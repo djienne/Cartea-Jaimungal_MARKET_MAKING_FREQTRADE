@@ -190,6 +190,7 @@ class Market_Making(IStrategy):
             return None
 
         mid_price = self.get_mid_price(pair, proposed_rate)
+        
         symbol = pair.replace("/USDC:USDC", "")
         kappa_m = self.kappas[symbol]['kappa-']
         epsilon_m = self.epsilons[symbol]['epsilon-']
