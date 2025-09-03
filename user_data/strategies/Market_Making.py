@@ -179,8 +179,9 @@ class Market_Making(IStrategy):
         symbol = pair.replace("/USDC:USDC","")
         kappa_m = self.kappas[symbol]['kappa-']
         epsilon_m = self.epsilons[symbol]['epsilon-']
-        returned_rate = mid_price - (1.0/kappa_m + epsilon_m + self.fees_maker_HL*mid_price)
-        logger.info(f"Calculated bid: {returned_rate:.5f}  (mid_price -{(1.0/kappa_m + epsilon_m)/mid_price*100:.5f}%)")
+        delta_m = (1.0/kappa_m + epsilon_m + self.fees_maker_HL*mid_price*2.0)
+        returned_rate = mid_price - delta_m
+        logger.info(f"Calculated bid: {returned_rate:.5f}  (mid_price -{delta_m/mid_price*100:.5f}%)")
         return returned_rate
 
     def custom_exit_price(self, pair: str, trade: Trade,
@@ -197,9 +198,10 @@ class Market_Making(IStrategy):
         symbol = pair.replace("/USDC:USDC","")
         kappa_p = self.kappas[symbol]['kappa+']
         epsilon_p = self.epsilons[symbol]['epsilon+']
-        returned_rate = mid_price + (1.0/kappa_p + epsilon_p + self.fees_maker_HL*mid_price)
+        delta_p = (1.0/kappa_p + epsilon_p + self.fees_maker_HL*mid_price*2.0)
+        returned_rate = mid_price + delta_p
 
-        logger.info(f"Calculated ask: {returned_rate:.5f}  (mid_price +{(1.0/kappa_p + epsilon_p)/mid_price*100:.5f}%)")
+        logger.info(f"Calculated ask: {returned_rate:.5f}  (mid_price +{delta_p/mid_price*100:.5f}%)")
 
         return returned_rate
 
