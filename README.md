@@ -40,17 +40,17 @@ This project implements an advanced market making strategy that:
 ADVANCED_MM/
 ├── user_data/
 │   ├── strategies/
-│   │   └── Market_Making.py          # Main market making strategy
+│       ├── Market_Making.py          # Main market making strategy
+│       ├── periodic_test_runner.py   # Parameter update orchestrator (update values in kappa.json/epsilon.json and copy files here so Market_Making.py can use)
+│       ├── kappa.json                # Current kappa parameters
+│       └── epsilon.json              # Current epsilon parameters
 │   ├── config.json                   # Freqtrade configuration
-│   ├── kappa.json                    # Current kappa parameters
-│   └── epsilon.json                  # Current epsilon parameters
 ├── scripts/
+│   ├── docker-compose.yml           # Docker compose to run the data collector (full order book over +-20 levels, trades, bid-ask prices)
 │   ├── test_kappa.py                # Kappa parameter calculation
 │   ├── test_epsilon.py              # Epsilon parameter calculation
-│   ├── periodic_test_runner.py      # Parameter update orchestrator
-│   ├── hyperliquid_data_collector.py # Market data collection
-│   └── market_making_introduction.py # Mathematical models
-├── docker-compose.yml               # Container orchestration
+│   └── hyperliquid_data_collector.py # Market data collection
+├── docker-compose.yml               # Docker compose to run Freqtrade (trading bot)
 └── commands.txt                     # Common Freqtrade commands
 ```
 
@@ -240,6 +240,7 @@ ONLY USE IN DRY-RUN
 
 
 This project implements academic market making models and is intended for research and educational use.
+
 
 
 
