@@ -230,9 +230,10 @@ class Market_Making(IStrategy):
 
         symbol = pair.replace("/USDC:USDC", "")
         kappa_m = self.kappas[symbol]['kappa-']
-        epsilon_m = self.epsilons[symbol]['epsilon-']  # Fixed: was using kappas instead of epsilons
+        epsilon_m = self.epsilons[symbol]['epsilon-']
         # Adjust bid price without fees (fees already paid on initial order)
-        returned_rate = mid_price - (1.0/kappa_m + epsilon_m)
+        delta_m = (1.0/kappa_m + epsilon_m + self.fees_maker_HL*mid_price*2.0)
+        returned_rate = mid_price - delta_m
         
         return returned_rate
 
