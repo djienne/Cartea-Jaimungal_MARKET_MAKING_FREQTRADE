@@ -1,7 +1,7 @@
 # Advanced Market Making with Freqtrade
 
 A sophisticated market making system built on Freqtrade, implementing dynamic spread optimization using Cartea-Jaimungal models and real-time parameter calculation for optimal bid-ask pricing.
-Works ONLY for **Hyperliquid**
+Works ONLY for **Hyperliquid**.
 
 ## Overview
 
@@ -243,6 +243,7 @@ ONLY USE IN DRY-RUN
 
 
 This project implements academic market making models and is intended for research and educational use.
+
 
 
 
