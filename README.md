@@ -14,7 +14,7 @@ This project implements an advanced market making strategy that:
 ## Key Features
 
 ### 🎯 Dynamic Spread Calculation
-- **Kappa parameters** (`kappa+`, `kappa-`): Control spread sensitivity to inventory levels
+- **Kappa parameters** (`kappa+`, `kappa-`): Control order book depth and steepness
 - **Epsilon parameters** (`epsilon+`, `epsilon-`): Adjust for market volatility and adverse selection
 - **Real-time recalibration** every 15 seconds during trading, over a 30 minute Window by default
 
@@ -240,5 +240,6 @@ ONLY USE IN DRY-RUN
 
 
 This project implements academic market making models and is intended for research and educational use.
+
 
 
