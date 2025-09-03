@@ -16,7 +16,7 @@ This project implements an advanced market making strategy that:
 ### 🎯 Dynamic Spread Calculation
 - **Kappa parameters** (`kappa+`, `kappa-`): Control spread sensitivity to inventory levels
 - **Epsilon parameters** (`epsilon+`, `epsilon-`): Adjust for market volatility and adverse selection
-- **Real-time recalibration** every 15 seconds during trading
+- **Real-time recalibration** every 15 seconds during trading, over a 30 minute Window by default
 
 ### 📊 Market Data Integration
 - **Order book analysis** for bid-ask spread calculation
@@ -332,5 +332,6 @@ The system implements state-of-the-art research from Cartea & Jaimungal on optim
 This software is for educational and research purposes. Market making involves significant financial risk. Always test thoroughly in dry-run mode before deploying with real capital. Past performance does not guarantee future results.
 
 ## License
+
 
 This project implements academic market making models and is intended for research and educational use.
