@@ -1,6 +1,7 @@
 # Advanced Market Making with Freqtrade
 
 A sophisticated market making system built on Freqtrade, implementing dynamic spread optimization using Cartea-Jaimungal models and real-time parameter calculation for optimal bid-ask pricing.
+Works ONLY for **Hyperliquid**
 
 ## Overview
 
@@ -39,7 +40,7 @@ This project implements an advanced market making strategy that:
 ```
 ADVANCED_MM/
 ├── user_data/
-├── docker-compose.yml                # Docker compose to run Freqtrade (trading bot)
+├── docker-compose.yml                # Docker compose to run Freqtrade (trading bot), WARNING: run the data collector for a while before launching live trading
 │   ├── strategies/
 │       ├── Market_Making.py          # Main market making strategy
 │       ├── periodic_test_runner.py   # Parameter update orchestrator (update values in kappa.json/epsilon.json and copy files here so Market_Making.py can use)
@@ -47,7 +48,8 @@ ADVANCED_MM/
 │       └── epsilon.json              # Current epsilon parameters
 │   ├── config.json                   # Freqtrade configuration
 ├── scripts/
-│   ├── docker-compose.yml           # Docker compose to run the data collector (full order book over +-20 levels, trades, bid-ask prices)
+│   ├── docker-compose.yml           # Docker compose to run the data collector (collects inside `HL_data` full order book over +-20 levels, trades, bid-ask prices)
+│   ├── HL_data                      # contains Hyperliquid gathered data with full order book over +-20 levels, trades, bid-ask prices
 │   ├── test_kappa.py                # Kappa parameter calculation
 │   ├── test_epsilon.py              # Epsilon parameter calculation
 │   └── hyperliquid_data_collector.py # Market data collection
@@ -163,6 +165,7 @@ Where:
    ```
    Only use in dry-run (paper trading)
    Monitor from Freqtrade web client, or set-up Telegram interface.
+   **WARNING: run the data collector for a while before launching live trading**
 
 ## Configuration
 
@@ -240,6 +243,7 @@ ONLY USE IN DRY-RUN
 
 
 This project implements academic market making models and is intended for research and educational use.
+
 
 
 
