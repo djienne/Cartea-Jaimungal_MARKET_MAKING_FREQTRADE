@@ -60,42 +60,38 @@ class Market_Making(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    #min_spread = 0.3/100.0 # minimum spread to avoid insane backtest results
-
+    # Market maker fees (1.5%)
     fees_maker_HL = 0.0150/100.0
 
-    # Can this strategy go short?
-    can_short: bool = False # LONG ONLY, never turn on shorts
+    # Strategy configuration
+    can_short: bool = False
     use_custom_stoploss: bool = False
     process_only_new_candles: bool = False
     position_adjustment_enable: bool = False
     max_entry_position_adjustment = 0
 
-    # exists ASAP
+    # Exit immediately when conditions are met
     minimal_roi = {
         "0": -1
     }
 
+    # Configuration parameters loaded from external files
     kappas = None
     epsilons = None
 
-    # Optimal stoploss designed for the strategy.
-    # This attribute will be overridden if the config file contains "stoploss".
+    # Conservative stoploss at 75% loss
     stoploss = -0.75
 
-    # Trailing stoploss
+    # Trailing stoploss disabled
     trailing_stop = False
-    # trailing_only_offset_is_reached = False
-    # trailing_stop_positive = 0.01
-    # trailing_stop_positive_offset = 0.0  # Disabled / not configured
 
-    # Optimal timeframe for the strategy.
+    # Use 1-minute timeframe for high-frequency market making
     timeframe = '1m'
 
-    # Number of candles the strategy requires before producing valid signals
+    # No startup candles required
     startup_candle_count: int = 0
 
-    # Optional order type mapping.
+    # Use limit orders for all operations to ensure maker fees
     order_types = {
         'entry': 'limit',
         'exit': 'limit',
@@ -104,7 +100,7 @@ class Market_Making(IStrategy):
         'stoploss_on_exchange': False
     }
 
-    # Optional order time in force.
+    # Good-til-cancelled orders
     order_time_in_force = {
         'entry': 'gtc',
         'exit': 'gtc'
@@ -115,44 +111,48 @@ class Market_Making(IStrategy):
         Called only once after bot instantiation.
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         """
-        logger.info('Running calculation of Espilon and Kappa')
+        logger.info('Loading market making parameters (Epsilon and Kappa)')
         pairs = self.dp.current_whitelist()
-        if len(pairs)!=1:
+        if len(pairs) != 1:
+            logger.error('Strategy requires exactly one trading pair')
             sys.exit()
-        symbol = pairs[0].replace("/USDC:USDC","")
-        logger.info(f"Current symbol: {symbol}")
+        symbol = pairs[0].replace("/USDC:USDC", "")
+        logger.info(f"Trading symbol: {symbol}")
         schedule_tests(run_once=True)
         self.kappas, self.epsilons = load_configs()
-        logger.info(self.kappas)
-        logger.info(self.epsilons)
+        logger.info(f'Loaded kappa values: {self.kappas}')
+        logger.info(f'Loaded epsilon values: {self.epsilons}')
 
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
         """
-        Called at the start of the bot iteration (one loop). For each loop, it will run populate_indicators on all pairs.
-        Might be used to perform pair-independent tasks
-        (e.g. gather some remote resource for comparison)
-        :param current_time: datetime object, containing the current datetime
-        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        Called at the start of each bot iteration to refresh market making parameters.
+        
+        :param current_time: Current datetime
+        :param **kwargs: Additional arguments
         """
-        logger.info('Running calculation of Espilon and Kappa')
+        logger.info('Refreshing market making parameters')
         t = threading.Thread(target=schedule_tests, daemon=True)
         t.start()
         self.kappas, self.epsilons = load_configs()
-        logger.info(self.kappas)
-        logger.info(self.epsilons)
+        logger.info(f'Updated kappa values: {self.kappas}')
+        logger.info(f'Updated epsilon values: {self.epsilons}')
 
     def informative_pairs(self):
         """
+        No additional informative pairs required for this market making strategy.
         """
         return []
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
+        No technical indicators needed for pure market making strategy.
         """
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
+        Enter long positions when market making parameters are loaded.
+        Entry price will be calculated dynamically in custom_entry_price.
         """
         if self.kappas is not None and self.epsilons is not None:
             dataframe.loc[:, 'enter_long'] = 1
@@ -162,63 +162,76 @@ class Market_Making(IStrategy):
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
+        Never exit based on indicators - exits handled by custom_exit_price.
         """
         dataframe.loc[:, 'exit_long'] = 0
         return dataframe
+    
+    def get_mid_price(self, pair: str, fallback_rate: float) -> float:
+        """
+        Calculate mid price from first order book bid and ask.
         
-    def custom_entry_price(self, pair: str, current_time: datetime, proposed_rate: float,
-                           entry_tag: str, side: str, **kwargs) -> float:
-
+        :param pair: Trading pair
+        :param fallback_rate: Rate to use if orderbook is not available
+        :return: Mid price
+        """
         orderbook = self.dp.orderbook(pair, maximum=1)
         if orderbook and 'bids' in orderbook and 'asks' in orderbook:
             best_bid = orderbook['bids'][0][0]
             best_ask = orderbook['asks'][0][0]
-            mid_price = (best_bid + best_ask) / 2
+            return (best_bid + best_ask) / 2
         else:
-            mid_price = proposed_rate
-        symbol = pair.replace("/USDC:USDC","")
+            return fallback_rate
+        
+    def custom_entry_price(self, pair: str, current_time: datetime, proposed_rate: float,
+                           entry_tag: str, side: str, **kwargs) -> float:
+
+        if side == 'short':
+            return None
+
+        mid_price = self.get_mid_price(pair, proposed_rate)
+        symbol = pair.replace("/USDC:USDC", "")
         kappa_m = self.kappas[symbol]['kappa-']
         epsilon_m = self.epsilons[symbol]['epsilon-']
+        # Calculate bid offset: inventory risk + market impact + trading fees
         delta_m = (1.0/kappa_m + epsilon_m + self.fees_maker_HL*mid_price*2.0)
         returned_rate = mid_price - delta_m
-        logger.info(f"Calculated bid: {returned_rate:.5f}  (mid_price -{delta_m/mid_price*100:.5f}%)")
+        logger.info(f"Calculated bid: {returned_rate:.5f} (mid_price -{delta_m/mid_price*100:.5f}%)")
         return returned_rate
 
     def custom_exit_price(self, pair: str, trade: Trade,
                         current_time: datetime, proposed_rate: float,
                         current_profit: float, exit_tag: str, **kwargs) -> float:
-        orderbook = self.dp.orderbook(pair, maximum=1)
-        if orderbook and 'bids' in orderbook and 'asks' in orderbook:
-            best_bid = orderbook['bids'][0][0]
-            best_ask = orderbook['asks'][0][0]
-            mid_price = (best_bid + best_ask) / 2
-        else:
-            mid_price = proposed_rate
+        
+        if trade.is_short:
+            return None
+            
+        mid_price = self.get_mid_price(pair, proposed_rate)
 
-        symbol = pair.replace("/USDC:USDC","")
+        symbol = pair.replace("/USDC:USDC", "")
         kappa_p = self.kappas[symbol]['kappa+']
         epsilon_p = self.epsilons[symbol]['epsilon+']
+        # Calculate ask offset: inventory risk + market impact + trading fees
         delta_p = (1.0/kappa_p + epsilon_p + self.fees_maker_HL*mid_price*2.0)
         returned_rate = mid_price + delta_p
 
-        logger.info(f"Calculated ask: {returned_rate:.5f}  (mid_price +{delta_p/mid_price*100:.5f}%)")
+        logger.info(f"Calculated ask: {returned_rate:.5f} (mid_price +{delta_p/mid_price*100:.5f}%)")
 
         return returned_rate
 
     def adjust_entry_price(self, trade: Trade, order: Order, pair: str,
                             current_time: datetime, proposed_rate: float, current_order_rate: float,
                             entry_tag: str, side: str, **kwargs) -> float:
-        orderbook = self.dp.orderbook(pair, maximum=1)
-        if orderbook and 'bids' in orderbook and 'asks' in orderbook:
-            best_bid = orderbook['bids'][0][0]
-            best_ask = orderbook['asks'][0][0]
-            mid_price = (best_bid + best_ask) / 2
-        else:
-            mid_price = proposed_rate
+        
+        if trade.is_short:
+            return None
+            
+        mid_price = self.get_mid_price(pair, proposed_rate)
 
-        symbol = pair.replace("/USDC:USDC","")
+        symbol = pair.replace("/USDC:USDC", "")
         kappa_m = self.kappas[symbol]['kappa-']
-        epsilon_m = self.kappas[symbol]['epsilon-']
+        epsilon_m = self.epsilons[symbol]['epsilon-']  # Fixed: was using kappas instead of epsilons
+        # Adjust bid price without fees (fees already paid on initial order)
         returned_rate = mid_price - (1.0/kappa_m + epsilon_m)
         
         return returned_rate
