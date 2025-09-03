@@ -32,7 +32,7 @@ This project implements an advanced market making strategy that:
 - **Core strategy**: `Market_Making.py` - Main Freqtrade strategy
 - **Parameter calculation**: `test_kappa.py`, `test_epsilon.py` - Dynamic parameter estimation
 - **Data collection**: `hyperliquid_data_collector.py` - Market data gathering
-- **Orchestration**: `periodic_test_runner.py` - Automated parameter updates
+- `periodic_test_runner.py` - Automated parameter updates
 
 ## Project Structure
 
@@ -335,3 +335,4 @@ This software is for educational and research purposes. Market making involves s
 
 
 This project implements academic market making models and is intended for research and educational use.
+
