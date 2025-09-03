@@ -65,9 +65,9 @@ class Market_Making(IStrategy):
     fees_maker_HL = 0.0150/100.0
 
     # Can this strategy go short?
-    can_short: bool = False
+    can_short: bool = False # LONG ONLY, never turn on shorts
     use_custom_stoploss: bool = False
-    process_only_new_candles: bool = True
+    process_only_new_candles: bool = False
     position_adjustment_enable: bool = False
     max_entry_position_adjustment = 0
 
@@ -93,7 +93,7 @@ class Market_Making(IStrategy):
     timeframe = '1m'
 
     # Number of candles the strategy requires before producing valid signals
-    startup_candle_count: int = 200
+    startup_candle_count: int = 0
 
     # Optional order type mapping.
     order_types = {
