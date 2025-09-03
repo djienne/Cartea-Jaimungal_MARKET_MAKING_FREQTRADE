@@ -24,7 +24,7 @@ This project implements an advanced market making strategy that:
 - **Mid-price tracking** for relative spread calculation
 
 ### 🔄 Automated Parameter Optimization
-- **Continuous parameter estimation** using recent market data
+- **Continuous parameter estimation** using recent market data (30-minutes window by default)
 - **Exponential decay models** for lambda estimation
 - **Statistical analysis** of trade patterns and volatility
 
@@ -32,7 +32,7 @@ This project implements an advanced market making strategy that:
 - **Core strategy**: `Market_Making.py` - Main Freqtrade strategy
 - **Parameter calculation**: `test_kappa.py`, `test_epsilon.py` - Dynamic parameter estimation
 - **Data collection**: `hyperliquid_data_collector.py` - Market data gathering
-- `periodic_test_runner.py` - Automated parameter updates
+- `periodic_test_runner.py` - Automated parameter updates to be used by Freqtrade
 
 ## Project Structure
 
@@ -151,35 +151,23 @@ Where:
 
 2. **Start data collection:**
    ```bash
+   cd scripts
    docker-compose up -d
    ```
+   Will write orderbook, price and orders data flow to files in directory `script/HL_data`
 
 3. **Run the strategy:**
    ```bash
-   # Dry run (recommended first)
-   freqtrade trade --config ./user_data/config.json --strategy Market_Making --dry-run
-   
-   # Live trading (after testing)
-   freqtrade trade --config ./user_data/config.json --strategy Market_Making
+   # cd to root directory of this project
+   docker compose up -d
    ```
-
-### Docker Deployment
-
-```bash
-# Build and start the market making bot
-docker-compose up -d
-
-# View logs
-docker logs MM_ADV -f
-
-# Stop the bot
-docker-compose down
-```
+   Only use in dry-run (paper trading)
+   Monitor from Freqtrade web client, or set-up Telegram interface.
 
 ## Configuration
 
 ### Main Configuration (`user_data/config.json`)
-
+Uses WLFI by default now.
 ```json
 {
     "max_open_trades": 1,
@@ -200,43 +188,21 @@ docker-compose down
 
 The system maintains dynamic parameters in JSON files:
 
-- `kappa.json`: Risk aversion parameters
+- `kappa.json`: order book depth parameter
 - `epsilon.json`: Market impact adjustments
 
 These are automatically updated every 15 seconds based on market conditions.
 
 ## Usage Examples
 
-### Backtesting
-
-```bash
-# Download historical data
-freqtrade download-data --timeframe 1m 5m 15m --days 190 --config ./user_data/config.json
-
-# Run backtest
-freqtrade backtesting --strategy Market_Making --config ./user_data/config.json --timeframe 1m --timerange 20240701-
-```
-
-### Parameter Optimization
-
-```bash
-# Hyperopt for parameter optimization
-freqtrade hyperopt --strategy Market_Making --timeframe 1m --min-trades 25 \
-  --config ./user_data/config.json --hyperopt-loss MultiMetricHyperOptLoss \
-  --timerange 20240701- --spaces buy -j 8 -e 1000
-
-# View results
-freqtrade hyperopt-show --best -n -1
-```
-
-### Manual Parameter Testing
+### Manual Parameter calibration from data in `script/HL_data`
 
 ```bash
 # Test kappa calculation
-python scripts/test_kappa.py --crypto WLFI --time-range 60
+python scripts/test_kappa.py --crypto WLFI
 
 # Test epsilon calculation  
-python scripts/test_epsilon.py --crypto WLFI --time-range 60
+python scripts/test_epsilon.py --crypto WLFI
 ```
 
 ## Key Components
@@ -246,24 +212,15 @@ python scripts/test_epsilon.py --crypto WLFI --time-range 60
 The main strategy implementing:
 - **Dynamic spread calculation** based on current parameters
 - **Order book analysis** for mid-price determination  
-- **Custom entry/exit pricing** using Cartea-Jaimungal formulas
+- **Custom entry/exit bid-ask spread pricing** using Cartea-Jaimungal formulas
 - **Real-time parameter loading** from JSON configuration files
-- **HJB solution integration**: Uses pre-computed value function `h(t,q)`
 - **Inventory skew adjustment**: *[Not yet implemented - planned enhancement to adjust optimal bid-ask spreads asymmetrically based on inventory position to remain market neutral]*
 
 ### Parameter Calculation Scripts
 
-- **test_kappa.py**: Estimates optimal inventory risk aversion
+- **test_kappa.py**: Estimates parameter for order book depth
 - **test_epsilon.py**: Calculates market impact adjustments
 - **periodic_test_runner.py**: Orchestrates continuous parameter updates
-
-### Data Collection and Analysis
-
-- **hyperliquid_data_collector.py**: Real-time market data collection
-- **Order book analysis**: Captures bid-ask spreads and depth at multiple levels
-- **Trade flow decomposition**: Separates market orders by direction and size
-- **Statistical calibration**: Fits exponential models to fill probabilities
-- **Jump detection**: Identifies permanent price impacts from informed trading
 
 ## Risk Management
 
@@ -274,65 +231,14 @@ The main strategy implementing:
 - **Order timeouts**: 15-second unfilled order cancellation
 - **Inventory risk control**: Dynamic spread adjustment based on position
 
-### Monitoring
-
-- **Real-time logging**: Comprehensive trade and parameter logging
-- **Parameter tracking**: Historical parameter evolution
-- **Performance metrics**: P&L, spread efficiency, inventory turnover
-
-## Performance Optimization
-
-### Strategy Tuning
-
-1. **Adjust risk parameters**: Modify `phi` (inventory penalty) in parameter calculation
-2. **Optimize time ranges**: Tune lookback periods for parameter estimation
-3. **Fee optimization**: Account for exchange-specific fee structures
-4. **Spread bounds**: Set minimum/maximum spread limits
-
-### System Performance
-
-- **Fast execution**: 15-second order timeout for rapid market response
-- **Efficient data usage**: Optimized parameter calculation algorithms
-- **Memory management**: Periodic cleanup of historical data
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Parameter files not found**: Ensure `kappa.json` and `epsilon.json` exist
-2. **No market data**: Check Hyperliquid data collector is running
-3. **Orders not filling**: Verify spread calculation and market conditions
-4. **High inventory**: Review risk parameters and position limits
-
-### Debugging
-
-```bash
-# Check parameter calculation
-python scripts/test_kappa.py --verbose
-
-# Verify market data
-ls -la scripts/HL_data/
-
-# Review strategy logs
-tail -f user_data/logs/freqtrade.log
-```
-
-## Contributing
-
-This is a sophisticated market making implementation suitable for:
-- **Quantitative researchers** developing market microstructure models
-- **High-frequency traders** implementing systematic strategies  
-- **Academic researchers** studying market making dynamics
-- **Crypto market makers** on low-latency exchanges like Hyperliquid
-
-The system implements state-of-the-art research from Cartea & Jaimungal on optimal market making with adverse selection, providing a practical framework for systematic liquidity provision.
-
 ## Disclaimer
 
 This software is for educational and research purposes. Market making involves significant financial risk. Always test thoroughly in dry-run mode before deploying with real capital. Past performance does not guarantee future results.
+ONLY USE IN DRY-RUN
 
 ## License
 
 
 This project implements academic market making models and is intended for research and educational use.
+
 
