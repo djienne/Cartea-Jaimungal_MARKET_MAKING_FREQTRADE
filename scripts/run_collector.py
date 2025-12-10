@@ -2,7 +2,7 @@ import os
 from hyperliquid_data_collector import HyperliquidDataCollector
 
 def _symbols():
-    raw = os.getenv("SYMBOLS", "BTC,ETH,SOL,WLFI")
+    raw = os.getenv("SYMBOLS", "ETH")
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 def main():
@@ -26,4 +26,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

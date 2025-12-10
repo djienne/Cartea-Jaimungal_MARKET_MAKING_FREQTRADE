@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import talib.abstract as ta
 import pandas_ta as pta
 import freqtrade.vendor.qtpylib.indicators as qtpylib
+from importlib import import_module
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,23 @@ def load_configs(start_dir: Path | None = None, max_up: int = 10):
 
     kappa = json.loads((find_upwards("kappa.json", start_dir, max_up)).read_text(encoding="utf-8"))
     epsilon = json.loads((find_upwards("epsilon.json", start_dir, max_up)).read_text(encoding="utf-8"))
-    return kappa, epsilon
+    lambda_params = {}
+    try:
+        lambda_params = json.loads((find_upwards("lambda.json", start_dir, max_up)).read_text(encoding="utf-8"))
+    except Exception:
+        lambda_params = {}
+    return kappa, epsilon, lambda_params
+
+
+def load_hjb_solver():
+    """
+    Lazy-import HJB solver from scripts/hjb.py to avoid path coupling.
+    """
+    try:
+        mod = import_module("hjb")
+        return getattr(mod, "compute_h_symmetric", None)
+    except Exception:
+        return None
 
 class Market_Making(IStrategy):
 
@@ -78,6 +95,9 @@ class Market_Making(IStrategy):
     # Configuration parameters loaded from external files
     kappas = None
     epsilons = None
+    lambdas = None
+    hjb_cache = None
+    hjb_solver = load_hjb_solver()
 
     # Conservative stoploss at 75% loss
     stoploss = -0.75
@@ -90,6 +110,12 @@ class Market_Making(IStrategy):
 
     # No startup candles required
     startup_candle_count: int = 0
+
+    # HJB risk settings (aligned with fq_market_making_introduction.ipynb)
+    hjb_alpha = 0.0   # terminal inventory penalty
+    hjb_phi = 0.0     # running inventory penalty
+    hjb_q_max = 3     # inventory grid radius
+    hjb_horizon_seconds = 60.0  # horizon in seconds for matrix exponential (λ is trades/sec)
 
     # Use limit orders for all operations to ensure maker fees
     order_types = {
@@ -119,9 +145,11 @@ class Market_Making(IStrategy):
         symbol = pairs[0].replace("/USDC:USDC", "")
         logger.info(f"Trading symbol: {symbol}")
         schedule_tests(run_once=True)
-        self.kappas, self.epsilons = load_configs()
+        self.kappas, self.epsilons, self.lambdas = load_configs()
         logger.info(f'Loaded kappa values: {self.kappas}')
         logger.info(f'Loaded epsilon values: {self.epsilons}')
+        logger.info(f'Loaded lambda values: {self.lambdas}')
+        self._refresh_hjb(pairs[0])
 
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
         """
@@ -133,9 +161,13 @@ class Market_Making(IStrategy):
         logger.info('Refreshing market making parameters')
         t = threading.Thread(target=schedule_tests, daemon=True)
         t.start()
-        self.kappas, self.epsilons = load_configs()
+        self.kappas, self.epsilons, self.lambdas = load_configs()
         logger.info(f'Updated kappa values: {self.kappas}')
         logger.info(f'Updated epsilon values: {self.epsilons}')
+        logger.info(f'Updated lambda values: {self.lambdas}')
+        pairs = self.dp.current_whitelist()
+        if pairs:
+            self._refresh_hjb(pairs[0])
 
     def informative_pairs(self):
         """
@@ -182,6 +214,80 @@ class Market_Making(IStrategy):
             return (best_bid + best_ask) / 2
         else:
             return fallback_rate
+    
+    def _refresh_hjb(self, pair: str) -> None:
+        """
+        Compute HJB surface (symmetric κ assumption) using latest λ/κ/ε.
+        Falls back silently if parameters are missing.
+        """
+        symbol = pair.replace("/USDC:USDC", "")
+        try:
+            kappa_p = float(self.kappas[symbol]["kappa+"])
+            kappa_m = float(self.kappas[symbol]["kappa-"])
+            epsilon_p = float(self.epsilons[symbol]["epsilon+"])
+            epsilon_m = float(self.epsilons[symbol]["epsilon-"])
+            lambda_p = float(self.lambdas.get(symbol, {}).get("lambda+", 0.0)) if isinstance(self.lambdas, dict) else 0.0
+            lambda_m = float(self.lambdas.get(symbol, {}).get("lambda-", 0.0)) if isinstance(self.lambdas, dict) else 0.0
+        except Exception:
+            self.hjb_cache = None
+            return
+
+        solver = self.hjb_solver
+        if solver is None:
+            self.hjb_cache = None
+            return
+
+        try:
+            hjb_res = solver(
+                lambda_plus=lambda_p,
+                lambda_minus=lambda_m,
+                epsilon_plus=epsilon_p,
+                epsilon_minus=epsilon_m,
+                kappa_plus=kappa_p,
+                kappa_minus=kappa_m,
+                alpha=self.hjb_alpha,
+                phi=self.hjb_phi,
+                T_seconds=self.hjb_horizon_seconds,
+                q_max=self.hjb_q_max,
+            )
+            self.hjb_cache = hjb_res
+        except Exception as e:
+            logger.error(f"Failed to compute HJB surfaces: {e}")
+            self.hjb_cache = None
+
+    def _inventory_level(self, pair: str) -> int:
+        """
+        Approximate inventory level as number of open trades for the pair.
+        Limits to configured HJB grid.
+        """
+        try:
+            open_trades = Trade.get_trades(is_open=True, pair=pair)
+            q = len(open_trades)
+        except Exception:
+            q = 0
+        q = max(-self.hjb_q_max, min(self.hjb_q_max, q))
+        return q
+
+    def _select_delta(self, side: str, q: int) -> float:
+        """
+        Select delta+/- from precomputed HJB grid for given inventory level.
+        Falls back to static 1/κ + ε when cache is unavailable.
+        """
+        if self.hjb_cache:
+            q_grid = self.hjb_cache["q_grid"]
+            if q < q_grid[0]:
+                idx = 0
+            elif q > q_grid[-1]:
+                idx = -1
+            else:
+                idx = int(np.argmin(np.abs(q_grid - q)))
+            if side == 'bid':
+                return float(self.hjb_cache["delta_minus"][idx])
+            else:
+                return float(self.hjb_cache["delta_plus"][idx])
+
+        # Fallback: static spread term
+        return None
         
     def custom_entry_price(self, pair: str, current_time: datetime, proposed_rate: float,
                            entry_tag: str, side: str, **kwargs) -> float:
@@ -194,8 +300,16 @@ class Market_Making(IStrategy):
         symbol = pair.replace("/USDC:USDC", "")
         kappa_m = self.kappas[symbol]['kappa-']
         epsilon_m = self.epsilons[symbol]['epsilon-']
-        # Calculate bid offset: inventory risk + market impact + trading fees
-        delta_m = (1.0/kappa_m + epsilon_m + self.fees_maker_HL*mid_price*2.0)
+
+        q_level = self._inventory_level(pair)
+        delta_from_hjb = self._select_delta('bid', q_level)
+        if delta_from_hjb is None:
+            delta_m = (1.0 / kappa_m) + epsilon_m
+        else:
+            delta_m = delta_from_hjb
+
+        # Add maker fee cushion (price units)
+        delta_m = delta_m + self.fees_maker_HL * mid_price * 2.0
         returned_rate = mid_price - delta_m
         logger.info(f"Calculated bid: {returned_rate:.5f} (mid_price -{delta_m/mid_price*100:.5f}%)")
         return returned_rate
@@ -213,7 +327,14 @@ class Market_Making(IStrategy):
         kappa_p = self.kappas[symbol]['kappa+']
         epsilon_p = self.epsilons[symbol]['epsilon+']
         # Calculate ask offset: inventory risk + market impact + trading fees
-        delta_p = (1.0/kappa_p + epsilon_p + self.fees_maker_HL*mid_price*2.0)
+        q_level = self._inventory_level(pair)
+        delta_from_hjb = self._select_delta('ask', q_level)
+        if delta_from_hjb is None:
+            delta_p = (1.0 / kappa_p) + epsilon_p
+        else:
+            delta_p = delta_from_hjb
+
+        delta_p = delta_p + self.fees_maker_HL * mid_price * 2.0
         returned_rate = mid_price + delta_p
 
         logger.info(f"Calculated ask: {returned_rate:.5f} (mid_price +{delta_p/mid_price*100:.5f}%)")
@@ -232,8 +353,14 @@ class Market_Making(IStrategy):
         symbol = pair.replace("/USDC:USDC", "")
         kappa_m = self.kappas[symbol]['kappa-']
         epsilon_m = self.epsilons[symbol]['epsilon-']
-        # Adjust bid price without fees (fees already paid on initial order)
-        delta_m = (1.0/kappa_m + epsilon_m + self.fees_maker_HL*mid_price*2.0)
+        # Adjust bid price without extra inventory skew (already accounted)
+        q_level = self._inventory_level(pair)
+        delta_from_hjb = self._select_delta('bid', q_level)
+        if delta_from_hjb is None:
+            delta_m = (1.0 / kappa_m) + epsilon_m
+        else:
+            delta_m = delta_from_hjb
+        delta_m = delta_m + self.fees_maker_HL * mid_price * 2.0
         returned_rate = mid_price - delta_m
         
         return returned_rate

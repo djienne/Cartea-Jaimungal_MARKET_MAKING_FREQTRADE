@@ -1,5 +1,5 @@
 """
-Periodic asynchronous runner for test_kappa.py and test_epsilon.py.
+Periodic asynchronous runner for get_kappa.py and get_epsilon.py.
 
 Key features:
 - Locates test files by walking up from this script's directory.
@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
-TEST_FILES = ("test_kappa.py", "test_epsilon.py")
-CONFIG_FILES = ("epsilon.json", "kappa.json")
+TEST_FILES = ("get_kappa.py", "get_epsilon.py")
+CONFIG_FILES = ("epsilon.json", "kappa.json", "lambda.json")
 
 
 def _ts() -> str:
@@ -228,7 +228,7 @@ def schedule_tests(
     run_once: bool = True,
     crypto_name: Optional[str] = None,
 ) -> None:
-    """Run test_kappa.py and test_epsilon.py.
+    """Run get_kappa.py and get_epsilon.py.
 
     - run_once: run a single cycle and exit (default). When False, loops.
     - interval_seconds: seconds to wait after each cycle completes (looping only).

@@ -13,7 +13,7 @@ services:
     container_name: hl-collector
     environment:
       # Comma-separated symbols; defaults match your script
-      SYMBOLS: ${SYMBOLS:-BTC,ETH,SOL,WLFI}
+      SYMBOLS: ${SYMBOLS:-ETH}
       OUTPUT_DIR: ${OUTPUT_DIR:-HL_data}
       ORDERBOOK_DEPTH: ${ORDERBOOK_DEPTH:-20}
       TZ: ${TZ:-UTC}
@@ -27,4 +27,3 @@ services:
         max-size: "10m"
         max-file: "3"
     command: ["python", "run_collector.py"]
-

@@ -18,14 +18,13 @@ A comprehensive Python suite for collecting real-time tick data from Hyperliquid
 - **Asynchronous data writing** to minimize performance impact
 - **Graceful shutdown** with data preservation
 
-### 🧮 Parameter Estimation TO BE DONE
-- **λ (Lambda)**: Market order arrival intensities for buy/sell orders
-- **ε (Epsilon)**: Permanent price impact from informed trading
-- **κ (Kappa)**: Order book depth sensitivity (liquidity measure)
+### 🧮 Parameter Estimation (aligned with Cartea-Jaimungal model)
+- **κ ± (Kappa)**: Order book depth sensitivity estimated from λ(δ)=λ₀·exp(−κδ); saved to `kappa.json`
+- **λ₀ ± (Lambda)**: Base arrival intensity at δ=0 (trades/sec) from the κ regression; saved to `lambda.json`
+- **ε ± (Epsilon)**: Event-level permanent impact per trade from immediate mid jumps (~200 ms); saved to `epsilon.json`
 - **Automatic data loading** with configurable time ranges
-- **Quality metrics** and confidence intervals for estimates
 - **Market toxicity assessment** based on ε×κ product
-- **Comprehensive validation** and warning system
+- **HJB-ready outputs** for the strategy (λ, κ, ε feed optimal δ* computation)
 
 ---
 
@@ -50,11 +49,17 @@ python hyperliquid_data_collector.py
 ### 2. Estimate Parameters
 
 ```bash
-# Estimate parameters for BTC using last 10 minutes of data
-python market_making_parameters_estimator.py --symbol BTC --minutes 10
+# Joint κ/λ fit (λ(δ)=λ0·exp(-κδ)), saves kappa.json & lambda.json (trades/sec)
+python get_kappa.py --crypto ETH --minutes 30
 
-# Or use the example script
-python example_parameter_estimation.py
+# Event-level ε from immediate post-trade jumps, saves epsilon.json
+python get_epsilon.py --crypto ETH --minutes 30
+
+# Optional raw trades/sec sanity check
+python get_lambda.py --crypto ETH --minutes 30
+
+# Inspect spreads across inventory (refreshes κ/ε/λ, then shows bid/ask and bps by q)
+python compute_spreads.py --crypto ETH --mid 4322.05 --qmax 3
 ```
 
 ---
@@ -83,7 +88,7 @@ You can configure it via environment variables, either inline or using a `.env` 
 
 | Variable          | Default            | Description                                |
 | ----------------- | ------------------ | ------------------------------------------ |
-| `SYMBOLS`         | `BTC,ETH,SOL,WLFI` | Comma-separated list of symbols to collect |
+| `SYMBOLS`         | `ETH` | Comma-separated list of symbols to collect |
 | `OUTPUT_DIR`      | `hyperliquid_data` | Directory where CSVs are written           |
 | `ORDERBOOK_DEPTH` | `20`               | Orderbook depth to record                  |
 | `TZ`              | `UTC`              | Timezone inside the container              |
@@ -174,14 +179,14 @@ hyperliquid_data/
 
 ### Parameters Estimated
 
-| Parameter         | Symbol | Description                               | Estimation Method                |
-| ----------------- | ------ | ----------------------------------------- | -------------------------------- |
-| **Lambda Plus**   | λ+     | Buy order arrival intensity (orders/min)  | Trade frequency analysis         |
-| **Lambda Minus**  | λ-     | Sell order arrival intensity (orders/min) | Trade frequency analysis         |
-| **Epsilon Plus**  | ε+     | Permanent price impact from buy orders    | Price impact before/after trades |
-| **Epsilon Minus** | ε-     | Permanent price impact from sell orders   | Price impact before/after trades |
-| **Kappa Plus**    | κ+     | Ask side order book depth sensitivity     | Order book decay fitting         |
-| **Kappa Minus**   | κ-     | Bid side order book depth sensitivity     | Order book decay fitting         |
+| Parameter         | Symbol | Description                               | Estimation Method                                |
+| ----------------- | ------ | ----------------------------------------- | ------------------------------------------------ |
+| **Lambda Plus**   | λ+     | Buy order arrival intensity (trades/sec)  | Base λ₀ from λ(δ)=λ₀·exp(−κδ) fit                |
+| **Lambda Minus**  | λ-     | Sell order arrival intensity (trades/sec) | Base λ₀ from λ(δ)=λ₀·exp(−κδ) fit                |
+| **Epsilon Plus**  | ε+     | Instant permanent jump from buy MOs       | Immediate mid change after trade (~200 ms)       |
+| **Epsilon Minus** | ε-     | Instant permanent jump from sell MOs      | Immediate mid change after trade (~200 ms)       |
+| **Kappa Plus**    | κ+     | Ask side order book depth sensitivity     | λ(δ) exponential decay regression                |
+| **Kappa Minus**   | κ-     | Bid side order book depth sensitivity     | λ(δ) exponential decay regression                |
 
 ### Market Assessment
 

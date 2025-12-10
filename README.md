@@ -34,7 +34,7 @@ This project implements an advanced market making strategy that:
 
 ### 🏗️ Modular Architecture
 - **Core strategy**: `Market_Making.py` - Main Freqtrade strategy
-- **Parameter calculation**: `test_kappa.py`, `test_epsilon.py` - Dynamic parameter estimation
+- **Parameter calculation**: `get_kappa.py`, `get_epsilon.py` - Dynamic parameter estimation
 - **Data collection**: `hyperliquid_data_collector.py` - Market data gathering
 - `periodic_test_runner.py` - Automated parameter updates to be used by Freqtrade
 
@@ -53,8 +53,8 @@ ADVANCED_MM/
 ├── scripts/
 │   ├── docker-compose.yml           # Docker compose to run the data collector (collects inside `HL_data` full order book over +-20 levels, trades, bid-ask prices)
 │   ├── HL_data                      # contains Hyperliquid gathered data with full order book over +-20 levels, trades, bid-ask prices
-│   ├── test_kappa.py                # Kappa parameter calculation
-│   ├── test_epsilon.py              # Epsilon parameter calculation
+│   ├── get_kappa.py                # Kappa parameter calculation
+│   ├── get_epsilon.py              # Epsilon parameter calculation
 │   └── hyperliquid_data_collector.py # Market data collection
 └── commands.txt                     # Common Freqtrade commands
 ```
@@ -173,7 +173,7 @@ Where:
 ## Configuration
 
 ### Main Configuration (`user_data/config.json`)
-Uses WLFI by default now.
+Uses ETH by default now.
 ```json
 {
     "max_open_trades": 1,
@@ -181,7 +181,7 @@ Uses WLFI by default now.
     "trading_mode": "futures",
     "exchange": {
         "name": "hyperliquid",
-        "pair_whitelist": ["WLFI/USDC:USDC"]
+        "pair_whitelist": ["ETH/USDC:USDC"]
     },
     "unfilledtimeout": {
         "entry": 15,
@@ -205,10 +205,13 @@ These are automatically updated every 15 seconds based on market conditions.
 
 ```bash
 # Test kappa calculation
-python scripts/test_kappa.py --crypto WLFI
+python scripts/get_kappa.py --crypto ETH
 
 # Test epsilon calculation  
-python scripts/test_epsilon.py --crypto WLFI
+python scripts/get_epsilon.py --crypto ETH
+
+# Quick spread check (refreshes κ/ε/λ first, then prints table of spreads vs inventory)
+python scripts/compute_spreads.py --crypto ETH --mid 4322.05
 ```
 
 ## Key Components
@@ -224,8 +227,10 @@ The main strategy implementing:
 
 ### Parameter Calculation Scripts
 
-- **test_kappa.py**: Estimates parameter for order book depth
-- **test_epsilon.py**: Calculates market impact adjustments
+- **get_kappa.py**: Jointly estimates κ± and λ₀± via λ(δ)=λ₀·exp(−κδ) (trades/sec, price-unit depths)
+- **get_epsilon.py**: Event-level ε± from immediate post-trade mid jumps (∼200ms window)
+- **get_lambda.py**: Trades/sec sanity check from raw trade counts (per-symbol)
+- **compute_spreads.py**: Refreshes κ/ε/λ then prints bid/ask prices and spreads (bps) across inventory levels
 - **periodic_test_runner.py**: Orchestrates continuous parameter updates
 
 ## Risk Management

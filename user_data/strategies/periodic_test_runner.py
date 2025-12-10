@@ -1,5 +1,5 @@
 """
-Periodic asynchronous runner for test_kappa.py and test_epsilon.py.
+Periodic asynchronous runner for get_kappa.py and get_epsilon.py.
 
 Key features:
 - Locates test files by walking up from this script's directory.
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
-TEST_FILES = ("test_kappa.py", "test_epsilon.py")
+TEST_FILES = ("get_kappa.py", "get_epsilon.py")
 CONFIG_FILES = ("epsilon.json", "kappa.json")
 
 
@@ -141,7 +141,7 @@ async def _run_once(found: Dict[str, Optional[Path]]) -> None:
         if not path:
             print(f"{_ts()} [finder] WARNING: Could not find {name}; skipping this cycle.")
             continue
-        cmd = [sys.executable, str(path)]
+        cmd = [sys.executable, str(path), "--crypto", "ETH"]
         tasks.append(asyncio.create_task(_stream_process(name, cmd, cwd=path.parent)))
 
     if not tasks:
@@ -207,7 +207,7 @@ def schedule_tests(
     copy_configs: bool = True,
     run_once: bool = True,
 ) -> None:
-    """Run test_kappa.py and test_epsilon.py.
+    """Run get_kappa.py and get_epsilon.py.
 
     - run_once: run a single cycle and exit (default). When False, loops.
     - interval_seconds: seconds to wait after each cycle completes (looping only).
