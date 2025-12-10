@@ -501,7 +501,7 @@ class HyperliquidDataCollector:
     def _periodic_flush(self):
         """Periodically flush buffers to disk"""
         while self.running:
-            time.sleep(10)  # Flush every 10 seconds
+            time.sleep(60)  # Flush every 60 seconds
             self._flush_buffers()
     
     def _periodic_summary(self):
