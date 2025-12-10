@@ -312,6 +312,18 @@ class Market_Making(IStrategy):
 
         # Fallback: static spread term
         return None
+
+    def _log_spread(self, side: str, mid_price: float, delta: float, source: str) -> None:
+        """
+        Log the applied spread in basis points off mid, with its origin.
+        """
+        if mid_price <= 0:
+            bps = float("nan")
+        else:
+            bps = (delta / mid_price) * 10_000.0
+        logger.info(
+            f"[spread] side={side} bps={bps:.2f} abs={delta:.6f} mid={mid_price:.6f} source={source}"
+        )
         
     def custom_entry_price(self, pair: str, current_time: datetime, proposed_rate: float,
                            entry_tag: str, side: str, **kwargs) -> float:
@@ -329,13 +341,16 @@ class Market_Making(IStrategy):
         delta_from_hjb = self._select_delta('bid', q_level)
         if delta_from_hjb is None:
             delta_m = (1.0 / kappa_m) + epsilon_m
+            delta_source = "fallback_static"
         else:
             delta_m = delta_from_hjb
+            delta_source = "hjb_grid"
 
         # Add maker fee cushion (price units)
         delta_m = delta_m + self.fees_maker_HL * mid_price * 2.0
         returned_rate = mid_price - delta_m
-        logger.info(f"Calculated bid: {returned_rate:.5f} (mid_price -{delta_m/mid_price*100:.5f}%)")
+        self._log_spread("bid", mid_price, delta_m, delta_source)
+        logger.info(f"Calculated bid: {returned_rate:.5f}")
         return returned_rate
 
     def custom_exit_price(self, pair: str, trade: Trade,
@@ -355,13 +370,16 @@ class Market_Making(IStrategy):
         delta_from_hjb = self._select_delta('ask', q_level)
         if delta_from_hjb is None:
             delta_p = (1.0 / kappa_p) + epsilon_p
+            delta_source = "fallback_static"
         else:
             delta_p = delta_from_hjb
+            delta_source = "hjb_grid"
 
         delta_p = delta_p + self.fees_maker_HL * mid_price * 2.0
         returned_rate = mid_price + delta_p
 
-        logger.info(f"Calculated ask: {returned_rate:.5f} (mid_price +{delta_p/mid_price*100:.5f}%)")
+        self._log_spread("ask", mid_price, delta_p, delta_source)
+        logger.info(f"Calculated ask: {returned_rate:.5f}")
 
         return returned_rate
 
@@ -382,10 +400,14 @@ class Market_Making(IStrategy):
         delta_from_hjb = self._select_delta('bid', q_level)
         if delta_from_hjb is None:
             delta_m = (1.0 / kappa_m) + epsilon_m
+            delta_source = "fallback_static"
         else:
             delta_m = delta_from_hjb
+            delta_source = "hjb_grid"
         delta_m = delta_m + self.fees_maker_HL * mid_price * 2.0
         returned_rate = mid_price - delta_m
+
+        self._log_spread("bid_adjust", mid_price, delta_m, delta_source)
         
         return returned_rate
 

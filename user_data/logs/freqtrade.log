@@ -1,0 +1,748 @@
+2025-12-10 21:10:37,047 - freqtrade.loggers - INFO - Enabling colorized output.
+2025-12-10 21:10:37,047 - root - INFO - Logfile configured
+2025-12-10 21:10:37,048 - freqtrade.loggers - INFO - Verbosity set to 0
+2025-12-10 21:10:37,049 - freqtrade.configuration.configuration - INFO - Runmode set to dry_run.
+2025-12-10 21:10:37,049 - freqtrade.configuration.configuration - INFO - Parameter --db-url detected ...
+2025-12-10 21:10:37,050 - freqtrade.configuration.configuration - WARNING - `force_entry_enable` RPC message enabled.
+2025-12-10 21:10:37,051 - freqtrade.configuration.configuration - INFO - Dry run is enabled
+2025-12-10 21:10:37,051 - freqtrade.configuration.configuration - INFO - Using DB: "sqlite:////freqtrade/user_data/tradesv3.sqlite"
+2025-12-10 21:10:37,052 - freqtrade.configuration.configuration - INFO - Using max_open_trades: 1 ...
+2025-12-10 21:10:37,123 - freqtrade.configuration.configuration - INFO - Using user-data directory: /freqtrade/user_data ...
+2025-12-10 21:10:37,127 - freqtrade.configuration.directory_operations - INFO - Created data directory: None
+2025-12-10 21:10:37,128 - freqtrade.configuration.configuration - INFO - Using data directory: /freqtrade/user_data/data/hyperliquid ...
+2025-12-10 21:10:37,129 - freqtrade.exchange.check_exchange - INFO - Checking exchange...
+2025-12-10 21:10:37,133 - freqtrade.exchange.check_exchange - INFO - Exchange "hyperliquid" is officially supported by the Freqtrade development team.
+2025-12-10 21:10:37,133 - freqtrade.configuration.configuration - INFO - Using pairlist from configuration.
+2025-12-10 21:10:37,380 - freqtrade.resolvers.iresolver - INFO - Using resolved strategy Market_Making from '/freqtrade/user_data/strategies/Market_Making.py'...
+2025-12-10 21:10:37,382 - freqtrade.strategy.hyper - INFO - Found no parameter file.
+2025-12-10 21:10:37,383 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'order_types' with value in config file: {'entry': 'limit', 'exit': 'limit', 'stoploss': 'limit', 'emergency_exit': 'market', 'stoploss_on_exchange': False}.
+2025-12-10 21:10:37,384 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'order_time_in_force' with value in config file: {'entry': 'GTC', 'exit': 'GTC'}.
+2025-12-10 21:10:37,384 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'stake_currency' with value in config file: USDC.
+2025-12-10 21:10:37,385 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'stake_amount' with value in config file: unlimited.
+2025-12-10 21:10:37,385 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'unfilledtimeout' with value in config file: {'entry': 15, 'exit': 15, 'exit_timeout_count': 0, 'unit': 'seconds'}.
+2025-12-10 21:10:37,386 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'position_adjustment_enable' with value in config file: False.
+2025-12-10 21:10:37,386 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'max_entry_position_adjustment' with value in config file: -1.
+2025-12-10 21:10:37,387 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'max_open_trades' with value in config file: 1.
+2025-12-10 21:10:37,387 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using minimal_roi: {'0': -1}
+2025-12-10 21:10:37,388 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using timeframe: 1m
+2025-12-10 21:10:37,388 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using stoploss: -0.75
+2025-12-10 21:10:37,388 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using trailing_stop: False
+2025-12-10 21:10:37,389 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using trailing_stop_positive_offset: 0.0
+2025-12-10 21:10:37,389 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using trailing_only_offset_is_reached: False
+2025-12-10 21:10:37,389 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using use_custom_stoploss: False
+2025-12-10 21:10:37,390 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using process_only_new_candles: False
+2025-12-10 21:10:37,390 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using order_types: {'entry': 'limit', 'exit': 'limit', 'stoploss': 'limit', 'emergency_exit': 'market', 'stoploss_on_exchange': False}
+2025-12-10 21:10:37,391 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using order_time_in_force: {'entry': 'GTC', 'exit': 'GTC'}
+2025-12-10 21:10:37,392 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using stake_currency: USDC
+2025-12-10 21:10:37,392 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using stake_amount: unlimited
+2025-12-10 21:10:37,393 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using startup_candle_count: 0
+2025-12-10 21:10:37,393 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using unfilledtimeout: {'entry': 15, 'exit': 15, 'exit_timeout_count': 0, 'unit': 'seconds'}
+2025-12-10 21:10:37,394 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using use_exit_signal: True
+2025-12-10 21:10:37,394 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using exit_profit_only: False
+2025-12-10 21:10:37,394 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using ignore_roi_if_entry_signal: False
+2025-12-10 21:10:37,395 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using exit_profit_offset: 0.0
+2025-12-10 21:10:37,395 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using disable_dataframe_checks: False
+2025-12-10 21:10:37,396 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using ignore_buying_expired_candle_after: 0
+2025-12-10 21:10:37,396 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using position_adjustment_enable: False
+2025-12-10 21:10:37,397 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using max_entry_position_adjustment: -1
+2025-12-10 21:10:37,397 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using max_open_trades: 1
+2025-12-10 21:10:37,398 - freqtrade.configuration.config_validation - INFO - Validating configuration ...
+2025-12-10 21:10:37,400 - freqtrade.exchange.exchange - INFO - Instance is running with dry_run enabled
+2025-12-10 21:10:37,400 - freqtrade.exchange.exchange - INFO - Using CCXT 4.4.77
+2025-12-10 21:10:37,400 - freqtrade.exchange.exchange - INFO - Applying additional ccxt config: {'options': {'defaultType': 'swap'}}
+2025-12-10 21:10:37,403 - freqtrade.exchange.exchange - INFO - Applying additional ccxt config: {'options': {'defaultType': 'swap'}}
+2025-12-10 21:10:37,406 - freqtrade.exchange.exchange - INFO - Using Exchange "Hyperliquid"
+2025-12-10 21:10:40,994 - freqtrade.resolvers.exchange_resolver - INFO - Using resolved exchange 'Hyperliquid'...
+2025-12-10 21:10:41,215 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:10:41,215 - freqtrade.rpc.rpc_manager - INFO - Enabling rpc.api_server
+2025-12-10 21:10:41,325 - freqtrade.rpc.api_server.webserver - INFO - Starting HTTP Server at 0.0.0.0:8080
+2025-12-10 21:10:41,325 - freqtrade.rpc.api_server.webserver - INFO - Starting Local Rest Server.
+2025-12-10 21:10:41,365 - freqtrade.resolvers.iresolver - INFO - Using resolved pairlist StaticPairList from '/freqtrade/freqtrade/plugins/pairlist/StaticPairList.py'...
+2025-12-10 21:10:41,366 - freqtrade.freqtradebot - INFO - Starting initial pairlist refresh
+2025-12-10 21:10:41,368 - freqtrade.plugins.pairlistmanager - INFO - Whitelist with 1 pairs: ['ETH/USDC:USDC']
+2025-12-10 21:10:41,369 - freqtrade.freqtradebot - INFO - Initial Pairlist refresh took 0.00s
+2025-12-10 21:10:41,370 - Market_Making - INFO - Loading market making parameters (Epsilon and Kappa)
+2025-12-10 21:10:41,370 - Market_Making - INFO - Trading symbol: ETH
+2025-12-10 21:10:43,018 - Market_Making - INFO - Loaded kappa values: {'ETH': {'kappa+': 0.1338982964564806, 'kappa-': 2.8495745488969884}}
+2025-12-10 21:10:43,019 - Market_Making - INFO - Loaded epsilon values: {'ETH': {'epsilon+': -0.29999999999972715, 'epsilon-': 0.0}}
+2025-12-10 21:10:43,019 - Market_Making - INFO - Loaded lambda values: {'ETH': {'lambda+': 0.032246866861907766, 'lambda-': 0.044444257321777425, 'unit': 'trades_per_second'}}
+2025-12-10 21:10:43,020 - freqtrade.strategy.hyper - INFO - No params for buy found, using default values.
+2025-12-10 21:10:43,021 - freqtrade.strategy.hyper - INFO - No params for sell found, using default values.
+2025-12-10 21:10:43,021 - freqtrade.strategy.hyper - INFO - No params for protection found, using default values.
+2025-12-10 21:10:43,022 - freqtrade.plugins.protectionmanager - INFO - No protection Handlers defined.
+2025-12-10 21:10:43,022 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': status, 'status': 'running'}
+2025-12-10 21:10:43,023 - freqtrade.worker - INFO - Changing state to: RUNNING
+2025-12-10 21:10:43,040 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': warning, 'status': 'Dry run is enabled. All trades are simulated.'}
+2025-12-10 21:10:43,041 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': startup, 'status': "*Exchange:* `hyperliquid`\n*Stake per trade:* `unlimited USDC`\n*Minimum ROI:* `{'0': -1}`\n*Stoploss:* `-0.75`\n*Position adjustment:* `Off`\n*Timeframe:* `1m`\n*Strategy:* `Market_Making`"}
+2025-12-10 21:10:43,042 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': startup, 'status': "Searching for USDC pairs to buy and sell based on [{'StaticPairList': 'StaticPairList'}]"}
+2025-12-10 21:10:45,599 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:10:45,614 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.1338982964564806, 'kappa-': 2.8495745488969884}}
+2025-12-10 21:10:45,615 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': -0.29999999999972715, 'epsilon-': 0.0}}
+2025-12-10 21:10:45,616 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.032246866861907766, 'lambda-': 0.044444257321777425, 'unit': 'trades_per_second'}}
+2025-12-10 21:10:45,629 - Market_Making - WARNING - No initial data files found in HL_data/ETH/**. Trading is currently disabled.
+2025-12-10 21:10:58,044 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:10:58,047 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:10:58,064 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.1338982964564806, 'kappa-': 2.8495745488969884}}
+2025-12-10 21:10:58,065 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': -0.29999999999972715, 'epsilon-': 0.0}}
+2025-12-10 21:10:58,065 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.032246866861907766, 'lambda-': 0.044444257321777425, 'unit': 'trades_per_second'}}
+2025-12-10 21:10:58,080 - Market_Making - WARNING - No initial data files found in HL_data/ETH/**. Trading is currently disabled.
+2025-12-10 21:11:03,599 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:11:03,613 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.1338982964564806, 'kappa-': 2.8495745488969884}}
+2025-12-10 21:11:03,614 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': -0.29999999999972715, 'epsilon-': 0.0}}
+2025-12-10 21:11:03,615 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.032246866861907766, 'lambda-': 0.044444257321777425, 'unit': 'trades_per_second'}}
+2025-12-10 21:11:03,627 - Market_Making - WARNING - No initial data files found in HL_data/ETH/**. Trading is currently disabled.
+2025-12-10 21:11:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:11:16,022 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.1338982964564806, 'kappa-': 2.8495745488969884}}
+2025-12-10 21:11:16,024 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': -0.29999999999972715, 'epsilon-': 0.0}}
+2025-12-10 21:11:16,024 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.032246866861907766, 'lambda-': 0.044444257321777425, 'unit': 'trades_per_second'}}
+2025-12-10 21:11:16,041 - Market_Making - WARNING - No initial data files found in HL_data/ETH/**. Trading is currently disabled.
+2025-12-10 21:11:31,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:11:31,019 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.1338982964564806, 'kappa-': 2.8495745488969884}}
+2025-12-10 21:11:31,020 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': -0.29999999999972715, 'epsilon-': 0.0}}
+2025-12-10 21:11:31,021 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.032246866861907766, 'lambda-': 0.044444257321777425, 'unit': 'trades_per_second'}}
+2025-12-10 21:11:31,037 - Market_Making - WARNING - No initial data files found in HL_data/ETH/**. Trading is currently disabled.
+2025-12-10 21:11:46,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:11:46,019 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.1338982964564806, 'kappa-': 2.8495745488969884}}
+2025-12-10 21:11:46,020 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': -0.29999999999972715, 'epsilon-': 0.0}}
+2025-12-10 21:11:46,020 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.032246866861907766, 'lambda-': 0.044444257321777425, 'unit': 'trades_per_second'}}
+2025-12-10 21:11:46,026 - Market_Making - INFO - Initial data files found in HL_data/ETH/**. Enabling trading.
+2025-12-10 21:11:46,036 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:11:46,618 - Market_Making - INFO - Calculated bid: 3346.09484 (mid_price -0.04048%)
+2025-12-10 21:11:46,622 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 1000.0 and price: 3346.0948354198676 ...
+2025-12-10 21:11:46,911 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1765401106.623573 was created for ETH/USDC:USDC and status is open.
+2025-12-10 21:11:49,210 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:11:49,211 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 1, 'type': entry, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3346.1, 'open_rate': 3346.1, 'order_type': 'limit', 'stake_amount': 1000.0, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2988, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'current_rate': 3346.1, 'sub_trade': False}
+2025-12-10 21:12:00,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:12:03,591 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:12:03,606 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.1338982964564806, 'kappa-': 2.8495745488969884}}
+2025-12-10 21:12:03,607 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': -0.29999999999972715, 'epsilon-': 0.0}}
+2025-12-10 21:12:03,607 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.032246866861907766, 'lambda-': 0.044444257321777425, 'unit': 'trades_per_second'}}
+2025-12-10 21:12:04,066 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3346.09483542, open_since=2025-12-10 21:11:46)
+2025-12-10 21:12:04,079 - freqtrade.freqtradebot - INFO - Fee for Trade Trade(id=1, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3346.09483542, open_since=2025-12-10 21:11:46) [buy]: 0.99981468 USDC - rate: 0.001
+2025-12-10 21:12:04,079 - freqtrade.persistence.trade_model - INFO - Updating trade (id=1) ...
+2025-12-10 21:12:04,080 - freqtrade.persistence.trade_model - INFO - LIMIT_BUY has been fulfilled for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:12:04,090 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:12:04,096 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 1, 'type': entry_fill, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3346.1, 'open_rate': 3346.1, 'order_type': 'limit', 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2988, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'current_rate': 3346.1, 'sub_trade': False}
+2025-12-10 21:12:04,364 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:12:06,924 - Market_Making - INFO - Calculated ask: 3353.87206 (mid_price +0.24426%)
+2025-12-10 21:12:06,927 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:12:07,340 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3353.8720649116326, 'order_rate': 3353.8720649116326, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3353.8720649116326, 'current_rate': 3345.9, 'profit_amount': 0.32034134, 'profit_ratio': 0.00032008, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 12, 7, 340697, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:12:07,349 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:12:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:12:16,018 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:12:16,019 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:12:16,020 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:12:16,285 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:12:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:12:31,036 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:12:31,036 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:12:31,037 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:12:31,303 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:12:31,837 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:12:31,843 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:12:31,844 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3345.9, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 12, 31, 844625, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:12:32,101 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:12:34,626 - Market_Making - INFO - Calculated ask: 3352.45736 (mid_price +0.22144%)
+2025-12-10 21:12:34,628 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:12:34,882 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3352.4573596186497, 'order_rate': 3352.4573596186497, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3352.4573596186497, 'current_rate': 3345.6, 'profit_amount': -0.10194989, 'profit_ratio': -0.00010187, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 12, 34, 882849, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:12:34,892 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:12:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:12:46,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:12:46,017 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:12:46,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:12:46,282 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:13:00,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:13:03,595 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:13:03,609 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:13:03,609 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:13:03,610 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:13:03,917 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:13:04,484 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:13:04,490 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:13:04,490 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3345.7, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 13, 4, 490716, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:13:04,759 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:13:07,326 - Market_Making - INFO - Calculated ask: 3353.95781 (mid_price +0.22136%)
+2025-12-10 21:13:07,328 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:13:07,586 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3353.9578096186497, 'order_rate': 3353.9578096186497, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3353.9578096186497, 'current_rate': 3343.4, 'profit_amount': 0.34593624, 'profit_ratio': 0.00034565, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 13, 7, 586824, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:13:07,594 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:13:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:13:16,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:13:16,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:13:16,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:13:16,290 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:13:31,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:13:31,015 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:13:31,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:13:31,016 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:13:31,280 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:13:31,875 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:13:31,886 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:13:31,887 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3347.0, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 13, 31, 887478, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:13:32,176 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:13:34,709 - Market_Making - INFO - Calculated ask: 3354.25790 (mid_price +0.22134%)
+2025-12-10 21:13:34,712 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:13:34,978 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3354.25789961865, 'order_rate': 3354.25789961865, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3354.25789961865, 'current_rate': 3347.0, 'profit_amount': 0.43551347, 'profit_ratio': 0.00043516, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 13, 34, 978731, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:13:34,988 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:13:46,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:13:46,013 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:13:46,014 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:13:46,014 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:13:46,572 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:14:00,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:14:03,392 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:14:03,407 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:14:03,407 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:14:03,408 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:14:03,680 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:14:04,242 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:14:04,250 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:14:04,251 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3351.2, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 14, 4, 251296, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:14:04,511 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:14:07,135 - Market_Making - INFO - Calculated ask: 3360.35973 (mid_price +0.22099%)
+2025-12-10 21:14:07,138 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:14:07,410 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3360.3597296186495, 'order_rate': 3360.3597296186495, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3360.3597296186495, 'current_rate': 3352.3, 'profit_amount': 2.25691704, 'profit_ratio': 0.00225508, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 14, 7, 410371, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:14:07,418 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:14:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:14:16,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:14:16,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:14:16,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:14:16,370 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:14:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:14:31,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:14:31,017 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:14:31,018 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:14:31,290 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:14:32,412 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:14:32,418 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:14:32,419 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3356.2, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 14, 32, 419051, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:14:32,685 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:14:35,217 - Market_Making - INFO - Calculated ask: 3361.41004 (mid_price +0.22093%)
+2025-12-10 21:14:35,220 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:14:35,475 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3361.4100446186494, 'order_rate': 3361.4100446186494, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3361.4100446186494, 'current_rate': 3353.5, 'profit_amount': 2.57043733, 'profit_ratio': 0.00256835, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 14, 35, 475312, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:14:35,483 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:14:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:14:46,019 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:14:46,020 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3500000000003638, 'epsilon-': -0.7000000000007276}}
+2025-12-10 21:14:46,021 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:14:46,292 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:15:03,072 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:15:03,089 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:15:03,089 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.22307692307710497, 'epsilon-': -0.20000000000004547}}
+2025-12-10 21:15:03,090 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:15:03,347 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:15:03,933 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:15:03,983 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:15:03,984 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3356.4, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 15, 3, 984534, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:15:04,271 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:15:06,844 - Market_Making - INFO - Calculated ask: 3363.28372 (mid_price +0.21704%)
+2025-12-10 21:15:06,847 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:15:07,258 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3363.283721541726, 'order_rate': 3363.283721541726, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3363.283721541726, 'current_rate': 3354.5, 'profit_amount': 3.12973214, 'profit_ratio': 0.00312719, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 15, 7, 258484, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:15:07,268 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:15:15,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:15:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:15:16,014 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:15:16,015 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.22307692307710497, 'epsilon-': -0.20000000000004547}}
+2025-12-10 21:15:16,016 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:15:16,277 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:15:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:15:31,020 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:15:31,021 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.22307692307710497, 'epsilon-': -0.20000000000004547}}
+2025-12-10 21:15:31,022 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:15:31,279 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:15:31,795 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:15:31,801 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:15:31,802 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3353.1, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 15, 31, 802574, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:15:32,080 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:15:34,613 - Market_Making - INFO - Calculated ask: 3360.13278 (mid_price +0.21721%)
+2025-12-10 21:15:34,616 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:15:34,890 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3360.1327765417263, 'order_rate': 3360.1327765417263, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3360.1327765417263, 'current_rate': 3352.9, 'profit_amount': 2.18917128, 'profit_ratio': 0.00218739, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 15, 34, 890703, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:15:34,902 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:15:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:15:46,015 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.16518428585356537, 'kappa-': 1.4308848988834164}}
+2025-12-10 21:15:46,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.22307692307710497, 'epsilon-': -0.20000000000004547}}
+2025-12-10 21:15:46,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.03632053847789429, 'lambda-': 0.012527515113554885, 'unit': 'trades_per_second'}}
+2025-12-10 21:15:46,302 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:16:01,620 - freqtrade.commands.trade_commands - INFO - worker found ... calling exit
+2025-12-10 21:16:01,621 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': status, 'status': 'process died'}
+2025-12-10 21:16:01,622 - freqtrade.freqtradebot - INFO - Cleaning up modules ...
+2025-12-10 21:16:02,489 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:16:02,496 - freqtrade.freqtradebot - INFO - Sell order cancelled (all unfilled and partially filled open orders cancelled) for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:16:02,496 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3354.0, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 16, 2, 496963, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled (all unfilled and partially filled open orders cancelled)', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:16:02,502 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': warning, 'status': "1 open trades active.\n\nHandle these trades manually on Hyperliquid, or '/start' the bot again and use '/stopentry' to handle open trades gracefully. \nNote: Trades are simulated (dry run)."}
+2025-12-10 21:16:02,503 - freqtrade.rpc.rpc_manager - INFO - Cleaning up rpc modules ...
+2025-12-10 21:16:02,504 - freqtrade.rpc.rpc_manager - INFO - Cleaning up rpc.apiserver ...
+2025-12-10 21:16:02,504 - freqtrade.rpc.api_server.webserver - INFO - Stopping API Server
+2025-12-10 21:19:36,949 - freqtrade.loggers - INFO - Enabling colorized output.
+2025-12-10 21:19:36,949 - root - INFO - Logfile configured
+2025-12-10 21:19:36,950 - freqtrade.loggers - INFO - Verbosity set to 0
+2025-12-10 21:19:36,950 - freqtrade.configuration.configuration - INFO - Runmode set to dry_run.
+2025-12-10 21:19:36,951 - freqtrade.configuration.configuration - INFO - Parameter --db-url detected ...
+2025-12-10 21:19:36,951 - freqtrade.configuration.configuration - WARNING - `force_entry_enable` RPC message enabled.
+2025-12-10 21:19:36,952 - freqtrade.configuration.configuration - INFO - Dry run is enabled
+2025-12-10 21:19:36,952 - freqtrade.configuration.configuration - INFO - Using DB: "sqlite:////freqtrade/user_data/tradesv3.sqlite"
+2025-12-10 21:19:36,953 - freqtrade.configuration.configuration - INFO - Using max_open_trades: 1 ...
+2025-12-10 21:19:37,000 - freqtrade.configuration.configuration - INFO - Using user-data directory: /freqtrade/user_data ...
+2025-12-10 21:19:37,001 - freqtrade.configuration.configuration - INFO - Using data directory: /freqtrade/user_data/data/hyperliquid ...
+2025-12-10 21:19:37,002 - freqtrade.exchange.check_exchange - INFO - Checking exchange...
+2025-12-10 21:19:37,005 - freqtrade.exchange.check_exchange - INFO - Exchange "hyperliquid" is officially supported by the Freqtrade development team.
+2025-12-10 21:19:37,006 - freqtrade.configuration.configuration - INFO - Using pairlist from configuration.
+2025-12-10 21:19:37,118 - freqtrade.resolvers.iresolver - INFO - Using resolved strategy Market_Making from '/freqtrade/user_data/strategies/Market_Making.py'...
+2025-12-10 21:19:37,119 - freqtrade.strategy.hyper - INFO - Found no parameter file.
+2025-12-10 21:19:37,119 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'order_types' with value in config file: {'entry': 'limit', 'exit': 'limit', 'stoploss': 'limit', 'emergency_exit': 'market', 'stoploss_on_exchange': False}.
+2025-12-10 21:19:37,120 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'order_time_in_force' with value in config file: {'entry': 'GTC', 'exit': 'GTC'}.
+2025-12-10 21:19:37,121 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'stake_currency' with value in config file: USDC.
+2025-12-10 21:19:37,121 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'stake_amount' with value in config file: unlimited.
+2025-12-10 21:19:37,121 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'unfilledtimeout' with value in config file: {'entry': 15, 'exit': 15, 'exit_timeout_count': 0, 'unit': 'seconds'}.
+2025-12-10 21:19:37,122 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'position_adjustment_enable' with value in config file: False.
+2025-12-10 21:19:37,122 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'max_entry_position_adjustment' with value in config file: -1.
+2025-12-10 21:19:37,123 - freqtrade.resolvers.strategy_resolver - INFO - Override strategy 'max_open_trades' with value in config file: 1.
+2025-12-10 21:19:37,124 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using minimal_roi: {'0': -1}
+2025-12-10 21:19:37,124 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using timeframe: 1m
+2025-12-10 21:19:37,125 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using stoploss: -0.75
+2025-12-10 21:19:37,125 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using trailing_stop: False
+2025-12-10 21:19:37,125 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using trailing_stop_positive_offset: 0.0
+2025-12-10 21:19:37,126 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using trailing_only_offset_is_reached: False
+2025-12-10 21:19:37,126 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using use_custom_stoploss: False
+2025-12-10 21:19:37,127 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using process_only_new_candles: False
+2025-12-10 21:19:37,127 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using order_types: {'entry': 'limit', 'exit': 'limit', 'stoploss': 'limit', 'emergency_exit': 'market', 'stoploss_on_exchange': False}
+2025-12-10 21:19:37,128 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using order_time_in_force: {'entry': 'GTC', 'exit': 'GTC'}
+2025-12-10 21:19:37,128 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using stake_currency: USDC
+2025-12-10 21:19:37,128 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using stake_amount: unlimited
+2025-12-10 21:19:37,129 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using startup_candle_count: 0
+2025-12-10 21:19:37,129 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using unfilledtimeout: {'entry': 15, 'exit': 15, 'exit_timeout_count': 0, 'unit': 'seconds'}
+2025-12-10 21:19:37,130 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using use_exit_signal: True
+2025-12-10 21:19:37,130 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using exit_profit_only: False
+2025-12-10 21:19:37,130 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using ignore_roi_if_entry_signal: False
+2025-12-10 21:19:37,131 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using exit_profit_offset: 0.0
+2025-12-10 21:19:37,131 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using disable_dataframe_checks: False
+2025-12-10 21:19:37,132 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using ignore_buying_expired_candle_after: 0
+2025-12-10 21:19:37,132 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using position_adjustment_enable: False
+2025-12-10 21:19:37,133 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using max_entry_position_adjustment: -1
+2025-12-10 21:19:37,133 - freqtrade.resolvers.strategy_resolver - INFO - Strategy using max_open_trades: 1
+2025-12-10 21:19:37,134 - freqtrade.configuration.config_validation - INFO - Validating configuration ...
+2025-12-10 21:19:37,136 - freqtrade.exchange.exchange - INFO - Instance is running with dry_run enabled
+2025-12-10 21:19:37,136 - freqtrade.exchange.exchange - INFO - Using CCXT 4.4.77
+2025-12-10 21:19:37,137 - freqtrade.exchange.exchange - INFO - Applying additional ccxt config: {'options': {'defaultType': 'swap'}}
+2025-12-10 21:19:37,140 - freqtrade.exchange.exchange - INFO - Applying additional ccxt config: {'options': {'defaultType': 'swap'}}
+2025-12-10 21:19:37,143 - freqtrade.exchange.exchange - INFO - Using Exchange "Hyperliquid"
+2025-12-10 21:19:40,710 - freqtrade.resolvers.exchange_resolver - INFO - Using resolved exchange 'Hyperliquid'...
+2025-12-10 21:19:40,763 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:19:40,764 - freqtrade.rpc.rpc_manager - INFO - Enabling rpc.api_server
+2025-12-10 21:19:40,861 - freqtrade.rpc.api_server.webserver - INFO - Starting HTTP Server at 0.0.0.0:8080
+2025-12-10 21:19:40,862 - freqtrade.rpc.api_server.webserver - INFO - Starting Local Rest Server.
+2025-12-10 21:19:40,888 - freqtrade.resolvers.iresolver - INFO - Using resolved pairlist StaticPairList from '/freqtrade/freqtrade/plugins/pairlist/StaticPairList.py'...
+2025-12-10 21:19:40,888 - freqtrade.freqtradebot - INFO - Starting initial pairlist refresh
+2025-12-10 21:19:40,890 - freqtrade.plugins.pairlistmanager - INFO - Whitelist with 1 pairs: ['ETH/USDC:USDC']
+2025-12-10 21:19:40,890 - freqtrade.freqtradebot - INFO - Initial Pairlist refresh took 0.00s
+2025-12-10 21:19:40,891 - Market_Making - INFO - Loading market making parameters (Epsilon and Kappa)
+2025-12-10 21:19:40,892 - Market_Making - INFO - Trading symbol: ETH
+2025-12-10 21:19:43,167 - Market_Making - INFO - Loaded kappa values: {'ETH': {'kappa+': 0.5556500870548885, 'kappa-': 1.5193868601209204}}
+2025-12-10 21:19:43,168 - Market_Making - INFO - Loaded epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:19:43,168 - Market_Making - INFO - Loaded lambda values: {'ETH': {'lambda+': 0.20699478703831617, 'lambda-': 0.08186244367451129, 'unit': 'trades_per_second'}}
+2025-12-10 21:19:43,169 - freqtrade.strategy.hyper - INFO - No params for buy found, using default values.
+2025-12-10 21:19:43,169 - freqtrade.strategy.hyper - INFO - No params for sell found, using default values.
+2025-12-10 21:19:43,170 - freqtrade.strategy.hyper - INFO - No params for protection found, using default values.
+2025-12-10 21:19:43,171 - freqtrade.plugins.protectionmanager - INFO - No protection Handlers defined.
+2025-12-10 21:19:43,171 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': status, 'status': 'running'}
+2025-12-10 21:19:43,172 - freqtrade.worker - INFO - Changing state to: RUNNING
+2025-12-10 21:19:43,180 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': warning, 'status': 'Dry run is enabled. All trades are simulated.'}
+2025-12-10 21:19:43,181 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': startup, 'status': "*Exchange:* `hyperliquid`\n*Stake per trade:* `unlimited USDC`\n*Minimum ROI:* `{'0': -1}`\n*Stoploss:* `-0.75`\n*Position adjustment:* `Off`\n*Timeframe:* `1m`\n*Strategy:* `Market_Making`"}
+2025-12-10 21:19:43,182 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': startup, 'status': "Searching for USDC pairs to buy and sell based on [{'StaticPairList': 'StaticPairList'}]"}
+2025-12-10 21:19:43,187 - freqtrade.persistence.trade_model - INFO - Found open trade: Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:19:48,009 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:19:48,024 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5556500870548885, 'kappa-': 1.5193868601209204}}
+2025-12-10 21:19:48,025 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:19:48,025 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.20699478703831617, 'lambda-': 0.08186244367451129, 'unit': 'trades_per_second'}}
+2025-12-10 21:19:48,030 - Market_Making - INFO - Initial data files found in HL_data/ETH/**. Enabling trading.
+2025-12-10 21:19:48,312 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:19:50,857 - Market_Making - INFO - Calculated ask: 3363.97975 (mid_price +0.08717%)
+2025-12-10 21:19:50,859 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:19:51,109 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3363.979747900484, 'order_rate': 3363.979747900484, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3363.979747900484, 'current_rate': 3361.5, 'profit_amount': 3.33749684, 'profit_ratio': 0.00333478, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 19, 51, 109212, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:19:51,118 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:20:00,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:20:03,591 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:20:03,610 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5556500870548885, 'kappa-': 1.5193868601209204}}
+2025-12-10 21:20:03,611 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:20:03,611 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.20699478703831614, 'lambda-': 0.08186244367451129, 'unit': 'trades_per_second'}}
+2025-12-10 21:20:03,870 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:20:04,613 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:20:07,238 - Market_Making - INFO - Calculated ask: 3361.37897 (mid_price +0.08721%)
+2025-12-10 21:20:07,244 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:20:08,022 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:20:08,029 - freqtrade.freqtradebot - INFO - Sell order cancelled to be replaced by new limit order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:20:08,030 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3346.1, 'current_rate': 3358.0, 'profit_amount': -1000.81449468, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833), 'close_date': datetime.datetime(2025, 12, 10, 21, 20, 8, 30585, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled to be replaced by new limit order', 'sub_trade': False, 'stake_amount': 999.81468}
+2025-12-10 21:20:08,391 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3361.378967900484, 'order_rate': 3361.378967900484, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3361.378967900484, 'current_rate': 3358.0, 'profit_amount': 2.56116089, 'profit_ratio': 0.00255908, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 20, 8, 391961, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:20:08,400 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:20:16,003 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:20:16,020 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5556500870548885, 'kappa-': 1.5193868601209204}}
+2025-12-10 21:20:16,021 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:20:16,021 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.20699478703831614, 'lambda-': 0.08186244367451129, 'unit': 'trades_per_second'}}
+2025-12-10 21:20:16,275 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:20:31,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:20:31,018 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5556500870548885, 'kappa-': 1.5193868601209204}}
+2025-12-10 21:20:31,019 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:20:31,019 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.20699478703831614, 'lambda-': 0.08186244367451129, 'unit': 'trades_per_second'}}
+2025-12-10 21:20:31,275 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46)
+2025-12-10 21:20:31,282 - freqtrade.freqtradebot - INFO - Fee for Trade Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46) [sell]: 1.0043863 USDC - rate: 0.001
+2025-12-10 21:20:31,283 - freqtrade.persistence.trade_model - INFO - Updating trade (id=1) ...
+2025-12-10 21:20:31,283 - freqtrade.persistence.trade_model - INFO - LIMIT_SELL has been fulfilled for Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=2025-12-10 21:11:46).
+2025-12-10 21:20:31,284 - freqtrade.persistence.trade_model - INFO - Marking Trade(id=1, pair=ETH/USDC:USDC, amount=0.29880000, is_short=False, leverage=1.0, open_rate=3346.10000000, open_since=closed) as closed as the trade is fulfilled and found no open orders for it.
+2025-12-10 21:20:31,294 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:20:31,297 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_fill, 'trade_id': 1, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'profit', 'limit': 3361.4, 'order_rate': 3361.4, 'order_type': 'limit', 'amount': 0.2988, 'open_rate': 3346.1, 'close_rate': 3361.4, 'current_rate': None, 'profit_amount': 2.567439, 'profit_ratio': 0.00256535, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 11, 46, 911833, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 20, 31, 276000, tzinfo=datetime.timezone.utc), 'stake_amount': 999.81468, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 2.567439, 'final_profit_ratio': 0.0025653495364502204, 'is_final_exit': True}
+2025-12-10 21:20:31,328 - freqtrade.freqtradebot - INFO - Pair ETH/USDC:USDC long is locked until 2025-12-10 21:21:00 due to Auto lock.
+2025-12-10 21:20:46,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:20:46,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5556500870548885, 'kappa-': 1.5193868601209204}}
+2025-12-10 21:20:46,017 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:20:46,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.20699478703831614, 'lambda-': 0.08186244367451129, 'unit': 'trades_per_second'}}
+2025-12-10 21:21:03,545 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:21:03,558 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5556500870548885, 'kappa-': 1.5193868601209204}}
+2025-12-10 21:21:03,559 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:21:03,560 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.20699478703831614, 'lambda-': 0.08186244367451129, 'unit': 'trades_per_second'}}
+2025-12-10 21:21:03,568 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:21:04,105 - Market_Making - INFO - Calculated bid: 3361.25801 (mid_price -0.04437%)
+2025-12-10 21:21:04,110 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 1002.567439 and price: 3361.258014773499 ...
+2025-12-10 21:21:04,361 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1765401664.111038 was created for ETH/USDC:USDC and status is open.
+2025-12-10 21:21:06,670 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:21:06,671 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 2, 'type': entry, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3361.3, 'open_rate': 3361.3, 'order_type': 'limit', 'stake_amount': 1002.567439, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2982, 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 4, 361812, tzinfo=datetime.timezone.utc), 'current_rate': 3362.7, 'sub_trade': False}
+2025-12-10 21:21:15,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:21:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:21:16,034 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5371331816694541, 'kappa-': 1.5525606696339616}}
+2025-12-10 21:21:16,035 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:21:16,036 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.22458132404421535, 'lambda-': 0.08815884342770719, 'unit': 'trades_per_second'}}
+2025-12-10 21:21:16,289 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.25801477, open_since=2025-12-10 21:21:04)
+2025-12-10 21:21:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:21:31,018 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5371331816694541, 'kappa-': 1.5525606696339616}}
+2025-12-10 21:21:31,019 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:21:31,020 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.22458132404421535, 'lambda-': 0.08815884342770719, 'unit': 'trades_per_second'}}
+2025-12-10 21:21:31,288 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.25801477, open_since=2025-12-10 21:21:04)
+2025-12-10 21:21:31,836 - freqtrade.freqtradebot - INFO - Buy order cancelled due to timeout for Trade(id=2, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.25801477, open_since=2025-12-10 21:21:04).
+2025-12-10 21:21:31,836 - freqtrade.freqtradebot - INFO - Buy order fully cancelled. Removing Trade(id=2, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.25801477, open_since=2025-12-10 21:21:04) from database.
+2025-12-10 21:21:31,859 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:21:31,860 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 2, 'type': entry_cancel, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3361.258014773499, 'order_type': 'limit', 'stake_amount': 1002.567439, 'open_rate': 3361.258014773499, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.0, 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 4, 361812), 'current_rate': 3362.7, 'reason': 'cancelled due to timeout, fully cancelled', 'sub_trade': False}
+2025-12-10 21:21:31,866 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:21:32,490 - Market_Making - INFO - Calculated bid: 3361.07214 (mid_price -0.04395%)
+2025-12-10 21:21:32,496 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 1002.567439 and price: 3361.072137787209 ...
+2025-12-10 21:21:32,747 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1765401692.496828 was created for ETH/USDC:USDC and status is open.
+2025-12-10 21:21:35,053 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:21:35,054 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 2, 'type': entry, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3361.1, 'open_rate': 3361.1, 'order_type': 'limit', 'stake_amount': 1002.567439, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2982, 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250, tzinfo=datetime.timezone.utc), 'current_rate': 3362.5, 'sub_trade': False}
+2025-12-10 21:21:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:21:46,017 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5371331816694541, 'kappa-': 1.5525606696339616}}
+2025-12-10 21:21:46,017 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:21:46,018 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.22458132404421535, 'lambda-': 0.08815884342770719, 'unit': 'trades_per_second'}}
+2025-12-10 21:21:46,304 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.07213779, open_since=2025-12-10 21:21:32)
+2025-12-10 21:22:03,585 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:22:03,600 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5371331816694541, 'kappa-': 1.5525606696339616}}
+2025-12-10 21:22:03,601 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.12173913043494869, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:22:03,601 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.22458132404421535, 'lambda-': 0.08815884342770719, 'unit': 'trades_per_second'}}
+2025-12-10 21:22:03,892 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.07213779, open_since=2025-12-10 21:21:32)
+2025-12-10 21:22:03,932 - freqtrade.freqtradebot - INFO - Fee for Trade Trade(id=2, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.07213779, open_since=2025-12-10 21:21:32) [buy]: 1.00228 USDC - rate: 0.001
+2025-12-10 21:22:03,936 - freqtrade.persistence.trade_model - INFO - Updating trade (id=2) ...
+2025-12-10 21:22:03,938 - freqtrade.persistence.trade_model - INFO - LIMIT_BUY has been fulfilled for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32).
+2025-12-10 21:22:03,949 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:22:03,957 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 2, 'type': entry_fill, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3361.1, 'open_rate': 3361.1, 'order_type': 'limit', 'stake_amount': 1002.28002, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2982, 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250, tzinfo=datetime.timezone.utc), 'current_rate': 3362.5, 'sub_trade': False}
+2025-12-10 21:22:04,217 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:22:06,759 - Market_Making - INFO - Calculated ask: 3364.14182 (mid_price +0.08901%)
+2025-12-10 21:22:06,761 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:22:07,023 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 2, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3364.1418197932585, 'order_rate': 3364.1418197932585, 'order_type': 'limit', 'amount': 0.2982, 'open_rate': 3361.1, 'close_rate': 3364.1418197932585, 'current_rate': 3360.7, 'profit_amount': -1.09839645, 'profit_ratio': -0.0010948, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 22, 7, 23029, tzinfo=datetime.timezone.utc), 'stake_amount': 1002.28002, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:22:07,034 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:22:15,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:22:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:22:16,017 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5720401952456912, 'kappa-': 1.6214317988162859}}
+2025-12-10 21:22:16,018 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.08750000000012885, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:22:16,018 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.24759827153952335, 'lambda-': 0.09717243210936737, 'unit': 'trades_per_second'}}
+2025-12-10 21:22:16,274 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:22:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:22:31,031 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5720401952456912, 'kappa-': 1.6214317988162859}}
+2025-12-10 21:22:31,032 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.08750000000012885, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:22:31,033 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.24759827153952335, 'lambda-': 0.09717243210936737, 'unit': 'trades_per_second'}}
+2025-12-10 21:22:31,298 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:22:31,855 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:22:31,862 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32).
+2025-12-10 21:22:31,862 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 2, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3361.1, 'current_rate': 3361.1, 'profit_amount': -1003.28230002, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250), 'close_date': datetime.datetime(2025, 12, 10, 21, 22, 31, 862915, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1002.28002}
+2025-12-10 21:22:32,119 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:22:34,656 - Market_Making - INFO - Calculated ask: 3361.19313 (mid_price +0.08466%)
+2025-12-10 21:22:34,660 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:22:34,936 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 2, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3361.193133904772, 'order_rate': 3361.193133904772, 'order_type': 'limit', 'amount': 0.2982, 'open_rate': 3361.1, 'close_rate': 3361.193133904772, 'current_rate': 3357.9, 'profit_amount': -1.97681528, 'profit_ratio': -0.00197035, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 22, 34, 936210, tzinfo=datetime.timezone.utc), 'stake_amount': 1002.28002, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:22:34,944 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:22:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:22:46,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5720401952456912, 'kappa-': 1.6214317988162859}}
+2025-12-10 21:22:46,017 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.08750000000012885, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:22:46,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.24759827153952335, 'lambda-': 0.09717243210936737, 'unit': 'trades_per_second'}}
+2025-12-10 21:22:46,497 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:23:03,604 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:23:03,621 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.5720401952456912, 'kappa-': 1.6214317988162859}}
+2025-12-10 21:23:03,621 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.08750000000012885, 'epsilon-': -0.1750000000000682}}
+2025-12-10 21:23:03,622 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.24759827153952335, 'lambda-': 0.09717243210936737, 'unit': 'trades_per_second'}}
+2025-12-10 21:23:03,897 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:23:04,414 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:23:04,421 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32).
+2025-12-10 21:23:04,422 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 2, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3361.1, 'current_rate': 3358.4, 'profit_amount': -1003.28230002, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250), 'close_date': datetime.datetime(2025, 12, 10, 21, 23, 4, 422469, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1002.28002}
+2025-12-10 21:23:04,699 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:23:07,240 - Market_Making - INFO - Calculated ask: 3360.29286 (mid_price +0.08467%)
+2025-12-10 21:23:07,243 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:23:07,493 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 2, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3360.2928639047714, 'order_rate': 3360.2928639047714, 'order_type': 'limit', 'amount': 0.2982, 'open_rate': 3361.1, 'close_rate': 3360.2928639047714, 'current_rate': 3357.9, 'profit_amount': -2.24500734, 'profit_ratio': -0.00223766, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 23, 7, 493792, tzinfo=datetime.timezone.utc), 'stake_amount': 1002.28002, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:23:07,503 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:23:15,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:23:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:23:16,015 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.6016418603238117, 'kappa-': 1.6671037176439454}}
+2025-12-10 21:23:16,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.08750000000012885, 'epsilon-': -0.08749999999997726}}
+2025-12-10 21:23:16,016 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.26738763368113827, 'lambda-': 0.10677875645887755, 'unit': 'trades_per_second'}}
+2025-12-10 21:23:16,290 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:23:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:23:31,022 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.6016418603238117, 'kappa-': 1.6671037176439454}}
+2025-12-10 21:23:31,022 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.08750000000012885, 'epsilon-': -0.08749999999997726}}
+2025-12-10 21:23:31,023 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.26738763368113827, 'lambda-': 0.10677875645887755, 'unit': 'trades_per_second'}}
+2025-12-10 21:23:31,279 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:23:32,064 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:23:32,072 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32).
+2025-12-10 21:23:32,073 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 2, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3361.1, 'current_rate': 3358.2, 'profit_amount': -1003.28230002, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250), 'close_date': datetime.datetime(2025, 12, 10, 21, 23, 32, 73641, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1002.28002}
+2025-12-10 21:23:32,330 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:23:34,924 - Market_Making - INFO - Calculated ask: 3361.00709 (mid_price +0.08210%)
+2025-12-10 21:23:34,928 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:23:35,179 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 2, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3361.0070933896045, 'order_rate': 3361.0070933896045, 'order_type': 'limit', 'amount': 0.2982, 'open_rate': 3361.1, 'close_rate': 3361.0070933896045, 'current_rate': 3358.3, 'profit_amount': -2.03223709, 'profit_ratio': -0.00202559, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 23, 35, 179761, tzinfo=datetime.timezone.utc), 'stake_amount': 1002.28002, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:23:35,193 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:23:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:23:46,015 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.6016418603238117, 'kappa-': 1.6671037176439454}}
+2025-12-10 21:23:46,015 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.08750000000012885, 'epsilon-': -0.08749999999997726}}
+2025-12-10 21:23:46,016 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.26738763368113827, 'lambda-': 0.10677875645887755, 'unit': 'trades_per_second'}}
+2025-12-10 21:23:46,275 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:24:03,612 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:24:03,646 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.6871502504374766, 'kappa-': 1.8985163162427439}}
+2025-12-10 21:24:03,647 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.32941176470617123, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:24:03,648 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.29151201034844204, 'lambda-': 0.13363459677429373, 'unit': 'trades_per_second'}}
+2025-12-10 21:24:03,914 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32)
+2025-12-10 21:24:03,927 - freqtrade.freqtradebot - INFO - Fee for Trade Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32) [sell]: 1.0022502 USDC - rate: 0.001
+2025-12-10 21:24:03,929 - freqtrade.persistence.trade_model - INFO - Updating trade (id=2) ...
+2025-12-10 21:24:03,929 - freqtrade.persistence.trade_model - INFO - LIMIT_SELL has been fulfilled for Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=2025-12-10 21:21:32).
+2025-12-10 21:24:03,932 - freqtrade.persistence.trade_model - INFO - Marking Trade(id=2, pair=ETH/USDC:USDC, amount=0.29820000, is_short=False, leverage=1.0, open_rate=3361.10000000, open_since=closed) as closed as the trade is fulfilled and found no open orders for it.
+2025-12-10 21:24:03,967 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:24:03,976 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_fill, 'trade_id': 2, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3361.0, 'order_rate': 3361.0, 'order_type': 'limit', 'amount': 0.2982, 'open_rate': 3361.1, 'close_rate': 3361.0, 'current_rate': None, 'profit_amount': -2.03435022, 'profit_ratio': -0.00202769, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 21, 32, 748250, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 24, 3, 915000, tzinfo=datetime.timezone.utc), 'stake_amount': 1002.28002, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': -2.03435022, 'final_profit_ratio': -0.002027694717587907, 'is_final_exit': True}
+2025-12-10 21:24:03,991 - freqtrade.freqtradebot - INFO - Pair ETH/USDC:USDC long is locked until 2025-12-10 21:25:00 due to Auto lock.
+2025-12-10 21:24:15,999 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:24:16,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:24:16,019 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.6871502504374766, 'kappa-': 1.8985163162427439}}
+2025-12-10 21:24:16,019 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.32941176470617123, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:24:16,020 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.29151201034844204, 'lambda-': 0.13363459677429373, 'unit': 'trades_per_second'}}
+2025-12-10 21:24:31,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:24:31,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.6871502504374766, 'kappa-': 1.8985163162427439}}
+2025-12-10 21:24:31,017 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.32941176470617123, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:24:31,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 3.710958830087295, 'lambda-': 1.4308391485010385, 'unit': 'trades_per_second'}}
+2025-12-10 21:24:46,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:24:46,013 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.6871502504374766, 'kappa-': 1.8985163162427439}}
+2025-12-10 21:24:46,014 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.32941176470617123, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:24:46,014 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.29151201034844204, 'lambda-': 0.13363459677429373, 'unit': 'trades_per_second'}}
+2025-12-10 21:25:03,619 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:25:03,637 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.6871502504374766, 'kappa-': 1.8985163162427439}}
+2025-12-10 21:25:03,638 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.32941176470617123, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:25:03,638 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.29151201034844204, 'lambda-': 0.13363459677429373, 'unit': 'trades_per_second'}}
+2025-12-10 21:25:03,647 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:25:04,163 - Market_Making - INFO - Calculated bid: 3361.25445 (mid_price -0.04447%)
+2025-12-10 21:25:04,167 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 1000.53308878 and price: 3361.2544478966065 ...
+2025-12-10 21:25:04,426 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1765401904.168039 was created for ETH/USDC:USDC and status is open.
+2025-12-10 21:25:06,729 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:25:06,730 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 3, 'type': entry, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3361.3, 'open_rate': 3361.3, 'order_type': 'limit', 'stake_amount': 1000.53308878, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2976, 'open_date': datetime.datetime(2025, 12, 10, 21, 25, 4, 427323, tzinfo=datetime.timezone.utc), 'current_rate': 3362.7, 'sub_trade': False}
+2025-12-10 21:25:15,999 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:25:16,003 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:25:16,017 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.7228871386015444, 'kappa-': 1.9406066969845208}}
+2025-12-10 21:25:16,018 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3166666666669092, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:25:16,018 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.3201091931298597, 'lambda-': 0.14069794225388868, 'unit': 'trades_per_second'}}
+2025-12-10 21:25:16,272 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.25444790, open_since=2025-12-10 21:25:04)
+2025-12-10 21:25:31,004 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:25:31,023 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.7228871386015444, 'kappa-': 1.9406066969845208}}
+2025-12-10 21:25:31,024 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3166666666669092, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:25:31,025 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.3201091931298597, 'lambda-': 0.14069794225388868, 'unit': 'trades_per_second'}}
+2025-12-10 21:25:31,355 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.25444790, open_since=2025-12-10 21:25:04)
+2025-12-10 21:25:31,923 - freqtrade.freqtradebot - INFO - Buy order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.25444790, open_since=2025-12-10 21:25:04).
+2025-12-10 21:25:31,924 - freqtrade.freqtradebot - INFO - Buy order fully cancelled. Removing Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.25444790, open_since=2025-12-10 21:25:04) from database.
+2025-12-10 21:25:31,937 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:25:31,937 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 3, 'type': entry_cancel, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3361.2544478966065, 'order_type': 'limit', 'stake_amount': 1000.53308878, 'open_rate': 3361.2544478966065, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.0, 'open_date': datetime.datetime(2025, 12, 10, 21, 25, 4, 427323), 'current_rate': 3362.7, 'reason': 'cancelled due to timeout, fully cancelled', 'sub_trade': False}
+2025-12-10 21:25:31,944 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:25:32,645 - Market_Making - INFO - Calculated bid: 3361.96566 (mid_price -0.04413%)
+2025-12-10 21:25:32,650 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 1000.53308878 and price: 3361.965662233317 ...
+2025-12-10 21:25:32,909 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1765401932.6508 was created for ETH/USDC:USDC and status is open.
+2025-12-10 21:25:35,198 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:25:35,199 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 3, 'type': entry, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3362.0, 'open_rate': 3362.0, 'order_type': 'limit', 'stake_amount': 1000.53308878, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2976, 'open_date': datetime.datetime(2025, 12, 10, 21, 25, 32, 910579, tzinfo=datetime.timezone.utc), 'current_rate': 3363.4, 'sub_trade': False}
+2025-12-10 21:25:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:25:46,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.7228871386015444, 'kappa-': 1.9406066969845208}}
+2025-12-10 21:25:46,017 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3166666666669092, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:25:46,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.3201091931298597, 'lambda-': 0.14069794225388868, 'unit': 'trades_per_second'}}
+2025-12-10 21:25:46,281 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.96566223, open_since=2025-12-10 21:25:32)
+2025-12-10 21:26:03,553 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:26:03,567 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.7228871386015444, 'kappa-': 1.9406066969845208}}
+2025-12-10 21:26:03,567 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.3166666666669092, 'epsilon-': -0.03999999999996362}}
+2025-12-10 21:26:03,568 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.3201091931298597, 'lambda-': 0.14069794225388868, 'unit': 'trades_per_second'}}
+2025-12-10 21:26:03,830 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.96566223, open_since=2025-12-10 21:25:32)
+2025-12-10 21:26:04,346 - freqtrade.freqtradebot - INFO - Buy order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.96566223, open_since=2025-12-10 21:25:32).
+2025-12-10 21:26:04,347 - freqtrade.freqtradebot - INFO - Buy order fully cancelled. Removing Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3361.96566223, open_since=2025-12-10 21:25:32) from database.
+2025-12-10 21:26:04,358 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:26:04,359 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 3, 'type': entry_cancel, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3361.965662233317, 'order_type': 'limit', 'stake_amount': 1000.53308878, 'open_rate': 3361.965662233317, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.0, 'open_date': datetime.datetime(2025, 12, 10, 21, 25, 32, 910579), 'current_rate': 3363.4, 'reason': 'cancelled due to timeout, fully cancelled', 'sub_trade': False}
+2025-12-10 21:26:04,366 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:26:04,870 - Market_Making - INFO - Calculated bid: 3363.26527 (mid_price -0.04413%)
+2025-12-10 21:26:04,874 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 1000.53308878 and price: 3363.265272233317 ...
+2025-12-10 21:26:05,199 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1765401964.875158 was created for ETH/USDC:USDC and status is open.
+2025-12-10 21:26:07,508 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:26:07,508 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 3, 'type': entry, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3363.3, 'open_rate': 3363.3, 'order_type': 'limit', 'stake_amount': 1000.53308878, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2974, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 5, 200220, tzinfo=datetime.timezone.utc), 'current_rate': 3364.7, 'sub_trade': False}
+2025-12-10 21:26:16,002 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:26:16,018 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.7464694002348765, 'kappa-': 1.9671091669177057}}
+2025-12-10 21:26:16,019 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2875000000001819, 'epsilon-': -0.05454545454540494}}
+2025-12-10 21:26:16,020 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.34062433490427313, 'lambda-': 0.14490133240212677, 'unit': 'trades_per_second'}}
+2025-12-10 21:26:16,275 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3363.26527223, open_since=2025-12-10 21:26:05)
+2025-12-10 21:26:30,997 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:26:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:26:31,018 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.7464694002348765, 'kappa-': 1.9671091669177057}}
+2025-12-10 21:26:31,019 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2875000000001819, 'epsilon-': -0.05454545454540494}}
+2025-12-10 21:26:31,020 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.34062433490427313, 'lambda-': 0.14490133240212677, 'unit': 'trades_per_second'}}
+2025-12-10 21:26:31,295 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3363.26527223, open_since=2025-12-10 21:26:05)
+2025-12-10 21:26:31,942 - freqtrade.freqtradebot - INFO - Buy order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3363.26527223, open_since=2025-12-10 21:26:05).
+2025-12-10 21:26:31,943 - freqtrade.freqtradebot - INFO - Buy order fully cancelled. Removing Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3363.26527223, open_since=2025-12-10 21:26:05) from database.
+2025-12-10 21:26:31,989 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:26:31,993 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 3, 'type': entry_cancel, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3363.265272233317, 'order_type': 'limit', 'stake_amount': 1000.53308878, 'open_rate': 3363.265272233317, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.0, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 5, 200220), 'current_rate': 3364.7, 'reason': 'cancelled due to timeout, fully cancelled', 'sub_trade': False}
+2025-12-10 21:26:32,004 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:26:32,509 - Market_Making - INFO - Calculated bid: 3365.88598 (mid_price -0.04348%)
+2025-12-10 21:26:32,513 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 1000.53308878 and price: 3365.8859802593834 ...
+2025-12-10 21:26:32,763 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1765401992.514422 was created for ETH/USDC:USDC and status is open.
+2025-12-10 21:26:35,093 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:26:35,094 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 3, 'type': entry, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3365.9, 'open_rate': 3365.9, 'order_type': 'limit', 'stake_amount': 1000.53308878, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2972, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'current_rate': 3367.3, 'sub_trade': False}
+2025-12-10 21:26:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:26:46,017 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.7464694002348765, 'kappa-': 1.9671091669177057}}
+2025-12-10 21:26:46,017 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2875000000001819, 'epsilon-': -0.05454545454540494}}
+2025-12-10 21:26:46,018 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.34062433490427313, 'lambda-': 0.14490133240212677, 'unit': 'trades_per_second'}}
+2025-12-10 21:26:46,299 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3365.88598026, open_since=2025-12-10 21:26:32)
+2025-12-10 21:27:03,542 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:27:03,556 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.7464694002348765, 'kappa-': 1.9671091669177057}}
+2025-12-10 21:27:03,557 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2875000000001819, 'epsilon-': -0.05454545454540494}}
+2025-12-10 21:27:03,557 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.34062433490427313, 'lambda-': 0.14490133240212677, 'unit': 'trades_per_second'}}
+2025-12-10 21:27:03,818 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3365.88598026, open_since=2025-12-10 21:26:32)
+2025-12-10 21:27:03,832 - freqtrade.freqtradebot - INFO - Fee for Trade Trade(id=3, pair=ETH/USDC:USDC, amount=0.00000000, is_short=False, leverage=1.0, open_rate=3365.88598026, open_since=2025-12-10 21:26:32) [buy]: 1.0003455 USDC - rate: 0.001
+2025-12-10 21:27:03,833 - freqtrade.persistence.trade_model - INFO - Updating trade (id=3) ...
+2025-12-10 21:27:03,834 - freqtrade.persistence.trade_model - INFO - LIMIT_BUY has been fulfilled for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32).
+2025-12-10 21:27:03,851 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:27:03,861 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'trade_id': 3, 'type': entry_fill, 'buy_tag': '', 'enter_tag': '', 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'limit': 3365.9, 'open_rate': 3365.9, 'order_type': 'limit', 'stake_amount': 1000.34548, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'amount': 0.2972, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'current_rate': 3367.3, 'sub_trade': False}
+2025-12-10 21:27:04,164 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:27:06,734 - Market_Making - INFO - Calculated ask: 3367.78668 (mid_price +0.07835%)
+2025-12-10 21:27:06,737 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:27:06,986 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3367.7866846418733, 'order_rate': 3367.7866846418733, 'order_type': 'limit', 'amount': 0.2972, 'open_rate': 3365.9, 'close_rate': 3367.7866846418733, 'current_rate': 3365.2, 'profit_amount': -1.44052901, 'profit_ratio': -0.00143859, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 27, 6, 986316, tzinfo=datetime.timezone.utc), 'stake_amount': 1000.34548, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:27:06,995 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:27:16,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:27:16,016 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.785592440490718, 'kappa-': 2.020482219995077}}
+2025-12-10 21:27:16,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2674418604652855, 'epsilon-': -0.05454545454540494}}
+2025-12-10 21:27:16,017 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.38270919420667726, 'lambda-': 0.15435753980075545, 'unit': 'trades_per_second'}}
+2025-12-10 21:27:16,270 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:27:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:27:31,019 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.785592440490718, 'kappa-': 2.020482219995077}}
+2025-12-10 21:27:31,019 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2674418604652855, 'epsilon-': -0.05454545454540494}}
+2025-12-10 21:27:31,020 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.38270919420667726, 'lambda-': 0.15435753980075545, 'unit': 'trades_per_second'}}
+2025-12-10 21:27:31,273 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:27:31,791 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:27:31,800 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32).
+2025-12-10 21:27:31,800 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3365.9, 'current_rate': 3364.9, 'profit_amount': -1001.34582548, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649), 'close_date': datetime.datetime(2025, 12, 10, 21, 27, 31, 800712, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1000.34548}
+2025-12-10 21:27:32,051 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:27:34,577 - Market_Making - INFO - Calculated ask: 3367.69991 (mid_price +0.07577%)
+2025-12-10 21:27:34,579 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:27:34,829 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3367.6999115329268, 'order_rate': 3367.6999115329268, 'order_type': 'limit', 'amount': 0.2972, 'open_rate': 3365.9, 'close_rate': 3367.6999115329268, 'current_rate': 3365.0, 'profit_amount': -1.46629219, 'profit_ratio': -0.00146432, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 27, 34, 829756, tzinfo=datetime.timezone.utc), 'stake_amount': 1000.34548, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:27:34,837 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:27:45,997 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:27:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:27:46,015 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.785592440490718, 'kappa-': 2.020482219995077}}
+2025-12-10 21:27:46,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2674418604652855, 'epsilon-': -0.05454545454540494}}
+2025-12-10 21:27:46,016 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.38270919420667726, 'lambda-': 0.15435753980075545, 'unit': 'trades_per_second'}}
+2025-12-10 21:27:46,269 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:28:03,496 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:28:03,509 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.785592440490718, 'kappa-': 2.020482219995077}}
+2025-12-10 21:28:03,509 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2674418604652855, 'epsilon-': -0.05454545454540494}}
+2025-12-10 21:28:03,510 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.38270919420667726, 'lambda-': 0.15435753980075545, 'unit': 'trades_per_second'}}
+2025-12-10 21:28:03,762 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:28:04,465 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:28:04,472 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32).
+2025-12-10 21:28:04,472 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3365.9, 'current_rate': 3365.1, 'profit_amount': -1001.34582548, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649), 'close_date': datetime.datetime(2025, 12, 10, 21, 28, 4, 472866, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1000.34548}
+2025-12-10 21:28:04,726 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:28:07,273 - Market_Making - INFO - Calculated ask: 3365.29919 (mid_price +0.07581%)
+2025-12-10 21:28:07,276 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:28:07,526 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3365.299191532927, 'order_rate': 3365.299191532927, 'order_type': 'limit', 'amount': 0.2972, 'open_rate': 3365.9, 'close_rate': 3365.299191532927, 'current_rate': 3364.0, 'profit_amount': -2.17907268, 'profit_ratio': -0.00217614, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 28, 7, 526198, tzinfo=datetime.timezone.utc), 'stake_amount': 1000.34548, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:28:07,535 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:28:16,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:28:16,015 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.801229137712769, 'kappa-': 2.11452252318802}}
+2025-12-10 21:28:16,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2674418604652855, 'epsilon-': -0.04166666666662877}}
+2025-12-10 21:28:16,016 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.39754420151139863, 'lambda-': 0.17156024026506425, 'unit': 'trades_per_second'}}
+2025-12-10 21:28:16,270 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:28:31,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:28:31,036 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.801229137712769, 'kappa-': 2.11452252318802}}
+2025-12-10 21:28:31,037 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2674418604652855, 'epsilon-': -0.04166666666662877}}
+2025-12-10 21:28:31,037 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.39754420151139863, 'lambda-': 0.17156024026506425, 'unit': 'trades_per_second'}}
+2025-12-10 21:28:31,295 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:28:31,807 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:28:31,816 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32).
+2025-12-10 21:28:31,817 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3365.9, 'current_rate': 3360.5, 'profit_amount': -1001.34582548, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649), 'close_date': datetime.datetime(2025, 12, 10, 21, 28, 31, 817645, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1000.34548}
+2025-12-10 21:28:32,069 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:28:34,692 - Market_Making - INFO - Calculated ask: 3361.77330 (mid_price +0.07511%)
+2025-12-10 21:28:34,696 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:28:34,942 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3361.773299279004, 'order_rate': 3361.773299279004, 'order_type': 'limit', 'amount': 0.2972, 'open_rate': 3365.9, 'close_rate': 3361.773299279004, 'current_rate': 3360.2, 'profit_amount': -3.22591996, 'profit_ratio': -0.00322158, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 28, 34, 942882, tzinfo=datetime.timezone.utc), 'stake_amount': 1000.34548, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:28:34,951 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:28:45,998 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:28:46,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:28:46,019 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.801229137712769, 'kappa-': 2.11452252318802}}
+2025-12-10 21:28:46,020 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2674418604652855, 'epsilon-': -0.04166666666662877}}
+2025-12-10 21:28:46,021 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.3975442015113987, 'lambda-': 0.17156024026506406, 'unit': 'trades_per_second'}}
+2025-12-10 21:28:46,276 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:29:03,580 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:29:03,594 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.801229137712769, 'kappa-': 2.11452252318802}}
+2025-12-10 21:29:03,595 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.2674418604652855, 'epsilon-': -0.04166666666662877}}
+2025-12-10 21:29:03,595 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.39754420151139863, 'lambda-': 0.17156024026506425, 'unit': 'trades_per_second'}}
+2025-12-10 21:29:03,880 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:29:04,462 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:29:04,476 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32).
+2025-12-10 21:29:04,476 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3365.9, 'current_rate': 3358.6, 'profit_amount': -1001.34582548, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649), 'close_date': datetime.datetime(2025, 12, 10, 21, 29, 4, 476806, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1000.34548}
+2025-12-10 21:29:05,294 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:29:08,053 - Market_Making - INFO - Calculated ask: 3360.97306 (mid_price +0.07513%)
+2025-12-10 21:29:08,055 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:29:08,309 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3360.9730592790033, 'order_rate': 3360.9730592790033, 'order_type': 'limit', 'amount': 0.2972, 'open_rate': 3365.9, 'close_rate': 3360.9730592790033, 'current_rate': 3357.8, 'profit_amount': -3.46351346, 'profit_ratio': -0.00345886, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 29, 8, 309158, tzinfo=datetime.timezone.utc), 'stake_amount': 1000.34548, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:29:08,321 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:29:16,001 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:29:16,018 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.8147773503890444, 'kappa-': 2.1439000524850367}}
+2025-12-10 21:29:16,019 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.25555555555571724, 'epsilon-': -0.04166666666662877}}
+2025-12-10 21:29:16,020 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.4107144129250831, 'lambda-': 0.19750953545681113, 'unit': 'trades_per_second'}}
+2025-12-10 21:29:16,279 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:29:31,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:29:31,022 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.8147773503890444, 'kappa-': 2.1439000524850367}}
+2025-12-10 21:29:31,023 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.25555555555571724, 'epsilon-': -0.04166666666662877}}
+2025-12-10 21:29:31,024 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.4107144129250831, 'lambda-': 0.19750953545681113, 'unit': 'trades_per_second'}}
+2025-12-10 21:29:31,422 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:29:31,943 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:29:31,951 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32).
+2025-12-10 21:29:31,951 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3365.9, 'current_rate': 3358.1, 'profit_amount': -1001.34582548, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649), 'close_date': datetime.datetime(2025, 12, 10, 21, 29, 31, 951754, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1000.34548}
+2025-12-10 21:29:32,214 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:29:34,735 - Market_Making - INFO - Calculated ask: 3360.74036 (mid_price +0.07416%)
+2025-12-10 21:29:34,738 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:29:34,998 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3360.7403597142793, 'order_rate': 3360.7403597142793, 'order_type': 'limit', 'amount': 0.2972, 'open_rate': 3365.9, 'close_rate': 3360.7403597142793, 'current_rate': 3358.7, 'profit_amount': -3.53260261, 'profit_ratio': -0.00352785, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 29, 34, 998003, tzinfo=datetime.timezone.utc), 'stake_amount': 1000.34548, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:29:35,007 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:29:46,000 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:29:46,015 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.8147773503890444, 'kappa-': 2.1439000524850367}}
+2025-12-10 21:29:46,016 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.25555555555571724, 'epsilon-': -0.04166666666662877}}
+2025-12-10 21:29:46,016 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.4107144129250831, 'lambda-': 0.19750953545681113, 'unit': 'trades_per_second'}}
+2025-12-10 21:29:46,280 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:30:00,999 - freqtrade.worker - INFO - Bot heartbeat. PID=1, version='2025.4', state='RUNNING'
+2025-12-10 21:30:03,579 - Market_Making - INFO - Refreshing market making parameters
+2025-12-10 21:30:03,617 - Market_Making - INFO - Updated kappa values: {'ETH': {'kappa+': 0.834088251435789, 'kappa-': 2.1912197999970155}}
+2025-12-10 21:30:03,618 - Market_Making - INFO - Updated epsilon values: {'ETH': {'epsilon+': 0.25000000000015815, 'epsilon-': -0.04166666666662877}}
+2025-12-10 21:30:03,619 - Market_Making - INFO - Updated lambda values: {'ETH': {'lambda+': 0.4304716759675135, 'lambda-': 0.20921523633840988, 'unit': 'trades_per_second'}}
+2025-12-10 21:30:03,945 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:30:04,484 - freqtrade.freqtradebot - INFO - Found open order for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32)
+2025-12-10 21:30:04,494 - freqtrade.freqtradebot - INFO - Sell order cancelled due to timeout for Trade(id=3, pair=ETH/USDC:USDC, amount=0.29720000, is_short=False, leverage=1.0, open_rate=3365.90000000, open_since=2025-12-10 21:26:32).
+2025-12-10 21:30:04,495 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit_cancel, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 0, 'order_type': 'limit', 'amount': 0.0, 'open_rate': 3365.9, 'current_rate': 3359.1, 'profit_amount': -1001.34582548, 'profit_ratio': -1.0, 'buy_tag': '', 'enter_tag': '', 'exit_reason': None, 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649), 'close_date': datetime.datetime(2025, 12, 10, 21, 30, 4, 495203, tzinfo=datetime.timezone.utc), 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'reason': 'cancelled due to timeout', 'sub_trade': False, 'stake_amount': 1000.34548}
+2025-12-10 21:30:05,112 - freqtrade.freqtradebot - INFO - Exit for ETH/USDC:USDC detected. Reason: roi
+2025-12-10 21:30:07,744 - Market_Making - INFO - Calculated ask: 3357.90555 (mid_price +0.07318%)
+2025-12-10 21:30:07,747 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:30:08,012 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': exit, 'trade_id': 3, 'exchange': 'Hyperliquid', 'pair': 'ETH/USDC:USDC', 'leverage': 1.0, 'direction': 'Long', 'gain': 'loss', 'limit': 3357.9055489018306, 'order_rate': 3357.9055489018306, 'order_type': 'limit', 'amount': 0.2972, 'open_rate': 3365.9, 'close_rate': 3357.9055489018306, 'current_rate': 3356.4, 'profit_amount': -4.37426588, 'profit_ratio': -0.00436839, 'buy_tag': '', 'enter_tag': '', 'exit_reason': 'roi', 'open_date': datetime.datetime(2025, 12, 10, 21, 26, 32, 764649, tzinfo=datetime.timezone.utc), 'close_date': datetime.datetime(2025, 12, 10, 21, 30, 8, 12540, tzinfo=datetime.timezone.utc), 'stake_amount': 1000.34548, 'stake_currency': 'USDC', 'base_currency': 'ETH', 'quote_currency': 'USDC', 'fiat_currency': None, 'sub_trade': False, 'cumulative_profit': 0.0, 'final_profit_ratio': None, 'is_final_exit': False}
+2025-12-10 21:30:08,022 - freqtrade.wallets - INFO - Wallets synced.
+2025-12-10 21:30:09,957 - freqtrade.commands.trade_commands - INFO - worker found ... calling exit
+2025-12-10 21:30:09,958 - freqtrade.rpc.rpc_manager - INFO - Sending rpc message: {'type': status, 'status': 'process died'}
+2025-12-10 21:30:09,958 - freqtrade.freqtradebot - INFO - Cleaning up modules ...
+2025-12-10 21:30:20,118 - freqtrade.loggers - INFO - Enabling colorized output.
+2025-12-10 21:30:20,118 - root - INFO - Logfile configured
+2025-12-10 21:30:20,119 - freqtrade.loggers - INFO - Verbosity set to 0
+2025-12-10 21:30:20,119 - freqtrade.configuration.configuration - INFO - Runmode set to dry_run.
+2025-12-10 21:30:20,120 - freqtrade.configuration.configuration - INFO - Parameter --db-url detected ...
+2025-12-10 21:30:20,120 - freqtrade.configuration.configuration - WARNING - `force_entry_enable` RPC message enabled.
+2025-12-10 21:30:20,121 - freqtrade.configuration.configuration - INFO - Dry run is enabled
+2025-12-10 21:30:20,121 - freqtrade.configuration.configuration - INFO - Using DB: "sqlite:////freqtrade/user_data/tradesv3.sqlite"
+2025-12-10 21:30:20,122 - freqtrade.configuration.configuration - INFO - Using max_open_trades: 1 ...

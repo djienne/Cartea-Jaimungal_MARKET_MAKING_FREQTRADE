@@ -18,6 +18,12 @@ from typing import Optional
 import pandas as pd
 
 
+def log_section(title: str) -> None:
+    print("\n" + "=" * 60)
+    print(title)
+    print("=" * 60)
+
+
 @dataclass
 class LambdaResults:
     lambda_plus: float
@@ -61,7 +67,7 @@ def load_trades_only(crypto: str = 'ETH', time_range_minutes: int = 15) -> pd.Da
 
 
 def compute_lambda_from_trades(df_trades: pd.DataFrame) -> Optional[LambdaResults]:
-    """Compute λ+ and λ- as trades per second in the filtered window."""
+    """Compute lambda+ and lambda- as trades per second in the filtered window."""
     if df_trades.empty:
         return None
 
@@ -115,8 +121,8 @@ def save_lambda_to_json(lam_plus: float, lam_minus: float, crypto: str, filename
     with open(filename, 'w') as f:
         json.dump(data, f, indent=4)
 
-    print(f"\nLambda estimates saved to {filename}")
-    print(f"  {crypto}: lambda+ = {lam_plus_val}, lambda- = {lam_minus_val}")
+    print(f"[save] lambda -> {filename}")
+    print(f"[save] {crypto}: lambda+={lam_plus_val}, lambda-={lam_minus_val}")
 
 
 def main():
@@ -125,9 +131,7 @@ def main():
     parser.add_argument('--minutes', '-m', type=int, default=30, help='Minutes from most recent to analyze')
     args = parser.parse_args()
 
-    print('=' * 60)
-    print(f'LAMBDA FROM TRADES - {args.crypto} (last {args.minutes} min)')
-    print('=' * 60)
+    log_section(f'LAMBDA FROM TRADES - {args.crypto} (last {args.minutes} min)')
 
     try:
         df_trades = load_trades_only(args.crypto, args.minutes)
@@ -153,9 +157,7 @@ def main():
 
     duration_min = (results.end_time - results.start_time).total_seconds() / 60.0
 
-    print('\n' + '=' * 60)
-    print('LAMBDA ESTIMATES (trades per second)')
-    print('=' * 60)
+    log_section('LAMBDA ESTIMATES (trades per second)')
     print(f"Window: {results.start_time} -> {results.end_time}  ({duration_min:.2f} min)")
     print(f"Trades: total={results.n_trades_total}, buy={results.n_trades_buy}, sell={results.n_trades_sell}")
     print(f"lambda+ (buy):  {results.lambda_plus:.6f} trades/sec")

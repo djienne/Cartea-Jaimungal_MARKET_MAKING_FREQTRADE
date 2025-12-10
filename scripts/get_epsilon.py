@@ -20,6 +20,11 @@ def vprint(*args, level: int = 1, **kwargs):
     if VERBOSITY >= level:
         print(*args, **kwargs)
 
+def log_section(title: str) -> None:
+    print("\n" + "=" * 60)
+    print(title)
+    print("=" * 60)
+
 def load_market_data(crypto='BTC', time_range_minutes=60):
     """
     Load market data for specified cryptocurrency and time range from Parquet files.
@@ -295,8 +300,8 @@ def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filenam
     with open(filename, 'w') as f:
         json.dump(data, f, indent=4)
     
-    vprint(f"\nEpsilon estimates saved to {filename}")
-    vprint(f"  {crypto}: epsilon+ = {epsilon_plus_val}, epsilon- = {epsilon_minus_val}")
+    print(f"[save] epsilon -> {filename}")
+    print(f"[save] {crypto}: epsilon+={epsilon_plus_val}, epsilon-={epsilon_minus_val}")
 
 def load_mid_price_from_json(crypto: str, filename: str = 'mid_price.json') -> float:
     """Load mid-price for a crypto from mid_price.json."""
@@ -310,6 +315,7 @@ def load_mid_price_from_json(crypto: str, filename: str = 'mid_price.json') -> f
 
 def run_epsilon_for_crypto(crypto: str, minutes: int = 30, do_plot: bool = False):
     """Run the full epsilon analysis and persistence for a single crypto symbol."""
+    log_section(f"EPSILON FROM MARKET DATA - {crypto} (last {minutes} min)")
     # Load market data with specified parameters
     try:
         df_quotes, df_trades = load_market_data(crypto, minutes)
@@ -333,43 +339,35 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, do_plot: bool = False
         vprint(df_trades.head(), level=1)
 
     # Calculate impacts
-    vprint("\n" + "="*60)
-    vprint(f"CALCULATING PRICE IMPACTS FOR {crypto}...")
-    vprint("="*60)
+    log_section(f"CALCULATING PRICE IMPACTS FOR {crypto}")
 
     impact_results = calculate_epsilon(df_quotes, df_trades)
 
     # Final recommendations and persistence
-    vprint("\n" + "="*60)
-    vprint(f"RECOMMENDED EPSILON VALUES FOR {crypto} MARKET MAKING (event-level)")
-    vprint("="*60)
+    log_section(f"EPSILON ESTIMATES (event-level) - {crypto}")
 
     final_estimates = estimate_epsilon_parameters(impact_results)
     eps_plus = final_estimates['epsilon_buy']['trimmed_mean']
     eps_minus = final_estimates['epsilon_sell']['trimmed_mean']
 
-    vprint(f"\nEvent-level estimates for {crypto} (trimmed mean of immediate jumps):")
-    vprint(f"  epsilon+ (buy impact):  {eps_plus:.8f}")
-    vprint(f"  epsilon- (sell impact): {eps_minus:.8f}")
-    if VERBOSITY == 0:
-        print(f"{crypto}: epsilon+={eps_plus:.8f}, epsilon-={eps_minus:.8f}")
+    print(f"{crypto}: epsilon+={eps_plus:.8f}, epsilon-={eps_minus:.8f}")
 
     # Check toxicity using kappa from kappa.json (per-crypto)
     try:
         kappa_plus, kappa_minus = load_kappa_from_json(crypto)
-        vprint("\nToxicity check (from kappa.json):")
-        vprint(f"  kappa+ x epsilon+ = {kappa_plus * eps_plus:.4f}")
-        vprint(f"  kappa- x epsilon- = {kappa_minus * eps_minus:.4f}")
+        log_section(f"TOXICITY CHECK - {crypto}")
+        print(f"  kappa+ x epsilon+ = {kappa_plus * eps_plus:.4f}")
+        print(f"  kappa- x epsilon- = {kappa_minus * eps_minus:.4f}")
 
         kappa_epsilon_max = max(kappa_plus * eps_plus, kappa_minus * eps_minus)
         if kappa_epsilon_max >= 2:
-            vprint("  WARNING: Market appears very toxic (kappa x epsilon >= 2)")
+            print("  WARNING: Market appears very toxic (kappa x epsilon >= 2)")
         elif kappa_epsilon_max >= 1:
-            vprint("  CAUTION: Market is competitive (1 <= kappa x epsilon < 2)")
+            print("  CAUTION: Market is competitive (1 <= kappa x epsilon < 2)")
         else:
-            vprint("  Market toxicity appears manageable (kappa x epsilon < 1)")
+            print("  Market toxicity appears manageable (kappa x epsilon < 1)")
     except Exception as e:
-        vprint(f"\nToxicity check skipped: {e}")
+        print(f"Toxicity check skipped: {e}")
 
     # Calculate delta and express as % of mid-price
     try:
@@ -391,12 +389,12 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, do_plot: bool = False
         delta_plus_pct = (delta_plus_price / mid_price) * 100.0 if mid_price != 0 else float('nan')
         delta_minus_pct = (delta_minus_price / mid_price) * 100.0 if mid_price != 0 else float('nan')
 
-        vprint("\nDelta estimates (half-spread + skew):")
-        vprint(f"  mid price [{crypto}]: {mid_price:.6f}")
-        vprint(f"  delta+ = 1/kappa+ + epsilon+ = {delta_plus_price:.8f}  ({delta_plus_pct:.6f}% of mid)")
-        vprint(f"  delta- = 1/kappa- + epsilon- = {delta_minus_price:.8f}  ({delta_minus_pct:.6f}% of mid)")
+        log_section(f"DELTA ESTIMATES - {crypto}")
+        print(f"  mid price [{crypto}]: {mid_price:.6f}")
+        print(f"  delta+ = 1/kappa+ + epsilon+ = {delta_plus_price:.8f}  ({delta_plus_pct:.6f}% of mid)")
+        print(f"  delta- = 1/kappa- + epsilon- = {delta_minus_price:.8f}  ({delta_minus_pct:.6f}% of mid)")
     except Exception as e:
-        vprint(f"\nDelta calculation skipped: {e}")
+        print(f"Delta calculation skipped: {e}")
 
     # Save epsilon estimates to JSON file
     save_epsilon_to_json(eps_plus, eps_minus, crypto)
@@ -451,7 +449,7 @@ def plot_impact_analysis(impact_results, window_ms=5000):
             z = np.polyfit(np.sqrt(sizes), impacts, 1)
             p = np.poly1d(z)
             x_fit = np.linspace(min(sizes), max(sizes), 100)
-            axes[i, 1].plot(x_fit, p(np.sqrt(x_fit)), "k--", alpha=0.5, label='√size fit')
+            axes[i, 1].plot(x_fit, p(np.sqrt(x_fit)), "k--", alpha=0.5, label='sqrt(size) fit')
             axes[i, 1].legend()
         
         # 3. Time series of impacts
@@ -504,7 +502,7 @@ try:
 except Exception as e:
     print(f"\nToxicity check skipped: {e}")
 
-# Calculate delta± = 1/kappa± + epsilon± and express as % of mid-price
+# Calculate delta +/- = 1/kappa +/- epsilon +/- and express as % of mid-price
 try:
     mid_price = load_mid_price_from_json(args.crypto)
     # Guard against NaN epsilons

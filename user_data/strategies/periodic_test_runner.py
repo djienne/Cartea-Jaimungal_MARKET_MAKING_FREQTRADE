@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
-TEST_FILES = ("get_kappa.py", "get_epsilon.py")
+TEST_FILES = ("get_lambda.py", "get_kappa.py", "get_epsilon.py")
 CONFIG_FILES = ("epsilon.json", "kappa.json", "lambda.json")
 
 
@@ -159,8 +159,21 @@ async def _run_once(found: Dict[str, Optional[Path]]) -> None:
 def _copy_if_needed(src: Path, dst: Path) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     import shutil
-    shutil.copy2(src, dst)
-    return True
+    try:
+        shutil.copy2(src, dst)
+        return True
+    except PermissionError as e:
+        # Filesystems or Docker volumes may block copystat/utime; fall back to data-only copy.
+        try:
+            shutil.copyfile(src, dst)
+            print(f"{_ts()} [copy] Falling back to copyfile for {dst} (metadata not preserved): {e}")
+            return True
+        except Exception as inner:
+            print(f"{_ts()} [copy] ERROR copying {src} -> {dst} via copyfile: {inner}")
+            return False
+    except OSError as e:
+        print(f"{_ts()} [copy] ERROR copying {src} -> {dst}: {e}")
+        return False
 
 
 def _copy_configs_to_cwd(config_paths: Dict[str, Optional[Path]], cwd: Path) -> None:
@@ -170,7 +183,10 @@ def _copy_configs_to_cwd(config_paths: Dict[str, Optional[Path]], cwd: Path) -> 
             continue
         dst = cwd / name
         changed = _copy_if_needed(src, dst)
-        print(f"{_ts()} [copy] Copied {name} to {dst}")
+        if changed:
+            print(f"{_ts()} [copy] Copied {name} to {dst}")
+        else:
+            print(f"{_ts()} [copy] WARNING: Failed to copy {name} to {dst}")
 
 
 async def _periodic_worker(

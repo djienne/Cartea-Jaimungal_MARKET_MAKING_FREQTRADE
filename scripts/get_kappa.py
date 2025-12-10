@@ -24,6 +24,11 @@ def vprint(*args, level: int = 1, **kwargs):
         print(*args, **kwargs)
 warnings.filterwarnings('ignore')
 
+def log_section(title: str) -> None:
+    print("\n" + "=" * 60)
+    print(title)
+    print("=" * 60)
+
 def load_market_data(crypto='BTC', time_range_minutes=60):
     """Load market data for specified cryptocurrency and time range from Parquet files."""
     
@@ -224,8 +229,8 @@ def bin_and_calculate_intensity(depths, n_bins=15, total_time_minutes=30):
 
 def fit_lambda_kappa(depths, counts, duration_seconds):
     """
-    Fit λ0 and κ from binned counts using weighted log-linear regression
-    for λ(δ) = λ0 * exp(-κ δ). Approximates Poisson MLE.
+    Fit lambda0 and kappa from binned counts using weighted log-linear regression
+    for lambda(delta) = lambda0 * exp(-kappa * delta). Approximates Poisson MLE.
     """
     mask = (counts > 0) & np.isfinite(depths)
     if np.sum(mask) < 3:
@@ -285,10 +290,10 @@ def estimate_kappa_linear_method(depths, intensities):
     """
     Estimate kappa using linear regression on log(intensity) vs depth.
     
-    From λ(δ) = λ₀ * exp(-κ * δ), taking log:
-    log(λ(δ)) = log(λ₀) - κ * δ
+    From lambda(delta) = lambda0 * exp(-kappa * delta), taking log:
+    log(lambda(delta)) = log(lambda0) - kappa * delta
     
-    So slope of log(intensity) vs depth gives -κ.
+    So slope of log(intensity) vs depth gives -kappa.
     """
     
     # Filter valid data points
@@ -312,7 +317,7 @@ def estimate_kappa_linear_method(depths, intensities):
     slope, intercept, r_value, p_value, std_err = linregress(valid_depths, log_intensities)
     
     # Extract parameters
-    kappa_estimate = -slope  # Since slope = -κ
+    kappa_estimate = -slope  # Since slope = -kappa
     lambda_0_estimate = np.exp(intercept)
     r_squared = r_value ** 2
     
@@ -405,13 +410,13 @@ def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_
         x_fit = np.linspace(0, np.max(buy_depths), 100)
         y_fit_linear = buy_estimates_linear['lambda_0'] * np.exp(-buy_estimates_linear['kappa'] * x_fit)
         ax1.plot(x_fit, y_fit_linear, 'r--', linewidth=2, 
-                label=f'Linear fit: k={buy_estimates_linear["kappa"]:.1f} (R²={buy_estimates_linear["r_squared"]:.3f})')
+                label=f'Linear fit: k={buy_estimates_linear["kappa"]:.1f} (R^2={buy_estimates_linear["r_squared"]:.3f})')
     
     if not np.isnan(buy_estimates_nonlinear['kappa']):
         x_fit = np.linspace(0, np.max(buy_depths), 100)
         y_fit_nonlinear = buy_estimates_nonlinear['lambda_0'] * np.exp(-buy_estimates_nonlinear['kappa'] * x_fit)
         ax1.plot(x_fit, y_fit_nonlinear, 'g:', linewidth=2,
-                label=f'Nonlinear fit: k={buy_estimates_nonlinear["kappa"]:.1f} (R²={buy_estimates_nonlinear["r_squared"]:.3f})')
+                label=f'Nonlinear fit: k={buy_estimates_nonlinear["kappa"]:.1f} (R^2={buy_estimates_nonlinear["r_squared"]:.3f})')
     
     ax1.set_xlabel('Buy Depth (price units)')
     ax1.set_ylabel('Trade Intensity (trades/min)')
@@ -441,13 +446,13 @@ def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_
         x_fit = np.linspace(0, np.max(sell_depths), 100)
         y_fit_linear = sell_estimates_linear['lambda_0'] * np.exp(-sell_estimates_linear['kappa'] * x_fit)
         ax3.plot(x_fit, y_fit_linear, 'b--', linewidth=2,
-                label=f'Linear fit: k={sell_estimates_linear["kappa"]:.1f} (R²={sell_estimates_linear["r_squared"]:.3f})')
+                label=f'Linear fit: k={sell_estimates_linear["kappa"]:.1f} (R^2={sell_estimates_linear["r_squared"]:.3f})')
     
     if not np.isnan(sell_estimates_nonlinear['kappa']):
         x_fit = np.linspace(0, np.max(sell_depths), 100)
         y_fit_nonlinear = sell_estimates_nonlinear['lambda_0'] * np.exp(-sell_estimates_nonlinear['kappa'] * x_fit)
         ax3.plot(x_fit, y_fit_nonlinear, 'g:', linewidth=2,
-                label=f'Nonlinear fit: k={sell_estimates_nonlinear["kappa"]:.1f} (R²={sell_estimates_nonlinear["r_squared"]:.3f})')
+                label=f'Nonlinear fit: k={sell_estimates_nonlinear["kappa"]:.1f} (R^2={sell_estimates_nonlinear["r_squared"]:.3f})')
     
     ax3.set_xlabel('Sell Depth (price units)')
     ax3.set_ylabel('Trade Intensity (trades/min)')
@@ -476,7 +481,7 @@ def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_
 
 def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus,
                               crypto: str, kappa_file: str = "kappa.json", lambda_file: str = "lambda.json"):
-    """Persist κ and base λ0 estimates (per second) to JSON files."""
+    """Persist kappa and base lambda0 estimates (per second) to JSON files."""
     def _load(path):
         if os.path.exists(path):
             try:
@@ -504,11 +509,13 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
     with open(lambda_file, 'w') as f:
         json.dump(lambda_data, f, indent=4)
 
-    vprint(f"\nSaved κ/λ to {kappa_file} and {lambda_file}")
+    print(f"[save] kappa -> {kappa_file}")
+    print(f"[save] lambda0 -> {lambda_file}")
 
 
 def run_kappa_for_crypto(crypto: str, minutes: int = 30, bins: int = 20, do_plot: bool = False):
     """Run the full kappa estimation flow for a single crypto symbol."""
+    log_section(f"KAPPA/LAMBDA FROM MARKET DATA - {crypto} (last {minutes} min)")
     # Load market data
     try:
         df_quotes, df_trades = load_market_data(crypto, minutes)
@@ -542,16 +549,14 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, bins: int = 20, do_plot
     buy_est = fit_lambda_kappa(buy_depth_bins, buy_counts, duration_seconds) if len(buy_depth_bins) > 0 else {'lambda_0': np.nan, 'kappa': np.nan, 'r_squared': np.nan, 'n_points': 0}
     sell_est = fit_lambda_kappa(sell_depth_bins, sell_counts, duration_seconds) if len(sell_depth_bins) > 0 else {'lambda_0': np.nan, 'kappa': np.nan, 'r_squared': np.nan, 'n_points': 0}
 
-    print("\n" + "="*60)
-    print(f"KAPPA/λ ESTIMATION RESULTS FOR {crypto}")
-    print("="*60)
+    log_section(f"KAPPA/LAMBDA ESTIMATES - {crypto}")
     print(f"Time window: {minutes} minutes ({duration_seconds:.0f} seconds)")
     if not np.isnan(buy_est['kappa']):
-        print(f"  kappa+ (ask): {buy_est['kappa']:.4f}, lambda+ (δ=0)={buy_est['lambda_0']:.6f} trades/sec, R²={buy_est['r_squared']:.3f}, n={buy_est['n_points']}")
+        print(f"  kappa+ (ask): {buy_est['kappa']:.4f}, lambda+ (delta=0)={buy_est['lambda_0']:.6f} trades/sec, R^2={buy_est['r_squared']:.3f}, n={buy_est['n_points']}")
     else:
         print("  kappa+/lambda+ unavailable (insufficient data)")
     if not np.isnan(sell_est['kappa']):
-        print(f"  kappa- (bid): {sell_est['kappa']:.4f}, lambda- (δ=0)={sell_est['lambda_0']:.6f} trades/sec, R²={sell_est['r_squared']:.3f}, n={sell_est['n_points']}")
+        print(f"  kappa- (bid): {sell_est['kappa']:.4f}, lambda- (delta=0)={sell_est['lambda_0']:.6f} trades/sec, R^2={sell_est['r_squared']:.3f}, n={sell_est['n_points']}")
     else:
         print("  kappa-/lambda- unavailable (insufficient data)")
 
@@ -577,7 +582,7 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, bins: int = 20, do_plot
 
 # Parse command line arguments
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Joint κ/λ estimation from market data')
+    parser = argparse.ArgumentParser(description='Joint kappa/lambda estimation from market data')
     parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'ETH'), 
                         help='Cryptocurrency symbol (e.g., ETH) or ALL to process every symbol in HL_data')
     parser.add_argument('--minutes', '-m', type=int, default=30,
