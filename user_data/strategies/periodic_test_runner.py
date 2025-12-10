@@ -28,7 +28,7 @@ from typing import Dict, Optional
 
 
 TEST_FILES = ("get_kappa.py", "get_epsilon.py")
-CONFIG_FILES = ("epsilon.json", "kappa.json")
+CONFIG_FILES = ("epsilon.json", "kappa.json", "lambda.json")
 
 
 def _ts() -> str:
