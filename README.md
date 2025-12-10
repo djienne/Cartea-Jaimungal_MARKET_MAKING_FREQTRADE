@@ -12,6 +12,9 @@ This project implements an advanced market making strategy that:
 - **Integrates with Hyperliquid exchange** for high-frequency trading
 - **Uses mathematical optimization** to minimize inventory risk while maximizing profits
 
+**💰 Support this project**:
+- **Hyperliquid**: Sign up with [this referral link](https://app.hyperliquid.xyz/join/FREQTRADE) for 10% fee reduction
+
 ## Key Features
 
 ### 🎯 Dynamic Spread Calculation
@@ -243,6 +246,7 @@ ONLY USE IN DRY-RUN
 
 
 This project implements academic market making models and is intended for research and educational use.
+
 
 
 
