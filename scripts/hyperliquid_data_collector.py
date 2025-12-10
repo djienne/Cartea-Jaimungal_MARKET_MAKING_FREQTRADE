@@ -401,15 +401,22 @@ class HyperliquidDataCollector:
                         symbol_buffers['orderbooks'].clear()
             
             # Then write to files (outside the lock)
+            flushed_count = 0
             for symbol, buffers in data_to_write.items():
                 if 'prices' in buffers:
                     self.executor.submit(self._write_to_parquet, symbol, 'prices', buffers['prices'])
+                    flushed_count += 1
                 
                 if 'trades' in buffers:
                     self.executor.submit(self._write_to_parquet, symbol, 'trades', buffers['trades'])
+                    flushed_count += 1
                 
                 if 'orderbooks' in buffers:
                     self.executor.submit(self._write_to_parquet, symbol, 'orderbooks', buffers['orderbooks'])
+                    flushed_count += 1
+            
+            if flushed_count > 0:
+                print(f"Flushed buffers for {flushed_count} data types across symbols")
                 
         except Exception as e:
             print(f"Error flushing buffers: {e}")
@@ -494,7 +501,7 @@ class HyperliquidDataCollector:
     def _periodic_flush(self):
         """Periodically flush buffers to disk"""
         while self.running:
-            time.sleep(60)  # Flush every 60 seconds
+            time.sleep(10)  # Flush every 10 seconds
             self._flush_buffers()
     
     def _periodic_summary(self):
