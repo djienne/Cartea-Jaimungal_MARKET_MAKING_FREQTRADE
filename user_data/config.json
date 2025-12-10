@@ -47,7 +47,7 @@
         "ccxt_config": {},
         "ccxt_async_config": {},
         "pair_whitelist": [
-            "WLFI/USDC:USDC"
+            "ETH/USDC:USDC"
         ],
         "pair_blacklist": []
     },

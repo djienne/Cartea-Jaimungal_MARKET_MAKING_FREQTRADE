@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 import csv
 import os
 import threading
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 
 from hyperliquid.info import Info
@@ -105,76 +106,56 @@ class HyperliquidDataCollector:
         self.stats = DataStats()
         self.subscription_ids = []
         
+        # Lock for thread-safe buffer access
+        self.lock = threading.Lock()
+        
         # Create separate buffers for each symbol
         self.data_buffers = {}
         for symbol in symbols:
             self.data_buffers[symbol] = {
-                'prices': deque(maxlen=10000),
-                'trades': deque(maxlen=10000),
-                'orderbooks': deque(maxlen=1000)
+                'prices': deque(maxlen=100000),
+                'trades': deque(maxlen=100000),
+                'orderbooks': deque(maxlen=10000)
             }
         
         self.running = False
         self.executor = ThreadPoolExecutor(max_workers=4)
         
-        # File paths for each symbol
-        self.symbol_files = {}
-        
-        # Ensure output directory exists
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Initialize CSV files
-        self._init_csv_files()
+        # Ensure output directory exists and organize by symbol/type
+        self._init_storage()
     
-    def _init_csv_files(self):
-        """Initialize CSV files for data storage - separate files per symbol"""
-        
+    def _init_storage(self):
+        """Initialize directory structure for data storage"""
         for symbol in self.symbols:
-            # Initialize file paths for this symbol
-            self.symbol_files[symbol] = {}
-            
-            # Price data CSV for this symbol
-            price_file = os.path.join(self.output_dir, f"prices_{symbol}.csv")
-            self.symbol_files[symbol]['prices'] = price_file
-            # Only write header if file doesn't exist
-            if not os.path.exists(price_file):
-                with open(price_file, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['timestamp', 'price', 'size', 'side', 'exchange_timestamp'])
-            
-            # Trade data CSV for this symbol
-            trade_file = os.path.join(self.output_dir, f"trades_{symbol}.csv")
-            self.symbol_files[symbol]['trades'] = trade_file
-            # Only write header if file doesn't exist
-            if not os.path.exists(trade_file):
-                with open(trade_file, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['timestamp', 'price', 'size', 'side', 'trade_id', 'exchange_timestamp'])
-            
-            # Order book CSV for this symbol (configurable depth)
-            orderbook_file = os.path.join(self.output_dir, f"orderbooks_{symbol}.csv")
-            self.symbol_files[symbol]['orderbooks'] = orderbook_file
-            # Only write header if file doesn't exist
-            if not os.path.exists(orderbook_file):
-                with open(orderbook_file, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    headers = ['timestamp', 'sequence', 'exchange_timestamp']
-                    for i in range(self.orderbook_depth):
-                        headers.extend([f'bid_price_{i}', f'bid_size_{i}', f'ask_price_{i}', f'ask_size_{i}'])
-                    writer.writerow(headers)
+            for dtype in ['prices', 'trades', 'orderbooks']:
+                path = os.path.join(self.output_dir, symbol, dtype)
+                os.makedirs(path, exist_ok=True)
     
-    def _write_to_csv(self, filename: str, data: List[Any]):
-        """Write data to CSV file"""
+    def _write_to_parquet(self, symbol: str, dtype: str, data: List[Any]):
+        """Write data to Parquet file using Pandas"""
+        if not data:
+            return
+
         try:
-            with open(filename, 'a', newline='') as f:
-                writer = csv.writer(f)
-                for item in data:
-                    if isinstance(item, dict):
-                        writer.writerow(item.values())
-                    else:
-                        writer.writerow(asdict(item).values())
+            # Convert to DataFrame
+            # For list of objects (TickData, TradeData etc) or list of dicts
+            if len(data) > 0 and not isinstance(data[0], dict):
+                df = pd.DataFrame([asdict(item) for item in data])
+            else:
+                df = pd.DataFrame(data)
+            
+            # Generate filename with timestamp
+            timestamp = int(time.time() * 1000)
+            filename = f"{dtype}_{timestamp}.parquet"
+            file_path = os.path.join(self.output_dir, symbol, dtype, filename)
+            
+            # Write to parquet
+            df.to_parquet(file_path, engine='pyarrow', index=False, compression='zstd')
+            
         except Exception as e:
-            print(f"Error writing to CSV {filename}: {e}")
+            print(f"Error writing to Parquet {symbol}/{dtype}: {e}")
+
+    # _handle_bbo_data, _handle_trade_data, _handle_orderbook_data remain unchanged
     
     def _handle_bbo_data(self, data: Dict[str, Any]):
         """Handle best bid/offer data"""
@@ -199,7 +180,6 @@ class HyperliquidDataCollector:
                         'side': 'bid',
                         'exchange_timestamp': bbo_data.get('time')
                     }
-                    self.data_buffers[symbol]['prices'].append(bid_data)
                     
                     # Create ask data
                     ask_data = {
@@ -209,32 +189,36 @@ class HyperliquidDataCollector:
                         'side': 'ask',
                         'exchange_timestamp': bbo_data.get('time')
                     }
-                    self.data_buffers[symbol]['prices'].append(ask_data)
+
+                    with self.lock:
+                        self.data_buffers[symbol]['prices'].append(bid_data)
+                        self.data_buffers[symbol]['prices'].append(ask_data)
                 
                 self.stats.update('bbo_updates')
             else:
                 # Direct format fallback
                 symbol = data.get('coin', 'UNKNOWN')
                 
-                if 'bid' in data and data['bid']:
-                    bid_data = {
-                        'timestamp': timestamp,
-                        'price': float(data['bid']['px']),
-                        'size': float(data['bid']['sz']),
-                        'side': 'bid',
-                        'exchange_timestamp': data.get('time')
-                    }
-                    self.data_buffers[symbol]['prices'].append(bid_data)
-                
-                if 'ask' in data and data['ask']:
-                    ask_data = {
-                        'timestamp': timestamp,
-                        'price': float(data['ask']['px']),
-                        'size': float(data['ask']['sz']),
-                        'side': 'ask',
-                        'exchange_timestamp': data.get('time')
-                    }
-                    self.data_buffers[symbol]['prices'].append(ask_data)
+                with self.lock:
+                    if 'bid' in data and data['bid']:
+                        bid_data = {
+                            'timestamp': timestamp,
+                            'price': float(data['bid']['px']),
+                            'size': float(data['bid']['sz']),
+                            'side': 'bid',
+                            'exchange_timestamp': data.get('time')
+                        }
+                        self.data_buffers[symbol]['prices'].append(bid_data)
+                    
+                    if 'ask' in data and data['ask']:
+                        ask_data = {
+                            'timestamp': timestamp,
+                            'price': float(data['ask']['px']),
+                            'size': float(data['ask']['sz']),
+                            'side': 'ask',
+                            'exchange_timestamp': data.get('time')
+                        }
+                        self.data_buffers[symbol]['prices'].append(ask_data)
                 
                 self.stats.update('bbo_updates')
         except Exception as e:
@@ -261,7 +245,8 @@ class HyperliquidDataCollector:
                         'trade_id': str(trade.get('tid')),
                         'exchange_timestamp': trade.get('time')
                     }
-                    self.data_buffers[symbol]['trades'].append(trade_data)
+                    with self.lock:
+                        self.data_buffers[symbol]['trades'].append(trade_data)
                 
                 self.stats.update('trades', len(trades))
             else:
@@ -283,7 +268,8 @@ class HyperliquidDataCollector:
                         'trade_id': str(trade.get('tid')),
                         'exchange_timestamp': trade.get('time')
                     }
-                    self.data_buffers[symbol]['trades'].append(trade_data)
+                    with self.lock:
+                        self.data_buffers[symbol]['trades'].append(trade_data)
                 
                 self.stats.update('trades', len(trades))
         except Exception as e:
@@ -338,7 +324,8 @@ class HyperliquidDataCollector:
                         csv_row[f'ask_price_{i}'] = None
                         csv_row[f'ask_size_{i}'] = None
                 
-                self.data_buffers[symbol]['orderbooks'].append(csv_row)
+                with self.lock:
+                    self.data_buffers[symbol]['orderbooks'].append(csv_row)
                 self.stats.update('orderbook_updates')
             else:
                 # Direct format fallback
@@ -383,36 +370,46 @@ class HyperliquidDataCollector:
                         csv_row[f'ask_price_{i}'] = None
                         csv_row[f'ask_size_{i}'] = None
                 
-                self.data_buffers[symbol]['orderbooks'].append(csv_row)
+                with self.lock:
+                    self.data_buffers[symbol]['orderbooks'].append(csv_row)
                 self.stats.update('orderbook_updates')
             
         except Exception as e:
             print(f"Error handling order book data: {e}")
     
     def _flush_buffers(self):
-        """Flush data buffers to CSV files - separate files per symbol"""
+        """Flush data buffers to Parquet files"""
         try:
-            for symbol in self.symbols:
-                symbol_buffers = self.data_buffers[symbol]
-                symbol_files = self.symbol_files[symbol]
+            # First, snapshot and clear buffers within the lock
+            data_to_write = {}
+            
+            with self.lock:
+                for symbol in self.symbols:
+                    symbol_buffers = self.data_buffers[symbol]
+                    data_to_write[symbol] = {}
+                    
+                    if symbol_buffers['prices']:
+                        data_to_write[symbol]['prices'] = list(symbol_buffers['prices'])
+                        symbol_buffers['prices'].clear()
+                    
+                    if symbol_buffers['trades']:
+                        data_to_write[symbol]['trades'] = list(symbol_buffers['trades'])
+                        symbol_buffers['trades'].clear()
+                        
+                    if symbol_buffers['orderbooks']:
+                        data_to_write[symbol]['orderbooks'] = list(symbol_buffers['orderbooks'])
+                        symbol_buffers['orderbooks'].clear()
+            
+            # Then write to files (outside the lock)
+            for symbol, buffers in data_to_write.items():
+                if 'prices' in buffers:
+                    self.executor.submit(self._write_to_parquet, symbol, 'prices', buffers['prices'])
                 
-                # Flush prices for this symbol
-                if symbol_buffers['prices']:
-                    prices_to_write = list(symbol_buffers['prices'])
-                    symbol_buffers['prices'].clear()
-                    self.executor.submit(self._write_to_csv, symbol_files['prices'], prices_to_write)
+                if 'trades' in buffers:
+                    self.executor.submit(self._write_to_parquet, symbol, 'trades', buffers['trades'])
                 
-                # Flush trades for this symbol
-                if symbol_buffers['trades']:
-                    trades_to_write = list(symbol_buffers['trades'])
-                    symbol_buffers['trades'].clear()
-                    self.executor.submit(self._write_to_csv, symbol_files['trades'], trades_to_write)
-                
-                # Flush order books for this symbol
-                if symbol_buffers['orderbooks']:
-                    orderbooks_to_write = list(symbol_buffers['orderbooks'])
-                    symbol_buffers['orderbooks'].clear()
-                    self.executor.submit(self._write_to_csv, symbol_files['orderbooks'], orderbooks_to_write)
+                if 'orderbooks' in buffers:
+                    self.executor.submit(self._write_to_parquet, symbol, 'orderbooks', buffers['orderbooks'])
                 
         except Exception as e:
             print(f"Error flushing buffers: {e}")
@@ -430,10 +427,13 @@ class HyperliquidDataCollector:
             print(f"  {data_type}: {count:,} ({rate:.1f}/min)")
         
         print(f"\nBuffer sizes by symbol:")
-        for symbol in self.symbols:
-            symbol_buffers = self.data_buffers[symbol]
-            total_buffered = sum(len(buffer) for buffer in symbol_buffers.values())
-            print(f"  {symbol}: {total_buffered} ({len(symbol_buffers['prices'])} prices, {len(symbol_buffers['trades'])} trades, {len(symbol_buffers['orderbooks'])} orderbooks)")
+        
+        # Calculate buffer sizes with lock to ensure consistency
+        with self.lock:
+            for symbol in self.symbols:
+                symbol_buffers = self.data_buffers[symbol]
+                total_buffered = sum(len(buffer) for buffer in symbol_buffers.values())
+                print(f"  {symbol}: {total_buffered} ({len(symbol_buffers['prices'])} prices, {len(symbol_buffers['trades'])} trades, {len(symbol_buffers['orderbooks'])} orderbooks)")
         
         print("="*60)
     
@@ -494,7 +494,7 @@ class HyperliquidDataCollector:
     def _periodic_flush(self):
         """Periodically flush buffers to disk"""
         while self.running:
-            time.sleep(5)  # Flush every 5 seconds
+            time.sleep(60)  # Flush every 60 seconds
             self._flush_buffers()
     
     def _periodic_summary(self):
@@ -508,13 +508,8 @@ class HyperliquidDataCollector:
         """Stop data collection"""
         self.running = False
         
-        # Unsubscribe from all feeds
-        for sub_id in self.subscription_ids:
-            try:
-                # Note: The exact unsubscribe method depends on the SDK implementation
-                pass  # self.info.unsubscribe(...) if available
-            except Exception as e:
-                print(f"Error unsubscribing {sub_id}: {e}")
+        # Unsubscribe from all feeds - SDK Info class manages this mostly via stop() but explicit unsubscribe would be here if needed
+        # Since we are shutting down, we'll rely on disconnect_websocket
         
         # Final flush
         self._flush_buffers()
@@ -536,7 +531,7 @@ class HyperliquidDataCollector:
 def main():
     """Main function"""
     # Configuration
-    SYMBOLS = ["BTC", "ETH", "SOL", "WLFI"]  # Add more symbols as needed
+    SYMBOLS = ["ETH"]  # Add more symbols as needed
     OUTPUT_DIR = "HL_data"
     ORDERBOOK_DEPTH = 20  # Number of order book levels to capture (default: 20)
     

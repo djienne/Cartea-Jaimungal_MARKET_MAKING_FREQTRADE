@@ -99,6 +99,7 @@ class Market_Making(IStrategy):
     hjb_cache = None
     hjb_solver = load_hjb_solver()
 
+    _data_checked_and_available: bool = False # Added to track initial data presence
     # Conservative stoploss at 75% loss
     stoploss = -0.75
 
@@ -181,12 +182,35 @@ class Market_Making(IStrategy):
         """
         return dataframe
 
+    def _check_data_files_exist(self) -> bool:
+        if self._data_checked_and_available:
+            return True
+
+        # Path inside the Docker container where HL_data is mounted
+        data_path_base = Path("/freqtrade/scripts/HL_data/ETH")
+        
+        found_data = False
+        # Check in orderbooks, prices, and trades subdirectories
+        for sub_dir in ["orderbooks", "prices", "trades"]:
+            target_dir = data_path_base / sub_dir
+            if target_dir.is_dir() and any(target_dir.glob("*.parquet")):
+                found_data = True
+                break
+        
+        if found_data:
+            logger.info("Initial data files found in HL_data/ETH/**. Enabling trading.")
+            self._data_checked_and_available = True
+        else:
+            logger.warning("No initial data files found in HL_data/ETH/**. Trading is currently disabled.")
+        return found_data
+
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
-        Enter long positions when market making parameters are loaded.
+        Enter long positions when market making parameters are loaded AND initial data is available.
         Entry price will be calculated dynamically in custom_entry_price.
         """
-        if self.kappas is not None and self.epsilons is not None:
+        if (self.kappas is not None and self.epsilons is not None and
+                self._check_data_files_exist()):
             dataframe.loc[:, 'enter_long'] = 1
         else:
             dataframe.loc[:, 'enter_long'] = 0
