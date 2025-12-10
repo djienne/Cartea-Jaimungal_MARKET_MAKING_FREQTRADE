@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Python deps – hyperliquid relies on websockets, etc.
 RUN pip install --no-cache-dir \
     hyperliquid-python-sdk \
-    websockets pandas
+    websockets pandas pyarrow
 
 # Copy your collector and wrapper
 COPY hyperliquid_data_collector.py /app/hyperliquid_data_collector.py
@@ -32,4 +32,3 @@ USER ftuser
 
 # Default command (also set in compose)
 CMD ["python", "run_collector.py"]
-
