@@ -419,7 +419,7 @@ def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_
                 label=f'Nonlinear fit: k={buy_estimates_nonlinear["kappa"]:.1f} (R^2={buy_estimates_nonlinear["r_squared"]:.3f})')
     
     ax1.set_xlabel('Buy Depth (price units)')
-    ax1.set_ylabel('Trade Intensity (trades/min)')
+    ax1.set_ylabel('Trade Intensity (trades/sec)')
     ax1.set_title('Buy Side - Linear Scale')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
@@ -433,7 +433,7 @@ def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_
         ax2.plot(x_fit, y_fit, 'r--', linewidth=2, label=f'k={buy_estimates_linear["kappa"]:.1f}')
     
     ax2.set_xlabel('Buy Depth (price units)')
-    ax2.set_ylabel('Trade Intensity (trades/min)')
+    ax2.set_ylabel('Trade Intensity (trades/sec)')
     ax2.set_title('Buy Side - Log Scale')
     ax2.set_yscale('log')
     ax2.legend()
@@ -455,7 +455,7 @@ def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_
                 label=f'Nonlinear fit: k={sell_estimates_nonlinear["kappa"]:.1f} (R^2={sell_estimates_nonlinear["r_squared"]:.3f})')
     
     ax3.set_xlabel('Sell Depth (price units)')
-    ax3.set_ylabel('Trade Intensity (trades/min)')
+    ax3.set_ylabel('Trade Intensity (trades/sec)')
     ax3.set_title('Sell Side - Linear Scale')
     ax3.legend()
     ax3.grid(True, alpha=0.3)
@@ -469,7 +469,7 @@ def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_
         ax4.plot(x_fit, y_fit, 'b--', linewidth=2, label=f'k={sell_estimates_linear["kappa"]:.1f}')
     
     ax4.set_xlabel('Sell Depth (price units)')
-    ax4.set_ylabel('Trade Intensity (trades/min)')
+    ax4.set_ylabel('Trade Intensity (trades/sec)')
     ax4.set_title('Sell Side - Log Scale')
     ax4.set_yscale('log')
     ax4.legend()

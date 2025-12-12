@@ -21,6 +21,7 @@ A comprehensive Python suite for collecting real-time tick data from Hyperliquid
 ### 🧮 Parameter Estimation (aligned with Cartea-Jaimungal model)
 - **κ ± (Kappa)**: Order book depth sensitivity estimated from λ(δ)=λ₀·exp(−κδ); saved to `kappa.json`
 - **λ₀ ± (Lambda)**: Base arrival intensity at δ=0 (trades/sec) from the κ regression; saved to `lambda.json`
+- **λ_trades ± (Lambda trades)**: Unconditional trade arrival rates (trades/sec) from raw counts; saved to `lambda_trades.json` (sanity check)
 - **ε ± (Epsilon)**: Event-level permanent impact per trade from immediate mid jumps (~200 ms); saved to `epsilon.json`
 - **Automatic data loading** with configurable time ranges
 - **Market toxicity assessment** based on ε×κ product
@@ -55,7 +56,7 @@ python get_kappa.py --crypto ETH --minutes 30
 # Event-level ε from immediate post-trade jumps, saves epsilon.json
 python get_epsilon.py --crypto ETH --minutes 30
 
-# Optional raw trades/sec sanity check
+# Optional raw trades/sec sanity check (writes lambda_trades.json)
 python get_lambda.py --crypto ETH --minutes 30
 
 # Inspect spreads across inventory (refreshes κ/ε/λ, then shows bid/ask and bps by q)

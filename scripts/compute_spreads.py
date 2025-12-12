@@ -3,14 +3,15 @@
 Compute bid/ask spreads (bps from mid) using the same logic as user_data/strategies/Market_Making.py.
 
 Inputs:
-- Refreshes κ/ε/λ by calling get_kappa.py, get_epsilon.py, and get_lambda.py before computing spreads.
-- kappa.json, epsilon.json, lambda.json (expected in working directory or parent)
+- Refreshes κ/ε and baseline λ₀ by calling get_kappa.py and get_epsilon.py.
+- Also runs get_lambda.py to compute unconditional trade rates into lambda_trades.json (monitoring only).
+- kappa.json, epsilon.json, lambda.json (baseline λ₀; expected in working directory or parent)
 - Mid price (via --mid) or fallback to mid_price.json if present, else 1.0
 - Inventory level q (optional, default 0)
 
 The script:
-1. Loads κ, ε, λ for the symbol.
-2. Runs the symmetric-κ HJB solver (from scripts/hjb.py) to get δ* with inventory skew.
+1. Loads κ, ε, and baseline λ₀ for the symbol.
+2. Runs the HJB solver (symmetric closed-form by default, optional asymmetric-κ backward Euler) to get δ* with inventory skew.
 3. Adds maker-fee cushion identical to the strategy (0.015% maker fee → fee * mid * 2).
 4. Prints bid/ask prices and spreads in bps from mid.
 """
@@ -26,7 +27,7 @@ import sys
 
 import numpy as np
 
-from hjb import compute_h_symmetric
+from hjb import compute_h_symmetric, compute_h_asymmetric
 
 
 MAKER_FEE = 0.0150 / 100.0  # 1.5 bps as fraction
@@ -87,6 +88,8 @@ def main():
     parser.add_argument("--phi", type=float, default=0.0, help="Running inventory penalty (phi)")
     parser.add_argument("--qmax", type=int, default=3, help="Inventory grid radius (q_max)")
     parser.add_argument("--horizon", type=float, default=60.0, help="Horizon in seconds for HJB (default 60s, tuned for λ in trades/sec)")
+    parser.add_argument("--asym-kappa", action="store_true", help="Use asymmetric-κ backward-Euler solver instead of symmetric closed form")
+    parser.add_argument("--steps", type=int, default=200, help="Time steps for asymmetric solver (ignored for symmetric)")
     parser.add_argument("--minutes", "-t", type=int, default=30, help="Minutes of data to use when refreshing κ/ε/λ")
     args = parser.parse_args()
 
@@ -123,18 +126,33 @@ def main():
     except Exception as e:
         raise SystemExit(f"Missing parameters for {sym}: {e}")
 
-    hjb_res = compute_h_symmetric(
-        lambda_plus=lam_p,
-        lambda_minus=lam_m,
-        epsilon_plus=eps_p,
-        epsilon_minus=eps_m,
-        kappa_plus=kappa_p,
-        kappa_minus=kappa_m,
-        alpha=args.alpha,
-        phi=args.phi,
-        T_seconds=args.horizon,
-        q_max=args.qmax,
-    )
+    if args.asym_kappa:
+        hjb_res = compute_h_asymmetric(
+            lambda_plus=lam_p,
+            lambda_minus=lam_m,
+            epsilon_plus=eps_p,
+            epsilon_minus=eps_m,
+            kappa_plus=kappa_p,
+            kappa_minus=kappa_m,
+            alpha=args.alpha,
+            phi=args.phi,
+            T_seconds=args.horizon,
+            q_max=args.qmax,
+            n_steps=args.steps,
+        )
+    else:
+        hjb_res = compute_h_symmetric(
+            lambda_plus=lam_p,
+            lambda_minus=lam_m,
+            epsilon_plus=eps_p,
+            epsilon_minus=eps_m,
+            kappa_plus=kappa_p,
+            kappa_minus=kappa_m,
+            alpha=args.alpha,
+            phi=args.phi,
+            T_seconds=args.horizon,
+            q_max=args.qmax,
+        )
 
     # Resolve mid price (arg -> mid_price.json -> 1.0)
     mid = args.mid

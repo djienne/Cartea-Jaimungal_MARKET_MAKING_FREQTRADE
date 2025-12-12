@@ -107,7 +107,8 @@ Where:
 **Solution Method - Hamilton-Jacobi-Bellman:**
 1. **Ansatz**: `H(t,x,S,q) = x + qS + h(t,q)` (value function decomposition)
 2. **Matrix method**: For symmetric κ, solve `∂_t ω + A ω = 0` where `h = log(ω)/κ`
-3. **Boundary condition**: `h(T,q) = -α q²` (terminal penalty)
+3. **Backward Euler**: For asymmetric κ (κ+ ≠ κ-), solve the nonlinear HJB on a (t,q) grid via implicit backward-Euler.
+4. **Boundary condition**: `h(T,q) = -α q²` (terminal penalty)
 
 ### Parameter Estimation and Calibration
 
@@ -223,13 +224,13 @@ The main strategy implementing:
 - **Order book analysis** for mid-price determination  
 - **Custom entry/exit bid-ask spread pricing** using Cartea-Jaimungal formulas
 - **Real-time parameter loading** from JSON configuration files
-- **Inventory skew adjustment**: *[Not yet implemented - planned enhancement to adjust optimal bid-ask spreads asymmetrically based on inventory position to remain market neutral]*
+- **Inventory skew adjustment**: Implemented via HJB grid (symmetric κ by default; set `use_asymmetric_kappa=True` for κ+≠κ-).
 
 ### Parameter Calculation Scripts
 
 - **get_kappa.py**: Jointly estimates κ± and λ₀± via λ(δ)=λ₀·exp(−κδ) (trades/sec, price-unit depths)
 - **get_epsilon.py**: Event-level ε± from immediate post-trade mid jumps (∼200ms window)
-- **get_lambda.py**: Trades/sec sanity check from raw trade counts (per-symbol)
+- **get_lambda.py**: Trades/sec sanity check from raw trade counts (per-symbol); writes `lambda_trades.json`
 - **compute_spreads.py**: Refreshes κ/ε/λ then prints bid/ask prices and spreads (bps) across inventory levels
 - **periodic_test_runner.py**: Orchestrates continuous parameter updates
 
@@ -251,8 +252,6 @@ ONLY USE IN DRY-RUN
 
 
 This project implements academic market making models and is intended for research and educational use.
-
-
 
 
 

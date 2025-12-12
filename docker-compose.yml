@@ -41,6 +41,10 @@ services:
       SYMBOLS: ${SYMBOLS:-ETH}
       OUTPUT_DIR: ${OUTPUT_DIR:-HL_data}
       ORDERBOOK_DEPTH: ${ORDERBOOK_DEPTH:-20}
+      # Restart/reconnect if no data arrives for this many seconds
+      INACTIVITY_TIMEOUT_SEC: ${INACTIVITY_TIMEOUT_SEC:-180}
+      MAX_RECONNECT_ATTEMPTS: ${MAX_RECONNECT_ATTEMPTS:-3}
+      RECONNECT_BACKOFF_SEC: ${RECONNECT_BACKOFF_SEC:-5}
       TZ: ${TZ:-UTC}
     volumes:
       - ./scripts/HL_data:/app/HL_data

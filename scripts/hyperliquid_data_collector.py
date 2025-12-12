@@ -120,6 +120,21 @@ class HyperliquidDataCollector:
         
         self.running = False
         self.executor = ThreadPoolExecutor(max_workers=4)
+
+        # Self-healing / watchdog configuration
+        try:
+            self.inactivity_timeout_sec = int(os.getenv("INACTIVITY_TIMEOUT_SEC", "180"))
+        except ValueError:
+            self.inactivity_timeout_sec = 180
+        try:
+            self.max_reconnect_attempts = int(os.getenv("MAX_RECONNECT_ATTEMPTS", "3"))
+        except ValueError:
+            self.max_reconnect_attempts = 3
+        try:
+            self.reconnect_backoff_sec = float(os.getenv("RECONNECT_BACKOFF_SEC", "5"))
+        except ValueError:
+            self.reconnect_backoff_sec = 5.0
+        self._reconnecting = False
         
         # Ensure output directory exists and organize by symbol/type
         self._init_storage()
@@ -443,6 +458,80 @@ class HyperliquidDataCollector:
                 print(f"  {symbol}: {total_buffered} ({len(symbol_buffers['prices'])} prices, {len(symbol_buffers['trades'])} trades, {len(symbol_buffers['orderbooks'])} orderbooks)")
         
         print("="*60)
+
+    def _subscribe_all(self):
+        """(Re)subscribe to all data feeds for all symbols."""
+        self.subscription_ids = []
+        for symbol in self.symbols:
+            print(f"Subscribing to data feeds for {symbol}...")
+
+            bbo_id = self.info.subscribe(
+                {"type": "bbo", "coin": symbol},
+                self._handle_bbo_data
+            )
+            self.subscription_ids.append(bbo_id)
+
+            trades_id = self.info.subscribe(
+                {"type": "trades", "coin": symbol},
+                self._handle_trade_data
+            )
+            self.subscription_ids.append(trades_id)
+
+            l2book_id = self.info.subscribe(
+                {"type": "l2Book", "coin": symbol},
+                self._handle_orderbook_data
+            )
+            self.subscription_ids.append(l2book_id)
+
+        print(f"Subscribed to {len(self.subscription_ids)} data feeds")
+
+    def _reconnect(self):
+        """Reconnect websocket and resubscribe."""
+        if self._reconnecting:
+            return
+        self._reconnecting = True
+        try:
+            print("Reconnecting Hyperliquid websocket...")
+            try:
+                self.info.disconnect_websocket()
+            except Exception as e:
+                print(f"Error disconnecting websocket during reconnect: {e}")
+            time.sleep(self.reconnect_backoff_sec)
+            self.info = Info(constants.MAINNET_API_URL, skip_ws=False)
+            self._subscribe_all()
+            print("Reconnected successfully.")
+        finally:
+            self._reconnecting = False
+
+    def _watchdog_inactivity(self):
+        """Watch for long periods with no data and attempt to recover."""
+        stale_attempts = 0
+        while self.running:
+            time.sleep(5)
+            since_last = time.time() - self.stats.last_update
+            if since_last <= self.inactivity_timeout_sec:
+                stale_attempts = 0
+                continue
+
+            stale_attempts += 1
+            print(
+                f"No data for {since_last:.0f}s (> {self.inactivity_timeout_sec}s). "
+                f"Reconnect attempt {stale_attempts}/{self.max_reconnect_attempts}..."
+            )
+            try:
+                self._reconnect()
+                stale_attempts = 0
+                # Avoid immediate re-trigger after a reconnect
+                self.stats.last_update = time.time()
+            except Exception as e:
+                print(f"Reconnect attempt failed: {e}")
+                if stale_attempts >= self.max_reconnect_attempts:
+                    print("Max reconnect attempts reached. Flushing buffers and exiting for Docker restart.")
+                    try:
+                        self._flush_buffers()
+                    except Exception as flush_e:
+                        print(f"Flush before exit failed: {flush_e}")
+                    os._exit(1)
     
     def start_collection(self):
         """Start data collection"""
@@ -453,31 +542,7 @@ class HyperliquidDataCollector:
         
         try:
             # Subscribe to data feeds for each symbol
-            for symbol in self.symbols:
-                print(f"Subscribing to data feeds for {symbol}...")
-                
-                # Subscribe to best bid/offer
-                bbo_id = self.info.subscribe(
-                    {"type": "bbo", "coin": symbol},
-                    self._handle_bbo_data
-                )
-                self.subscription_ids.append(bbo_id)
-                
-                # Subscribe to trades
-                trades_id = self.info.subscribe(
-                    {"type": "trades", "coin": symbol},
-                    self._handle_trade_data
-                )
-                self.subscription_ids.append(trades_id)
-                
-                # Subscribe to order book
-                l2book_id = self.info.subscribe(
-                    {"type": "l2Book", "coin": symbol},
-                    self._handle_orderbook_data
-                )
-                self.subscription_ids.append(l2book_id)
-            
-            print(f"Subscribed to {len(self.subscription_ids)} data feeds")
+            self._subscribe_all()
             
             # Start background tasks
             flush_thread = threading.Thread(target=self._periodic_flush, daemon=True)
@@ -485,6 +550,9 @@ class HyperliquidDataCollector:
             
             summary_thread = threading.Thread(target=self._periodic_summary, daemon=True)
             summary_thread.start()
+
+            watchdog_thread = threading.Thread(target=self._watchdog_inactivity, daemon=True)
+            watchdog_thread.start()
             
             # Keep running
             print("Data collection started. Press Ctrl+C to stop.")

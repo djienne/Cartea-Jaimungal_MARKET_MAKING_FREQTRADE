@@ -1,5 +1,5 @@
 """
-Periodic asynchronous runner for get_kappa.py and get_epsilon.py.
+Periodic asynchronous runner for get_kappa.py, get_epsilon.py, and get_lambda.py.
 
 Key features:
 - Locates test files by walking up from this script's directory.
@@ -28,7 +28,8 @@ from typing import Dict, Optional
 
 
 TEST_FILES = ("get_lambda.py", "get_kappa.py", "get_epsilon.py")
-CONFIG_FILES = ("epsilon.json", "kappa.json", "lambda.json")
+# lambda.json holds baseline λ₀ from get_kappa.py; lambda_trades.json is optional monitoring output.
+CONFIG_FILES = ("epsilon.json", "kappa.json", "lambda.json", "lambda_trades.json")
 
 
 def _ts() -> str:

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Calibrate lambda (order arrival intensity) from HL_data trades only.
+Calibrate raw trade arrival rates from HL_data trades only.
 
-Definition used here:
-- lambda+ (buy): number of buy-side market trades per minute
-- lambda- (sell): number of sell-side market trades per minute
+Definition used here (unconditional):
+- lambda+ (buy): number of buy-side market trades per second
+- lambda- (sell): number of sell-side market trades per second
 
-No quotes/orderbook, kappa, or epsilon are used in this script.
+These values are intended as a sanity-check / monitoring signal.
+Baseline λ₀± for the HJB (used by the strategy) comes from the joint κ/λ₀
+regression in `get_kappa.py` and is stored in `lambda.json`.
+To avoid overwriting λ₀, this script writes to `lambda_trades.json` by default.
 """
 
 import os
@@ -95,8 +98,8 @@ def compute_lambda_from_trades(df_trades: pd.DataFrame) -> Optional[LambdaResult
     )
 
 
-def save_lambda_to_json(lam_plus: float, lam_minus: float, crypto: str, filename: str = "lambda.json"):
-    """Save lambda estimates (per second) to lambda.json, overwriting or appending the symbol entry."""
+def save_lambda_to_json(lam_plus: float, lam_minus: float, crypto: str, filename: str = "lambda_trades.json"):
+    """Save raw trade lambda estimates (per second) to JSON, overwriting or appending the symbol entry."""
     # Prepare values as plain floats
     lam_plus_val = float(lam_plus) if pd.notna(lam_plus) else None
     lam_minus_val = float(lam_minus) if pd.notna(lam_minus) else None
@@ -126,9 +129,11 @@ def save_lambda_to_json(lam_plus: float, lam_minus: float, crypto: str, filename
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Calibrate lambda (trades/min) from HL_data trades only')
+    parser = argparse.ArgumentParser(description='Calibrate raw trade lambda (trades/sec) from HL_data trades only')
     parser.add_argument('--crypto', '-c', type=str, default='ETH', help='Crypto symbol (default ETH)')
     parser.add_argument('--minutes', '-m', type=int, default=30, help='Minutes from most recent to analyze')
+    parser.add_argument('--output', '-o', type=str, default='lambda_trades.json',
+                        help='Output JSON filename (default lambda_trades.json)')
     args = parser.parse_args()
 
     log_section(f'LAMBDA FROM TRADES - {args.crypto} (last {args.minutes} min)')
@@ -164,8 +169,8 @@ def main():
     print(f"lambda- (sell): {results.lambda_minus:.6f} trades/sec")
     print(f"lambda (total): {results.lambda_total:.6f} trades/sec")
 
-    # Save to lambda.json
-    save_lambda_to_json(results.lambda_plus, results.lambda_minus, args.crypto)
+    # Save to monitoring file (does not overwrite lambda.json baseline)
+    save_lambda_to_json(results.lambda_plus, results.lambda_minus, args.crypto, filename=args.output)
 
 
 if __name__ == '__main__':
