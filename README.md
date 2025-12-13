@@ -41,22 +41,34 @@ This project implements an advanced market making strategy that:
 ## Project Structure
 
 ```
-ADVANCED_MM/
+Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 ├── user_data/
-├── docker-compose.yml                # Docker compose to run Freqtrade (trading bot), WARNING: run the data collector for a while before launching live trading
-│   ├── strategies/
-│       ├── Market_Making.py          # Main market making strategy
-│       ├── periodic_test_runner.py   # Parameter update orchestrator (update values in kappa.json/epsilon.json and copy files here so Market_Making.py can use)
-│       ├── kappa.json                # Current kappa parameters
-│       └── epsilon.json              # Current epsilon parameters
-│   ├── config.json                   # Freqtrade configuration
+│   ├── config.json
+│   ├── logs/
+│   │   └── mm_debug.jsonl                 # Strategy debug JSONL (quotes/HJB/params)
+│   └── strategies/
+│       ├── Market_Making.py               # Main market making strategy
+│       ├── periodic_test_runner.py        # Updates kappa/epsilon/lambda JSONs
+│       ├── kappa.json
+│       ├── epsilon.json
+│       ├── lambda.json
+│       └── lambda_trades.json
 ├── scripts/
-│   ├── docker-compose.yml           # Docker compose to run the data collector (collects inside `HL_data` full order book over +-20 levels, trades, bid-ask prices)
-│   ├── HL_data                      # contains Hyperliquid gathered data with full order book over +-20 levels, trades, bid-ask prices
-│   ├── get_kappa.py                # Kappa parameter calculation
-│   ├── get_epsilon.py              # Epsilon parameter calculation
-│   └── hyperliquid_data_collector.py # Market data collection
-└── commands.txt                     # Common Freqtrade commands
+│   ├── docker-compose.yml                 # Hyperliquid data collector
+│   ├── Dockerfile                         # Collector image (includes pyarrow)
+│   ├── hyperliquid_data_collector.py      # Writes Parquet shards to HL_data/<SYMBOL>/<dtype>/
+│   ├── run_collector.py
+│   ├── get_kappa.py
+│   ├── get_epsilon.py
+│   ├── get_lambda.py
+│   ├── hjb.py
+│   ├── compute_spreads.py
+│   ├── mid_price.py
+│   └── HL_data/
+├── docker-compose.yml                     # Freqtrade compose
+├── Dockerfile.technical                   # Freqtrade image (adds deps)
+├── analyze_trades.py
+└── README.md
 ```
 
 ## Mathematical Foundation
@@ -160,7 +172,7 @@ Where:
    cd scripts
    docker-compose up -d
    ```
-   Will write orderbook, price and orders data flow to files in directory `script/HL_data`
+   Will write orderbook, price and orders data flow to files in directory `scripts/HL_data`
 
 3. **Run the strategy:**
    ```bash
@@ -195,14 +207,16 @@ Uses ETH by default now.
 
 The system maintains dynamic parameters in JSON files:
 
-- `kappa.json`: order book depth parameter
-- `epsilon.json`: Market impact adjustments
+- `kappa.json`: Order book depth sensitivity (`kappa+`, `kappa-`)
+- `epsilon.json`: Adverse selection / permanent impact (`epsilon+`, `epsilon-`)
+- `lambda.json`: Baseline trade arrival intensity (`lambda+`, `lambda-`)
+- `lambda_trades.json`: Raw trades/sec monitor (sanity check; optional)
 
-These are automatically updated every 15 seconds based on market conditions.
+These are automatically updated each bot loop (throttled by `internals.process_throttle_secs`, default 15s) based on recent market data.
 
 ## Usage Examples
 
-### Manual Parameter calibration from data in `script/HL_data`
+### Manual Parameter calibration from data in `scripts/HL_data`
 
 ```bash
 # Test kappa calculation
@@ -224,7 +238,8 @@ The main strategy implementing:
 - **Order book analysis** for mid-price determination  
 - **Custom entry/exit bid-ask spread pricing** using Cartea-Jaimungal formulas
 - **Real-time parameter loading** from JSON configuration files
-- **Inventory skew adjustment**: Implemented via HJB grid (symmetric κ by default; set `use_asymmetric_kappa=True` for κ+≠κ-).
+- **Inventory skew adjustment**: Implemented via HJB grid (uses asymmetric κ+/κ- and ε+/ε- by default).
+- **Debugging**: Writes `user_data/logs/mm_debug.jsonl` with per-quote spreads (bps from mid) and the parameters/HJB surface used.
 
 ### Parameter Calculation Scripts
 
@@ -238,7 +253,7 @@ The main strategy implementing:
 
 ### Built-in Protections
 
-- **Maximum drawdown protection**: Stops trading at 5% drawdown
+- **Maximum drawdown protection**: Optional (currently commented out in `user_data/strategies/Market_Making.py`)
 - **Position limits**: Single position with unlimited stake
 - **Order timeouts**: 15-second unfilled order cancellation
 - **Inventory risk control**: Dynamic spread adjustment based on position
@@ -252,10 +267,6 @@ ONLY USE IN DRY-RUN
 
 
 This project implements academic market making models and is intended for research and educational use.
-
-
-
-
 
 
 

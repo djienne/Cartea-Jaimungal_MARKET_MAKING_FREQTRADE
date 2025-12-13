@@ -1,3 +1,3 @@
 FROM freqtradeorg/freqtrade:2025.4
 
-RUN pip3 install ta tqdm scipy plotly matplotlib pandas
+RUN pip3 install ta tqdm scipy plotly matplotlib pandas pyarrow

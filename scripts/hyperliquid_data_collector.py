@@ -317,7 +317,7 @@ class HyperliquidDataCollector:
                     for ask in asks_array:
                         asks.append(OrderBookLevel(price=float(ask['px']), size=float(ask['sz'])))
                 
-                # Prepare data for CSV (flatten configurable depth levels)
+                # Prepare flattened orderbook row (configurable depth levels)
                 csv_row = {
                     'timestamp': timestamp,
                     'sequence': book_data.get('time'),
@@ -363,7 +363,7 @@ class HyperliquidDataCollector:
                     for ask in asks_array:
                         asks.append(OrderBookLevel(price=float(ask['px']), size=float(ask['sz'])))
                 
-                # Prepare data for CSV (flatten configurable depth levels)
+                # Prepare flattened orderbook row (configurable depth levels)
                 csv_row = {
                     'timestamp': timestamp,
                     'sequence': data.get('time'),

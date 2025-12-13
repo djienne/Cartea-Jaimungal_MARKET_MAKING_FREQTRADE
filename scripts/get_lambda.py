@@ -142,10 +142,26 @@ def main():
         df_trades = load_trades_only(args.crypto, args.minutes)
     except FileNotFoundError as e:
         print(f'Error: {e}')
-        print('Available trade files in HL_data:')
-        for f in os.listdir('HL_data'):
-            if f.startswith('trades_') and f.endswith('.csv'):
-                print(f'  - {f}')
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            base_dir = os.path.join(script_dir, 'HL_data')
+            print('Available symbols with trade data in HL_data:')
+            candidates = [
+                d for d in os.listdir(base_dir)
+                if os.path.isdir(os.path.join(base_dir, d))
+            ]
+            valid = []
+            for sym in sorted(candidates):
+                trades_dir = os.path.join(base_dir, sym, 'trades')
+                if os.path.isdir(trades_dir) and any(name.endswith('.parquet') for name in os.listdir(trades_dir)):
+                    valid.append(sym)
+            if valid:
+                for sym in valid:
+                    print(f'  - {sym}')
+            else:
+                print('  (none found)')
+        except Exception:
+            pass
         return
     except ValueError as e:
         print(f'Error: {e}')

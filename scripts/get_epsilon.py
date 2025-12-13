@@ -558,7 +558,7 @@ if __name__ == "__main__":
     if isinstance(args.crypto, str) and args.crypto.strip().upper() == 'ALL':
         symbols = list_available_cryptos('HL_data')
         if not symbols:
-            print("No crypto data found in HL_data (need orderbooks_*.csv and trades_*.csv)")
+            print("No crypto data found in HL_data (need <SYMBOL>/orderbooks/*.parquet and <SYMBOL>/trades/*.parquet)")
             raise SystemExit(1)
     else:
         symbols = [args.crypto.strip().upper()]
