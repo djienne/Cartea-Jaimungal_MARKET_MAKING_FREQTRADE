@@ -3,6 +3,7 @@ hyperliquid-python-sdk
 
 # WebSocket and HTTP client dependencies
 websockets>=10.0
+websocket-client>=1.0.0
 requests>=2.25.0
 typing-extensions>=4.0.0
 

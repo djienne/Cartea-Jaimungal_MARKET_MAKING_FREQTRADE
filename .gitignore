@@ -1,1 +1,16 @@
 HL_data/
+
+# Generated parameter/output JSON files
+scripts/*.json
+user_data/strategies/lambda_trades.json
+
+# Logs and debug output
+user_data/logs/
+user_data/logs/mm_debug.jsonl*
+
+# Local trade database (+ -wal/-shm)
+user_data/tradesv3.sqlite*
+
+# Python bytecode cache
+__pycache__/
+*.pyc
