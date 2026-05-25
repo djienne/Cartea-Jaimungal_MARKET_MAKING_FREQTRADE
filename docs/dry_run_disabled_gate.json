@@ -8,7 +8,7 @@
   "docker_stop_returncode": 0,
   "duration_seconds": 150,
   "evidence": [],
-  "health_events": 2,
+  "health_events": 1,
   "latest_health": {
     "collector_fresh": true,
     "consecutive_losses": 0,
@@ -28,12 +28,12 @@
     "signed_base_position": 0.0,
     "taker_fills": 0,
     "trading_enabled": false,
-    "ts": "2026-05-25T14:25:35.877Z",
+    "ts": "2026-05-25T14:37:56.359Z",
     "unrealized_pnl": null
   },
   "log_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\freqtrade_gate_disabled.log",
   "mm_debug_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\mm_debug.jsonl",
   "passed": true,
   "reason": "ok",
-  "started_at": "2026-05-25T14:23:13.012780Z"
+  "started_at": "2026-05-25T14:36:46.438451Z"
 }

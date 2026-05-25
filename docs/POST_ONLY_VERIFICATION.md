@@ -89,10 +89,21 @@ python scripts/verify_post_only_mapping.py --mode evaluate-evidence --crossing-r
 ```
 
 The direct adapter requires local maker-safety before normal submit mode, so an
-intentional crossing-order probe should use `verify_post_only_mapping.py`
-submit mode on testnet/tiny size. A direct SDK ALO rejection caused by market
-movement is still valid rejection evidence if the retained result shows zero
-fill and the classifier marks `alo_rejected=true`.
+intentional crossing-order evidence uses a separate guarded mode:
+
+```bash
+$env:HYPERLIQUID_DIRECT_ALO_ALLOW = "1"
+python scripts/hyperliquid_alo_executor.py --mode submit-crossing-alo --testnet --symbol ETH/USDC:USDC --side bid --size <min_size> --best-bid <best_bid> --best-ask <best_ask> --allow-crossing-probe --acknowledge-real-orders --output docs/direct_alo_reject_result.json
+```
+
+For a bid probe, the adapter submits at the observed best ask; for an ask probe,
+it submits at the observed best bid. The order type remains native SDK
+`{"limit": {"tif": "Alo"}}`, so the acceptable outcome is zero fill with an ALO
+post-only rejection/cancel. Non-testnet crossing probes require the additional
+`--allow-mainnet-crossing-probe` flag and should only use the smallest possible
+order size. A direct SDK ALO rejection caused by market movement is still valid
+rejection evidence if the retained result shows zero fill and the classifier
+marks `alo_rejected=true`.
 
 This adapter is not wired into the Freqtrade strategy. It is the implementation
 scaffold for a future direct Hyperliquid execution layer if Freqtrade cannot be

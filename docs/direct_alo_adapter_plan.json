@@ -1,6 +1,14 @@
 {
   "component": "direct_hyperliquid_alo_executor",
-  "generated_at": "2026-05-25T14:21:53Z",
+  "crossing_probe_guards": [
+    "HYPERLIQUID_DIRECT_ALO_ALLOW=1",
+    "--acknowledge-real-orders",
+    "--allow-crossing-probe",
+    "--testnet, or --allow-mainnet-crossing-probe for tiny mainnet evidence",
+    "--best-bid and --best-ask crossing evidence inputs",
+    "bid probe price is best ask; ask probe price is best bid"
+  ],
+  "generated_at": "2026-05-25T14:35:26Z",
   "order_type": {
     "limit": {
       "tif": "Alo"

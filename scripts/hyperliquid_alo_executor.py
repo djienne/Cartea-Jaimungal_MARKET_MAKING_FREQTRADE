@@ -85,6 +85,41 @@ def maker_safe(intent: AloOrderIntent, best_bid: float, best_ask: float) -> tupl
     return True, "ok"
 
 
+def crossing_probe_intent(symbol: str, side: str, size: float, best_bid: float, best_ask: float) -> AloOrderIntent:
+    """Build an intentionally crossing ALO probe intent from an observed BBO."""
+    if size <= 0:
+        raise ValueError("size must be positive")
+    try:
+        best_bid = float(best_bid)
+        best_ask = float(best_ask)
+    except Exception as exc:
+        raise ValueError("best_bid and best_ask must be numeric") from exc
+    if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
+        raise ValueError("best_bid/best_ask must describe a valid uncrossed book")
+    side_l = side.lower()
+    if side_l in {"buy", "bid", "long"}:
+        return AloOrderIntent(symbol=symbol, side=side, size=float(size), price=best_ask)
+    if side_l in {"sell", "ask", "short"}:
+        return AloOrderIntent(symbol=symbol, side=side, size=float(size), price=best_bid)
+    raise ValueError(f"unsupported side: {side}")
+
+
+def crossing_probe_check(intent: AloOrderIntent, best_bid: float, best_ask: float) -> tuple[bool, str]:
+    try:
+        price = float(intent.price)
+        best_bid = float(best_bid)
+        best_ask = float(best_ask)
+    except Exception:
+        return False, "invalid_book_or_price"
+    if price <= 0 or best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
+        return False, "crossed_or_invalid_book"
+    if intent.is_buy and price >= best_ask:
+        return True, "bid_crosses_ask_for_alo_probe"
+    if not intent.is_buy and price <= best_bid:
+        return True, "ask_crosses_bid_for_alo_probe"
+    return False, "probe_does_not_cross"
+
+
 def nested_values(payload: Any) -> list[Any]:
     values: list[Any] = []
     if isinstance(payload, dict):
@@ -236,6 +271,47 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
+    if os.getenv(DIRECT_ALO_ALLOW_ENV) != "1":
+        raise SystemExit(f"Set {DIRECT_ALO_ALLOW_ENV}=1 to permit direct ALO submit mode")
+    if not args.acknowledge_real_orders:
+        raise SystemExit("--acknowledge-real-orders is required for submit mode")
+    if not args.allow_crossing_probe:
+        raise SystemExit("--allow-crossing-probe is required because this intentionally submits a crossing ALO order")
+    if not args.testnet and not args.allow_mainnet_crossing_probe:
+        raise SystemExit("--allow-mainnet-crossing-probe is required for non-testnet crossing probes")
+    if args.best_bid is None or args.best_ask is None:
+        raise SystemExit("--best-bid and --best-ask are required so crossing probe evidence is explicit")
+
+    try:
+        intent = crossing_probe_intent(
+            symbol=args.symbol,
+            side=args.side,
+            size=float(args.size),
+            best_bid=float(args.best_bid),
+            best_ask=float(args.best_ask),
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    ok, reason = crossing_probe_check(intent, float(args.best_bid), float(args.best_ask))
+    if not ok:
+        raise SystemExit(f"crossing probe check failed: {reason}")
+
+    exchange = load_sdk_exchange(args)
+    order_args = build_sdk_order_args(intent)
+    result = exchange.order(**order_args)
+    classification = classify_order_result(result if isinstance(result, dict) else {"raw_result": result})
+    return {
+        "generated_at": utc_now_iso(),
+        "mode": "submit-crossing-alo",
+        "intent": asdict(intent),
+        "crossing_probe_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
+        "sdk_order_args": order_args,
+        "classification": classification,
+        "raw_result": result,
+    }
+
+
 def render_plan(symbol: str) -> dict[str, Any]:
     return {
         "generated_at": utc_now_iso(),
@@ -251,6 +327,14 @@ def render_plan(symbol: str) -> dict[str, Any]:
             "bid price must be below best ask",
             "ask price must be above best bid",
         ],
+        "crossing_probe_guards": [
+            f"{DIRECT_ALO_ALLOW_ENV}=1",
+            "--acknowledge-real-orders",
+            "--allow-crossing-probe",
+            "--testnet, or --allow-mainnet-crossing-probe for tiny mainnet evidence",
+            "--best-bid and --best-ask crossing evidence inputs",
+            "bid probe price is best ask; ask probe price is best bid",
+        ],
         "response_acceptance": [
             "resting order status is acceptable",
             "ALO post-only rejection/cancel without fill is acceptable",
@@ -262,7 +346,11 @@ def render_plan(symbol: str) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Guarded direct Hyperliquid SDK Alo executor.")
-    parser.add_argument("--mode", choices=["plan", "build-order", "classify-result", "submit-alo"], default="plan")
+    parser.add_argument(
+        "--mode",
+        choices=["plan", "build-order", "classify-result", "submit-alo", "submit-crossing-alo"],
+        default="plan",
+    )
     parser.add_argument("--symbol", default="ETH/USDC:USDC")
     parser.add_argument("--side", default="bid", choices=["bid", "ask", "buy", "sell", "long", "short"])
     parser.add_argument("--size", type=float, default=0.0)
@@ -275,6 +363,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--private-key", default=None)
     parser.add_argument("--account-address", default=None)
     parser.add_argument("--acknowledge-real-orders", action="store_true")
+    parser.add_argument("--allow-crossing-probe", action="store_true")
+    parser.add_argument("--allow-mainnet-crossing-probe", action="store_true")
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
@@ -299,8 +389,10 @@ def main() -> int:
         if args.result_json is None:
             raise SystemExit("--result-json is required for classify-result")
         payload = classify_order_result(json.loads(args.result_json.read_text(encoding="utf-8")))
-    else:
+    elif args.mode == "submit-alo":
         payload = submit_alo_order(args)
+    else:
+        payload = submit_crossing_alo_probe(args)
 
     text = json.dumps(payload, indent=2, sort_keys=True, default=str)
     if args.output:

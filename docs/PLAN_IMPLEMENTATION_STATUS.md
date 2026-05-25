@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 82 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 84 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -21,7 +21,9 @@ Generated from the current local worktree after the latest safety-gate run.
   environment/CLI acknowledgements. Direct SDK submit artifacts are normalized
   by `scripts/verify_post_only_mapping.py --mode evaluate-evidence`, so direct
   execution evidence and CCXT/Freqtrade probe evidence use the same Gate 4
-  checker.
+  checker. The direct adapter now has a separate guarded
+  `submit-crossing-alo` mode for ALO rejection evidence and keeps regular
+  `submit-alo` locally maker-safe for passive evidence.
 - Fresh collector data validation:
   `docs/hl_data_validation.json` shows fresh ETH shards, 75 checked files, and
   0 bad files.
