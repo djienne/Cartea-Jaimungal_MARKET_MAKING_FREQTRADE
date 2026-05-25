@@ -26,7 +26,7 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from replay_market_maker import MAKER_FEE, ReplayConfig, ReplayMetrics, run_replay  # noqa: E402
+from replay_market_maker import MAKER_FEE, TAKER_FEE, ReplayConfig, ReplayMetrics, run_replay  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -255,6 +255,7 @@ def build_report(
             "order_ack_latency_ms": config.order_ack_latency_ms,
             "cancel_latency_ms": config.cancel_latency_ms,
             "maker_fee": config.maker_fee,
+            "taker_fee": config.taker_fee,
             "funding_rate_per_hour": config.funding_rate_per_hour,
         },
         "base_params": params,
@@ -311,6 +312,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-net-realized-spread", type=float, default=0.0)
     parser.add_argument("--min-mean-markout-usdc", type=float, default=-0.01)
     parser.add_argument("--max-directional-drift-ratio", type=float, default=0.75)
+    parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
+    parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
     parser.add_argument("--kappa-plus", type=float, required=True)
@@ -336,6 +339,8 @@ def main() -> int:
         symbol=args.symbol,
         data_dir=args.data_dir,
         mid_fallback=args.mid,
+        maker_fee=args.maker_fee,
+        taker_fee=args.taker_fee,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,
     )

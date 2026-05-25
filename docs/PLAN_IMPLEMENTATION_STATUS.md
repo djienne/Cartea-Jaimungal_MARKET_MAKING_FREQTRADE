@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 86 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 87 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -42,9 +42,12 @@ Generated from the current local worktree after the latest safety-gate run.
   `docs/replay_acceptance_report.json` and
   `docs/replay_acceptance_report.md` run baseline, fee, latency, and parameter
   perturbation variants, including directional-drift attribution so PnL from
-  one-way price movement is reported separately from net realized spread. The
-  current report correctly fails because the local data window is much shorter
-  than the required multi-day coverage and has no maker fills.
+  one-way price movement is reported separately from net realized spread.
+  Replay quote generation and fill accounting both use the configured
+  maker/taker fee schedule, so fee-sensitivity variants change quoted depth as
+  well as fees paid. The current report correctly fails because the local data
+  window is much shorter than the required multi-day coverage and has no maker
+  fills.
 
 ## Phase Status
 

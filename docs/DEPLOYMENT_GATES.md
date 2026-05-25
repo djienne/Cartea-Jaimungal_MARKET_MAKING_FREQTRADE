@@ -60,7 +60,9 @@ Optional Docker runtime gates:
   uses `--allow-incomplete` so the artifact is always produced; the report's own
   `ok` field remains false until the multi-day acceptance criteria are met. The
   report includes a directional-drift ratio so mark-to-market PnL that is not
-  explained by net realized spread cannot masquerade as maker edge.
+  explained by net realized spread cannot masquerade as maker edge. Replay
+  quotes and fill accounting both use the configured maker fee, so fee
+  sensitivity changes quote distances as well as realized fees.
 
 Data freshness/replay-readiness report:
 

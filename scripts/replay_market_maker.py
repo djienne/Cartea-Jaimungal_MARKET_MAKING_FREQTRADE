@@ -226,14 +226,22 @@ def compute_hjb_cache(params: dict[str, float], q_max: int) -> dict:
     )
 
 
-def compute_quotes(mid: float, q: int, params: dict[str, float], q_max: int, hjb: dict | None = None) -> tuple[float | None, float | None, dict]:
+def compute_quotes(
+    mid: float,
+    q: int,
+    params: dict[str, float],
+    q_max: int,
+    hjb: dict | None = None,
+    *,
+    maker_fee: float = MAKER_FEE,
+) -> tuple[float | None, float | None, dict]:
     if hjb is None:
         hjb = compute_hjb_cache(params, q_max)
     q_grid = hjb["q_grid"]
     idx = int(np.argmin(np.abs(q_grid - q)))
     bid_delta = hjb["delta_minus"][idx]
     ask_delta = hjb["delta_plus"][idx]
-    fee_cushion = MAKER_FEE * mid * 2.0
+    fee_cushion = float(maker_fee) * mid * 2.0
     bid = None if not np.isfinite(bid_delta) else mid - float(bid_delta + fee_cushion)
     ask = None if not np.isfinite(ask_delta) else mid + float(ask_delta + fee_cushion)
     return bid, ask, hjb
@@ -375,7 +383,7 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             metrics.funding_usdc += funding
             metrics.cash_usdc += funding
 
-        bid, ask, _ = compute_quotes(mid, q, params, config.q_max, hjb_cache)
+        bid, ask, _ = compute_quotes(mid, q, params, config.q_max, hjb_cache, maker_fee=config.maker_fee)
         inventory_at_decision = metrics.inventory_base
         active_at = row["timestamp"] + pd.Timedelta(milliseconds=total_quote_latency_ms)
         if row_idx + 1 < len(prices):
@@ -495,6 +503,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda-minus", type=float, required=True)
     parser.add_argument("--epsilon-plus", type=float, default=0.0)
     parser.add_argument("--epsilon-minus", type=float, default=0.0)
+    parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
+    parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
     parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
@@ -515,6 +525,8 @@ def main() -> int:
         symbol=args.symbol,
         data_dir=args.data_dir,
         mid_fallback=args.mid,
+        maker_fee=args.maker_fee,
+        taker_fee=args.taker_fee,
         funding_rate_per_hour=args.funding_rate_per_hour,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,

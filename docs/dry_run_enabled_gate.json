@@ -12,17 +12,17 @@
     "action": "entry",
     "best_ask": 2129.7,
     "best_bid": 2129.6,
-    "bps": 5.511401977224831,
+    "bps": 5.511048200504165,
     "decision": "accept",
     "delta_model": 0.5347653800203696,
-    "delta_total": 1.1735703800203696,
+    "delta_total": 1.1736603800203693,
     "event": "quote_decision",
-    "fee_cushion": 0.6388050000000001,
+    "fee_cushion": 0.6388949999999999,
     "hjb_generation": 1,
-    "hjb_last_refresh_ts": "2026-05-25T15:05:05.287Z",
+    "hjb_last_refresh_ts": "2026-05-25T15:18:22.289Z",
     "inventory_unit_base": 0.01,
     "max_abs_inventory_units": 3,
-    "mid": 2129.3500000000004,
+    "mid": 2129.6499999999996,
     "pair": "ETH/USDC:USDC",
     "params": {
       "epsilon_minus": 0.0,
@@ -40,15 +40,15 @@
       "use_asymmetric_kappa": true
     },
     "post_only_verified": false,
-    "proposed_rate": 2129.3,
+    "proposed_rate": 2129.6,
     "q": 0,
-    "raw_price": 2128.17642961998,
+    "raw_price": 2128.476339619979,
     "reason": "ok",
-    "rounded_price": 2128.17642961998,
+    "rounded_price": 2128.476339619979,
     "side": "bid",
     "signed_base_position": 0.0,
     "symbol": "ETH",
-    "ts": "2026-05-25T15:06:53.112Z"
+    "ts": "2026-05-25T15:20:04.670Z"
   },
   "latest_health": {
     "collector_fresh": true,
@@ -69,17 +69,16 @@
     "signed_base_position": 0.0,
     "taker_fills": 0,
     "trading_enabled": true,
-    "ts": "2026-05-25T15:05:40.999Z",
+    "ts": "2026-05-25T15:18:52.638Z",
     "unrealized_pnl": null
   },
   "log_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\freqtrade_gate_enabled.log",
   "mm_debug_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\mm_debug.jsonl",
   "order_evidence": [
-    "2026-05-25 15:06:53,130 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.2817642961998 and price: 2128.17642961998 ...",
-    "2026-05-25 15:07:26,205 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779721645.950693 was created for ETH/USDC:USDC and status is open."
+    "2026-05-25 15:20:04,687 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.284763396199793 and price: 2128.476339619979 ..."
   ],
   "passed": true,
   "quote_decisions": 1,
   "reason": "ok",
-  "started_at": "2026-05-25T15:04:37.191135Z"
+  "started_at": "2026-05-25T15:17:50.151957Z"
 }

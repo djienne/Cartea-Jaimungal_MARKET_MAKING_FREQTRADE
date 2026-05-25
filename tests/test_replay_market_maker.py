@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -14,6 +15,7 @@ if str(SCRIPTS) not in sys.path:
 import replay_market_maker  # noqa: E402
 from replay_market_maker import (  # noqa: E402
     ReplayConfig,
+    compute_quotes,
     first_level_size,
     inventory_q,
     matching_trade,
@@ -39,6 +41,30 @@ def test_long_only_inventory_q_is_clipped_nonnegative():
     assert inventory_q(-0.03, 0.01, 3) == 0
     assert inventory_q(0.02, 0.01, 3) == 2
     assert inventory_q(0.08, 0.01, 3) == 3
+
+
+def test_compute_quotes_uses_configurable_maker_fee_cushion():
+    hjb = {
+        "q_grid": np.array([-1, 0, 1]),
+        "delta_plus": np.array([np.inf, 0.5, 0.4]),
+        "delta_minus": np.array([0.4, 0.5, np.inf]),
+    }
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    bid_base, ask_base, _ = compute_quotes(100.0, 0, params, 1, hjb, maker_fee=0.001)
+    bid_wide, ask_wide, _ = compute_quotes(100.0, 0, params, 1, hjb, maker_fee=0.002)
+
+    assert round(float(bid_base), 6) == 99.3
+    assert round(float(ask_base), 6) == 100.7
+    assert round(float(bid_wide), 6) == 99.1
+    assert round(float(ask_wide), 6) == 100.9
 
 
 def test_replay_applies_latency_and_records_markouts(monkeypatch):
