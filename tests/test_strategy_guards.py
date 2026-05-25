@@ -400,6 +400,71 @@ def test_confirm_entry_rejects_non_limit_order_type():
     assert events[0][1]["order_type"] == "market"
 
 
+def test_post_only_verified_rejects_gtc_entry_time_in_force():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.post_only_verified = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        99.5,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert events[0][0] == "entry_rejected"
+    assert events[0][1]["reason"] == "time_in_force_not_post_only"
+    assert events[0][1]["time_in_force"] == "GTC"
+    assert events[0][1]["expected_tif"] == "Alo"
+
+
+def test_post_only_verified_accepts_alo_entry_time_in_force():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.post_only_verified = True
+
+    assert bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.02,
+        99.5,
+        "Alo",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+
+def test_post_only_verified_rejects_gtc_exit_time_in_force():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.post_only_verified = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_exit(
+        "ETH/USDC:USDC",
+        DummyTrade(amount=0.01),
+        "limit",
+        0.01,
+        100.5,
+        "GTC",
+        "exit_signal",
+        datetime.now(timezone.utc),
+    )
+
+    assert events[0][0] == "exit_rejected"
+    assert events[0][1]["reason"] == "time_in_force_not_post_only"
+    assert events[0][1]["time_in_force"] == "GTC"
+    assert events[0][1]["expected_tif"] == "Alo"
+
+
 def test_param_snapshot_status_must_be_ok():
     bot = make_bot()
     bot.kappas["ETH"]["status"] = "seeded_unverified"

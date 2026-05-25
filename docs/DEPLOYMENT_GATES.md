@@ -55,6 +55,8 @@ Optional Docker runtime gates:
   metadata, and actual fill fee rates when available. Trading enablement and
   quote confirmation reject config fee mismatches; quote confirmation also
   rejects exchange maker-fee mismatches when exchange metadata is available.
+  When post-only support is marked verified, final entry/exit confirmation also
+  rejects non-post-only time-in-force values before submission.
 - `replay_latest_data_smoke`: after runtime collector gates have produced fresh
   shards, replays the newest local data window and writes
   `docs/replay_latest_smoke.json` with input coverage, maker/taker counts,

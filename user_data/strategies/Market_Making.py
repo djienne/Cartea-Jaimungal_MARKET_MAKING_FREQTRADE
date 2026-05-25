@@ -1250,6 +1250,14 @@ class Market_Making(IStrategy):
             configured = self.order_time_in_force.get("exit")
         return "Alo" if self.post_only_verified else configured
 
+    def _time_in_force_valid(self, quote_side: str, time_in_force: str | None) -> tuple[bool, str]:
+        expected_tif = self._expected_time_in_force(quote_side)
+        expected_canonical = self._canonical_tif(expected_tif)
+        actual_canonical = self._canonical_tif(time_in_force)
+        if expected_canonical == "post_only" and actual_canonical != "post_only":
+            return False, "time_in_force_not_post_only"
+        return True, "ok"
+
     def _config_fee_rate(self) -> float | None:
         config = getattr(self, "config", {}) or {}
         if not isinstance(config, dict):
@@ -2218,6 +2226,23 @@ class Market_Making(IStrategy):
             )
             return False
 
+        ok, reason = self._time_in_force_valid("bid", time_in_force)
+        if not ok:
+            self._debug_log_event(
+                "entry_rejected",
+                {
+                    "pair": pair,
+                    "reason": reason,
+                    "rate": float(rate),
+                    "side": side,
+                    "order_type": order_type,
+                    "time_in_force": time_in_force,
+                    "expected_tif": self._expected_time_in_force("bid"),
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
         ok, reason = self._quote_state_valid(pair, "bid", rate, current_time)
         if not ok:
             self._debug_log_event(
@@ -2293,6 +2318,24 @@ class Market_Making(IStrategy):
                     "reason": "non_limit_order_type",
                     "rate": float(rate),
                     "order_type": order_type,
+                    "exit_reason": exit_reason,
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
+        ok, reason = self._time_in_force_valid("ask", time_in_force)
+        if not ok:
+            self._debug_log_event(
+                "exit_rejected",
+                {
+                    "pair": pair,
+                    "reason": reason,
+                    "rate": float(rate),
+                    "order_type": order_type,
+                    "time_in_force": time_in_force,
+                    "expected_tif": self._expected_time_in_force("ask"),
                     "exit_reason": exit_reason,
                     "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                     **self._inventory_snapshot(pair),
