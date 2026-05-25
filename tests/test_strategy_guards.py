@@ -585,6 +585,17 @@ def test_book_freshness_rejects_stale_timestamp():
     assert bot._book_is_fresh("ETH/USDC:USDC", now) == (False, "stale_orderbook")
 
 
+def test_market_data_fresh_uses_thirty_second_default():
+    bot = make_bot()
+    delattr(bot, "_market_data_fresh")
+    bot._collector_age_seconds = lambda symbol, now=None: 31.0
+
+    ok, reason = bot._market_data_fresh("ETH")
+
+    assert not ok
+    assert reason == "collector_data_stale_31.0s"
+
+
 def test_quote_decision_logs_freshness_age_fields():
     bot = make_bot()
     events = []

@@ -165,7 +165,7 @@ class Market_Making(IStrategy):
     inventory_unit_base = 0.01
     max_abs_inventory_units = 3
     max_param_age_seconds = 90
-    max_collector_age_seconds = 90
+    max_collector_age_seconds = 30
     max_book_age_seconds = 5
     collector_timestamp_cache_seconds = 90
     book_snapshot_cache_ms = 500
@@ -439,7 +439,7 @@ class Market_Making(IStrategy):
         return max(0.0, (reference - latest_ts).total_seconds())
 
     def _market_data_fresh(self, symbol: str, max_age_seconds: int | None = None) -> tuple[bool, str]:
-        max_age = int(max_age_seconds or getattr(self, "max_collector_age_seconds", 90))
+        max_age = int(max_age_seconds or getattr(self, "max_collector_age_seconds", 30))
         age = self._collector_age_seconds(symbol)
         if age is None:
             return False, "no_collector_data"
