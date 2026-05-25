@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import inspect
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -77,15 +77,19 @@ from Market_Making import Market_Making  # noqa: E402
 
 
 class DummyDP:
-    def __init__(self, best_bid=99.0, best_ask=101.0):
+    def __init__(self, best_bid=99.0, best_ask=101.0, timestamp=None):
         self.best_bid = best_bid
         self.best_ask = best_ask
+        self.timestamp = timestamp
 
     def current_whitelist(self):
         return ["ETH/USDC:USDC"]
 
     def orderbook(self, pair, maximum=1):
-        return {"bids": [[self.best_bid, 1.0]], "asks": [[self.best_ask, 1.0]]}
+        payload = {"bids": [[self.best_bid, 1.0]], "asks": [[self.best_ask, 1.0]]}
+        if self.timestamp is not None:
+            payload["timestamp"] = self.timestamp
+        return payload
 
 
 class DummyExchange:
@@ -428,3 +432,55 @@ def test_adjust_exit_price_reprices_passive_ask():
     )
 
     assert adjusted > 100.0
+
+
+def test_param_age_seconds_uses_oldest_snapshot():
+    bot = make_bot()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    bot.kappas["ETH"]["generated_at"] = (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z")
+    bot.epsilons["ETH"]["generated_at"] = (now - timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+    bot.lambdas["ETH"]["generated_at"] = (now - timedelta(seconds=20)).isoformat().replace("+00:00", "Z")
+
+    assert bot._param_age_seconds("ETH", now) == 30.0
+
+
+def test_book_freshness_rejects_stale_timestamp():
+    bot = make_bot()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    bot.dp = DummyDP(timestamp=now - timedelta(seconds=6))
+    bot.max_book_age_seconds = 5
+
+    assert bot._book_is_fresh("ETH/USDC:USDC", now) == (False, "stale_orderbook")
+
+
+def test_quote_decision_logs_freshness_age_fields():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot._collector_age_seconds = lambda symbol, now=None: 12.4
+    bot._book_age_ms = lambda pair, current_time=None: 180.0
+
+    bot._log_quote_decision(
+        pair="ETH/USDC:USDC",
+        symbol="ETH",
+        side="bid",
+        action="entry",
+        decision="accept",
+        reason="ok",
+        mid_price=100.0,
+        proposed_rate=99.5,
+        raw_price=99.4,
+        rounded_price=99.4,
+        delta_model=0.5,
+        fee_cushion=0.1,
+        delta_total=0.6,
+    )
+
+    assert events[0][0] == "quote_decision"
+    payload = events[0][1]
+    assert payload["param_age_seconds"] is not None
+    assert payload["collector_age_seconds"] == 12.4
+    assert payload["book_age_ms"] == 180.0
+    assert payload["params_fresh"] is True
+    assert payload["collector_fresh"] is True
+    assert payload["book_fresh"] is True

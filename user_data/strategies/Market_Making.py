@@ -167,6 +167,8 @@ class Market_Making(IStrategy):
     max_param_age_seconds = 90
     max_collector_age_seconds = 90
     max_book_age_seconds = 5
+    collector_timestamp_cache_seconds = 90
+    book_snapshot_cache_ms = 500
     max_toxicity = 1.5
     max_daily_loss_usdc = 20
     max_consecutive_losses = 10
@@ -214,6 +216,25 @@ class Market_Making(IStrategy):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+    def _parse_utc_timestamp(self, value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return self._as_utc(value)
+        try:
+            if isinstance(value, (int, float)):
+                ts = float(value)
+                if ts > 1_000_000_000_000:
+                    ts /= 1000.0
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+            text = str(value).strip()
+            if not text:
+                return None
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return self._as_utc(parsed)
+        except Exception:
+            return None
 
     def _symbol_from_pair(self, pair: str) -> str:
         return pair.split("/", 1)[0].split(":", 1)[0]
@@ -380,6 +401,20 @@ class Market_Making(IStrategy):
         return candidates[0]
 
     def _latest_collector_timestamp(self, symbol: str) -> datetime | None:
+        now = self._now_utc()
+        cache = getattr(self, "_collector_timestamp_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._collector_timestamp_cache = cache
+        cached = cache.get(symbol)
+        if isinstance(cached, dict):
+            checked_at = self._as_utc(cached.get("checked_at"))
+            if (
+                checked_at is not None
+                and (now - checked_at).total_seconds() <= float(self.collector_timestamp_cache_seconds)
+            ):
+                return self._as_utc(cached.get("latest_ts"))
+
         base = self._collector_symbol_dir(symbol)
         newest: datetime | None = None
         for sub_dir in ("orderbooks", "prices", "trades"):
@@ -393,15 +428,22 @@ class Market_Making(IStrategy):
                     continue
                 if newest is None or ts > newest:
                     newest = ts
+        cache[symbol] = {"checked_at": now, "latest_ts": newest}
         return newest
+
+    def _collector_age_seconds(self, symbol: str, now: datetime | None = None) -> float | None:
+        latest_ts = self._latest_collector_timestamp(symbol)
+        if latest_ts is None:
+            return None
+        reference = self._as_utc(now) or self._now_utc()
+        return max(0.0, (reference - latest_ts).total_seconds())
 
     def _market_data_fresh(self, symbol: str, max_age_seconds: int | None = None) -> tuple[bool, str]:
         max_age = int(max_age_seconds or getattr(self, "max_collector_age_seconds", 90))
-        latest_ts = self._latest_collector_timestamp(symbol)
-        if latest_ts is None:
+        age = self._collector_age_seconds(symbol)
+        if age is None:
             return False, "no_collector_data"
 
-        age = (self._now_utc() - latest_ts).total_seconds()
         if age > max_age:
             return False, f"collector_data_stale_{age:.1f}s"
 
@@ -697,12 +739,36 @@ class Market_Making(IStrategy):
             return True
         return (now - refreshed_at).total_seconds() > float(self.max_param_age_seconds)
 
+    def _hjb_age_seconds(self, now: datetime | None = None) -> float | None:
+        refreshed_at = self._as_utc(self._hjb_last_refresh_dt)
+        if refreshed_at is None:
+            return None
+        reference = self._as_utc(now) or self._now_utc()
+        return max(0.0, (reference - refreshed_at).total_seconds())
+
     def _combined_params(self, symbol: str) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         for source in (self.kappas, self.epsilons, self.lambdas):
             if isinstance(source, dict) and isinstance(source.get(symbol), dict):
                 payload.update(source[symbol])
         return payload
+
+    def _param_source_entries(self, symbol: str) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for source in (self.kappas, self.epsilons, self.lambdas):
+            if isinstance(source, dict) and isinstance(source.get(symbol), dict):
+                entries.append(source[symbol])
+        return entries
+
+    def _param_age_seconds(self, symbol: str, now: datetime | None = None) -> float | None:
+        ages: list[float] = []
+        reference = self._as_utc(now) or self._now_utc()
+        for entry in self._param_source_entries(symbol):
+            generated_at = self._parse_utc_timestamp(entry.get("generated_at"))
+            if generated_at is None:
+                continue
+            ages.append(max(0.0, (reference - generated_at).total_seconds()))
+        return max(ages) if ages else None
 
     def _param_update_status(self) -> tuple[bool, str]:
         configured_path = getattr(self, "param_update_status_path", None)
@@ -733,17 +799,14 @@ class Market_Making(IStrategy):
 
         params = self._combined_params(symbol)
         schema_versions: list[int] = []
-        source_entries: list[dict[str, Any]] = []
-        for source in (self.kappas, self.epsilons, self.lambdas):
-            if isinstance(source, dict) and isinstance(source.get(symbol), dict):
-                entry = source[symbol]
-                source_entries.append(entry)
-                version = entry.get("schema_version")
-                if version is not None:
-                    try:
-                        schema_versions.append(int(version))
-                    except Exception:
-                        return False, "param_schema_unsupported"
+        source_entries = self._param_source_entries(symbol)
+        for entry in source_entries:
+            version = entry.get("schema_version")
+            if version is not None:
+                try:
+                    schema_versions.append(int(version))
+                except Exception:
+                    return False, "param_schema_unsupported"
         if len(schema_versions) < 3 or any(version != 2 for version in schema_versions):
             return False, "param_schema_unsupported"
         if len(source_entries) < 3:
@@ -755,13 +818,12 @@ class Market_Making(IStrategy):
             generated_at = entry.get("generated_at")
             if not generated_at:
                 return False, "missing_param_timestamp"
-            try:
-                parsed = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
-                age = (self._now_utc() - self._as_utc(parsed)).total_seconds()
-                if age > float(self.max_param_age_seconds):
-                    return False, "stale_params"
-            except Exception:
+            parsed = self._parse_utc_timestamp(generated_at)
+            if parsed is None:
                 return False, "invalid_param_timestamp"
+            age = (self._now_utc() - parsed).total_seconds()
+            if age > float(self.max_param_age_seconds):
+                return False, "stale_params"
 
         required = ("kappa+", "kappa-", "lambda+", "lambda-", "epsilon+", "epsilon-")
         for key in required:
@@ -810,22 +872,69 @@ class Market_Making(IStrategy):
         return True, "ok"
 
     def _book_snapshot(self, pair: str) -> tuple[dict[str, float] | None, str]:
+        now = self._now_utc()
+        cache = getattr(self, "_book_snapshot_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._book_snapshot_cache = cache
+        cached = cache.get(pair)
+        if isinstance(cached, dict):
+            checked_at = self._as_utc(cached.get("checked_at"))
+            if (
+                checked_at is not None
+                and (now - checked_at).total_seconds() * 1000.0 <= float(self.book_snapshot_cache_ms)
+            ):
+                return cached.get("snapshot"), str(cached.get("reason", "ok"))
+
         try:
             ob = self.dp.orderbook(pair, maximum=1)
             if not ob or not ob.get("bids") or not ob.get("asks"):
+                cache[pair] = {"checked_at": now, "snapshot": None, "reason": "empty_orderbook", "book_ts": None}
                 return None, "empty_orderbook"
             best_bid = float(ob["bids"][0][0])
             best_ask = float(ob["asks"][0][0])
             if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
+                cache[pair] = {
+                    "checked_at": now,
+                    "snapshot": None,
+                    "reason": "crossed_or_invalid_book",
+                    "book_ts": None,
+                }
                 return None, "crossed_or_invalid_book"
-            return {"best_bid": best_bid, "best_ask": best_ask, "mid": (best_bid + best_ask) / 2.0}, "ok"
+            book_ts = None
+            if isinstance(ob, dict):
+                for key in ("timestamp", "ts", "datetime"):
+                    book_ts = self._parse_utc_timestamp(ob.get(key))
+                    if book_ts is not None:
+                        break
+            snapshot = {"best_bid": best_bid, "best_ask": best_ask, "mid": (best_bid + best_ask) / 2.0}
+            cache[pair] = {"checked_at": now, "snapshot": snapshot, "reason": "ok", "book_ts": book_ts}
+            return snapshot, "ok"
         except Exception as exc:
+            cache[pair] = {"checked_at": now, "snapshot": None, "reason": f"orderbook_error:{exc}", "book_ts": None}
             return None, f"orderbook_error:{exc}"
+
+    def _book_age_ms(self, pair: str, current_time: datetime | None = None) -> float | None:
+        self._book_snapshot(pair)
+        cache = getattr(self, "_book_snapshot_cache", {})
+        cached = cache.get(pair) if isinstance(cache, dict) else None
+        if not isinstance(cached, dict):
+            return None
+        reference = self._as_utc(current_time) or self._now_utc()
+        timestamp = self._as_utc(cached.get("book_ts"))
+        if timestamp is None:
+            timestamp = self._as_utc(cached.get("checked_at"))
+        if timestamp is None:
+            return None
+        return max(0.0, (reference - timestamp).total_seconds() * 1000.0)
 
     def _book_is_fresh(self, pair: str, current_time: datetime) -> tuple[bool, str]:
         snapshot, reason = self._book_snapshot(pair)
         if snapshot is None:
             return False, reason
+        age_ms = self._book_age_ms(pair, current_time)
+        if age_ms is not None and age_ms > float(self.max_book_age_seconds) * 1000.0:
+            return False, "stale_orderbook"
         return True, "ok"
 
     def _maker_safe(self, pair: str, quote_side: str, rate: float) -> tuple[bool, str]:
@@ -1196,7 +1305,11 @@ class Market_Making(IStrategy):
         delta_total: float | None = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        snapshot, _ = self._book_snapshot(pair)
+        now = self._now_utc()
+        snapshot, book_snapshot_reason = self._book_snapshot(pair)
+        params_ok, params_reason = self._params_are_valid(pair)
+        collector_ok, collector_reason = self._market_data_fresh(symbol)
+        book_ok, book_reason = self._book_is_fresh(pair, now)
         payload = {
             "action": action,
             "pair": pair,
@@ -1215,6 +1328,16 @@ class Market_Making(IStrategy):
             "delta_total": float(delta_total) if delta_total is not None else None,
             "hjb_generation": int(self._hjb_generation),
             "hjb_last_refresh_ts": self._hjb_last_refresh_ts,
+            "hjb_age_seconds": self._hjb_age_seconds(now),
+            "param_age_seconds": self._param_age_seconds(symbol, now),
+            "collector_age_seconds": self._collector_age_seconds(symbol, now),
+            "book_age_ms": self._book_age_ms(pair, now),
+            "params_fresh": bool(params_ok),
+            "params_fresh_reason": params_reason,
+            "collector_fresh": bool(collector_ok),
+            "collector_fresh_reason": collector_reason,
+            "book_fresh": bool(book_ok),
+            "book_fresh_reason": book_reason if snapshot else book_snapshot_reason,
             "post_only_verified": bool(self.post_only_verified),
             "params": self._params_snapshot(symbol),
             **self._inventory_snapshot(pair),
@@ -1229,8 +1352,9 @@ class Market_Making(IStrategy):
         if self._last_health_log and (now - self._last_health_log) < timedelta(seconds=60):
             return
         symbol = self._symbol_from_pair(pair)
-        params_ok, _ = self._params_are_valid(pair)
-        collector_ok, _ = self._market_data_fresh(symbol)
+        params_ok, params_reason = self._params_are_valid(pair)
+        collector_ok, collector_reason = self._market_data_fresh(symbol)
+        book_ok, book_reason = self._book_is_fresh(pair, now)
         hjb_fresh = self.hjb_cache is not None and not self._hjb_is_stale(now)
         self._debug_log_event(
             "health",
@@ -1238,8 +1362,16 @@ class Market_Making(IStrategy):
                 "trading_enabled": bool(self.trading_enabled),
                 "fail_closed_reason": self.fail_closed_reason,
                 "collector_fresh": collector_ok,
+                "collector_fresh_reason": collector_reason,
+                "collector_age_seconds": self._collector_age_seconds(symbol, now),
                 "params_fresh": params_ok,
+                "params_fresh_reason": params_reason,
+                "param_age_seconds": self._param_age_seconds(symbol, now),
+                "book_fresh": book_ok,
+                "book_fresh_reason": book_reason,
+                "book_age_ms": self._book_age_ms(pair, now),
                 "hjb_fresh": hjb_fresh,
+                "hjb_age_seconds": self._hjb_age_seconds(now),
                 "post_only_verified": bool(self.post_only_verified),
                 "open_orders": None,
                 "maker_fills": int(getattr(self, "_maker_fill_count", 0)),
