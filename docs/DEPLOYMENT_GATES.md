@@ -81,6 +81,13 @@ Optional Docker runtime gates:
   starting equity, leverage, notional exposure, margin used, maintenance margin,
   equity, liquidation buffer, and maintenance-margin breach counts; acceptance
   fails any variant with a maintenance-margin breach.
+- `replay_log_calibration_artifact`: parses the JSONL audit log from dry-run or
+  testnet, matches fills back to accepted quotes by pair/side/price/time window,
+  and writes `docs/replay_log_calibration.json` with observed fill
+  probabilities by side and depth bucket, maker ratio, fee-rate summary, and
+  markout summary. The artifact may be `usable_for_calibration=false` when the
+  sample is too small; that is expected until enough dry-run/testnet fills
+  exist.
 
 Data freshness/replay-readiness report:
 
