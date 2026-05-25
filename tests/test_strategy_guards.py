@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import inspect
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -189,6 +190,7 @@ def make_bot() -> Market_Making:
         }
     }
     bot._market_data_fresh = lambda symbol, max_age_seconds=None: (True, "ok")
+    bot._collector_age_seconds = lambda symbol, now=None: 0.0
     return bot
 
 
@@ -1046,12 +1048,83 @@ def test_book_freshness_rejects_stale_timestamp():
 def test_market_data_fresh_uses_thirty_second_default():
     bot = make_bot()
     delattr(bot, "_market_data_fresh")
-    bot._collector_age_seconds = lambda symbol, now=None: 31.0
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    bot._now_utc = lambda: now
+    bot._collector_stream_timestamps = lambda symbol: {
+        stream: now - timedelta(seconds=31)
+        for stream in bot.collector_required_streams
+    }
 
     ok, reason = bot._market_data_fresh("ETH")
 
     assert not ok
-    assert reason == "collector_data_stale_31.0s"
+    assert reason == "collector_data_stale_orderbooks_31.0s"
+
+
+def test_market_data_fresh_uses_parquet_timestamps_not_file_mtime(tmp_path):
+    bot = make_bot()
+    delattr(bot, "_market_data_fresh")
+    delattr(bot, "_collector_age_seconds")
+    now = datetime.now(timezone.utc)
+    stale_ts = now - timedelta(seconds=120)
+    symbol_dir = tmp_path / "ETH"
+    for stream in bot.collector_required_streams:
+        stream_dir = symbol_dir / stream
+        stream_dir.mkdir(parents=True)
+        shard = stream_dir / f"{stream}.parquet"
+        pd.DataFrame({"timestamp": [stale_ts.timestamp()]}).to_parquet(shard, index=False)
+        os.utime(shard, None)
+
+    bot._collector_symbol_dir = lambda symbol: symbol_dir
+    bot.collector_timestamp_cache_seconds = 0
+
+    ok, reason = bot._market_data_fresh("ETH", max_age_seconds=30)
+
+    assert not ok
+    assert reason.startswith("collector_data_stale_")
+    assert bot._collector_age_seconds("ETH", now) >= 100
+
+
+def test_market_data_fresh_rejects_missing_required_stream(tmp_path):
+    bot = make_bot()
+    delattr(bot, "_market_data_fresh")
+    symbol_dir = tmp_path / "ETH"
+    stream_dir = symbol_dir / "prices"
+    stream_dir.mkdir(parents=True)
+    pd.DataFrame({"timestamp": [datetime.now(timezone.utc).timestamp()]}).to_parquet(
+        stream_dir / "prices.parquet",
+        index=False,
+    )
+    bot._collector_symbol_dir = lambda symbol: symbol_dir
+    bot.collector_timestamp_cache_seconds = 0
+
+    ok, reason = bot._market_data_fresh("ETH", max_age_seconds=30)
+
+    assert not ok
+    assert reason == "missing_collector_streams:orderbooks,trades"
+
+
+def test_quote_state_maps_missing_collector_stream_to_stale_collector_data():
+    bot = make_bot()
+    delattr(bot, "_market_data_fresh")
+    bot.trading_enabled = True
+    now = datetime.now(timezone.utc)
+    bot._now_utc = lambda: now
+    bot._collector_stream_timestamps = lambda symbol: {
+        "prices": now,
+        "orderbooks": None,
+        "trades": None,
+    }
+
+    ok, reason = bot._quote_state_valid(
+        "ETH/USDC:USDC",
+        "long",
+        99.5,
+        now,
+    )
+
+    assert not ok
+    assert reason == "stale_collector_data"
 
 
 def test_quote_decision_logs_freshness_age_fields():

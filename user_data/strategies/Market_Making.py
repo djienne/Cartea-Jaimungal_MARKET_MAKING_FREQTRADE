@@ -168,6 +168,8 @@ class Market_Making(IStrategy):
     max_collector_age_seconds = 30
     max_book_age_seconds = 5
     collector_timestamp_cache_seconds = 90
+    collector_timestamp_newest_files_per_stream = 5
+    collector_required_streams = ("orderbooks", "prices", "trades")
     book_snapshot_cache_ms = 500
     max_toxicity = 1.5
     max_daily_loss_usdc = 20
@@ -275,6 +277,7 @@ class Market_Making(IStrategy):
             "max_collector_age_seconds",
             "max_book_age_seconds",
             "max_toxicity",
+            "collector_timestamp_newest_files_per_stream",
         ):
             if numeric_key in mm_config:
                 try:
@@ -420,7 +423,42 @@ class Market_Making(IStrategy):
                 return candidate
         return candidates[0]
 
-    def _latest_collector_timestamp(self, symbol: str) -> datetime | None:
+    def _latest_parquet_timestamp(self, path: Path) -> datetime | None:
+        try:
+            frame = pd.read_parquet(path, columns=["timestamp"])
+        except Exception as exc:
+            self._debug_log_event(
+                "collector_data_read_error",
+                {"path": str(path), "reason": str(exc)},
+            )
+            return None
+
+        if frame.empty or "timestamp" not in frame:
+            return None
+
+        series = frame["timestamp"].dropna()
+        if series.empty:
+            return None
+
+        try:
+            if pd.api.types.is_numeric_dtype(series):
+                numeric = pd.to_numeric(series, errors="coerce").dropna()
+                if numeric.empty:
+                    return None
+                return self._parse_utc_timestamp(float(numeric.max()))
+
+            parsed = pd.to_datetime(series, utc=True, errors="coerce").dropna()
+            if parsed.empty:
+                return None
+            return self._as_utc(parsed.max().to_pydatetime())
+        except Exception as exc:
+            self._debug_log_event(
+                "collector_data_timestamp_error",
+                {"path": str(path), "reason": str(exc)},
+            )
+            return None
+
+    def _collector_stream_timestamps(self, symbol: str) -> dict[str, datetime | None]:
         now = self._now_utc()
         cache = getattr(self, "_collector_timestamp_cache", None)
         if not isinstance(cache, dict):
@@ -432,40 +470,86 @@ class Market_Making(IStrategy):
             if (
                 checked_at is not None
                 and (now - checked_at).total_seconds() <= float(self.collector_timestamp_cache_seconds)
+                and isinstance(cached.get("stream_timestamps"), dict)
             ):
-                return self._as_utc(cached.get("latest_ts"))
+                return {
+                    str(stream): self._as_utc(ts)
+                    for stream, ts in cached.get("stream_timestamps", {}).items()
+                }
 
         base = self._collector_symbol_dir(symbol)
-        newest: datetime | None = None
-        for sub_dir in ("orderbooks", "prices", "trades"):
+        stream_timestamps: dict[str, datetime | None] = {}
+        for sub_dir in self.collector_required_streams:
             target_dir = base / sub_dir
             if not target_dir.is_dir():
+                stream_timestamps[sub_dir] = None
                 continue
-            for shard in target_dir.glob("*.parquet"):
-                try:
-                    ts = datetime.fromtimestamp(shard.stat().st_mtime, tz=timezone.utc)
-                except Exception:
+            newest: datetime | None = None
+            shards = list(target_dir.glob("*.parquet"))
+            shards = sorted(shards, key=lambda path: path.stat().st_mtime, reverse=True)
+            try:
+                scan_limit = int(self.collector_timestamp_newest_files_per_stream)
+            except Exception:
+                scan_limit = 5
+            if scan_limit > 0:
+                shards = shards[:scan_limit]
+            for shard in shards:
+                ts = self._latest_parquet_timestamp(shard)
+                if ts is None:
                     continue
                 if newest is None or ts > newest:
                     newest = ts
-        cache[symbol] = {"checked_at": now, "latest_ts": newest}
+            stream_timestamps[sub_dir] = newest
+        latest = max(
+            (ts for ts in stream_timestamps.values() if ts is not None),
+            default=None,
+        )
+        cache[symbol] = {
+            "checked_at": now,
+            "latest_ts": latest,
+            "stream_timestamps": stream_timestamps,
+        }
+        return dict(stream_timestamps)
+
+    def _latest_collector_timestamp(self, symbol: str) -> datetime | None:
+        stream_timestamps = self._collector_stream_timestamps(symbol)
+        newest = max(
+            (ts for ts in stream_timestamps.values() if ts is not None),
+            default=None,
+        )
         return newest
 
     def _collector_age_seconds(self, symbol: str, now: datetime | None = None) -> float | None:
-        latest_ts = self._latest_collector_timestamp(symbol)
-        if latest_ts is None:
+        stream_timestamps = self._collector_stream_timestamps(symbol)
+        present = [ts for ts in stream_timestamps.values() if ts is not None]
+        if not present:
             return None
         reference = self._as_utc(now) or self._now_utc()
-        return max(0.0, (reference - latest_ts).total_seconds())
+        return max(0.0, max((reference - ts).total_seconds() for ts in present))
 
     def _market_data_fresh(self, symbol: str, max_age_seconds: int | None = None) -> tuple[bool, str]:
         max_age = int(max_age_seconds or getattr(self, "max_collector_age_seconds", 30))
-        age = self._collector_age_seconds(symbol)
-        if age is None:
+        stream_timestamps = self._collector_stream_timestamps(symbol)
+        missing = [stream for stream in self.collector_required_streams if stream_timestamps.get(stream) is None]
+        if len(missing) == len(tuple(self.collector_required_streams)):
             return False, "no_collector_data"
 
-        if age > max_age:
-            return False, f"collector_data_stale_{age:.1f}s"
+        if missing:
+            return False, "missing_collector_streams:" + ",".join(missing)
+
+        reference = self._now_utc()
+        stale: list[tuple[str, float]] = []
+        for stream in self.collector_required_streams:
+            ts = stream_timestamps.get(stream)
+            if ts is None:
+                continue
+            age = max(0.0, (reference - ts).total_seconds())
+            if age > max_age:
+                stale.append((stream, age))
+
+        if stale:
+            stream, age = max(stale, key=lambda item: item[1])
+            return False, f"collector_data_stale_{stream}_{age:.1f}s"
 
         return True, "ok"
 
@@ -1022,7 +1106,9 @@ class Market_Making(IStrategy):
         symbol = self._symbol_from_pair(pair)
         ok, reason = self._market_data_fresh(symbol)
         if not ok:
-            return False, "stale_collector_data" if reason.startswith("collector_data_stale") else reason
+            if reason.startswith("collector_data_stale") or reason.startswith("missing_collector_streams"):
+                return False, "stale_collector_data"
+            return False, reason
 
         signed_base = self._signed_base_position(pair)
         if self._reject_unexpected_short_position(pair, signed_base):

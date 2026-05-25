@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +26,7 @@ from verify_post_only_mapping import (  # noqa: E402
     evaluate_passive_result,
     render_plan,
 )
-from validate_hl_data import validate_parquet_file, validate_symbol  # noqa: E402
+from validate_hl_data import latest_parquet_timestamp, validate_parquet_file, validate_symbol  # noqa: E402
 from verify_dry_run_enabled import evaluate_enabled_gate, write_gate_config, write_gate_params  # noqa: E402
 
 
@@ -378,6 +381,18 @@ def test_hl_data_validator_reports_bad_parquet(tmp_path):
     assert result.error
 
 
+def test_hl_data_validator_reads_row_timestamp(tmp_path):
+    shard = tmp_path / "prices.parquet"
+    ts = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    pd.DataFrame({"timestamp": [ts.timestamp()]}).to_parquet(shard, index=False)
+
+    result = validate_parquet_file(shard, {"timestamp"})
+
+    assert result.ok
+    assert result.latest_timestamp == "2026-05-25T12:00:00Z"
+    assert latest_parquet_timestamp(shard) == ts
+
+
 def test_hl_data_validator_reports_missing_streams(tmp_path):
     payload = validate_symbol(tmp_path, "ETH")
 
@@ -390,3 +405,25 @@ def test_hl_data_validator_can_fail_stale_data(tmp_path):
 
     assert not payload["fresh"]
     assert not payload["ok"]
+
+
+def test_hl_data_validator_uses_data_timestamp_not_file_mtime(tmp_path):
+    now = datetime.now(timezone.utc)
+    stale_ts = now - timedelta(seconds=120)
+    symbol_dir = tmp_path / "ETH"
+    for stream in ("prices", "trades", "orderbooks"):
+        stream_dir = symbol_dir / stream
+        stream_dir.mkdir(parents=True)
+        payload = {"timestamp": [stale_ts.timestamp()]}
+        if stream == "trades":
+            payload["price"] = [100.0]
+        shard = stream_dir / f"{stream}.parquet"
+        pd.DataFrame(payload).to_parquet(shard, index=False)
+        os.utime(shard, None)
+
+    result = validate_symbol(tmp_path, "ETH", max_age_seconds=30)
+
+    assert not result["fresh"]
+    assert not result["ok"]
+    assert result["freshness_age_seconds"] >= 100
+    assert result["latest_file_age_seconds"] < 30

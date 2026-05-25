@@ -89,11 +89,15 @@ Optional Docker runtime gates:
   markout summary. The artifact may be `usable_for_calibration=false` when the
   sample is too small; that is expected until enough dry-run/testnet fills
   exist.
+- `hl_data_validation_report`: reads the newest collector Parquet shards and
+  validates required streams/columns plus the actual `timestamp` values inside
+  the files. Freshness is based on row timestamps, not file modification time,
+  so copied stale files cannot satisfy the collector-fresh gate.
 
 Data freshness/replay-readiness report:
 
 ```bash
-python scripts/validate_hl_data.py --symbol ETH --newest-per-stream 25 --max-age-seconds 30 --output docs/hl_data_validation.json
+python scripts/validate_hl_data.py --symbol ETH --newest-per-stream 25 --max-age-seconds 30 --output docs/hl_data_validation.json --fail-on-bad-data
 ```
 
 The freshness report is intentionally separate from the default pass/fail gate:

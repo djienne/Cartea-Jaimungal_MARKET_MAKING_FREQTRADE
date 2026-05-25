@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 129 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 134 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -27,8 +27,9 @@ Generated from the current local worktree after the latest safety-gate run.
   classification. Regular `submit-alo` remains locally maker-safe for the future
   direct execution layer.
 - Fresh collector data validation:
-  `docs/hl_data_validation.json` shows fresh ETH shards, 75 checked files, and
-  0 bad files.
+  `docs/hl_data_validation.json` validates required streams/columns and bases
+  freshness on the Parquet row `timestamp` values, not file modification time,
+  so copied stale files cannot satisfy the collector-fresh gate.
 - Locked dry-run evidence:
   `docs/dry_run_disabled_gate.json` uses temporary ignored params/config and
   shows `trading_enabled=false`, `params_fresh=true`,
@@ -85,7 +86,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 2 - inventory/units/risk | Automated pass for long-only research mode | Strategy guard tests, `docs/UNITS.md`, quote logs include signed base and q. |
 | Phase 3 - Freqtrade fail-closed wiring | Automated pass | Confirm gates, callback signature tests, disabled and enabled dry-run smokes. |
 | Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` is not verified. |
-| Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, schema v2 tests, status locking, freshness validation. |
+| Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, schema v2 tests, status locking, and row-timestamp-based collector freshness validation. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
 | Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, freshness-age fields, fee agreement snapshots, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, delayed fill markouts, post-only reject-rate enforcement, and kill-switch tests/log artifacts exist. |
 | Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gates 4-6 require external/manual evidence. |

@@ -223,6 +223,23 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                     [0],
                 ),
                 (
+                    "hl_data_validation_report",
+                    [
+                        sys.executable,
+                        "scripts/validate_hl_data.py",
+                        "--symbol",
+                        "ETH",
+                        "--newest-per-stream",
+                        "25",
+                        "--max-age-seconds",
+                        "180",
+                        "--output",
+                        "docs/hl_data_validation.json",
+                        "--fail-on-bad-data",
+                    ],
+                    [0],
+                ),
+                (
                     "replay_latest_data_smoke",
                     [
                         sys.executable,

@@ -24,11 +24,63 @@ class FileValidation:
     ok: bool
     rows: int = 0
     columns: list[str] | None = None
+    latest_timestamp: str | None = None
     error: str | None = None
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def timestamp_to_utc(value) -> datetime | None:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        numeric = float(value)
+        if numeric > 1_000_000_000_000:
+            numeric /= 1000.0
+        return datetime.fromtimestamp(numeric, tz=timezone.utc)
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+
+def latest_parquet_timestamp(path: Path) -> datetime | None:
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(path, columns=["timestamp"])
+        if frame.empty or "timestamp" not in frame:
+            return None
+        series = frame["timestamp"].dropna()
+        if series.empty:
+            return None
+        if pd.api.types.is_numeric_dtype(series):
+            numeric = pd.to_numeric(series, errors="coerce").dropna()
+            if numeric.empty:
+                return None
+            return timestamp_to_utc(float(numeric.max()))
+        parsed = pd.to_datetime(series, utc=True, errors="coerce").dropna()
+        if parsed.empty:
+            return None
+        return timestamp_to_utc(parsed.max().to_pydatetime())
+    except Exception:
+        return None
+
+
+def timestamp_iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def validate_parquet_file(path: Path, required: set[str]) -> FileValidation:
@@ -46,7 +98,14 @@ def validate_parquet_file(path: Path, required: set[str]) -> FileValidation:
                 columns=columns,
                 error=f"missing_columns:{','.join(missing)}",
             )
-        return FileValidation(path=str(path), ok=True, rows=pf.metadata.num_rows, columns=columns)
+        latest_ts = latest_parquet_timestamp(path) if "timestamp" in required else None
+        return FileValidation(
+            path=str(path),
+            ok=True,
+            rows=pf.metadata.num_rows,
+            columns=columns,
+            latest_timestamp=timestamp_iso(latest_ts),
+        )
     except Exception as exc:
         return FileValidation(path=str(path), ok=False, error=str(exc))
 
@@ -80,6 +139,7 @@ def validate_symbol(
 ) -> dict:
     symbol_dir = data_dir / symbol
     results: dict[str, list[FileValidation]] = {stream: [] for stream in REQUIRED_COLUMNS}
+    newest_stream_timestamps: dict[str, datetime | None] = {stream: None for stream in REQUIRED_COLUMNS}
     newest_mtime: float | None = None
     checked = 0
 
@@ -92,7 +152,13 @@ def validate_symbol(
             newest_mtime = mtime if newest_mtime is None else max(newest_mtime, mtime)
         except Exception:
             pass
-        results[stream].append(validate_parquet_file(path, REQUIRED_COLUMNS[stream]))
+        validation = validate_parquet_file(path, REQUIRED_COLUMNS[stream])
+        results[stream].append(validation)
+        latest_ts = timestamp_to_utc(validation.latest_timestamp)
+        if latest_ts is not None:
+            current = newest_stream_timestamps.get(stream)
+            if current is None or latest_ts > current:
+                newest_stream_timestamps[stream] = latest_ts
 
     stream_payload = {}
     total_files = 0
@@ -107,21 +173,36 @@ def validate_symbol(
         total_rows += rows
         bad = [item for item in validations if not item.ok]
         corrupt_files.extend(bad)
+        latest_ts = newest_stream_timestamps.get(stream)
         stream_payload[stream] = {
             "files": len(validations),
             "ok_files": len(validations) - len(bad),
             "bad_files": len(bad),
             "rows": rows,
+            "latest_timestamp": timestamp_iso(latest_ts),
         }
 
+    present_stream_timestamps = [ts for ts in newest_stream_timestamps.values() if ts is not None]
+    newest_data_timestamp = max(present_stream_timestamps, default=None)
+    oldest_required_timestamp = (
+        min(present_stream_timestamps) if len(present_stream_timestamps) == len(REQUIRED_COLUMNS) else None
+    )
+    now = datetime.now(timezone.utc)
+    latest_data_age_seconds = (
+        (now - newest_data_timestamp).total_seconds() if newest_data_timestamp is not None else None
+    )
+    oldest_required_data_age_seconds = (
+        (now - oldest_required_timestamp).total_seconds() if oldest_required_timestamp is not None else None
+    )
     latest_mtime = (
         datetime.fromtimestamp(newest_mtime, tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         if newest_mtime is not None
         else None
     )
-    age_seconds = (datetime.now(timezone.utc).timestamp() - newest_mtime) if newest_mtime is not None else None
+    mtime_age_seconds = (now.timestamp() - newest_mtime) if newest_mtime is not None else None
     fresh = True if max_age_seconds is None else (
-        age_seconds is not None and age_seconds <= float(max_age_seconds)
+        oldest_required_data_age_seconds is not None
+        and oldest_required_data_age_seconds <= float(max_age_seconds)
     )
     ok = total_files > 0 and not corrupt_files and not missing_streams and fresh
     return {
@@ -137,8 +218,13 @@ def validate_symbol(
         "missing_streams": missing_streams,
         "bad_files": [asdict(item) for item in corrupt_files[:100]],
         "bad_file_count": len(corrupt_files),
+        "latest_data_timestamp": timestamp_iso(newest_data_timestamp),
+        "latest_data_age_seconds": latest_data_age_seconds,
+        "oldest_required_data_timestamp": timestamp_iso(oldest_required_timestamp),
+        "oldest_required_data_age_seconds": oldest_required_data_age_seconds,
+        "freshness_age_seconds": oldest_required_data_age_seconds,
         "latest_file_mtime": latest_mtime,
-        "latest_file_age_seconds": age_seconds,
+        "latest_file_age_seconds": mtime_age_seconds,
         "max_age_seconds": max_age_seconds,
         "fresh": fresh,
     }
