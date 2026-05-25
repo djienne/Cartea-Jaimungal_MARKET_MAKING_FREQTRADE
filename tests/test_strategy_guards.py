@@ -1016,6 +1016,8 @@ def test_daily_loss_triggers_kill_switch():
     bot = make_bot()
     bot.trading_enabled = True
     bot.max_daily_loss_usdc = 20
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
     order = types.SimpleNamespace(
         id="loss-1",
         liquidity="maker",
@@ -1031,6 +1033,67 @@ def test_daily_loss_triggers_kill_switch():
 
     assert not bot.trading_enabled
     assert bot.fail_closed_reason == "drawdown_limit_reached"
+    assert [event for event, _ in events] == ["fill", "risk_update", "kill_switch"]
+    assert events[1][1]["daily_realized_pnl"] == -21.0
+    assert events[1][1]["max_daily_loss_usdc"] == 20.0
+    assert events[2][1]["daily_realized_pnl"] == -21.0
+
+
+def test_consecutive_losses_trigger_kill_switch():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.max_daily_loss_usdc = 1_000
+    bot.max_consecutive_losses = 2
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    for idx in range(2):
+        order = types.SimpleNamespace(
+            id=f"loss-{idx}",
+            liquidity="maker",
+            order_type="limit",
+            time_in_force="GTC",
+            ft_order_side="sell",
+            price=100.0,
+            amount=0.01,
+            realized_pnl=-1.0,
+        )
+        bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.01), order, datetime.now(timezone.utc))
+
+    assert not bot.trading_enabled
+    assert bot.fail_closed_reason == "consecutive_losses_limit_reached"
+    assert bot.exchange.cancelled_pair == "ETH/USDC:USDC"
+    risk_updates = [payload for event, payload in events if event == "risk_update"]
+    assert [payload["consecutive_losses"] for payload in risk_updates] == [1, 2]
+    assert risk_updates[-1]["max_consecutive_losses"] == 2
+    kill_payload = events[-1][1]
+    assert kill_payload["reason"] == "consecutive_losses_limit_reached"
+    assert kill_payload["consecutive_losses"] == 2
+
+
+def test_duplicate_fill_does_not_double_count_realized_pnl():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    order = types.SimpleNamespace(
+        id="same-fill",
+        liquidity="maker",
+        order_type="limit",
+        time_in_force="GTC",
+        ft_order_side="sell",
+        price=100.0,
+        amount=0.01,
+        realized_pnl=-2.0,
+    )
+    now = datetime.now(timezone.utc)
+
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.01), order, now)
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.01), order, now)
+
+    assert bot._daily_realized_pnl_usdc == -2.0
+    assert bot._consecutive_losses == 1
+    assert [event for event, _ in events].count("risk_update") == 1
 
 
 def test_adjust_exit_price_reprices_passive_ask():
@@ -1245,6 +1308,8 @@ def test_health_log_counts_open_orders_and_logs_position():
     assert payload["position"] == 0.0
     assert payload["signed_base_position"] == 0.0
     assert payload["unrealized_pnl"] == 0.0
+    assert payload["max_daily_loss_usdc"] == bot.max_daily_loss_usdc
+    assert payload["max_consecutive_losses"] == bot.max_consecutive_losses
     assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
     assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
 

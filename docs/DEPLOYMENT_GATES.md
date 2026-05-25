@@ -61,6 +61,9 @@ Optional Docker runtime gates:
   post-only mode also requires fills to carry maker/taker liquidity; unknown
   liquidity triggers `unknown_fill_liquidity`. Repeated non-post-only TIF
   confirmation rejects count toward the post-only reject-rate kill switch.
+  Realized-PnL fills emit `risk_update` audit events with daily drawdown and
+  consecutive-loss counters before any drawdown or consecutive-loss kill switch
+  fires.
 - `replay_latest_data_smoke`: after runtime collector gates have produced fresh
   shards, replays the newest local data window and writes
   `docs/replay_latest_smoke.json` with input coverage, maker/taker counts,

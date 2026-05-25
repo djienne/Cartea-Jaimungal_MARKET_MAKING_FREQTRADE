@@ -1708,15 +1708,29 @@ class Market_Making(IStrategy):
         elif pnl_usdc > 0:
             self._consecutive_losses = 0
 
+        risk_payload = {
+            "pair": pair,
+            "realized_pnl": float(pnl_usdc),
+            "daily_realized_pnl": float(self._daily_realized_pnl_usdc),
+            "max_daily_loss_usdc": float(self.max_daily_loss_usdc),
+            "consecutive_losses": int(self._consecutive_losses),
+            "max_consecutive_losses": int(self.max_consecutive_losses),
+            "order_id": payload.get("order_id"),
+            "trade_id": payload.get("trade_id"),
+            "quote_side": payload.get("quote_side"),
+            "liquidity": payload.get("liquidity"),
+        }
+        self._debug_log_event("risk_update", risk_payload)
+
         if self.trading_enabled and self._daily_realized_pnl_usdc <= -abs(float(self.max_daily_loss_usdc)):
             self._trigger_kill_switch(
                 "drawdown_limit_reached",
-                {"pair": pair, "daily_realized_pnl": self._daily_realized_pnl_usdc, **payload},
+                {**payload, **risk_payload},
             )
         if self.trading_enabled and self._consecutive_losses >= int(self.max_consecutive_losses):
             self._trigger_kill_switch(
                 "consecutive_losses_limit_reached",
-                {"pair": pair, "consecutive_losses": self._consecutive_losses, **payload},
+                {**payload, **risk_payload},
             )
 
     def _log_spread(self, side: str, mid_price: float, delta: float, source: str) -> None:
@@ -2142,8 +2156,10 @@ class Market_Making(IStrategy):
                 "post_only_rejects": int(getattr(self, "_post_only_rejects", 0)),
                 "quote_decisions": int(getattr(self, "_quote_decisions_count", 0)),
                 "realized_pnl": float(getattr(self, "_daily_realized_pnl_usdc", 0.0)),
+                "max_daily_loss_usdc": float(self.max_daily_loss_usdc),
                 "unrealized_pnl": self._unrealized_pnl_usdc(pair),
                 "consecutive_losses": int(getattr(self, "_consecutive_losses", 0)),
+                "max_consecutive_losses": int(self.max_consecutive_losses),
                 **self._inventory_snapshot(pair),
             },
         )
