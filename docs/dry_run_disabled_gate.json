@@ -11,22 +11,22 @@
   "evidence": [],
   "health_events": 2,
   "latest_health": {
-    "book_age_ms": 311.51800000000003,
+    "book_age_ms": 128.776,
     "book_fresh": true,
     "book_fresh_reason": "ok",
-    "collector_age_seconds": 49.359658,
+    "collector_age_seconds": 43.414611,
     "collector_fresh": true,
     "collector_fresh_reason": "ok",
     "consecutive_losses": 0,
     "event": "health",
     "fail_closed_reason": "initial_safety_lock",
-    "hjb_age_seconds": 63.015039,
+    "hjb_age_seconds": 64.275818,
     "hjb_fresh": true,
     "inventory_unit_base": 0.01,
     "maker_fills": 0,
     "max_abs_inventory_units": 3,
     "open_orders": null,
-    "param_age_seconds": 103.789518,
+    "param_age_seconds": 97.597776,
     "params_fresh": true,
     "params_fresh_reason": "ok",
     "post_only_rejects": 0,
@@ -37,7 +37,7 @@
     "signed_base_position": 0.0,
     "taker_fills": 0,
     "trading_enabled": false,
-    "ts": "2026-05-25T16:57:57.053Z",
+    "ts": "2026-05-25T17:11:57.922Z",
     "unrealized_pnl": null
   },
   "log_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\freqtrade_gate_disabled.log",
@@ -45,5 +45,5 @@
   "mm_debug_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\mm_debug.jsonl",
   "passed": true,
   "reason": "ok",
-  "started_at": "2026-05-25T16:56:13.623187Z"
+  "started_at": "2026-05-25T17:10:20.568563Z"
 }

@@ -602,13 +602,22 @@ class Market_Making(IStrategy):
         Long-only inventory unit, based on signed base exposure.
         """
         signed_base = self._signed_base_position(pair)
-        if signed_base < 0 and not self.can_short:
-            self._trigger_kill_switch("unexpected_short_position", {"pair": pair, "signed_base_position": signed_base})
+        if self._reject_unexpected_short_position(pair, signed_base):
             return 0
         unit = max(float(self.inventory_unit_base), 1e-12)
         q = int(round(max(0.0, signed_base) / unit))
         q = max(0, min(int(self.hjb_q_max), q))
         return q
+
+    def _reject_unexpected_short_position(self, pair: str, signed_base: float | None = None) -> bool:
+        if signed_base is None:
+            signed_base = self._signed_base_position(pair)
+        if float(signed_base) >= 0 or self.can_short:
+            return False
+        payload = {"pair": pair, "signed_base_position": float(signed_base)}
+        if self.fail_closed_reason != "unexpected_short_position":
+            self._trigger_kill_switch("unexpected_short_position", payload)
+        return True
 
     def _signed_base_position(self, pair: str) -> float:
         exchange_position = self._signed_base_position_from_exchange(pair)
@@ -957,10 +966,14 @@ class Market_Making(IStrategy):
         return ok
 
     def _inventory_allows_bid(self, pair: str) -> bool:
+        if self._reject_unexpected_short_position(pair):
+            return False
         q = self._inventory_level(pair)
         return q < min(int(self.hjb_q_max), int(self.max_abs_inventory_units))
 
     def _inventory_allows_ask(self, pair: str) -> bool:
+        if self._reject_unexpected_short_position(pair):
+            return False
         return self._inventory_level(pair) > 0
 
     def _quote_state_valid(self, pair: str, side: str, rate: float, current_time: datetime) -> tuple[bool, str]:
@@ -983,6 +996,10 @@ class Market_Making(IStrategy):
         ok, reason = self._market_data_fresh(symbol)
         if not ok:
             return False, "stale_collector_data" if reason.startswith("collector_data_stale") else reason
+
+        signed_base = self._signed_base_position(pair)
+        if self._reject_unexpected_short_position(pair, signed_base):
+            return False, "unexpected_short_position"
 
         q = self._inventory_level(pair)
         delta = self._select_delta("bid" if side in {"long", "bid"} else "ask", q)

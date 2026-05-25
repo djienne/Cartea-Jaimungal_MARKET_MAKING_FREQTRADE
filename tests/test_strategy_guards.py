@@ -438,6 +438,38 @@ def test_exchange_position_takes_priority_over_open_trade_count():
     assert bot._inventory_level("ETH/USDC:USDC") == 2
 
 
+def test_unexpected_short_position_rejects_entry_and_kills_strategy():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot.exchange.positions = [{"symbol": "ETH/USDC:USDC", "side": "short", "contracts": "0.02"}]
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        99.5,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert not bot.trading_enabled
+    assert bot.fail_closed_reason == "unexpected_short_position"
+    assert bot.exchange.cancelled_pair == "ETH/USDC:USDC"
+    assert [event for event, _ in events] == ["kill_switch", "entry_rejected"]
+    assert events[0][1] == {
+        "reason": "unexpected_short_position",
+        "pair": "ETH/USDC:USDC",
+        "signed_base_position": -0.02,
+    }
+    assert events[1][1]["reason"] == "unexpected_short_position"
+    assert events[1][1]["signed_base_position"] == -0.02
+    assert events[1][1]["q"] == 0
+
+
 def test_daily_loss_triggers_kill_switch():
     bot = make_bot()
     bot.trading_enabled = True
