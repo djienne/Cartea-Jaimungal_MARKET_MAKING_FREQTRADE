@@ -424,6 +424,36 @@ def test_post_only_verified_rejects_gtc_entry_time_in_force():
     assert events[0][1]["expected_tif"] == "Alo"
 
 
+def test_repeated_post_only_tif_rejects_trigger_reject_rate_kill_switch():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.post_only_verified = True
+    bot.min_post_only_reject_samples = 2
+    bot.max_post_only_reject_rate = 0.5
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    for _ in range(2):
+        assert not bot.confirm_trade_entry(
+            "ETH/USDC:USDC",
+            "limit",
+            0.01,
+            99.5,
+            "GTC",
+            datetime.now(timezone.utc),
+            "mm_bid",
+            "long",
+        )
+
+    assert not bot.trading_enabled
+    assert bot.fail_closed_reason == "post_only_reject_rate_exceeded"
+    assert bot._quote_decisions_count == 2
+    assert bot._post_only_rejects == 2
+    assert [event for event, _ in events] == ["entry_rejected", "kill_switch", "entry_rejected"]
+    assert events[1][1]["reason"] == "post_only_reject_rate_exceeded"
+    assert events[1][1]["post_only_rejects"] == 2
+
+
 def test_post_only_verified_accepts_alo_entry_time_in_force():
     bot = make_bot()
     bot.trading_enabled = True

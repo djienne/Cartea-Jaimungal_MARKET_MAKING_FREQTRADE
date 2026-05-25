@@ -1,11 +1,11 @@
 {
   "cash_usdc": 0.0,
-  "data_end": "2026-05-25T21:10:54.515171766+00:00",
-  "data_start": "2026-05-25T21:06:23.866743565+00:00",
+  "data_end": "2026-05-25T21:23:40.492861271+00:00",
+  "data_start": "2026-05-25T21:19:10.224693298+00:00",
   "equity_usdc": 1000.0,
   "fees_usdc": 0.0,
   "fill_ratio_by_depth": {},
-  "final_mid": 2110.1499999999996,
+  "final_mid": 2107.8500000000004,
   "funding_usdc": 0.0,
   "input_files": {
     "orderbooks": 10,
@@ -13,9 +13,9 @@
     "trades": 10
   },
   "input_rows": {
-    "orderbooks": 505,
+    "orderbooks": 500,
     "prices": 1000,
-    "trades": 187
+    "trades": 198
   },
   "inventory_base": 0.0,
   "inventory_histogram": {

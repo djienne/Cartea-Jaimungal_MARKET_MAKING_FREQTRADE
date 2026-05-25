@@ -57,7 +57,9 @@ Optional Docker runtime gates:
   rejects exchange maker-fee mismatches when exchange metadata is available.
   When post-only support is marked verified, final entry/exit confirmation also
   rejects non-post-only time-in-force values before submission, and any fill
-  reported with a non-post-only or missing TIF triggers a kill switch.
+  reported with a non-post-only or missing TIF triggers a kill switch. Repeated
+  non-post-only TIF confirmation rejects count toward the post-only reject-rate
+  kill switch.
 - `replay_latest_data_smoke`: after runtime collector gates have produced fresh
   shards, replays the newest local data window and writes
   `docs/replay_latest_smoke.json` with input coverage, maker/taker counts,

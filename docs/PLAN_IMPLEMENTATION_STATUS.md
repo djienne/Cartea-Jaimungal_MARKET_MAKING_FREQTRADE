@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 123 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 124 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -44,6 +44,8 @@ Generated from the current local worktree after the latest safety-gate run.
   them, and verified post-only mode rejects non-post-only TIF values before
   order submission. If a fill is still reported with a non-post-only or missing
   TIF while post-only mode is asserted, the strategy triggers a kill switch.
+  Repeated non-post-only TIF confirmation rejects also count toward the
+  post-only reject-rate kill switch.
 - Latest-data replay smoke:
   `docs/replay_latest_smoke.json` replays the newest local shards and records
   input coverage, post-only rejects, stale cancels, maker/taker counts,
@@ -76,7 +78,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` is not verified. |
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, schema v2 tests, status locking, freshness validation. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
-| Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, freshness-age fields, fee agreement snapshots, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, delayed fill markouts, and kill-switch tests/log artifacts exist. |
+| Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, freshness-age fields, fee agreement snapshots, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, delayed fill markouts, post-only reject-rate enforcement, and kill-switch tests/log artifacts exist. |
 | Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gates 4-6 require external/manual evidence. |
 
 ## Remaining Required Gates

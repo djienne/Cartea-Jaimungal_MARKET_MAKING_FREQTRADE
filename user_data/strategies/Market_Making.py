@@ -1160,6 +1160,7 @@ class Market_Making(IStrategy):
             "empty_orderbook",
             "post_only_not_verified",
             "not_post_only_supported",
+            "time_in_force_not_post_only",
         }
         if decision == "reject" and reason in post_only_reasons:
             self._post_only_rejects = int(getattr(self, "_post_only_rejects", 0)) + 1
@@ -2229,6 +2230,7 @@ class Market_Making(IStrategy):
 
         ok, reason = self._time_in_force_valid("bid", time_in_force)
         if not ok:
+            self._record_quote_decision(pair, "reject", reason)
             self._debug_log_event(
                 "entry_rejected",
                 {
@@ -2328,6 +2330,7 @@ class Market_Making(IStrategy):
 
         ok, reason = self._time_in_force_valid("ask", time_in_force)
         if not ok:
+            self._record_quote_decision(pair, "reject", reason)
             self._debug_log_event(
                 "exit_rejected",
                 {
