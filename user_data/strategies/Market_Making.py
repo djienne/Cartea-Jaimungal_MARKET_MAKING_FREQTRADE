@@ -312,6 +312,17 @@ class Market_Making(IStrategy):
             )
             return
 
+        if requested_enabled and not is_dry_run and self.post_only_verified:
+            ok, reason, tif_payload = self._configured_post_only_tif_valid()
+            if not ok:
+                self.trading_enabled = False
+                self.fail_closed_reason = reason
+                self._debug_log_event(
+                    "trading_enable_rejected",
+                    {"reason": reason, "dry_run": is_dry_run, **tif_payload},
+                )
+                return
+
         self.trading_enabled = requested_enabled
         self.fail_closed_reason = "none" if self.trading_enabled else "initial_safety_lock"
 
@@ -1333,12 +1344,35 @@ class Market_Making(IStrategy):
             return "ioc"
         return text or None
 
-    def _expected_time_in_force(self, quote_side: str | None) -> str | None:
-        configured = None
+    def _configured_time_in_force(self, quote_side: str | None) -> Any:
+        config = getattr(self, "config", {}) or {}
+        config_tif = config.get("order_time_in_force") if isinstance(config, dict) else None
+        if not isinstance(config_tif, dict):
+            config_tif = {}
+        strategy_tif = self.order_time_in_force if isinstance(self.order_time_in_force, dict) else {}
         if quote_side == "bid":
-            configured = self.order_time_in_force.get("entry")
-        elif quote_side == "ask":
-            configured = self.order_time_in_force.get("exit")
+            return config_tif.get("entry", strategy_tif.get("entry"))
+        if quote_side == "ask":
+            return config_tif.get("exit", strategy_tif.get("exit"))
+        return None
+
+    def _configured_post_only_tif_valid(self) -> tuple[bool, str, dict[str, Any]]:
+        entry_tif = self._configured_time_in_force("bid")
+        exit_tif = self._configured_time_in_force("ask")
+        entry_canonical = self._canonical_tif(entry_tif)
+        exit_canonical = self._canonical_tif(exit_tif)
+        payload = {
+            "entry_time_in_force": entry_tif,
+            "exit_time_in_force": exit_tif,
+            "entry_time_in_force_canonical": entry_canonical,
+            "exit_time_in_force_canonical": exit_canonical,
+        }
+        if entry_canonical != "post_only" or exit_canonical != "post_only":
+            return False, "time_in_force_not_post_only", payload
+        return True, "ok", payload
+
+    def _expected_time_in_force(self, quote_side: str | None) -> str | None:
+        configured = self._configured_time_in_force(quote_side)
         return "Alo" if self.post_only_verified else configured
 
     def _time_in_force_valid(self, quote_side: str, time_in_force: str | None) -> tuple[bool, str]:

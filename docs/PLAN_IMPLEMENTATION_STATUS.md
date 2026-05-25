@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 134 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 136 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -43,8 +43,10 @@ Generated from the current local worktree after the latest safety-gate run.
   strategy/config/exchange fee agreement snapshots. Quote admission now
   rejects config or exchange maker-fee mismatches instead of merely logging
   them, and verified post-only mode rejects non-post-only TIF values before
-  order submission. If a fill is still reported with a non-post-only or missing
-  TIF while post-only mode is asserted, the strategy triggers a kill switch.
+  order submission. Live enablement also rejects verified post-only mode unless
+  the configured entry and exit TIFs are actually post-only/Alo. If a fill is
+  still reported with a non-post-only or missing TIF while post-only mode is
+  asserted, the strategy triggers a kill switch.
   Verified post-only mode also requires fills to report maker/taker liquidity;
   unknown liquidity triggers `unknown_fill_liquidity` so live/testnet evidence
   cannot silently omit the field. Repeated non-post-only TIF confirmation

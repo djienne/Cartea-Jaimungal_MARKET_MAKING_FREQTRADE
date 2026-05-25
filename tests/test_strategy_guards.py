@@ -297,6 +297,62 @@ def test_live_config_cannot_enable_without_post_only_verification():
     assert bot.fail_closed_reason == "post_only_not_verified"
 
 
+def test_live_config_cannot_enable_with_verified_post_only_but_gtc_tif():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "GTC", "exit": "GTC"},
+        "market_making": {"trading_enabled": True, "post_only_verified": True},
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "time_in_force_not_post_only"
+    assert events == [
+        (
+            "trading_enable_rejected",
+            {
+                "reason": "time_in_force_not_post_only",
+                "dry_run": False,
+                "entry_time_in_force": "GTC",
+                "exit_time_in_force": "GTC",
+                "entry_time_in_force_canonical": "gtc",
+                "exit_time_in_force_canonical": "gtc",
+            },
+        )
+    ]
+
+
+def test_live_config_can_enable_after_post_only_tif_and_verification():
+    bot = make_bot()
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {"trading_enabled": True, "post_only_verified": True},
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is True
+    assert bot.fail_closed_reason == "none"
+    assert bot._expected_time_in_force("bid") == "Alo"
+    assert bot._configured_post_only_tif_valid() == (
+        True,
+        "ok",
+        {
+            "entry_time_in_force": "Alo",
+            "exit_time_in_force": "Alo",
+            "entry_time_in_force_canonical": "post_only",
+            "exit_time_in_force_canonical": "post_only",
+        },
+    )
+
+
 def test_custom_stake_amount_caps_to_one_inventory_unit():
     bot = make_bot()
 

@@ -122,7 +122,9 @@ These gates require the real Freqtrade/Hyperliquid runtime:
 - `hyperliquid_post_only_mapping`: Freqtrade `PO` is currently not verified for
   Hyperliquid. In local runtime evidence, Freqtrade 2025.4 rejected Hyperliquid
   `PO` as unsupported, so the dry-run harness uses `GTC` and live trading remains
-  blocked. See `docs/POST_ONLY_VERIFICATION.md`.
+  blocked. Even if `post_only_verified=true` is supplied, live strategy
+  enablement also rejects unless configured entry and exit TIF canonicalize to
+  post-only/Alo. See `docs/POST_ONLY_VERIFICATION.md`.
   Prove a native `Alo` path before live use; intentionally crossing `Alo` orders
   must reject or cancel without filling, and passive `Alo` orders must rest,
   cancel, or fill maker-only.
