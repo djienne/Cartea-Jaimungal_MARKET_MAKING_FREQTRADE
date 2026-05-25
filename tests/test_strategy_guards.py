@@ -519,6 +519,7 @@ def test_daily_loss_triggers_kill_switch():
 
 def test_adjust_exit_price_reprices_passive_ask():
     bot = make_bot()
+    bot.trading_enabled = True
     DummyTrade._open_trades = [DummyTrade(amount=0.01)]
     trade = DummyTrade(amount=0.01)
     order = types.SimpleNamespace()
@@ -535,6 +536,34 @@ def test_adjust_exit_price_reprices_passive_ask():
     )
 
     assert adjusted > 100.0
+
+
+def test_adjust_entry_price_cancels_open_order_when_params_are_stale():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot.kappas["ETH"]["generated_at"] = "2026-01-01T00:00:00Z"
+    trade = DummyTrade(amount=0.0)
+    order = types.SimpleNamespace()
+
+    adjusted = bot.adjust_entry_price(
+        trade,
+        order,
+        "ETH/USDC:USDC",
+        datetime.now(timezone.utc),
+        proposed_rate=99.5,
+        current_order_rate=99.5,
+        entry_tag="mm_bid",
+        side="long",
+    )
+
+    assert adjusted is None
+    assert events[0][0] == "quote_decision"
+    assert events[0][1]["action"] == "adjust_entry"
+    assert events[0][1]["decision"] == "reject"
+    assert events[0][1]["reason"] == "stale_params"
+    assert events[0][1]["cancel_open_order"] is True
 
 
 def test_param_age_seconds_uses_oldest_snapshot():

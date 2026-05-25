@@ -1844,7 +1844,7 @@ class Market_Making(IStrategy):
 
     def adjust_entry_price(self, trade: Trade, order: Order, pair: str,
                             current_time: datetime, proposed_rate: float, current_order_rate: float,
-                            entry_tag: str, side: str, **kwargs) -> float:
+                            entry_tag: str, side: str, **kwargs) -> float | None:
         
         if trade.is_short:
             return current_order_rate
@@ -1855,10 +1855,30 @@ class Market_Making(IStrategy):
         if self.hjb_cache is None:
             self._refresh_hjb(pair)
 
+        ok, reason = self._quote_state_valid(pair, "bid", current_order_rate, current_time)
+        if not ok:
+            self._log_quote_decision(
+                pair=pair,
+                symbol=symbol,
+                side="bid",
+                action="adjust_entry",
+                decision="reject",
+                reason=reason,
+                mid_price=mid_price,
+                proposed_rate=proposed_rate,
+                rounded_price=current_order_rate,
+                extra={
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    "current_order_rate": float(current_order_rate),
+                    "cancel_open_order": True,
+                },
+            )
+            return None
+
         q_level = self._inventory_level(pair)
         delta_m = self._select_delta('bid', q_level)
         if delta_m is None or not np.isfinite(float(delta_m)):
-            logger.warning("No HJB delta available for bid adjust; keeping current order rate.")
+            logger.warning("No HJB delta available for bid adjust; cancelling open order.")
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
@@ -1872,9 +1892,10 @@ class Market_Making(IStrategy):
                 extra={
                     "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                     "current_order_rate": float(current_order_rate),
+                    "cancel_open_order": True,
                 },
             )
-            return current_order_rate
+            return None
         delta_source = "hjb_grid"
         delta_model = float(delta_m)
         fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
@@ -1902,17 +1923,18 @@ class Market_Making(IStrategy):
             extra={
                 "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                 "current_order_rate": float(current_order_rate),
+                "cancel_open_order": not ok,
                 "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
             },
         )
 
         if not ok:
-            return current_order_rate
+            return None
         return returned_rate
 
     def adjust_exit_price(self, trade: Trade, order: Order, pair: str,
                           current_time: datetime, proposed_rate: float, current_order_rate: float,
-                          exit_tag: str, side: str, **kwargs) -> float:
+                          exit_tag: str, side: str, **kwargs) -> float | None:
         if trade.is_short:
             return current_order_rate
 
@@ -1922,10 +1944,31 @@ class Market_Making(IStrategy):
         if self.hjb_cache is None:
             self._refresh_hjb(pair)
 
+        ok, reason = self._quote_state_valid(pair, "ask", current_order_rate, current_time)
+        if not ok:
+            self._log_quote_decision(
+                pair=pair,
+                symbol=symbol,
+                side="ask",
+                action="adjust_exit",
+                decision="reject",
+                reason=reason,
+                mid_price=mid_price,
+                proposed_rate=proposed_rate,
+                rounded_price=current_order_rate,
+                extra={
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    "current_order_rate": float(current_order_rate),
+                    "exit_tag": exit_tag,
+                    "cancel_open_order": True,
+                },
+            )
+            return None
+
         q_level = self._inventory_level(pair)
         delta_p = self._select_delta('ask', q_level)
         if delta_p is None or not np.isfinite(float(delta_p)):
-            logger.warning("No HJB delta available for ask adjust; keeping current order rate.")
+            logger.warning("No HJB delta available for ask adjust; cancelling open order.")
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
@@ -1939,9 +1982,11 @@ class Market_Making(IStrategy):
                 extra={
                     "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                     "current_order_rate": float(current_order_rate),
+                    "exit_tag": exit_tag,
+                    "cancel_open_order": True,
                 },
             )
-            return current_order_rate
+            return None
 
         delta_source = "hjb_grid"
         delta_model = float(delta_p)
@@ -1971,12 +2016,13 @@ class Market_Making(IStrategy):
                 "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                 "current_order_rate": float(current_order_rate),
                 "exit_tag": exit_tag,
+                "cancel_open_order": not ok,
                 "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
             },
         )
 
         if not ok:
-            return current_order_rate
+            return None
         return returned_rate
 
     # @property
