@@ -28,19 +28,19 @@
     "queue_decay_per_second": 0.05,
     "taker_fee": 0.00045
   },
-  "generated_at": "2026-05-25T20:32:24Z",
+  "generated_at": "2026-05-25T20:44:35Z",
   "ok": false,
   "reasons": [
-    "baseline:insufficient_coverage_days:0.005553<min_3.000000",
-    "baseline:directional_drift_dominates_pnl:1.461742>max_0.750000",
-    "fee_2x:insufficient_coverage_days:0.005553<min_3.000000",
+    "baseline:insufficient_coverage_days:0.004200<min_3.000000",
+    "baseline:no_maker_fills",
+    "fee_2x:insufficient_coverage_days:0.004200<min_3.000000",
     "fee_2x:no_maker_fills",
-    "latency_2x:insufficient_coverage_days:0.005553<min_3.000000",
-    "latency_2x:directional_drift_dominates_pnl:1.461742>max_0.750000",
-    "params_soft:insufficient_coverage_days:0.005553<min_3.000000",
-    "params_soft:directional_drift_dominates_pnl:1.579350>max_0.750000",
-    "params_hard:insufficient_coverage_days:0.005553<min_3.000000",
-    "params_hard:directional_drift_dominates_pnl:1.410483>max_0.750000"
+    "latency_2x:insufficient_coverage_days:0.004200<min_3.000000",
+    "latency_2x:no_maker_fills",
+    "params_soft:insufficient_coverage_days:0.004200<min_3.000000",
+    "params_soft:no_maker_fills",
+    "params_hard:insufficient_coverage_days:0.004200<min_3.000000",
+    "params_hard:no_maker_fills"
   ],
   "refusal_checks": [
     {
@@ -70,157 +70,17 @@
   "symbol": "ETH",
   "variants": [
     {
-      "coverage_days": 0.005553061319444445,
-      "directional_drift_ratio": 1.4617417353617224,
-      "directional_pnl_proxy_usdc": -0.026999999999996513,
-      "markout_summary": {
-        "100": {
-          "count": 1.0,
-          "mean_usdc": -0.005293396199795098,
-          "min_usdc": -0.005293396199795098
-        },
-        "1000": {
-          "count": 1.0,
-          "mean_usdc": -0.005293396199795098,
-          "min_usdc": -0.005293396199795098
-        },
-        "30000": {
-          "count": 1.0,
-          "mean_usdc": 0.0027066038002067218,
-          "min_usdc": 0.0027066038002067218
-        },
-        "5000": {
-          "count": 1.0,
-          "mean_usdc": -0.005293396199795098,
-          "min_usdc": -0.005293396199795098
-        }
-      },
-      "metrics": {
-        "cash_usdc": -21.187971115209223,
-        "data_end": "2026-05-25T20:31:55.032162905+00:00",
-        "data_start": "2026-05-25T20:23:55.247664213+00:00",
-        "fees_usdc": 0.003177719009429969,
-        "fill_ratio_by_depth": {
-          "bid:5.52bps": 1
-        },
-        "final_mid": 2116.95,
-        "funding_usdc": 0.0,
-        "input_files": {
-          "orderbooks": 25,
-          "prices": 25,
-          "trades": 25
-        },
-        "input_rows": {
-          "orderbooks": 801,
-          "prices": 2000,
-          "trades": 542
-        },
-        "inventory_base": 0.01,
-        "inventory_histogram": {
-          "0": 635,
-          "1": 1365
-        },
-        "maker_fills": 1,
-        "maker_ratio": 1.0,
-        "mark_to_market_pnl_usdc": -0.0184711152092234,
-        "markout_samples": [
-          {
-            "fill_price": 2118.4793396199793,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 100,
-            "markout_usdc": -0.005293396199795098,
-            "markout_usdc_per_base": -0.5293396199795097,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.4793396199793,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 1000,
-            "markout_usdc": -0.005293396199795098,
-            "markout_usdc_per_base": -0.5293396199795097,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.4793396199793,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 5000,
-            "markout_usdc": -0.005293396199795098,
-            "markout_usdc_per_base": -0.5293396199795097,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.4793396199793,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2118.75,
-            "horizon_ms": 30000,
-            "markout_usdc": 0.0027066038002067218,
-            "markout_usdc_per_base": 0.27066038002067216,
-            "side": "bid"
-          }
-        ],
-        "parameter_series": [
-          {
-            "epsilon_minus": 0.0,
-            "epsilon_plus": 0.0,
-            "kappa_minus": 2.0,
-            "kappa_plus": 2.0,
-            "lambda_minus": 0.1,
-            "lambda_plus": 0.1,
-            "symbol": "ETH"
-          }
-        ],
-        "pnl_by_side": {
-          "ask": 0.0,
-          "bid": -0.003177719009429969
-        },
-        "post_only_reject_ratio": 0.0,
-        "post_only_rejects": 0,
-        "queue_decay_base": 0.0,
-        "quote_attempts": 3365,
-        "realized_spread_usdc": 0.011706603800203084,
-        "stale_quote_cancels": 3364,
-        "taker_fills": 0,
-        "time_at_q_boundary": {
-          "q_max": 0,
-          "q_min": 635
-        },
-        "toxicity_series": [
-          {
-            "symbol": "ETH",
-            "toxicity_minus": 0.0,
-            "toxicity_plus": 0.0
-          }
-        ]
-      },
-      "net_realized_spread_usdc": 0.008528884790773114,
-      "ok": false,
-      "reasons": [
-        "insufficient_coverage_days:0.005553<min_3.000000",
-        "directional_drift_dominates_pnl:1.461742>max_0.750000"
-      ],
-      "variant": {
-        "epsilon_add": 0.0,
-        "latency_multiplier": 1.0,
-        "maker_fee_multiplier": 1.0,
-        "name": "baseline",
-        "params_multiplier": 1.0
-      }
-    },
-    {
-      "coverage_days": 0.005553061319444445,
+      "coverage_days": 0.004200135983796296,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
       "metrics": {
         "cash_usdc": 0.0,
-        "data_end": "2026-05-25T20:31:55.032162905+00:00",
-        "data_start": "2026-05-25T20:23:55.247664213+00:00",
+        "data_end": "2026-05-25T20:44:06.401771784+00:00",
+        "data_start": "2026-05-25T20:38:03.510022402+00:00",
         "fees_usdc": 0.0,
         "fill_ratio_by_depth": {},
-        "final_mid": 2116.95,
+        "final_mid": 2111.25,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -228,9 +88,9 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 801,
+          "orderbooks": 588,
           "prices": 2000,
-          "trades": 542
+          "trades": 782
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
@@ -277,52 +137,29 @@
       "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.005553<min_3.000000",
+        "insufficient_coverage_days:0.004200<min_3.000000",
         "no_maker_fills"
       ],
       "variant": {
         "epsilon_add": 0.0,
         "latency_multiplier": 1.0,
-        "maker_fee_multiplier": 2.0,
-        "name": "fee_2x",
+        "maker_fee_multiplier": 1.0,
+        "name": "baseline",
         "params_multiplier": 1.0
       }
     },
     {
-      "coverage_days": 0.005553061319444445,
-      "directional_drift_ratio": 1.4617417353617224,
-      "directional_pnl_proxy_usdc": -0.026999999999996513,
-      "markout_summary": {
-        "100": {
-          "count": 1.0,
-          "mean_usdc": -0.005293396199795098,
-          "min_usdc": -0.005293396199795098
-        },
-        "1000": {
-          "count": 1.0,
-          "mean_usdc": -0.005293396199795098,
-          "min_usdc": -0.005293396199795098
-        },
-        "30000": {
-          "count": 1.0,
-          "mean_usdc": 0.0027066038002067218,
-          "min_usdc": 0.0027066038002067218
-        },
-        "5000": {
-          "count": 1.0,
-          "mean_usdc": -0.005293396199795098,
-          "min_usdc": -0.005293396199795098
-        }
-      },
+      "coverage_days": 0.004200135983796296,
+      "directional_drift_ratio": 0.0,
+      "directional_pnl_proxy_usdc": 0.0,
+      "markout_summary": {},
       "metrics": {
-        "cash_usdc": -21.187971115209223,
-        "data_end": "2026-05-25T20:31:55.032162905+00:00",
-        "data_start": "2026-05-25T20:23:55.247664213+00:00",
-        "fees_usdc": 0.003177719009429969,
-        "fill_ratio_by_depth": {
-          "bid:5.52bps": 1
-        },
-        "final_mid": 2116.95,
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T20:44:06.401771784+00:00",
+        "data_start": "2026-05-25T20:38:03.510022402+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2111.25,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -330,56 +167,18 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 801,
+          "orderbooks": 588,
           "prices": 2000,
-          "trades": 542
+          "trades": 782
         },
-        "inventory_base": 0.01,
+        "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 635,
-          "1": 1365
+          "0": 2000
         },
-        "maker_fills": 1,
-        "maker_ratio": 1.0,
-        "mark_to_market_pnl_usdc": -0.0184711152092234,
-        "markout_samples": [
-          {
-            "fill_price": 2118.4793396199793,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 100,
-            "markout_usdc": -0.005293396199795098,
-            "markout_usdc_per_base": -0.5293396199795097,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.4793396199793,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 1000,
-            "markout_usdc": -0.005293396199795098,
-            "markout_usdc_per_base": -0.5293396199795097,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.4793396199793,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 5000,
-            "markout_usdc": -0.005293396199795098,
-            "markout_usdc_per_base": -0.5293396199795097,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.4793396199793,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2118.75,
-            "horizon_ms": 30000,
-            "markout_usdc": 0.0027066038002067218,
-            "markout_usdc_per_base": 0.27066038002067216,
-            "side": "bid"
-          }
-        ],
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
         "parameter_series": [
           {
             "epsilon_minus": 0.0,
@@ -393,18 +192,18 @@
         ],
         "pnl_by_side": {
           "ask": 0.0,
-          "bid": -0.003177719009429969
+          "bid": 0.0
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 3365,
-        "realized_spread_usdc": 0.011706603800203084,
-        "stale_quote_cancels": 3364,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 635
+          "q_min": 2000
         },
         "toxicity_series": [
           {
@@ -414,11 +213,90 @@
           }
         ]
       },
-      "net_realized_spread_usdc": 0.008528884790773114,
+      "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.005553<min_3.000000",
-        "directional_drift_dominates_pnl:1.461742>max_0.750000"
+        "insufficient_coverage_days:0.004200<min_3.000000",
+        "no_maker_fills"
+      ],
+      "variant": {
+        "epsilon_add": 0.0,
+        "latency_multiplier": 1.0,
+        "maker_fee_multiplier": 2.0,
+        "name": "fee_2x",
+        "params_multiplier": 1.0
+      }
+    },
+    {
+      "coverage_days": 0.004200135983796296,
+      "directional_drift_ratio": 0.0,
+      "directional_pnl_proxy_usdc": 0.0,
+      "markout_summary": {},
+      "metrics": {
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T20:44:06.401771784+00:00",
+        "data_start": "2026-05-25T20:38:03.510022402+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2111.25,
+        "funding_usdc": 0.0,
+        "input_files": {
+          "orderbooks": 25,
+          "prices": 25,
+          "trades": 25
+        },
+        "input_rows": {
+          "orderbooks": 588,
+          "prices": 2000,
+          "trades": 782
+        },
+        "inventory_base": 0.0,
+        "inventory_histogram": {
+          "0": 2000
+        },
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
+        "parameter_series": [
+          {
+            "epsilon_minus": 0.0,
+            "epsilon_plus": 0.0,
+            "kappa_minus": 2.0,
+            "kappa_plus": 2.0,
+            "lambda_minus": 0.1,
+            "lambda_plus": 0.1,
+            "symbol": "ETH"
+          }
+        ],
+        "pnl_by_side": {
+          "ask": 0.0,
+          "bid": 0.0
+        },
+        "post_only_reject_ratio": 0.0,
+        "post_only_rejects": 0,
+        "queue_decay_base": 0.0,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
+        "taker_fills": 0,
+        "time_at_q_boundary": {
+          "q_max": 0,
+          "q_min": 2000
+        },
+        "toxicity_series": [
+          {
+            "symbol": "ETH",
+            "toxicity_minus": 0.0,
+            "toxicity_plus": 0.0
+          }
+        ]
+      },
+      "net_realized_spread_usdc": 0.0,
+      "ok": false,
+      "reasons": [
+        "insufficient_coverage_days:0.004200<min_3.000000",
+        "no_maker_fills"
       ],
       "variant": {
         "epsilon_add": 0.0,
@@ -429,40 +307,17 @@
       }
     },
     {
-      "coverage_days": 0.005553061319444445,
-      "directional_drift_ratio": 1.579349821352686,
-      "directional_pnl_proxy_usdc": -0.026999999999997165,
-      "markout_summary": {
-        "100": {
-          "count": 1.0,
-          "mean_usdc": -0.003918129825933647,
-          "min_usdc": -0.003918129825933647
-        },
-        "1000": {
-          "count": 1.0,
-          "mean_usdc": -0.003918129825933647,
-          "min_usdc": -0.003918129825933647
-        },
-        "30000": {
-          "count": 1.0,
-          "mean_usdc": 0.004081870174068172,
-          "min_usdc": 0.004081870174068172
-        },
-        "5000": {
-          "count": 1.0,
-          "mean_usdc": -0.003918129825933647,
-          "min_usdc": -0.003918129825933647
-        }
-      },
+      "coverage_days": 0.004200135983796296,
+      "directional_drift_ratio": 0.0,
+      "directional_pnl_proxy_usdc": 0.0,
+      "markout_summary": {},
       "metrics": {
-        "cash_usdc": -21.186595642545406,
-        "data_end": "2026-05-25T20:31:55.032162905+00:00",
-        "data_start": "2026-05-25T20:23:55.247664213+00:00",
-        "fees_usdc": 0.0031775127194738893,
-        "fill_ratio_by_depth": {
-          "bid:6.17bps": 1
-        },
-        "final_mid": 2116.95,
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T20:44:06.401771784+00:00",
+        "data_start": "2026-05-25T20:38:03.510022402+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2111.25,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -470,56 +325,18 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 801,
+          "orderbooks": 588,
           "prices": 2000,
-          "trades": 542
+          "trades": 782
         },
-        "inventory_base": 0.01,
+        "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 635,
-          "1": 1365
+          "0": 2000
         },
-        "maker_fills": 1,
-        "maker_ratio": 1.0,
-        "mark_to_market_pnl_usdc": -0.01709564254540652,
-        "markout_samples": [
-          {
-            "fill_price": 2118.341812982593,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 100,
-            "markout_usdc": -0.003918129825933647,
-            "markout_usdc_per_base": -0.3918129825933647,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.341812982593,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 1000,
-            "markout_usdc": -0.003918129825933647,
-            "markout_usdc_per_base": -0.3918129825933647,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.341812982593,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 5000,
-            "markout_usdc": -0.003918129825933647,
-            "markout_usdc_per_base": -0.3918129825933647,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.341812982593,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2118.75,
-            "horizon_ms": 30000,
-            "markout_usdc": 0.004081870174068172,
-            "markout_usdc_per_base": 0.4081870174068172,
-            "side": "bid"
-          }
-        ],
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
         "parameter_series": [
           {
             "epsilon_minus": 0.01,
@@ -533,18 +350,18 @@
         ],
         "pnl_by_side": {
           "ask": 0.0,
-          "bid": -0.0031775127194738893
+          "bid": 0.0
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 3365,
-        "realized_spread_usdc": 0.013081870174064534,
-        "stale_quote_cancels": 3364,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 635
+          "q_min": 2000
         },
         "toxicity_series": [
           {
@@ -554,11 +371,11 @@
           }
         ]
       },
-      "net_realized_spread_usdc": 0.009904357454590645,
+      "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.005553<min_3.000000",
-        "directional_drift_dominates_pnl:1.579350>max_0.750000"
+        "insufficient_coverage_days:0.004200<min_3.000000",
+        "no_maker_fills"
       ],
       "variant": {
         "epsilon_add": 0.01,
@@ -569,40 +386,17 @@
       }
     },
     {
-      "coverage_days": 0.005553061319444445,
-      "directional_drift_ratio": 1.4104828333125659,
-      "directional_pnl_proxy_usdc": -0.026999999999995528,
-      "markout_summary": {
-        "100": {
-          "count": 1.0,
-          "mean_usdc": -0.005964561465211773,
-          "min_usdc": -0.005964561465211773
-        },
-        "1000": {
-          "count": 1.0,
-          "mean_usdc": -0.005964561465211773,
-          "min_usdc": -0.005964561465211773
-        },
-        "30000": {
-          "count": 1.0,
-          "mean_usdc": 0.002035438534790046,
-          "min_usdc": 0.002035438534790046
-        },
-        "5000": {
-          "count": 1.0,
-          "mean_usdc": -0.005964561465211773,
-          "min_usdc": -0.005964561465211773
-        }
-      },
+      "coverage_days": 0.004200135983796296,
+      "directional_drift_ratio": 0.0,
+      "directional_pnl_proxy_usdc": 0.0,
+      "markout_summary": {},
       "metrics": {
-        "cash_usdc": -21.188642381149428,
-        "data_end": "2026-05-25T20:31:55.032162905+00:00",
-        "data_start": "2026-05-25T20:23:55.247664213+00:00",
-        "fees_usdc": 0.0031778196842197812,
-        "fill_ratio_by_depth": {
-          "bid:5.21bps": 1
-        },
-        "final_mid": 2116.95,
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T20:44:06.401771784+00:00",
+        "data_start": "2026-05-25T20:38:03.510022402+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2111.25,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -610,56 +404,18 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 801,
+          "orderbooks": 588,
           "prices": 2000,
-          "trades": 542
+          "trades": 782
         },
-        "inventory_base": 0.01,
+        "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 635,
-          "1": 1365
+          "0": 2000
         },
-        "maker_fills": 1,
-        "maker_ratio": 1.0,
-        "mark_to_market_pnl_usdc": -0.0191423811494289,
-        "markout_samples": [
-          {
-            "fill_price": 2118.546456146521,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 100,
-            "markout_usdc": -0.005964561465211773,
-            "markout_usdc_per_base": -0.5964561465211773,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.546456146521,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 1000,
-            "markout_usdc": -0.005964561465211773,
-            "markout_usdc_per_base": -0.5964561465211773,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.546456146521,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2117.95,
-            "horizon_ms": 5000,
-            "markout_usdc": -0.005964561465211773,
-            "markout_usdc_per_base": -0.5964561465211773,
-            "side": "bid"
-          },
-          {
-            "fill_price": 2118.546456146521,
-            "fill_ts": "2026-05-25T20:26:55.776670456+00:00",
-            "future_mid": 2118.75,
-            "horizon_ms": 30000,
-            "markout_usdc": 0.002035438534790046,
-            "markout_usdc_per_base": 0.2035438534790046,
-            "side": "bid"
-          }
-        ],
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
         "parameter_series": [
           {
             "epsilon_minus": 0.02,
@@ -673,18 +429,18 @@
         ],
         "pnl_by_side": {
           "ask": 0.0,
-          "bid": -0.0031778196842197812
+          "bid": 0.0
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 3365,
-        "realized_spread_usdc": 0.011035438534786408,
-        "stale_quote_cancels": 3364,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 635
+          "q_min": 2000
         },
         "toxicity_series": [
           {
@@ -694,11 +450,11 @@
           }
         ]
       },
-      "net_realized_spread_usdc": 0.007857618850566626,
+      "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.005553<min_3.000000",
-        "directional_drift_dominates_pnl:1.410483>max_0.750000"
+        "insufficient_coverage_days:0.004200<min_3.000000",
+        "no_maker_fills"
       ],
       "variant": {
         "epsilon_add": 0.02,

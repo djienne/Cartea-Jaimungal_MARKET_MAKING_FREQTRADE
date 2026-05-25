@@ -175,6 +175,7 @@ class Market_Making(IStrategy):
     max_post_only_reject_rate = 0.80
     min_post_only_reject_samples = 10
     kill_on_taker_fill = True
+    kill_on_time_in_force_mismatch = True
     fill_markout_horizons_ms = (100, 1_000, 5_000, 30_000)
     fee_snapshot_cache_seconds = 300
     require_exchange_fee_match_live = True
@@ -2459,6 +2460,14 @@ class Market_Making(IStrategy):
 
         if realized_pnl is not None:
             self._record_realized_pnl(pair, realized_pnl, current_time, payload)
+
+        tif_missing_when_required = (
+            expected_tif_canonical == "post_only"
+            and tif_canonical is None
+        )
+        tif_mismatch = payload["tif_matches_expected"] is False or tif_missing_when_required
+        if self.kill_on_time_in_force_mismatch and self.post_only_verified and tif_mismatch:
+            self._trigger_kill_switch("unexpected_time_in_force", payload)
 
         if self.kill_on_taker_fill and liquidity == "taker":
             self._trigger_kill_switch("unexpected_taker_fill", payload)

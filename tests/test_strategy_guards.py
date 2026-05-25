@@ -725,6 +725,35 @@ def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
     assert bot._maker_fill_count == 1
 
 
+def test_post_only_fill_time_in_force_mismatch_triggers_kill_switch():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.post_only_verified = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    order = types.SimpleNamespace(
+        id="maker-gtc-1",
+        liquidity="maker",
+        order_type="limit",
+        time_in_force="GTC",
+        ft_order_side="buy",
+        price=100.0,
+        amount=1.0,
+        fee={"cost": 0.015, "rate": 0.00015},
+    )
+
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.01), order, datetime.now(timezone.utc))
+
+    assert not bot.trading_enabled
+    assert bot.fail_closed_reason == "unexpected_time_in_force"
+    assert [event for event, _ in events] == ["fill", "kill_switch"]
+    fill_payload = events[0][1]
+    assert fill_payload["tif_canonical"] == "gtc"
+    assert fill_payload["expected_tif_canonical"] == "post_only"
+    assert fill_payload["tif_matches_expected"] is False
+    assert events[1][1]["reason"] == "unexpected_time_in_force"
+
+
 def test_fill_markout_events_are_logged_after_horizon():
     bot = make_bot()
     bot.fill_markout_horizons_ms = (100, 1_000)
