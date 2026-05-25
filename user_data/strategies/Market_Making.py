@@ -716,6 +716,7 @@ class Market_Making(IStrategy):
         q = self._inventory_level(pair)
         return {
             "signed_base_position": float(signed_base),
+            "position": float(signed_base),
             "inventory_unit_base": float(self.inventory_unit_base),
             "q": int(q),
             "max_abs_inventory_units": int(self.max_abs_inventory_units),
@@ -1309,6 +1310,49 @@ class Market_Making(IStrategy):
             f"[spread] side={side} bps={bps:.2f} abs={delta:.6f} mid={mid_price:.6f} source={source}"
         )
 
+    def _open_order_count(self, pair: str) -> int | None:
+        exchange = getattr(self, "exchange", None)
+        if exchange is None:
+            return None
+
+        for method_name in ("fetch_open_orders", "get_open_orders"):
+            method = getattr(exchange, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                orders = method(pair)
+            except TypeError:
+                try:
+                    orders = method()
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            try:
+                return len(list(orders or []))
+            except Exception:
+                return None
+
+        orders = getattr(exchange, "open_orders", None)
+        if isinstance(orders, dict):
+            if pair in orders and isinstance(orders[pair], list):
+                return len(orders[pair])
+            count = 0
+            for value in orders.values():
+                if isinstance(value, list):
+                    count += len(value)
+            return count
+        if isinstance(orders, list):
+            count = 0
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                symbol = order.get("symbol") or order.get("pair")
+                if symbol is None or str(symbol) == pair:
+                    count += 1
+            return count
+        return None
+
     def _debug_log_path(self) -> Path:
         try:
             base = Path(__file__).resolve().parent.parent  # user_data
@@ -1495,7 +1539,7 @@ class Market_Making(IStrategy):
                 "hjb_fresh": hjb_fresh,
                 "hjb_age_seconds": self._hjb_age_seconds(now),
                 "post_only_verified": bool(self.post_only_verified),
-                "open_orders": None,
+                "open_orders": self._open_order_count(pair),
                 "maker_fills": int(getattr(self, "_maker_fill_count", 0)),
                 "taker_fills": int(getattr(self, "_taker_fill_count", 0)),
                 "post_only_rejects": int(getattr(self, "_post_only_rejects", 0)),

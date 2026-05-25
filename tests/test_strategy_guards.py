@@ -101,6 +101,7 @@ class DummyExchange:
             }
         }
         self.positions = []
+        self.open_orders = []
         self.cancelled_pair = None
 
     def amount_to_precision(self, pair, amount):
@@ -701,3 +702,25 @@ def test_quote_decision_logs_freshness_age_fields():
     assert payload["params_fresh"] is True
     assert payload["collector_fresh"] is True
     assert payload["book_fresh"] is True
+
+
+def test_health_log_counts_open_orders_and_logs_position():
+    bot = make_bot()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot._collector_age_seconds = lambda symbol, now=None: 2.0
+    bot._book_age_ms = lambda pair, current_time=None: 125.0
+    bot.exchange.open_orders = [
+        {"symbol": "ETH/USDC:USDC", "id": "a"},
+        {"symbol": "ETH/USDC:USDC", "id": "b"},
+        {"symbol": "BTC/USDC:USDC", "id": "c"},
+    ]
+
+    bot._log_health("ETH/USDC:USDC", now)
+
+    assert events[0][0] == "health"
+    payload = events[0][1]
+    assert payload["open_orders"] == 2
+    assert payload["position"] == 0.0
+    assert payload["signed_base_position"] == 0.0
