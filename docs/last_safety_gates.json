@@ -9,7 +9,7 @@
         "scripts",
         "user_data/strategies"
       ],
-      "elapsed_seconds": 1.125,
+      "elapsed_seconds": 1.076,
       "expected_returncodes": [
         0
       ],
@@ -17,7 +17,7 @@
       "passed": true,
       "returncode": 0,
       "stderr_tail": "",
-      "stdout_tail": "Listing 'scripts'...\nListing 'scripts\\\\HL_data'...\nListing 'scripts\\\\HL_data\\\\ETH'...\nListing 'scripts\\\\HL_data\\\\ETH\\\\orderbooks'...\nListing 'scripts\\\\HL_data\\\\ETH\\\\prices'...\nListing 'scripts\\\\HL_data\\\\ETH\\\\trades'...\nListing 'scripts\\\\doc'...\nListing 'user_data/strategies'..."
+      "stdout_tail": "Listing 'scripts'...\nListing 'scripts\\\\HL_data'...\nListing 'scripts\\\\HL_data\\\\ETH'...\nListing 'scripts\\\\HL_data\\\\ETH\\\\orderbooks'...\nListing 'scripts\\\\HL_data\\\\ETH\\\\prices'...\nListing 'scripts\\\\HL_data\\\\ETH\\\\trades'...\nListing 'scripts\\\\doc'...\nCompiling 'scripts\\\\run_safety_gates.py'...\nListing 'user_data/strategies'..."
     },
     {
       "command": [
@@ -26,6 +26,7 @@
         "pytest",
         "tests/test_hjb.py",
         "tests/test_hyperliquid_alo_executor.py",
+        "tests/test_fee_evidence.py",
         "tests/test_strategy_guards.py",
         "tests/test_params.py",
         "tests/test_periodic_runner.py",
@@ -33,7 +34,7 @@
         "tests/test_replay_log_calibration.py",
         "tests/test_replay_report.py"
       ],
-      "elapsed_seconds": 23.296,
+      "elapsed_seconds": 22.528,
       "expected_returncodes": [
         0
       ],
@@ -41,7 +42,7 @@
       "passed": true,
       "returncode": 0,
       "stderr_tail": "",
-      "stdout_tail": "============================= test session starts =============================\nplatform win32 -- Python 3.10.11, pytest-9.0.1, pluggy-1.6.0\nrootdir: C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\nplugins: anyio-4.12.0, asyncio-1.3.0, cov-7.0.0, mock-3.15.1\nasyncio: mode=strict, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function\ncollected 136 items\n\ntests\\test_hjb.py .............                                          [  9%]\ntests\\test_hyperliquid_alo_executor.py ............                      [ 18%]\ntests\\test_strategy_guards.py .......................................... [ 49%]\n............                                                             [ 58%]\ntests\\test_params.py ..........................                          [ 77%]\ntests\\test_periodic_runner.py ..                                         [ 78%]\ntests\\test_replay_market_maker.py ...............                        [ 89%]\ntests\\test_replay_log_calibration.py ...                                 [ 91%]\ntests\\test_replay_report.py ...........                                  [100%]\n\n============================ 136 passed in 21.72s ============================="
+      "stdout_tail": "============================= test session starts =============================\nplatform win32 -- Python 3.10.11, pytest-9.0.1, pluggy-1.6.0\nrootdir: C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\nplugins: anyio-4.12.0, asyncio-1.3.0, cov-7.0.0, mock-3.15.1\nasyncio: mode=strict, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function\ncollected 140 items\n\ntests\\test_hjb.py .............                                          [  9%]\ntests\\test_hyperliquid_alo_executor.py ............                      [ 17%]\ntests\\test_fee_evidence.py ....                                          [ 20%]\ntests\\test_strategy_guards.py .......................................... [ 50%]\n............                                                             [ 59%]\ntests\\test_params.py ..........................                          [ 77%]\ntests\\test_periodic_runner.py ..                                         [ 79%]\ntests\\test_replay_market_maker.py ...............                        [ 90%]\ntests\\test_replay_log_calibration.py ...                                 [ 92%]\ntests\\test_replay_report.py ...........                                  [100%]\n\n============================ 140 passed in 21.34s ============================="
     },
     {
       "command": [
@@ -56,7 +57,7 @@
         "--asym-kappa",
         "--skip-refresh"
       ],
-      "elapsed_seconds": 1.286,
+      "elapsed_seconds": 1.302,
       "expected_returncodes": [
         0
       ],
@@ -84,7 +85,7 @@
         "--lambda-minus",
         "0.09516227408346505"
       ],
-      "elapsed_seconds": 1.743,
+      "elapsed_seconds": 2.09,
       "expected_returncodes": [
         0
       ],
@@ -103,7 +104,7 @@
         "--output",
         "docs/post_only_probe_plan.json"
       ],
-      "elapsed_seconds": 0.086,
+      "elapsed_seconds": 0.104,
       "expected_returncodes": [
         0
       ],
@@ -122,7 +123,7 @@
         "--output",
         "docs/post_only_evidence_report.json"
       ],
-      "elapsed_seconds": 0.078,
+      "elapsed_seconds": 0.088,
       "expected_returncodes": [
         1
       ],
@@ -141,7 +142,7 @@
         "--output",
         "docs/direct_alo_adapter_plan.json"
       ],
-      "elapsed_seconds": 0.12,
+      "elapsed_seconds": 0.11,
       "expected_returncodes": [
         0
       ],
@@ -157,7 +158,7 @@
         "compose",
         "config"
       ],
-      "elapsed_seconds": 0.253,
+      "elapsed_seconds": 0.273,
       "expected_returncodes": [
         0
       ],
@@ -179,14 +180,14 @@
         "--config",
         "/freqtrade/user_data/config.json"
       ],
-      "elapsed_seconds": 7.597,
+      "elapsed_seconds": 7.047,
       "expected_returncodes": [
         0
       ],
       "name": "freqtrade_runtime_load",
       "passed": true,
       "returncode": 0,
-      "stderr_tail": "time=\"2026-05-26T00:54:52+02:00\" level=warning msg=\"Found orphan containers ([MM_ADV]) for this project. If you removed or renamed this service in your compose file, you can run this command with the --remove-orphans flag to clean it up.\"\n Container cartea-jaimungal_market_making_freqtrade-freqtrade-run-00c7e3ed0500 Creating \n Container cartea-jaimungal_market_making_freqtrade-freqtrade-run-00c7e3ed0500 Created \n2026-05-25 22:54:53,774 - freqtrade - INFO - freqtrade 2025.4\n2026-05-25 22:54:54,673 - numexpr.utils - INFO - NumExpr defaulting to 10 threads.\n2026-05-25 22:54:58,065 - freqtrade.configuration.load_config - INFO - Using config: /freqtrade/user_data/config.json ...\n2026-05-25 22:54:58,069 - freqtrade.loggers - INFO - Enabling colorized output.\n2026-05-25 22:54:58,069 - root - INFO - Logfile configured\n2026-05-25 22:54:58,069 - freqtrade.loggers - INFO - Verbosity set to 0\n2026-05-25 22:54:58,138 - freqtrade.configuration.configuration - INFO - Using user-data directory: /freqtrade/user_data ...\n2026-05-25 22:54:58,140 - freqtrade.configuration.configuration - INFO - Using data directory: /freqtrade/user_data/data/hyperliquid ...\n2026-05-25 22:54:58,141 - freqtrade.exchange.check_exchange - INFO - Checking exchange...\n2026-05-25 22:54:58,144 - freqtrade.exchange.check_exchange - INFO - Exchange \"hyperliquid\" is officially supported by the Freqtrade development team.\n2026-05-25 22:54:58,144 - freqtrade.configuration.configuration - INFO - Using pairlist from configuration.\n2026-05-25 22:54:58,144 - freqtrade.configuration.config_validation - INFO - Validating configuration ...",
+      "stderr_tail": "time=\"2026-05-26T01:09:56+02:00\" level=warning msg=\"Found orphan containers ([MM_ADV]) for this project. If you removed or renamed this service in your compose file, you can run this command with the --remove-orphans flag to clean it up.\"\n Container cartea-jaimungal_market_making_freqtrade-freqtrade-run-13d76b458ead Creating \n Container cartea-jaimungal_market_making_freqtrade-freqtrade-run-13d76b458ead Created \n2026-05-25 23:09:57,069 - freqtrade - INFO - freqtrade 2025.4\n2026-05-25 23:09:57,915 - numexpr.utils - INFO - NumExpr defaulting to 10 threads.\n2026-05-25 23:10:00,776 - freqtrade.configuration.load_config - INFO - Using config: /freqtrade/user_data/config.json ...\n2026-05-25 23:10:00,780 - freqtrade.loggers - INFO - Enabling colorized output.\n2026-05-25 23:10:00,781 - root - INFO - Logfile configured\n2026-05-25 23:10:00,782 - freqtrade.loggers - INFO - Verbosity set to 0\n2026-05-25 23:10:00,893 - freqtrade.configuration.configuration - INFO - Using user-data directory: /freqtrade/user_data ...\n2026-05-25 23:10:00,895 - freqtrade.configuration.configuration - INFO - Using data directory: /freqtrade/user_data/data/hyperliquid ...\n2026-05-25 23:10:00,896 - freqtrade.exchange.check_exchange - INFO - Checking exchange...\n2026-05-25 23:10:00,900 - freqtrade.exchange.check_exchange - INFO - Exchange \"hyperliquid\" is officially supported by the Freqtrade development team.\n2026-05-25 23:10:00,901 - freqtrade.configuration.configuration - INFO - Using pairlist from configuration.\n2026-05-25 23:10:00,901 - freqtrade.configuration.config_validation - INFO - Validating configuration ...",
       "stdout_tail": "\u250f\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2533\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2533\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2533\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2533\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2533\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2513\n\u2503          Name \u2503         Location \u2503 Status \u2503 Hyperoptable \u2503 Buy-params \u2503 Sell-params \u2503\n\u2521\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2547\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2547\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2547\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2547\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2547\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2529\n\u2502 Market_Making \u2502 Market_Making.py \u2502     OK \u2502           No \u2502          0 \u2502           0 \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518"
     },
     {
@@ -202,7 +203,7 @@
         "--json-output",
         "docs/dry_run_disabled_gate.json"
       ],
-      "elapsed_seconds": 224.921,
+      "elapsed_seconds": 224.865,
       "expected_returncodes": [
         0
       ],
@@ -210,7 +211,7 @@
       "passed": true,
       "returncode": 0,
       "stderr_tail": "",
-      "stdout_tail": "{\n  \"cleanup_before_returncode\": 0,\n  \"collector_service\": \"hl-collector2\",\n  \"collector_start_returncode\": 0,\n  \"collector_stop_returncode\": 0,\n  \"collector_warmup_seconds\": 70,\n  \"config_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\mm_gate_disabled_config.json\",\n  \"docker_compose_up_returncode\": 0,\n  \"docker_stop_returncode\": 0,\n  \"duration_seconds\": 150,\n  \"evidence\": [],\n  \"health_events\": 2,\n  \"latest_health\": {\n    \"accepted_order_attempts\": 0,\n    \"book_age_ms\": 427.41,\n    \"book_fresh\": true,\n    \"book_fresh_reason\": \"ok\",\n    \"collector_age_seconds\": 99.482063,\n    \"collector_fresh\": true,\n    \"collector_fresh_reason\": \"ok\",\n    \"consecutive_losses\": 0,\n    \"event\": \"health\",\n    \"fail_closed_reason\": \"initial_safety_lock\",\n    \"fee_snapshot\": {\n      \"actual_fee_matches_strategy\": null,\n      \"actual_fee_rate\": null,\n      \"config_fee_matches_strategy\": true,\n      \"config_fee_rate\": 0.00015,\n      \"exchange_fee_source\": \"unavailable\",\n      \"exchange_maker_fee_matches_strategy\": null,\n      \"exchange_maker_fee_rate\": null,\n      \"exchange_taker_fee_rate\": null,\n      \"fee_agreement_ok\": true,\n      \"strategy_maker_fee_rate\": 0.00015\n    },\n    \"hjb_age_seconds\": 65.946868,\n    \"hjb_fresh\": true,\n    \"inventory_unit_base\": 0.01,\n    \"maker_fills\": 0,\n    \"max_abs_inventory_units\": 3,\n    \"open_order_cancels_requested\": 0,\n    \"open_orders\": 0,\n    \"open_orders_source\": \"accepted_confirmation_estimate\",\n    \"param_age_seconds\": 91.21841,\n    \"params_fresh\": true,\n    \"params_fresh_reason\": \"ok\",\n    \"position\": 0.0,\n    \"post_only_rejects\": 0,\n    \"post_only_verified\": false,\n    \"q\": 0,\n    \"quote_decisions\": 0,\n    \"realized_pnl\": 0.0,\n    \"signed_base_position\": 0.0,\n    \"taker_fills\": 0,\n    \"trading_enabled\": false,\n    \"ts\": \"2026-05-25T22:57:41.728Z\",\n    \"unrealized_pnl\": 0.0\n  },\n  \"log_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\freqtrade_gate_disabled.log\",\n  \"max_collector_age_seconds\": 340,\n  \"mm_debug_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\mm_debug.jsonl\",\n  \"passed\": true,\n  \"reason\": \"ok\",\n  \"started_at\": \"2026-05-25T22:56:10.675484Z\"\n}"
+      "stdout_tail": "{\n  \"cleanup_before_returncode\": 0,\n  \"collector_service\": \"hl-collector2\",\n  \"collector_start_returncode\": 0,\n  \"collector_stop_returncode\": 0,\n  \"collector_warmup_seconds\": 70,\n  \"config_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\mm_gate_disabled_config.json\",\n  \"docker_compose_up_returncode\": 0,\n  \"docker_stop_returncode\": 0,\n  \"duration_seconds\": 150,\n  \"evidence\": [],\n  \"health_events\": 2,\n  \"latest_health\": {\n    \"accepted_order_attempts\": 0,\n    \"book_age_ms\": 165.28799999999998,\n    \"book_fresh\": true,\n    \"book_fresh_reason\": \"ok\",\n    \"collector_age_seconds\": 96.858919,\n    \"collector_fresh\": true,\n    \"collector_fresh_reason\": \"ok\",\n    \"consecutive_losses\": 0,\n    \"event\": \"health\",\n    \"fail_closed_reason\": \"initial_safety_lock\",\n    \"fee_snapshot\": {\n      \"actual_fee_matches_strategy\": null,\n      \"actual_fee_rate\": null,\n      \"config_fee_matches_strategy\": true,\n      \"config_fee_rate\": 0.00015,\n      \"exchange_fee_source\": \"unavailable\",\n      \"exchange_maker_fee_matches_strategy\": null,\n      \"exchange_maker_fee_rate\": null,\n      \"exchange_taker_fee_rate\": null,\n      \"fee_agreement_ok\": true,\n      \"strategy_maker_fee_rate\": 0.00015\n    },\n    \"hjb_age_seconds\": 66.579012,\n    \"hjb_fresh\": true,\n    \"inventory_unit_base\": 0.01,\n    \"maker_fills\": 0,\n    \"max_abs_inventory_units\": 3,\n    \"open_order_cancels_requested\": 0,\n    \"open_orders\": 0,\n    \"open_orders_source\": \"accepted_confirmation_estimate\",\n    \"param_age_seconds\": 89.919288,\n    \"params_fresh\": true,\n    \"params_fresh_reason\": \"ok\",\n    \"position\": 0.0,\n    \"post_only_rejects\": 0,\n    \"post_only_verified\": false,\n    \"q\": 0,\n    \"quote_decisions\": 0,\n    \"realized_pnl\": 0.0,\n    \"signed_base_position\": 0.0,\n    \"taker_fills\": 0,\n    \"trading_enabled\": false,\n    \"ts\": \"2026-05-25T23:12:43.436Z\",\n    \"unrealized_pnl\": 0.0\n  },\n  \"log_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\freqtrade_gate_disabled.log\",\n  \"max_collector_age_seconds\": 340,\n  \"mm_debug_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\mm_debug.jsonl\",\n  \"passed\": true,\n  \"reason\": \"ok\",\n  \"started_at\": \"2026-05-25T23:11:13.599612Z\"\n}"
     },
     {
       "command": [
@@ -223,7 +224,7 @@
         "--json-output",
         "docs/dry_run_enabled_gate.json"
       ],
-      "elapsed_seconds": 313.65,
+      "elapsed_seconds": 319.453,
       "expected_returncodes": [
         0
       ],
@@ -231,7 +232,7 @@
       "passed": true,
       "returncode": 0,
       "stderr_tail": "",
-      "stdout_tail": "  \"params_fresh_reason\": \"ok\",\n    \"position\": 0.0,\n    \"post_only\": false,\n    \"post_only_verified\": false,\n    \"proposed_rate\": 2104.5,\n    \"q\": 0,\n    \"raw_price\": 2103.38386961998,\n    \"reason\": \"ok\",\n    \"rounded_price\": 2103.38386961998,\n    \"side\": \"bid\",\n    \"signed_base_position\": 0.0,\n    \"symbol\": \"ETH\",\n    \"ts\": \"2026-05-25T23:03:33.594Z\"\n  },\n  \"latest_health\": {\n    \"accepted_order_attempts\": 3,\n    \"book_age_ms\": 495.584,\n    \"book_fresh\": true,\n    \"book_fresh_reason\": \"ok\",\n    \"collector_age_seconds\": 60.484759,\n    \"collector_fresh\": true,\n    \"collector_fresh_reason\": \"ok\",\n    \"consecutive_losses\": 0,\n    \"event\": \"health\",\n    \"fail_closed_reason\": \"none\",\n    \"fee_snapshot\": {\n      \"actual_fee_matches_strategy\": null,\n      \"actual_fee_rate\": null,\n      \"config_fee_matches_strategy\": true,\n      \"config_fee_rate\": 0.00015,\n      \"exchange_fee_source\": \"unavailable\",\n      \"exchange_maker_fee_matches_strategy\": null,\n      \"exchange_maker_fee_rate\": null,\n      \"exchange_taker_fee_rate\": null,\n      \"fee_agreement_ok\": true,\n      \"strategy_maker_fee_rate\": 0.00015\n    },\n    \"hjb_age_seconds\": 147.065121,\n    \"hjb_fresh\": true,\n    \"inventory_unit_base\": 0.01,\n    \"maker_fills\": 0,\n    \"max_abs_inventory_units\": 3,\n    \"open_order_cancels_requested\": 0,\n    \"open_orders\": 3,\n    \"open_orders_source\": \"accepted_confirmation_estimate\",\n    \"param_age_seconds\": 173.152584,\n    \"params_fresh\": true,\n    \"params_fresh_reason\": \"ok\",\n    \"position\": 0.0,\n    \"post_only_rejects\": 0,\n    \"post_only_verified\": false,\n    \"q\": 0,\n    \"quote_decisions\": 3,\n    \"realized_pnl\": 0.0,\n    \"signed_base_position\": 0.0,\n    \"taker_fills\": 0,\n    \"trading_enabled\": true,\n    \"ts\": \"2026-05-25T23:02:48.704Z\",\n    \"unrealized_pnl\": 0.0\n  },\n  \"log_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\freqtrade_gate_enabled.log\",\n  \"mm_debug_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\mm_debug.jsonl\",\n  \"order_evidence\": [\n    \"2026-05-25 23:01:06,957 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.035838096199797 and price: 2103.5838096199795 ...\",\n    \"2026-05-25 23:01:07,268 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779750066.960111 was created for ETH/USDC:USDC and status is open.\",\n    \"2026-05-25 23:01:36,158 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.025841096199798 and price: 2102.5841096199797 ...\",\n    \"2026-05-25 23:01:36,431 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779750096.160502 was created for ETH/USDC:USDC and status is open.\",\n    \"2026-05-25 23:02:45,583 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.027840496199797 and price: 2102.7840496199797 ...\",\n    \"2026-05-25 23:02:45,846 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779750165.585791 was created for ETH/USDC:USDC and status is open.\",\n    \"2026-05-25 23:03:04,897 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.034838396199795 and price: 2103.4838396199793 ...\",\n    \"2026-05-25 23:03:05,162 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779750184.899625 was created for ETH/USDC:USDC and status is open.\",\n    \"2026-05-25 23:03:33,616 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.0338386961998 and price: 2103.38386961998 ...\",\n    \"2026-05-25 23:03:33,871 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779750213.618324 was created for ETH/USDC:USDC and status is open.\"\n  ],\n  \"passed\": true,\n  \"quote_decisions\": 5,\n  \"reason\": \"ok\",\n  \"started_at\": \"2026-05-25T22:59:55.762287Z\"\n}"
+      "stdout_tail": "2551,\n    \"collector_age_seconds\": 100.411063,\n    \"collector_fresh\": true,\n    \"collector_fresh_reason\": \"ok\",\n    \"decision\": \"accept\",\n    \"delta_model\": 0.5347653800203696,\n    \"delta_total\": 1.1670903800203694,\n    \"event\": \"quote_decision\",\n    \"expected_tif\": \"GTC\",\n    \"expected_tif_canonical\": \"gtc\",\n    \"fee_cushion\": 0.6323249999999999,\n    \"fee_snapshot\": {\n      \"actual_fee_matches_strategy\": null,\n      \"actual_fee_rate\": null,\n      \"config_fee_matches_strategy\": true,\n      \"config_fee_rate\": 0.00015,\n      \"exchange_fee_source\": \"unavailable\",\n      \"exchange_maker_fee_matches_strategy\": null,\n      \"exchange_maker_fee_rate\": null,\n      \"exchange_taker_fee_rate\": null,\n      \"fee_agreement_ok\": true,\n      \"strategy_maker_fee_rate\": 0.00015\n    },\n    \"hjb_age_seconds\": 177.691111,\n    \"hjb_generation\": 1,\n    \"hjb_last_refresh_ts\": \"2026-05-25T23:15:34.793Z\",\n    \"inventory_unit_base\": 0.01,\n    \"max_abs_inventory_units\": 3,\n    \"mid\": 2107.75,\n    \"pair\": \"ETH/USDC:USDC\",\n    \"param_age_seconds\": 214.484733,\n    \"params\": {\n      \"epsilon_minus\": 0.0,\n      \"epsilon_plus\": 0.0,\n      \"fees_maker_HL\": 0.00015,\n      \"hjb_alpha\": 0.001,\n      \"hjb_horizon_seconds\": 60.0,\n      \"hjb_phi\": 0.0001,\n      \"hjb_q_max\": 3,\n      \"kappa_minus\": 2.0,\n      \"kappa_plus\": 2.0,\n      \"lambda_minus\": 0.1,\n      \"lambda_plus\": 0.1,\n      \"symbol\": \"ETH\",\n      \"use_asymmetric_kappa\": true\n    },\n    \"params_fresh\": true,\n    \"params_fresh_reason\": \"ok\",\n    \"position\": 0.0,\n    \"post_only\": false,\n    \"post_only_verified\": false,\n    \"proposed_rate\": 2107.7,\n    \"q\": 0,\n    \"raw_price\": 2106.5829096199795,\n    \"reason\": \"ok\",\n    \"rounded_price\": 2106.5829096199795,\n    \"side\": \"bid\",\n    \"signed_base_position\": 0.0,\n    \"symbol\": \"ETH\",\n    \"ts\": \"2026-05-25T23:18:32.487Z\"\n  },\n  \"latest_health\": {\n    \"accepted_order_attempts\": 0,\n    \"book_age_ms\": 72.05,\n    \"book_fresh\": true,\n    \"book_fresh_reason\": \"ok\",\n    \"collector_age_seconds\": 98.42138,\n    \"collector_fresh\": true,\n    \"collector_fresh_reason\": \"ok\",\n    \"consecutive_losses\": 0,\n    \"event\": \"health\",\n    \"fail_closed_reason\": \"none\",\n    \"fee_snapshot\": {\n      \"actual_fee_matches_strategy\": null,\n      \"actual_fee_rate\": null,\n      \"config_fee_matches_strategy\": true,\n      \"config_fee_rate\": 0.00015,\n      \"exchange_fee_source\": \"unavailable\",\n      \"exchange_maker_fee_matches_strategy\": null,\n      \"exchange_maker_fee_rate\": null,\n      \"exchange_taker_fee_rate\": null,\n      \"fee_agreement_ok\": true,\n      \"strategy_maker_fee_rate\": 0.00015\n    },\n    \"hjb_age_seconds\": 175.701428,\n    \"hjb_fresh\": true,\n    \"inventory_unit_base\": 0.01,\n    \"maker_fills\": 0,\n    \"max_abs_inventory_units\": 3,\n    \"open_order_cancels_requested\": 0,\n    \"open_orders\": 0,\n    \"open_orders_source\": \"accepted_confirmation_estimate\",\n    \"param_age_seconds\": 212.49505,\n    \"params_fresh\": true,\n    \"params_fresh_reason\": \"ok\",\n    \"position\": 0.0,\n    \"post_only_rejects\": 0,\n    \"post_only_verified\": false,\n    \"q\": 0,\n    \"quote_decisions\": 0,\n    \"realized_pnl\": 0.0,\n    \"signed_base_position\": 0.0,\n    \"taker_fills\": 0,\n    \"trading_enabled\": true,\n    \"ts\": \"2026-05-25T23:18:31.102Z\",\n    \"unrealized_pnl\": 0.0\n  },\n  \"log_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\freqtrade_gate_enabled.log\",\n  \"mm_debug_path\": \"C:\\\\Users\\\\david\\\\Desktop\\\\freqtrade\\\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\\\user_data\\\\logs\\\\mm_debug.jsonl\",\n  \"order_evidence\": [\n    \"2026-05-25 23:18:32,511 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.065829096199796 and price: 2106.5829096199795 ...\",\n    \"2026-05-25 23:18:32,790 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779751112.513875 was created for ETH/USDC:USDC and status is open.\"\n  ],\n  \"passed\": true,\n  \"quote_decisions\": 1,\n  \"reason\": \"ok\",\n  \"started_at\": \"2026-05-25T23:15:00.114986Z\"\n}"
     },
     {
       "command": [
@@ -242,7 +243,7 @@
         "--output",
         "docs/replay_log_calibration.json"
       ],
-      "elapsed_seconds": 0.729,
+      "elapsed_seconds": 1.097,
       "expected_returncodes": [
         0
       ],
@@ -250,7 +251,27 @@
       "passed": true,
       "returncode": 0,
       "stderr_tail": "",
-      "stdout_tail": "{\n  \"accepted_quotes_by_depth\": {\n    \"bid:5.00-6.00bps\": 148\n  },\n  \"accepted_quotes_by_side\": {\n    \"bid\": 148\n  },\n  \"actual_fee_rate\": {\n    \"count\": 0,\n    \"max\": null,\n    \"mean\": null,\n    \"min\": null,\n    \"outlier_count\": 8,\n    \"outlier_threshold\": 0.01\n  },\n  \"fill_probability_by_depth\": {\n    \"bid:5.00-6.00bps\": 0.0\n  },\n  \"fill_probability_by_side\": {\n    \"bid\": 0.05405405405405406\n  },\n  \"fills_by_side\": {\n    \"bid\": 8\n  },\n  \"generated_at\": \"2026-05-25T23:03:59Z\",\n  \"input_paths\": [\n    \"user_data\\\\logs\\\\mm_debug.jsonl\"\n  ],\n  \"inputs\": {\n    \"accepted_quotes\": 148,\n    \"bucket_bps\": 1.0,\n    \"events\": 1099,\n    \"fills\": 8,\n    \"match_window_seconds\": 300.0,\n    \"max_fee_rate\": 0.01,\n    \"min_fills\": 10,\n    \"min_quotes\": 100,\n    \"price_tolerance\": 1e-08\n  },\n  \"maker_fills\": 0,\n  \"maker_ratio\": 0.0,\n  \"markout_summary\": {\n    \"100\": {\n      \"count\": 7.0,\n      \"max_usdc\": 0.0004999999999972715,\n      \"mean_usdc\": -0.005214285714287143,\n      \"min_usdc\": -0.012500000000004547\n    },\n    \"1000\": {\n      \"count\": 7.0,\n      \"max_usdc\": 0.0004999999999972715,\n      \"mean_usdc\": -0.005928571428572858,\n      \"min_usdc\": -0.0175\n    },\n    \"30000\": {\n      \"count\": 7.0,\n      \"max_usdc\": 0.011499999999996362,\n      \"mean_usdc\": -0.005357142857143509,\n      \"min_usdc\": -0.03349999999999909\n    },\n    \"5000\": {\n      \"count\": 7.0,\n      \"max_usdc\": 0.010500000000001819,\n      \"mean_usdc\": -0.004214285714286104,\n      \"min_usdc\": -0.0175\n    }\n  },\n  \"matched_fills_by_depth\": {},\n  \"reasons\": [\n    \"insufficient_maker_fills:0<min_10\",\n    \"unknown_liquidity_fills:8\",\n    \"no_fills_matched_to_quotes\"\n  ],\n  \"taker_fills\": 0,\n  \"unknown_liquidity_fills\": 8,\n  \"unmatched_fills\": 8,\n  \"usable_for_calibration\": false\n}"
+      "stdout_tail": "{\n  \"accepted_quotes_by_depth\": {\n    \"bid:5.00-6.00bps\": 149\n  },\n  \"accepted_quotes_by_side\": {\n    \"bid\": 149\n  },\n  \"actual_fee_rate\": {\n    \"count\": 0,\n    \"max\": null,\n    \"mean\": null,\n    \"min\": null,\n    \"outlier_count\": 8,\n    \"outlier_threshold\": 0.01\n  },\n  \"fill_probability_by_depth\": {\n    \"bid:5.00-6.00bps\": 0.0\n  },\n  \"fill_probability_by_side\": {\n    \"bid\": 0.053691275167785234\n  },\n  \"fills_by_side\": {\n    \"bid\": 8\n  },\n  \"generated_at\": \"2026-05-25T23:19:08Z\",\n  \"input_paths\": [\n    \"user_data\\\\logs\\\\mm_debug.jsonl\"\n  ],\n  \"inputs\": {\n    \"accepted_quotes\": 149,\n    \"bucket_bps\": 1.0,\n    \"events\": 1117,\n    \"fills\": 8,\n    \"match_window_seconds\": 300.0,\n    \"max_fee_rate\": 0.01,\n    \"min_fills\": 10,\n    \"min_quotes\": 100,\n    \"price_tolerance\": 1e-08\n  },\n  \"maker_fills\": 0,\n  \"maker_ratio\": 0.0,\n  \"markout_summary\": {\n    \"100\": {\n      \"count\": 7.0,\n      \"max_usdc\": 0.0004999999999972715,\n      \"mean_usdc\": -0.005214285714287143,\n      \"min_usdc\": -0.012500000000004547\n    },\n    \"1000\": {\n      \"count\": 7.0,\n      \"max_usdc\": 0.0004999999999972715,\n      \"mean_usdc\": -0.005928571428572858,\n      \"min_usdc\": -0.0175\n    },\n    \"30000\": {\n      \"count\": 7.0,\n      \"max_usdc\": 0.011499999999996362,\n      \"mean_usdc\": -0.005357142857143509,\n      \"min_usdc\": -0.03349999999999909\n    },\n    \"5000\": {\n      \"count\": 7.0,\n      \"max_usdc\": 0.010500000000001819,\n      \"mean_usdc\": -0.004214285714286104,\n      \"min_usdc\": -0.0175\n    }\n  },\n  \"matched_fills_by_depth\": {},\n  \"reasons\": [\n    \"insufficient_maker_fills:0<min_10\",\n    \"unknown_liquidity_fills:8\",\n    \"no_fills_matched_to_quotes\"\n  ],\n  \"taker_fills\": 0,\n  \"unknown_liquidity_fills\": 8,\n  \"unmatched_fills\": 8,\n  \"usable_for_calibration\": false\n}"
+    },
+    {
+      "command": [
+        "C:\\Python310\\python.exe",
+        "scripts/verify_fee_evidence.py",
+        "--input",
+        "user_data/logs/mm_debug.jsonl",
+        "--output",
+        "docs/fee_evidence_report.json"
+      ],
+      "elapsed_seconds": 0.08,
+      "expected_returncodes": [
+        0,
+        1
+      ],
+      "name": "fee_evidence_report",
+      "passed": true,
+      "returncode": 1,
+      "stderr_tail": "",
+      "stdout_tail": "{\n  \"event_count\": 1117,\n  \"expected_maker_fee_rate\": 0.00015,\n  \"expected_taker_fee_rate\": 0.00045,\n  \"fee_snapshots\": {\n    \"config_matches\": 124,\n    \"count\": 124,\n    \"exchange_matches\": 0,\n    \"exchange_sources\": {\n      \"unavailable\": 124\n    },\n    \"exchange_unavailable\": 124,\n    \"strategy_matches\": 124\n  },\n  \"fills\": {\n    \"count\": 8,\n    \"maker\": 0,\n    \"maker_actual_fee_matches\": 0,\n    \"maker_actual_fee_mismatches\": 0,\n    \"maker_actual_fee_observed\": 0,\n    \"min_maker_fills\": 1,\n    \"taker\": 0\n  },\n  \"generated_at\": \"2026-05-25T23:19:08Z\",\n  \"mismatches\": [],\n  \"ok\": false,\n  \"reasons\": [\n    \"exchange_fee_not_proven\",\n    \"insufficient_maker_fills:0<min_1\",\n    \"insufficient_actual_maker_fee_matches:0<min_1\"\n  ],\n  \"tolerance\": 1e-09\n}"
     },
     {
       "command": [
@@ -266,7 +287,7 @@
         "docs/hl_data_validation.json",
         "--fail-on-bad-data"
       ],
-      "elapsed_seconds": 1.727,
+      "elapsed_seconds": 2.176,
       "expected_returncodes": [
         0
       ],
@@ -299,7 +320,7 @@
         "--output",
         "docs/replay_latest_smoke.json"
       ],
-      "elapsed_seconds": 3.264,
+      "elapsed_seconds": 4.112,
       "expected_returncodes": [
         0
       ],
@@ -335,7 +356,7 @@
         "docs/replay_acceptance_report.md",
         "--allow-incomplete"
       ],
-      "elapsed_seconds": 17.666,
+      "elapsed_seconds": 17.894,
       "expected_returncodes": [
         0
       ],
@@ -343,7 +364,7 @@
       "passed": true,
       "returncode": 0,
       "stderr_tail": "",
-      "stdout_tail": "_pnl_usdc\": 0.0,\n        \"markout_samples\": [],\n        \"max_margin_used_usdc\": 0.0,\n        \"min_equity_usdc\": 1000.0,\n        \"min_liquidation_buffer_usdc\": 1000.0,\n        \"notional_exposure_usdc\": 0.0,\n        \"parameter_series\": [\n          {\n            \"epsilon_minus\": 0.01,\n            \"epsilon_plus\": 0.01,\n            \"kappa_minus\": 1.6,\n            \"kappa_plus\": 1.6,\n            \"lambda_minus\": 0.08000000000000002,\n            \"lambda_plus\": 0.08000000000000002,\n            \"symbol\": \"ETH\"\n          }\n        ],\n        \"pnl_by_side\": {\n          \"ask\": 0.0,\n          \"bid\": 0.0\n        },\n        \"post_only_reject_ratio\": 0.0,\n        \"post_only_rejects\": 0,\n        \"queue_decay_base\": 0.0,\n        \"quote_attempts\": 2000,\n        \"realized_spread_usdc\": 0.0,\n        \"stale_quote_cancels\": 2000,\n        \"starting_equity_usdc\": 1000.0,\n        \"taker_fills\": 0,\n        \"time_at_q_boundary\": {\n          \"q_max\": 0,\n          \"q_min\": 2000\n        },\n        \"toxicity_series\": [\n          {\n            \"symbol\": \"ETH\",\n            \"toxicity_minus\": 0.016,\n            \"toxicity_plus\": 0.016\n          }\n        ]\n      },\n      \"net_realized_spread_usdc\": 0.0,\n      \"ok\": false,\n      \"reasons\": [\n        \"insufficient_coverage_days:0.003152<min_3.000000\",\n        \"no_maker_fills\"\n      ],\n      \"variant\": {\n        \"epsilon_add\": 0.01,\n        \"latency_multiplier\": 1.0,\n        \"maker_fee_multiplier\": 1.0,\n        \"name\": \"params_soft\",\n        \"params_multiplier\": 0.8\n      }\n    },\n    {\n      \"coverage_days\": 0.003152228101851852,\n      \"directional_drift_ratio\": 0.0,\n      \"directional_pnl_proxy_usdc\": 0.0,\n      \"markout_summary\": {},\n      \"metrics\": {\n        \"cash_usdc\": 0.0,\n        \"data_end\": \"2026-05-25T23:03:48.286797762+00:00\",\n        \"data_start\": \"2026-05-25T22:59:15.934289455+00:00\",\n        \"equity_usdc\": 1000.0,\n        \"fees_usdc\": 0.0,\n        \"fill_ratio_by_depth\": {},\n        \"final_mid\": 2104.6499999999996,\n        \"funding_usdc\": 0.0,\n        \"input_files\": {\n          \"orderbooks\": 25,\n          \"prices\": 25,\n          \"trades\": 25\n        },\n        \"input_rows\": {\n          \"orderbooks\": 504,\n          \"prices\": 2000,\n          \"trades\": 556\n        },\n        \"inventory_base\": 0.0,\n        \"inventory_histogram\": {\n          \"0\": 2000\n        },\n        \"liquidation_breach_events\": 0,\n        \"maintenance_margin_usdc\": 0.0,\n        \"maker_fills\": 0,\n        \"maker_ratio\": 0.0,\n        \"margin_used_usdc\": 0.0,\n        \"mark_to_market_pnl_usdc\": 0.0,\n        \"markout_samples\": [],\n        \"max_margin_used_usdc\": 0.0,\n        \"min_equity_usdc\": 1000.0,\n        \"min_liquidation_buffer_usdc\": 1000.0,\n        \"notional_exposure_usdc\": 0.0,\n        \"parameter_series\": [\n          {\n            \"epsilon_minus\": 0.02,\n            \"epsilon_plus\": 0.02,\n            \"kappa_minus\": 2.4,\n            \"kappa_plus\": 2.4,\n            \"lambda_minus\": 0.12,\n            \"lambda_plus\": 0.12,\n            \"symbol\": \"ETH\"\n          }\n        ],\n        \"pnl_by_side\": {\n          \"ask\": 0.0,\n          \"bid\": 0.0\n        },\n        \"post_only_reject_ratio\": 0.0,\n        \"post_only_rejects\": 0,\n        \"queue_decay_base\": 0.0,\n        \"quote_attempts\": 2000,\n        \"realized_spread_usdc\": 0.0,\n        \"stale_quote_cancels\": 2000,\n        \"starting_equity_usdc\": 1000.0,\n        \"taker_fills\": 0,\n        \"time_at_q_boundary\": {\n          \"q_max\": 0,\n          \"q_min\": 2000\n        },\n        \"toxicity_series\": [\n          {\n            \"symbol\": \"ETH\",\n            \"toxicity_minus\": 0.048,\n            \"toxicity_plus\": 0.048\n          }\n        ]\n      },\n      \"net_realized_spread_usdc\": 0.0,\n      \"ok\": false,\n      \"reasons\": [\n        \"insufficient_coverage_days:0.003152<min_3.000000\",\n        \"no_maker_fills\"\n      ],\n      \"variant\": {\n        \"epsilon_add\": 0.02,\n        \"latency_multiplier\": 1.0,\n        \"maker_fee_multiplier\": 1.0,\n        \"name\": \"params_hard\",\n        \"params_multiplier\": 1.2\n      }\n    }\n  ]\n}"
+      "stdout_tail": "_to_market_pnl_usdc\": 0.0,\n        \"markout_samples\": [],\n        \"max_margin_used_usdc\": 0.0,\n        \"min_equity_usdc\": 1000.0,\n        \"min_liquidation_buffer_usdc\": 1000.0,\n        \"notional_exposure_usdc\": 0.0,\n        \"parameter_series\": [\n          {\n            \"epsilon_minus\": 0.01,\n            \"epsilon_plus\": 0.01,\n            \"kappa_minus\": 1.6,\n            \"kappa_plus\": 1.6,\n            \"lambda_minus\": 0.08000000000000002,\n            \"lambda_plus\": 0.08000000000000002,\n            \"symbol\": \"ETH\"\n          }\n        ],\n        \"pnl_by_side\": {\n          \"ask\": 0.0,\n          \"bid\": 0.0\n        },\n        \"post_only_reject_ratio\": 0.0,\n        \"post_only_rejects\": 0,\n        \"queue_decay_base\": 0.0,\n        \"quote_attempts\": 2000,\n        \"realized_spread_usdc\": 0.0,\n        \"stale_quote_cancels\": 2000,\n        \"starting_equity_usdc\": 1000.0,\n        \"taker_fills\": 0,\n        \"time_at_q_boundary\": {\n          \"q_max\": 0,\n          \"q_min\": 2000\n        },\n        \"toxicity_series\": [\n          {\n            \"symbol\": \"ETH\",\n            \"toxicity_minus\": 0.016,\n            \"toxicity_plus\": 0.016\n          }\n        ]\n      },\n      \"net_realized_spread_usdc\": 0.0,\n      \"ok\": false,\n      \"reasons\": [\n        \"insufficient_coverage_days:0.004538<min_3.000000\",\n        \"no_maker_fills\"\n      ],\n      \"variant\": {\n        \"epsilon_add\": 0.01,\n        \"latency_multiplier\": 1.0,\n        \"maker_fee_multiplier\": 1.0,\n        \"name\": \"params_soft\",\n        \"params_multiplier\": 0.8\n      }\n    },\n    {\n      \"coverage_days\": 0.0045376421180555555,\n      \"directional_drift_ratio\": 0.0,\n      \"directional_pnl_proxy_usdc\": 0.0,\n      \"markout_summary\": {},\n      \"metrics\": {\n        \"cash_usdc\": 0.0,\n        \"data_end\": \"2026-05-25T23:18:51.884624243+00:00\",\n        \"data_start\": \"2026-05-25T23:12:19.832344770+00:00\",\n        \"equity_usdc\": 1000.0,\n        \"fees_usdc\": 0.0,\n        \"fill_ratio_by_depth\": {},\n        \"final_mid\": 2107.75,\n        \"funding_usdc\": 0.0,\n        \"input_files\": {\n          \"orderbooks\": 25,\n          \"prices\": 25,\n          \"trades\": 25\n        },\n        \"input_rows\": {\n          \"orderbooks\": 641,\n          \"prices\": 2000,\n          \"trades\": 260\n        },\n        \"inventory_base\": 0.0,\n        \"inventory_histogram\": {\n          \"0\": 2000\n        },\n        \"liquidation_breach_events\": 0,\n        \"maintenance_margin_usdc\": 0.0,\n        \"maker_fills\": 0,\n        \"maker_ratio\": 0.0,\n        \"margin_used_usdc\": 0.0,\n        \"mark_to_market_pnl_usdc\": 0.0,\n        \"markout_samples\": [],\n        \"max_margin_used_usdc\": 0.0,\n        \"min_equity_usdc\": 1000.0,\n        \"min_liquidation_buffer_usdc\": 1000.0,\n        \"notional_exposure_usdc\": 0.0,\n        \"parameter_series\": [\n          {\n            \"epsilon_minus\": 0.02,\n            \"epsilon_plus\": 0.02,\n            \"kappa_minus\": 2.4,\n            \"kappa_plus\": 2.4,\n            \"lambda_minus\": 0.12,\n            \"lambda_plus\": 0.12,\n            \"symbol\": \"ETH\"\n          }\n        ],\n        \"pnl_by_side\": {\n          \"ask\": 0.0,\n          \"bid\": 0.0\n        },\n        \"post_only_reject_ratio\": 0.0,\n        \"post_only_rejects\": 0,\n        \"queue_decay_base\": 0.0,\n        \"quote_attempts\": 2000,\n        \"realized_spread_usdc\": 0.0,\n        \"stale_quote_cancels\": 2000,\n        \"starting_equity_usdc\": 1000.0,\n        \"taker_fills\": 0,\n        \"time_at_q_boundary\": {\n          \"q_max\": 0,\n          \"q_min\": 2000\n        },\n        \"toxicity_series\": [\n          {\n            \"symbol\": \"ETH\",\n            \"toxicity_minus\": 0.048,\n            \"toxicity_plus\": 0.048\n          }\n        ]\n      },\n      \"net_realized_spread_usdc\": 0.0,\n      \"ok\": false,\n      \"reasons\": [\n        \"insufficient_coverage_days:0.004538<min_3.000000\",\n        \"no_maker_fills\"\n      ],\n      \"variant\": {\n        \"epsilon_add\": 0.02,\n        \"latency_multiplier\": 1.0,\n        \"maker_fee_multiplier\": 1.0,\n        \"name\": \"params_hard\",\n        \"params_multiplier\": 1.2\n      }\n    }\n  ]\n}"
     }
   ],
   "manual_gates": [
@@ -354,6 +375,10 @@
     {
       "name": "multi_day_event_replay",
       "reason": "Requires several days of fresh HL_data and review of markout/latency/fee sensitivity."
+    },
+    {
+      "name": "hyperliquid_fee_tier",
+      "reason": "Requires exchange/account maker-fee evidence and actual maker fill fee rates."
     },
     {
       "name": "live_canary",

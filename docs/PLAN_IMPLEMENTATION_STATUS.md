@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 136 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 140 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -78,6 +78,12 @@ Generated from the current local worktree after the latest safety-gate run.
   markout summary. The runtime safety gate generates this artifact after the
   enabled dry-run smoke. It can be `usable_for_calibration=false` until enough
   real dry-run/testnet fills exist.
+- Fee evidence report:
+  `scripts/verify_fee_evidence.py` writes `docs/fee_evidence_report.json` from
+  JSONL audit logs. It requires strategy/config fee agreement, exchange/account
+  maker-fee evidence, and at least one maker fill with an actual fee rate that
+  matches the configured maker fee. The current report can be `ok=false` until
+  testnet/tiny integration supplies real account fee and fill-fee evidence.
 
 ## Phase Status
 
@@ -87,7 +93,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 1 - HJB math | Automated pass | `tests/test_hjb.py`; `compute_spreads_boundary_smoke`. |
 | Phase 2 - inventory/units/risk | Automated pass for long-only research mode | Strategy guard tests, `docs/UNITS.md`, quote logs include signed base and q. |
 | Phase 3 - Freqtrade fail-closed wiring | Automated pass | Confirm gates, callback signature tests, disabled and enabled dry-run smokes. |
-| Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` is not verified. |
+| Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, fee evidence evaluator, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` and account fee-tier evidence are not verified. |
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, schema v2 tests, status locking, and row-timestamp-based collector freshness validation. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
 | Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, freshness-age fields, fee agreement snapshots, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, delayed fill markouts, post-only reject-rate enforcement, and kill-switch tests/log artifacts exist. |
@@ -98,6 +104,10 @@ Generated from the current local worktree after the latest safety-gate run.
 - Hyperliquid post-only/Alo integration:
   prove passive `Alo` orders rest, crossing `Alo` orders reject/cancel without
   filling, actual order TIF is `Alo`, and liquidity/fee fields are logged.
+- Hyperliquid account fee tier:
+  provide exchange/account fee snapshots and maker fills whose actual fee rate
+  matches the configured maker fee so `docs/fee_evidence_report.json` becomes
+  `ok=true`.
 - Multi-day event replay:
   run several days of collected data with fee, latency, and parameter
   perturbation sensitivity; review realized spread, markouts, maker ratio,

@@ -89,6 +89,12 @@ Optional Docker runtime gates:
   markout summary. The artifact may be `usable_for_calibration=false` when the
   sample is too small; that is expected until enough dry-run/testnet fills
   exist.
+- `fee_evidence_report`: parses the same audit log and writes
+  `docs/fee_evidence_report.json`. The report requires strategy/config fee
+  agreement, an exchange/account maker-fee snapshot, and at least one maker fill
+  whose actual fee rate matches the configured maker fee. It is expected to be
+  `ok=false` until testnet/tiny integration produces real fee-tier and fill-fee
+  evidence.
 - `hl_data_validation_report`: reads the newest collector Parquet shards and
   validates required streams/columns plus the actual `timestamp` values inside
   the files. Freshness is based on row timestamps, not file modification time,
@@ -164,6 +170,10 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   gate is a several-day replay with acceptable realized spread, markouts, maker
   ratio, inventory, latency, fee sensitivity, parameter perturbation, and
   directional-drift attribution.
+- `hyperliquid_fee_tier`: provide exchange/account fee snapshots and maker fill
+  logs, then run `python scripts/verify_fee_evidence.py --input user_data/logs/mm_debug.jsonl --output docs/fee_evidence_report.json`.
+  This report must be `ok=true` before canary: config/strategy fee agreement is
+  not enough without exchange/account fee and actual maker fill-fee evidence.
 - `live_canary`: only after all previous gates pass, with tiny fixed stake,
   one symbol, hard loss limits, post-only required, and kill-on-taker-fill
   enabled.

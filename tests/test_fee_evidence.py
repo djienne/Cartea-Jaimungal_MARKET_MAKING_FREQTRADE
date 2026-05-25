@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from verify_fee_evidence import build_fee_evidence_report, read_jsonl_events  # noqa: E402
+
+
+def fee_snapshot_event(**overrides):
+    snapshot = {
+        "strategy_maker_fee_rate": 0.00015,
+        "config_fee_rate": 0.00015,
+        "config_fee_matches_strategy": True,
+        "exchange_fee_source": "fetch_trading_fee",
+        "exchange_maker_fee_rate": 0.00015,
+        "exchange_taker_fee_rate": 0.00045,
+        "exchange_maker_fee_matches_strategy": True,
+    }
+    snapshot.update(overrides)
+    return {"event": "health", "fee_snapshot": snapshot}
+
+
+def test_fee_evidence_passes_with_exchange_and_maker_fill_fee():
+    report = build_fee_evidence_report(
+        [
+            fee_snapshot_event(),
+            {
+                "event": "fill",
+                "liquidity": "maker",
+                "actual_fee_rate": 0.00015,
+                "order_id": "maker-1",
+            },
+        ]
+    )
+
+    assert report["ok"] is True
+    assert report["reasons"] == []
+    assert report["fee_snapshots"]["exchange_matches"] == 1
+    assert report["fills"]["maker_actual_fee_matches"] == 1
+
+
+def test_fee_evidence_requires_exchange_fee_and_actual_maker_fill():
+    report = build_fee_evidence_report(
+        [
+            fee_snapshot_event(
+                exchange_fee_source="unavailable",
+                exchange_maker_fee_rate=None,
+                exchange_taker_fee_rate=None,
+                exchange_maker_fee_matches_strategy=None,
+            )
+        ]
+    )
+
+    assert report["ok"] is False
+    assert "exchange_fee_not_proven" in report["reasons"]
+    assert "insufficient_maker_fills:0<min_1" in report["reasons"]
+    assert "insufficient_actual_maker_fee_matches:0<min_1" in report["reasons"]
+
+
+def test_fee_evidence_rejects_taker_or_mismatched_fee():
+    report = build_fee_evidence_report(
+        [
+            fee_snapshot_event(exchange_maker_fee_rate=0.001, exchange_maker_fee_matches_strategy=False),
+            {"event": "fill", "liquidity": "maker", "actual_fee_rate": 0.001, "order_id": "bad-maker"},
+            {"event": "fill", "liquidity": "taker", "actual_fee_rate": 0.00045, "order_id": "taker-1"},
+        ]
+    )
+
+    assert report["ok"] is False
+    assert "exchange_fee_not_proven" in report["reasons"]
+    assert "fee_snapshot_mismatch" in report["reasons"]
+    assert "actual_maker_fee_mismatches:1" in report["reasons"]
+    assert "taker_fills_seen:1" in report["reasons"]
+
+
+def test_read_jsonl_events_skips_invalid_lines(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps({"event": "health"}),
+                "not-json",
+                json.dumps(["not", "an", "event"]),
+                json.dumps({"event": "fill"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_jsonl_events(path) == [{"event": "health"}, {"event": "fill"}]

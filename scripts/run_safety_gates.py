@@ -78,6 +78,7 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                 "pytest",
                 "tests/test_hjb.py",
                 "tests/test_hyperliquid_alo_executor.py",
+                "tests/test_fee_evidence.py",
                 "tests/test_strategy_guards.py",
                 "tests/test_params.py",
                 "tests/test_periodic_runner.py",
@@ -223,6 +224,18 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                     [0],
                 ),
                 (
+                    "fee_evidence_report",
+                    [
+                        sys.executable,
+                        "scripts/verify_fee_evidence.py",
+                        "--input",
+                        "user_data/logs/mm_debug.jsonl",
+                        "--output",
+                        "docs/fee_evidence_report.json",
+                    ],
+                    [0, 1],
+                ),
+                (
                     "hl_data_validation_report",
                     [
                         sys.executable,
@@ -308,6 +321,10 @@ def manual_gates(*, include_runtime: bool = False) -> list[dict[str, str]]:
         {
             "name": "multi_day_event_replay",
             "reason": "Requires several days of fresh HL_data and review of markout/latency/fee sensitivity.",
+        },
+        {
+            "name": "hyperliquid_fee_tier",
+            "reason": "Requires exchange/account maker-fee evidence and actual maker fill fee rates.",
         },
         {
             "name": "live_canary",
