@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 91 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 93 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -50,9 +50,10 @@ Generated from the current local worktree after the latest safety-gate run.
   one-way price movement is reported separately from net realized spread.
   Replay quote generation and fill accounting both use the configured
   maker/taker fee schedule, so fee-sensitivity variants change quoted depth as
-  well as fees paid. The current report correctly fails because the local data
-  window is much shorter than the required multi-day coverage and has no maker
-  fills.
+  well as fees paid. The report also includes refusal checks proving bad
+  parameters and stale collector data reject quoting. The current report
+  correctly fails because the local data window is much shorter than the
+  required multi-day coverage and has no maker fills.
 
 ## Phase Status
 

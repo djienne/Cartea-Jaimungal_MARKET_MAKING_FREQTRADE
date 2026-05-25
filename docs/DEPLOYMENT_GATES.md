@@ -62,7 +62,9 @@ Optional Docker runtime gates:
   report includes a directional-drift ratio so mark-to-market PnL that is not
   explained by net realized spread cannot masquerade as maker edge. Replay
   quotes and fill accounting both use the configured maker fee, so fee
-  sensitivity changes quote distances as well as realized fees.
+  sensitivity changes quote distances as well as realized fees. The report also
+  includes refusal checks for bad parameters and stale collector data, proving
+  those scenarios reject quoting instead of silently producing orders.
 
 Data freshness/replay-readiness report:
 

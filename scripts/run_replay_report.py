@@ -128,6 +128,110 @@ def directional_drift_ratio(metrics: dict[str, Any]) -> float:
     return directional / scale
 
 
+def replay_param_guard(params: dict[str, Any], *, max_toxicity: float = 1.5) -> tuple[bool, str]:
+    required = ("kappa+", "kappa-", "lambda+", "lambda-", "epsilon+", "epsilon-")
+    parsed: dict[str, float] = {}
+    for key in required:
+        if key not in params:
+            return False, f"missing_{key}"
+        try:
+            value = float(params[key])
+        except Exception:
+            return False, f"nonfinite_{key}"
+        if not np.isfinite(value):
+            return False, f"nonfinite_{key}"
+        parsed[key] = value
+
+    if parsed["kappa+"] <= 0 or parsed["kappa-"] <= 0:
+        return False, "invalid_kappa"
+    if parsed["lambda+"] < 0 or parsed["lambda-"] < 0:
+        return False, "invalid_lambda"
+    if parsed["epsilon+"] < 0 or parsed["epsilon-"] < 0:
+        return False, "invalid_epsilon"
+
+    toxicity = max(parsed["kappa+"] * parsed["epsilon+"], parsed["kappa-"] * parsed["epsilon-"])
+    if toxicity > float(max_toxicity):
+        return False, "toxicity_too_high"
+
+    return True, "ok"
+
+
+def replay_data_fresh_guard(
+    metrics: dict[str, Any],
+    *,
+    reference_time: pd.Timestamp,
+    max_age_seconds: float,
+) -> tuple[bool, str, float | None]:
+    data_end = parse_ts(metrics.get("data_end"))
+    if data_end is None:
+        return False, "no_collector_data", None
+    age_seconds = max(0.0, float((reference_time - data_end).total_seconds()))
+    if age_seconds > float(max_age_seconds):
+        return False, "stale_collector_data", age_seconds
+    return True, "ok", age_seconds
+
+
+def build_refusal_checks(
+    *,
+    params: dict[str, float],
+    baseline_metrics: dict[str, Any],
+    max_toxicity: float = 1.5,
+    max_data_age_seconds: float = 30.0,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+
+    bad_kappa_params = dict(params)
+    bad_kappa_params["kappa+"] = 0.0
+    ok, reason = replay_param_guard(bad_kappa_params, max_toxicity=max_toxicity)
+    checks.append(
+        {
+            "name": "bad_params_nonpositive_kappa",
+            "expected_decision": "reject",
+            "decision": "accept" if ok else "reject",
+            "reason": reason,
+            "ok": (not ok and reason == "invalid_kappa"),
+        }
+    )
+
+    toxic_params = dict(params)
+    toxic_params["epsilon+"] = max(float(toxic_params.get("epsilon+", 0.0)), float(max_toxicity) + 0.1)
+    ok, reason = replay_param_guard(toxic_params, max_toxicity=max_toxicity)
+    checks.append(
+        {
+            "name": "bad_params_toxicity",
+            "expected_decision": "reject",
+            "decision": "accept" if ok else "reject",
+            "reason": reason,
+            "ok": (not ok and reason == "toxicity_too_high"),
+        }
+    )
+
+    data_end = parse_ts(baseline_metrics.get("data_end"))
+    reference = (
+        data_end + pd.Timedelta(seconds=float(max_data_age_seconds) + 1.0)
+        if data_end is not None
+        else pd.Timestamp.now(tz="UTC")
+    )
+    ok, reason, age_seconds = replay_data_fresh_guard(
+        baseline_metrics,
+        reference_time=reference,
+        max_age_seconds=max_data_age_seconds,
+    )
+    checks.append(
+        {
+            "name": "stale_collector_data",
+            "expected_decision": "reject",
+            "decision": "accept" if ok else "reject",
+            "reason": reason,
+            "age_seconds": age_seconds,
+            "max_age_seconds": float(max_data_age_seconds),
+            "ok": (not ok and reason == "stale_collector_data"),
+        }
+    )
+
+    return checks
+
+
 def evaluate_metrics(
     metrics: dict[str, Any],
     *,
@@ -233,6 +337,12 @@ def build_report(
         )
         all_reasons.extend(f"{variant.name}:{reason}" for reason in reasons)
 
+    baseline_metrics = variant_payloads[0]["metrics"] if variant_payloads else {}
+    refusal_checks = build_refusal_checks(params=params, baseline_metrics=baseline_metrics)
+    for check in refusal_checks:
+        if not check["ok"]:
+            all_reasons.append(f"refusal:{check['name']}:{check['reason']}")
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "symbol": config.symbol,
@@ -259,6 +369,7 @@ def build_report(
             "funding_rate_per_hour": config.funding_rate_per_hour,
         },
         "base_params": params,
+        "refusal_checks": refusal_checks,
         "variants": variant_payloads,
     }
 
@@ -292,6 +403,26 @@ def render_markdown(report: dict[str, Any]) -> str:
                 reasons=reasons,
             )
         )
+    if report.get("refusal_checks"):
+        lines.extend(
+            [
+                "",
+                "## Refusal Checks",
+                "",
+                "| Check | Status | Expected | Decision | Reason |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+        )
+        for check in report["refusal_checks"]:
+            lines.append(
+                "| {name} | {status} | {expected} | {decision} | {reason} |".format(
+                    name=check["name"],
+                    status="PASS" if check["ok"] else "FAIL",
+                    expected=check.get("expected_decision", ""),
+                    decision=check.get("decision", ""),
+                    reason=check.get("reason", ""),
+                )
+            )
     if report["reasons"]:
         lines.extend(["", "## Blocking Reasons", ""])
         lines.extend(f"- `{reason}`" for reason in report["reasons"])

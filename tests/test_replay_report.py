@@ -10,12 +10,14 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from run_replay_report import (  # noqa: E402
+    build_refusal_checks,
     coverage_days,
     directional_drift_ratio,
     directional_pnl_proxy_usdc,
     evaluate_metrics,
     markout_summary,
     render_markdown,
+    replay_param_guard,
 )
 
 
@@ -133,12 +135,62 @@ def test_evaluate_metrics_rejects_directional_drift_dominated_pnl():
     assert any(reason.startswith("directional_drift_dominates_pnl") for reason in reasons)
 
 
+def test_replay_param_guard_rejects_toxicity():
+    ok, reason = replay_param_guard(
+        {
+            "kappa+": 2.0,
+            "kappa-": 2.0,
+            "lambda+": 0.1,
+            "lambda-": 0.1,
+            "epsilon+": 1.0,
+            "epsilon-": 0.0,
+        },
+        max_toxicity=1.5,
+    )
+
+    assert not ok
+    assert reason == "toxicity_too_high"
+
+
+def test_refusal_checks_require_bad_params_and_stale_data_to_reject():
+    checks = build_refusal_checks(
+        params={
+            "kappa+": 2.0,
+            "kappa-": 2.0,
+            "lambda+": 0.1,
+            "lambda-": 0.1,
+            "epsilon+": 0.0,
+            "epsilon-": 0.0,
+        },
+        baseline_metrics=minimal_metrics(),
+        max_toxicity=1.5,
+        max_data_age_seconds=30,
+    )
+
+    assert {check["name"] for check in checks} == {
+        "bad_params_nonpositive_kappa",
+        "bad_params_toxicity",
+        "stale_collector_data",
+    }
+    assert all(check["ok"] for check in checks)
+    assert all(check["decision"] == "reject" for check in checks)
+
+
 def test_render_markdown_includes_reasons():
     report = {
         "ok": False,
         "symbol": "ETH",
         "generated_at": "2026-05-25T00:00:00Z",
         "reasons": ["baseline:no_maker_fills"],
+        "refusal_checks": [
+            {
+                "name": "bad_params_nonpositive_kappa",
+                "ok": True,
+                "expected_decision": "reject",
+                "decision": "reject",
+                "reason": "invalid_kappa",
+            }
+        ],
         "variants": [
             {
                 "variant": {"name": "baseline"},
@@ -154,4 +206,6 @@ def test_render_markdown_includes_reasons():
     markdown = render_markdown(report)
 
     assert "Replay Acceptance Report" in markdown
+    assert "Refusal Checks" in markdown
+    assert "bad_params_nonpositive_kappa" in markdown
     assert "`baseline:no_maker_fills`" in markdown
