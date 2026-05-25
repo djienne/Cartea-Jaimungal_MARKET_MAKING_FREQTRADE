@@ -50,7 +50,9 @@ Optional Docker runtime gates:
   decision, and dry-run order evidence. Checked-in config and checked-in params
   remain fail-closed. Strategy fill callbacks also schedule delayed
   `fill_markout` audit events at 100 ms, 1 s, 5 s, and 30 s after fills when
-  fill price, size, and side are available.
+  fill price, size, and side are available. Quote, health, and fill logs include
+  fee snapshots that compare the strategy maker fee with config, exchange
+  metadata, and actual fill fee rates when available.
 - `replay_latest_data_smoke`: after runtime collector gates have produced fresh
   shards, replays the newest local data window and writes
   `docs/replay_latest_smoke.json` with input coverage, maker/taker counts,

@@ -176,6 +176,7 @@ class Market_Making(IStrategy):
     min_post_only_reject_samples = 10
     kill_on_taker_fill = True
     fill_markout_horizons_ms = (100, 1_000, 5_000, 30_000)
+    fee_snapshot_cache_seconds = 300
     min_kappa_fit_points = 2
     min_kappa_r2 = 0.0
     min_epsilon_events = 1
@@ -1234,6 +1235,138 @@ class Market_Making(IStrategy):
             configured = self.order_time_in_force.get("exit")
         return "Alo" if self.post_only_verified else configured
 
+    def _config_fee_rate(self) -> float | None:
+        config = getattr(self, "config", {}) or {}
+        if not isinstance(config, dict):
+            return None
+        return self._finite_float_or_none(config.get("fee"))
+
+    def _fee_rate_matches(self, expected: float | None, observed: float | None, tolerance: float = 1e-9) -> bool | None:
+        if expected is None or observed is None:
+            return None
+        return abs(float(expected) - float(observed)) <= float(tolerance)
+
+    def _extract_fee_rates_from_mapping(self, payload: Any) -> tuple[float | None, float | None]:
+        if not isinstance(payload, dict):
+            return None, None
+
+        maker = None
+        taker = None
+        for key in ("maker", "maker_fee", "makerFee", "maker_rate", "makerRate"):
+            if key in payload:
+                maker = self._finite_float_or_none(payload.get(key))
+                if maker is not None:
+                    break
+        for key in ("taker", "taker_fee", "takerFee", "taker_rate", "takerRate"):
+            if key in payload:
+                taker = self._finite_float_or_none(payload.get(key))
+                if taker is not None:
+                    break
+        if maker is not None or taker is not None:
+            return maker, taker
+
+        for key in ("trading", "fees", "info"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                maker, taker = self._extract_fee_rates_from_mapping(nested)
+                if maker is not None or taker is not None:
+                    return maker, taker
+        return None, None
+
+    def _cached_exchange_fee_snapshot(self, pair: str) -> dict[str, Any] | None:
+        cache = getattr(self, "_fee_snapshot_cache", None)
+        if not isinstance(cache, dict):
+            return None
+        entry = cache.get(pair)
+        if not isinstance(entry, dict):
+            return None
+        checked_at = self._as_utc(entry.get("checked_at"))
+        if checked_at is None:
+            return None
+        age = (self._now_utc() - checked_at).total_seconds()
+        if age > float(self.fee_snapshot_cache_seconds):
+            return None
+        snapshot = entry.get("snapshot")
+        return snapshot if isinstance(snapshot, dict) else None
+
+    def _exchange_fee_snapshot(self, pair: str) -> dict[str, Any]:
+        cached = self._cached_exchange_fee_snapshot(pair)
+        if cached is not None:
+            return cached
+
+        exchange = getattr(self, "exchange", None)
+        maker = None
+        taker = None
+        source = "unavailable"
+
+        if exchange is not None:
+            try:
+                market = getattr(exchange, "markets", {}).get(pair, {})
+            except Exception:
+                market = {}
+            maker, taker = self._extract_fee_rates_from_mapping(market)
+            if maker is not None or taker is not None:
+                source = "exchange_markets"
+
+            if maker is None and taker is None:
+                maker, taker = self._extract_fee_rates_from_mapping(getattr(exchange, "fees", None))
+                if maker is not None or taker is not None:
+                    source = "exchange_fees"
+
+            if (
+                maker is None
+                and taker is None
+                and bool(self._mm_config().get("fetch_exchange_fee_snapshot", False))
+            ):
+                method = getattr(exchange, "fetch_trading_fee", None)
+                if callable(method):
+                    try:
+                        fee_payload = method(pair)
+                    except Exception as exc:
+                        source = f"fetch_trading_fee_error:{exc}"
+                    else:
+                        maker, taker = self._extract_fee_rates_from_mapping(fee_payload)
+                        source = "fetch_trading_fee"
+
+        snapshot = {
+            "source": source,
+            "maker_fee_rate": float(maker) if maker is not None else None,
+            "taker_fee_rate": float(taker) if taker is not None else None,
+        }
+        cache = getattr(self, "_fee_snapshot_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._fee_snapshot_cache = cache
+        cache[pair] = {"checked_at": self._now_utc(), "snapshot": snapshot}
+        return snapshot
+
+    def _fee_snapshot(self, pair: str, actual_fee_rate: float | None = None) -> dict[str, Any]:
+        exchange_snapshot = self._exchange_fee_snapshot(pair)
+        strategy_fee = float(self.fees_maker_HL)
+        config_fee = self._config_fee_rate()
+        exchange_maker_fee = self._finite_float_or_none(exchange_snapshot.get("maker_fee_rate"))
+        exchange_taker_fee = self._finite_float_or_none(exchange_snapshot.get("taker_fee_rate"))
+        config_matches = self._fee_rate_matches(strategy_fee, config_fee)
+        exchange_maker_matches = self._fee_rate_matches(strategy_fee, exchange_maker_fee)
+        actual_matches = self._fee_rate_matches(strategy_fee, actual_fee_rate)
+        observed_matches = [
+            match
+            for match in (config_matches, exchange_maker_matches, actual_matches)
+            if match is not None
+        ]
+        return {
+            "strategy_maker_fee_rate": strategy_fee,
+            "config_fee_rate": float(config_fee) if config_fee is not None else None,
+            "config_fee_matches_strategy": config_matches,
+            "exchange_fee_source": exchange_snapshot.get("source"),
+            "exchange_maker_fee_rate": exchange_maker_fee,
+            "exchange_taker_fee_rate": exchange_taker_fee,
+            "exchange_maker_fee_matches_strategy": exchange_maker_matches,
+            "actual_fee_rate": float(actual_fee_rate) if actual_fee_rate is not None else None,
+            "actual_fee_matches_strategy": actual_matches,
+            "fee_agreement_ok": all(observed_matches) if observed_matches else None,
+        }
+
     def _markout_value(self, quote_side: str | None, fill_price: float, future_mid_price: float) -> float | None:
         if quote_side == "bid":
             return float(future_mid_price) - float(fill_price)
@@ -1781,6 +1914,7 @@ class Market_Making(IStrategy):
             "book_fresh_reason": book_reason if snapshot else book_snapshot_reason,
             "post_only_verified": bool(self.post_only_verified),
             "params": self._params_snapshot(symbol),
+            "fee_snapshot": self._fee_snapshot(pair),
             **self._inventory_snapshot(pair),
             **(extra or {}),
         }
@@ -1816,6 +1950,7 @@ class Market_Making(IStrategy):
                 "hjb_fresh": hjb_fresh,
                 "hjb_age_seconds": self._hjb_age_seconds(now),
                 "post_only_verified": bool(self.post_only_verified),
+                "fee_snapshot": self._fee_snapshot(pair),
                 "open_orders": open_order_count,
                 "open_orders_source": open_order_source,
                 "accepted_order_attempts": int(getattr(self, "_accepted_order_attempts", 0)),
@@ -2208,6 +2343,7 @@ class Market_Making(IStrategy):
             "expected_fee_rate": float(self.fees_maker_HL),
             "actual_fee_paid": float(fee_paid) if fee_paid is not None else None,
             "actual_fee_rate": float(fee_rate) if fee_rate is not None else None,
+            "fee_snapshot": self._fee_snapshot(pair, fee_rate),
             "order_type": order_type,
             "tif": tif,
             "tif_canonical": tif_canonical,

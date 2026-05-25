@@ -117,6 +117,8 @@ class DummyExchange:
             "ETH/USDC:USDC": {
                 "precision": {"amount": 2, "price": 2},
                 "limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}},
+                "maker": 0.00015,
+                "taker": 0.00045,
             }
         }
         self.positions = []
@@ -142,7 +144,7 @@ def make_bot() -> Market_Making:
     bot = Market_Making()
     bot.dp = DummyDP()
     bot.exchange = DummyExchange()
-    bot.config = {"dry_run": True}
+    bot.config = {"dry_run": True, "fee": 0.00015}
     bot.debug_json_log = False
     bot.trading_enabled = False
     bot.post_only_verified = False
@@ -208,6 +210,32 @@ def test_custom_entry_price_signature_includes_trade_argument():
 def test_strategy_time_in_force_uses_runtime_supported_research_mode():
     assert Market_Making.order_time_in_force == {"entry": "GTC", "exit": "GTC"}
     assert Market_Making.post_only_verified is False
+
+
+def test_fee_snapshot_reports_config_and_exchange_agreement():
+    bot = make_bot()
+
+    snapshot = bot._fee_snapshot("ETH/USDC:USDC")
+
+    assert snapshot["strategy_maker_fee_rate"] == bot.fees_maker_HL
+    assert snapshot["config_fee_rate"] == 0.00015
+    assert snapshot["config_fee_matches_strategy"] is True
+    assert snapshot["exchange_fee_source"] == "exchange_markets"
+    assert snapshot["exchange_maker_fee_rate"] == 0.00015
+    assert snapshot["exchange_taker_fee_rate"] == 0.00045
+    assert snapshot["exchange_maker_fee_matches_strategy"] is True
+    assert snapshot["fee_agreement_ok"] is True
+
+
+def test_fee_snapshot_reports_config_mismatch():
+    bot = make_bot()
+    bot.config["fee"] = 0.001
+
+    snapshot = bot._fee_snapshot("ETH/USDC:USDC")
+
+    assert snapshot["config_fee_matches_strategy"] is False
+    assert snapshot["exchange_maker_fee_matches_strategy"] is True
+    assert snapshot["fee_agreement_ok"] is False
 
 
 def test_dry_run_config_can_enable_research_mode_without_post_only():
@@ -528,6 +556,10 @@ def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
     assert payload["actual_fee_paid"] == 0.015
     assert payload["actual_fee_rate"] == 0.00015
     assert payload["expected_fee_rate"] == bot.fees_maker_HL
+    assert payload["fee_snapshot"]["actual_fee_matches_strategy"] is True
+    assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
+    assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
+    assert payload["fee_snapshot"]["fee_agreement_ok"] is True
     assert payload["expected_tif"] == "Alo"
     assert payload["tif_canonical"] == "post_only"
     assert payload["expected_tif_canonical"] == "post_only"
@@ -783,6 +815,8 @@ def test_quote_decision_logs_freshness_age_fields():
     assert payload["params_fresh"] is True
     assert payload["collector_fresh"] is True
     assert payload["book_fresh"] is True
+    assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
+    assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
 
 
 def test_health_log_counts_open_orders_and_logs_position():
@@ -807,6 +841,8 @@ def test_health_log_counts_open_orders_and_logs_position():
     assert payload["position"] == 0.0
     assert payload["signed_base_position"] == 0.0
     assert payload["unrealized_pnl"] == 0.0
+    assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
+    assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
 
 
 def test_health_log_counts_open_orders_from_trades_when_exchange_unavailable():
