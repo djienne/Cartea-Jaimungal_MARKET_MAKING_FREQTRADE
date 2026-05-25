@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 87 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 88 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -22,8 +22,10 @@ Generated from the current local worktree after the latest safety-gate run.
   by `scripts/verify_post_only_mapping.py --mode evaluate-evidence`, so direct
   execution evidence and CCXT/Freqtrade probe evidence use the same Gate 4
   checker. The direct adapter now has a separate guarded
-  `submit-crossing-alo` mode for ALO rejection evidence and keeps regular
-  `submit-alo` locally maker-safe for passive evidence.
+  `submit-crossing-alo` mode for ALO rejection evidence and a guarded
+  `submit-passive-alo` evidence mode that cancels any resting order ids after
+  classification. Regular `submit-alo` remains locally maker-safe for the future
+  direct execution layer.
 - Fresh collector data validation:
   `docs/hl_data_validation.json` shows fresh ETH shards, 75 checked files, and
   0 bad files.

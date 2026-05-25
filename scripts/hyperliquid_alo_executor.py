@@ -221,6 +221,17 @@ def classify_order_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def cancel_resting_orders(exchange: Any, coin: str, resting_oids: list[Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for oid in resting_oids:
+        try:
+            cancel_result = exchange.cancel(coin, int(oid))
+            results.append({"oid": oid, "ok": True, "raw_result": cancel_result})
+        except Exception as exc:
+            results.append({"oid": oid, "ok": False, "cancel_error": str(exc)})
+    return results
+
+
 def load_sdk_exchange(args: argparse.Namespace):
     try:
         import eth_account  # type: ignore
@@ -312,6 +323,46 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
+    if os.getenv(DIRECT_ALO_ALLOW_ENV) != "1":
+        raise SystemExit(f"Set {DIRECT_ALO_ALLOW_ENV}=1 to permit direct ALO submit mode")
+    if not args.acknowledge_real_orders:
+        raise SystemExit("--acknowledge-real-orders is required for submit mode")
+    if not args.allow_passive_probe:
+        raise SystemExit("--allow-passive-probe is required for passive evidence probes")
+    if not args.testnet and not args.allow_mainnet_passive_probe:
+        raise SystemExit("--allow-mainnet-passive-probe is required for non-testnet passive probes")
+    if args.best_bid is None or args.best_ask is None:
+        raise SystemExit("--best-bid and --best-ask are required so local maker-safety is explicit")
+
+    intent = AloOrderIntent(
+        symbol=args.symbol,
+        side=args.side,
+        size=float(args.size),
+        price=float(args.price),
+        reduce_only=bool(args.reduce_only),
+    )
+    ok, reason = maker_safe(intent, float(args.best_bid), float(args.best_ask))
+    if not ok:
+        raise SystemExit(f"local maker-safety failed: {reason}")
+
+    exchange = load_sdk_exchange(args)
+    order_args = build_sdk_order_args(intent)
+    result = exchange.order(**order_args)
+    classification = classify_order_result(result if isinstance(result, dict) else {"raw_result": result})
+    cancel_results = cancel_resting_orders(exchange, intent.coin, classification.get("resting_oids", []))
+    return {
+        "generated_at": utc_now_iso(),
+        "mode": "submit-passive-alo",
+        "intent": asdict(intent),
+        "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
+        "sdk_order_args": order_args,
+        "classification": classification,
+        "cancel_results": cancel_results,
+        "raw_result": result,
+    }
+
+
 def render_plan(symbol: str) -> dict[str, Any]:
     return {
         "generated_at": utc_now_iso(),
@@ -335,6 +386,14 @@ def render_plan(symbol: str) -> dict[str, Any]:
             "--best-bid and --best-ask crossing evidence inputs",
             "bid probe price is best ask; ask probe price is best bid",
         ],
+        "passive_probe_guards": [
+            f"{DIRECT_ALO_ALLOW_ENV}=1",
+            "--acknowledge-real-orders",
+            "--allow-passive-probe",
+            "--testnet, or --allow-mainnet-passive-probe for tiny mainnet evidence",
+            "--best-bid and --best-ask local maker-safety inputs",
+            "resting order ids are canceled after evidence capture",
+        ],
         "response_acceptance": [
             "resting order status is acceptable",
             "ALO post-only rejection/cancel without fill is acceptable",
@@ -348,7 +407,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Guarded direct Hyperliquid SDK Alo executor.")
     parser.add_argument(
         "--mode",
-        choices=["plan", "build-order", "classify-result", "submit-alo", "submit-crossing-alo"],
+        choices=["plan", "build-order", "classify-result", "submit-alo", "submit-crossing-alo", "submit-passive-alo"],
         default="plan",
     )
     parser.add_argument("--symbol", default="ETH/USDC:USDC")
@@ -365,6 +424,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--acknowledge-real-orders", action="store_true")
     parser.add_argument("--allow-crossing-probe", action="store_true")
     parser.add_argument("--allow-mainnet-crossing-probe", action="store_true")
+    parser.add_argument("--allow-passive-probe", action="store_true")
+    parser.add_argument("--allow-mainnet-passive-probe", action="store_true")
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
@@ -391,8 +452,10 @@ def main() -> int:
         payload = classify_order_result(json.loads(args.result_json.read_text(encoding="utf-8")))
     elif args.mode == "submit-alo":
         payload = submit_alo_order(args)
-    else:
+    elif args.mode == "submit-crossing-alo":
         payload = submit_crossing_alo_probe(args)
+    else:
+        payload = submit_passive_alo_probe(args)
 
     text = json.dumps(payload, indent=2, sort_keys=True, default=str)
     if args.output:

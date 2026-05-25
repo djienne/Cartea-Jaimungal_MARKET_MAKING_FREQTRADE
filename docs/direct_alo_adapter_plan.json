@@ -8,12 +8,20 @@
     "--best-bid and --best-ask crossing evidence inputs",
     "bid probe price is best ask; ask probe price is best bid"
   ],
-  "generated_at": "2026-05-25T15:12:46Z",
+  "generated_at": "2026-05-25T15:25:20Z",
   "order_type": {
     "limit": {
       "tif": "Alo"
     }
   },
+  "passive_probe_guards": [
+    "HYPERLIQUID_DIRECT_ALO_ALLOW=1",
+    "--acknowledge-real-orders",
+    "--allow-passive-probe",
+    "--testnet, or --allow-mainnet-passive-probe for tiny mainnet evidence",
+    "--best-bid and --best-ask local maker-safety inputs",
+    "resting order ids are canceled after evidence capture"
+  ],
   "response_acceptance": [
     "resting order status is acceptable",
     "ALO post-only rejection/cancel without fill is acceptable",

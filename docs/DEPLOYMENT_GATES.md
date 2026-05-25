@@ -122,7 +122,10 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   checker normalizes SDK `order_type={"limit": {"tif": "Alo"}}` and evaluates
   the adapter's resting/rejected/fill classification. Use
   `hyperliquid_alo_executor.py --mode submit-crossing-alo` for a direct SDK
-  rejection probe and `--mode submit-alo` for passive resting/maker evidence.
+  rejection probe and `--mode submit-passive-alo` for passive resting/maker
+  evidence with automatic cancellation of any resting order ids returned by the
+  SDK. Plain `--mode submit-alo` is reserved for the future direct execution
+  layer and may leave a passive order working.
 - `multi_day_event_replay`: the automated latest-data smoke proves the replay
   parser and conservative fill loop work on real shards, and the acceptance
   report records exactly which criteria are still failing. The remaining manual

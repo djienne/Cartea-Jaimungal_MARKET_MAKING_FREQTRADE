@@ -78,6 +78,15 @@ $env:HYPERLIQUID_DIRECT_ALO_ALLOW = "1"
 python scripts/hyperliquid_alo_executor.py --mode submit-alo --testnet --symbol ETH/USDC:USDC --side bid --size <min_size> --price <passive_bid> --best-bid <best_bid> --best-ask <best_ask> --acknowledge-real-orders --output docs/direct_alo_submit_result.json
 ```
 
+For evidence generation, prefer the passive probe mode. It submits the same
+native `Alo` order, classifies the response, and cancels any resting order ids
+reported by the SDK:
+
+```bash
+$env:HYPERLIQUID_DIRECT_ALO_ALLOW = "1"
+python scripts/hyperliquid_alo_executor.py --mode submit-passive-alo --testnet --symbol ETH/USDC:USDC --side bid --size <min_size> --price <passive_bid> --best-bid <best_bid> --best-ask <best_ask> --allow-passive-probe --acknowledge-real-orders --output docs/direct_alo_passive_result.json
+```
+
 The canonical evidence checker also accepts direct SDK submit artifacts. It
 normalizes `sdk_order_args.order_type.limit.tif = Alo` into the same post-only
 evidence shape used for CCXT/Freqtrade probes and reads the direct adapter's
@@ -85,7 +94,7 @@ evidence shape used for CCXT/Freqtrade probes and reads the direct adapter's
 outcomes:
 
 ```bash
-python scripts/verify_post_only_mapping.py --mode evaluate-evidence --crossing-result docs/direct_alo_reject_result.json --passive-result docs/direct_alo_submit_result.json --output docs/post_only_evidence_report.json
+python scripts/verify_post_only_mapping.py --mode evaluate-evidence --crossing-result docs/direct_alo_reject_result.json --passive-result docs/direct_alo_passive_result.json --output docs/post_only_evidence_report.json
 ```
 
 The direct adapter requires local maker-safety before normal submit mode, so an

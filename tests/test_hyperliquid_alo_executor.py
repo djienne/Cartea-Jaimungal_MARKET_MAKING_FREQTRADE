@@ -13,6 +13,7 @@ from hyperliquid_alo_executor import (  # noqa: E402
     AloOrderIntent,
     alo_order_type,
     build_sdk_order_args,
+    cancel_resting_orders,
     classify_order_result,
     crossing_probe_check,
     crossing_probe_intent,
@@ -79,6 +80,26 @@ def test_classify_resting_sdk_result_as_ok():
     assert classified["resting_oids"] == [123]
 
 
+def test_cancel_resting_orders_calls_sdk_cancel():
+    class FakeExchange:
+        def __init__(self):
+            self.calls = []
+
+        def cancel(self, coin, oid):
+            self.calls.append((coin, oid))
+            return {"status": "ok", "oid": oid}
+
+    exchange = FakeExchange()
+
+    results = cancel_resting_orders(exchange, "ETH", [123, "456"])
+
+    assert exchange.calls == [("ETH", 123), ("ETH", 456)]
+    assert results == [
+        {"oid": 123, "ok": True, "raw_result": {"status": "ok", "oid": 123}},
+        {"oid": "456", "ok": True, "raw_result": {"status": "ok", "oid": 456}},
+    ]
+
+
 def test_classify_post_only_error_as_ok_rejection():
     result = {"status": "ok", "response": {"data": {"statuses": [{"error": "Post only order would immediately match"}]}}}
 
@@ -124,3 +145,4 @@ def test_plan_documents_submit_guards():
     assert plan["order_type"] == {"limit": {"tif": "Alo"}}
     assert any("HYPERLIQUID_DIRECT_ALO_ALLOW" in item for item in plan["submit_guards"])
     assert any("--allow-crossing-probe" in item for item in plan["crossing_probe_guards"])
+    assert any("--allow-passive-probe" in item for item in plan["passive_probe_guards"])
