@@ -249,6 +249,7 @@ def test_custom_stake_amount_caps_to_one_inventory_unit():
 
 def test_confirm_entry_rejects_missing_hjb_cache():
     bot = make_bot()
+    bot.trading_enabled = True
     bot.hjb_cache = None
 
     assert not bot.confirm_trade_entry(
@@ -263,6 +264,26 @@ def test_confirm_entry_rejects_missing_hjb_cache():
     )
 
 
+def test_confirm_entry_rejects_when_trading_disabled_even_with_valid_quote():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        99.5,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert events[0][0] == "entry_rejected"
+    assert events[0][1]["reason"] == "initial_safety_lock"
+
+
 def test_param_snapshot_status_must_be_ok():
     bot = make_bot()
     bot.kappas["ETH"]["status"] = "seeded_unverified"
@@ -272,6 +293,7 @@ def test_param_snapshot_status_must_be_ok():
 
 def test_stale_params_reject_entry():
     bot = make_bot()
+    bot.trading_enabled = True
     stale = "2026-01-01T00:00:00Z"
     bot.kappas["ETH"]["generated_at"] = stale
 
@@ -307,6 +329,7 @@ def test_live_mode_requires_post_only_verification():
 
 def test_confirm_entry_rejects_boundary_inf_delta():
     bot = make_bot()
+    bot.trading_enabled = True
     DummyTrade._open_trades = [DummyTrade(amount=0.01)]
 
     assert not bot.confirm_trade_entry(
@@ -323,6 +346,7 @@ def test_confirm_entry_rejects_boundary_inf_delta():
 
 def test_confirm_entry_rejects_crossing_bid():
     bot = make_bot()
+    bot.trading_enabled = True
 
     assert not bot.confirm_trade_entry(
         "ETH/USDC:USDC",
@@ -340,16 +364,17 @@ def test_stop_loss_exit_is_not_blocked():
     bot = make_bot()
     bot.hjb_cache = None
 
-    assert bot.confirm_trade_exit(
-        "ETH/USDC:USDC",
-        DummyTrade(amount=0.01),
-        "limit",
-        0.01,
-        90.0,
-        "GTC",
-        "stop_loss",
-        datetime.now(timezone.utc),
-    )
+    for exit_reason in ("stop_loss", "stoploss_on_exchange", "liquidation", "emergency_exit"):
+        assert bot.confirm_trade_exit(
+            "ETH/USDC:USDC",
+            DummyTrade(amount=0.01),
+            "limit",
+            0.01,
+            90.0,
+            "GTC",
+            exit_reason,
+            datetime.now(timezone.utc),
+        )
 
 
 def test_taker_fill_triggers_kill_switch():
@@ -417,6 +442,7 @@ def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
 
 def test_amount_below_minimum_is_rejected():
     bot = make_bot()
+    bot.trading_enabled = True
 
     assert not bot.confirm_trade_entry(
         "ETH/USDC:USDC",

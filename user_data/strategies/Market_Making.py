@@ -977,6 +977,8 @@ class Market_Making(IStrategy):
         return self._inventory_level(pair) > 0
 
     def _quote_state_valid(self, pair: str, side: str, rate: float, current_time: datetime) -> tuple[bool, str]:
+        if not self.trading_enabled:
+            return False, self.fail_closed_reason or "trading_disabled"
         if self.hjb_cache is None:
             return False, "no_hjb_cache"
         if not np.isfinite(float(rate)) or float(rate) <= 0:

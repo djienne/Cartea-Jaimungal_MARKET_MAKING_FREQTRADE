@@ -1,18 +1,18 @@
 # Safety Gate Results
 
-- PASS `compileall` (1.14s)
-- PASS `pytest_core` (20.321s)
-- PASS `compute_spreads_boundary_smoke` (1.553s)
-- PASS `replay_smoke` (1.82s)
-- PASS `post_only_probe_plan` (0.12s)
-- PASS `post_only_evidence_report` (0.084s)
-- PASS `direct_alo_adapter_plan` (0.135s)
-- PASS `docker_compose_config` (0.254s)
-- PASS `freqtrade_runtime_load` (8.155s)
-- PASS `dry_run_disabled_smoke` (224.644s)
-- PASS `dry_run_enabled_smoke` (314.143s)
-- PASS `replay_latest_data_smoke` (3.348s)
-- PASS `replay_acceptance_report_artifact` (16.993s)
+- PASS `compileall` (1.15s)
+- PASS `pytest_core` (21.088s)
+- PASS `compute_spreads_boundary_smoke` (1.577s)
+- PASS `replay_smoke` (2.284s)
+- PASS `post_only_probe_plan` (0.101s)
+- PASS `post_only_evidence_report` (0.095s)
+- PASS `direct_alo_adapter_plan` (0.149s)
+- PASS `docker_compose_config` (0.274s)
+- PASS `freqtrade_runtime_load` (7.947s)
+- PASS `dry_run_disabled_smoke` (225.164s)
+- PASS `dry_run_enabled_smoke` (313.88s)
+- PASS `replay_latest_data_smoke` (3.683s)
+- PASS `replay_acceptance_report_artifact` (17.706s)
 
 Manual gates still required:
 - `hyperliquid_post_only_mapping`: Requires testnet/tiny integration evidence that Freqtrade/CCXT PO maps to Hyperliquid Alo.
