@@ -1,6 +1,23 @@
 {
     "ETH": {
-        "kappa+": 8.54373712363063,
-        "kappa-": 4.195726955538045
+        "generated_at": "2026-05-25T00:00:00Z",
+        "kappa+": 2.8815386649988977,
+        "kappa-": 1.0839082467471117,
+        "lambda+": 0.1364138970843998,
+        "lambda-": 0.09516227408346505,
+        "lambda_source": "lambda0_fit",
+        "n_points_minus": 0,
+        "n_points_plus": 0,
+        "n_quotes": 0,
+        "n_trades": 0,
+        "r2_minus": null,
+        "r2_plus": null,
+        "schema_version": 2,
+        "status": "seeded_unverified",
+        "status_reason": "legacy_snapshot_preserved_for_reference_only",
+        "unit": {
+            "kappa": "1/USDC",
+            "lambda": "events_per_second"
+        }
     }
 }

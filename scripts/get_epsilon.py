@@ -6,6 +6,15 @@ import argparse
 import os
 import json
 
+from param_utils import (
+    PARAM_SCHEMA_VERSION,
+    atomic_write_json,
+    finite_or_none,
+    load_json_object,
+    timestamp_to_iso,
+    utc_now_iso,
+)
+
 # Verbosity control: 0=minimal, 1=verbose (previous default)
 VERBOSITY = 0
 
@@ -273,32 +282,27 @@ def load_kappa_from_json(crypto: str, filename: str = 'kappa.json'):
         raise ValueError(f"kappa values missing for '{crypto}' in {filename}")
     return float(kappa_plus), float(kappa_minus)
 
-def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filename: str = "epsilon.json"):
+def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filename: str = "epsilon.json",
+                         metadata: dict | None = None):
     """Save the epsilon estimates from trimmed mean 5000ms to JSON file"""
-    
-    # Handle NaN values
-    epsilon_plus_val = float(eps_plus) if not np.isnan(eps_plus) else None
-    epsilon_minus_val = float(eps_minus) if not np.isnan(eps_minus) else None
-    
-    # Load existing data if file exists
-    if os.path.exists(filename):
-        try:
-            with open(filename, 'r') as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            data = {}
-    else:
-        data = {}
-    
-    # Update with new estimates
+    metadata = dict(metadata or {})
+    status = str(metadata.pop("status", "ok"))
+    metadata.setdefault("generated_at", utc_now_iso())
+    epsilon_plus_val = finite_or_none(eps_plus)
+    epsilon_minus_val = finite_or_none(eps_minus)
+    data = load_json_object(filename)
+
     data[crypto] = {
+        "schema_version": PARAM_SCHEMA_VERSION,
+        "status": status,
         "epsilon+": epsilon_plus_val,
-        "epsilon-": epsilon_minus_val
+        "epsilon-": epsilon_minus_val,
+        "unit": "USDC",
+        "estimator": "trimmed_mean",
+        **metadata,
     }
-    
-    # Save to file
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=4)
+
+    atomic_write_json(filename, data)
     
     print(f"[save] epsilon -> {filename}")
     print(f"[save] {crypto}: epsilon+={epsilon_plus_val}, epsilon-={epsilon_minus_val}")
@@ -353,13 +357,17 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, do_plot: bool = False
     print(f"{crypto}: epsilon+={eps_plus:.8f}, epsilon-={eps_minus:.8f}")
 
     # Check toxicity using kappa from kappa.json (per-crypto)
+    toxicity_plus = None
+    toxicity_minus = None
     try:
         kappa_plus, kappa_minus = load_kappa_from_json(crypto)
         log_section(f"TOXICITY CHECK - {crypto}")
-        print(f"  kappa+ x epsilon+ = {kappa_plus * eps_plus:.4f}")
-        print(f"  kappa- x epsilon- = {kappa_minus * eps_minus:.4f}")
+        toxicity_plus = kappa_plus * eps_plus
+        toxicity_minus = kappa_minus * eps_minus
+        print(f"  kappa+ x epsilon+ = {toxicity_plus:.4f}")
+        print(f"  kappa- x epsilon- = {toxicity_minus:.4f}")
 
-        kappa_epsilon_max = max(kappa_plus * eps_plus, kappa_minus * eps_minus)
+        kappa_epsilon_max = max(toxicity_plus, toxicity_minus)
         if kappa_epsilon_max >= 2:
             print("  WARNING: Market appears very toxic (kappa x epsilon >= 2)")
         elif kappa_epsilon_max >= 1:
@@ -397,7 +405,39 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, do_plot: bool = False
         print(f"Delta calculation skipped: {e}")
 
     # Save epsilon estimates to JSON file
-    save_epsilon_to_json(eps_plus, eps_minus, crypto)
+    n_buy_events = int(final_estimates["epsilon_buy"].get("n_trades", 0) or 0)
+    n_sell_events = int(final_estimates["epsilon_sell"].get("n_trades", 0) or 0)
+    if (
+        eps_plus is None
+        or eps_minus is None
+        or not np.isfinite(float(eps_plus))
+        or not np.isfinite(float(eps_minus))
+        or n_buy_events <= 0
+        or n_sell_events <= 0
+    ):
+        status = "insufficient_data"
+    else:
+        status = "ok"
+    save_epsilon_to_json(
+        eps_plus,
+        eps_minus,
+        crypto,
+        metadata={
+            "status": status,
+            "window_ms": 200,
+            "window_start": timestamp_to_iso(df_quotes["timestamp"].min()) if not df_quotes.empty else None,
+            "window_end": timestamp_to_iso(df_quotes["timestamp"].max()) if not df_quotes.empty else None,
+            "generated_at": utc_now_iso(),
+            "n_quotes": int(len(df_quotes)),
+            "n_trades": int(len(df_trades)),
+            "n_buy_events": n_buy_events,
+            "n_sell_events": n_sell_events,
+            "trades_analyzed": int(impact_results.get("trades_analyzed", 0) or 0),
+            "trades_skipped": int(impact_results.get("trades_skipped", 0) or 0),
+            "toxicity_plus": finite_or_none(toxicity_plus),
+            "toxicity_minus": finite_or_none(toxicity_minus),
+        },
+    )
 
     vprint("\nNotes:")
     vprint("- Use longer windows (5-10s) for more stable permanent impact")

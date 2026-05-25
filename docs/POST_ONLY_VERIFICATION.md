@@ -1,0 +1,83 @@
+# Post-Only Verification Status
+
+Current status: **not verified for Freqtrade live execution**.
+
+Runtime evidence from the Docker/Freqtrade dry-run gate showed that Freqtrade
+2025.4 rejects `order_time_in_force = {"entry": "PO", "exit": "PO"}` for
+Hyperliquid with:
+
+```text
+Configuration error: Time in force policies are not supported for Hyperliquid yet.
+```
+
+Therefore the repository uses `GTC` in `user_data/config.json` and
+`Market_Making.order_time_in_force` only so the Freqtrade research/dry-run
+harness can start. This does **not** satisfy maker-safe live execution.
+
+Live trading remains blocked by strategy state:
+
+```python
+trading_enabled = False
+post_only_verified = False
+```
+
+The only acceptable live maker path is:
+
+1. Prove Freqtrade/CCXT can submit Hyperliquid native `Alo` orders, or
+2. Move live execution to a direct Hyperliquid SDK bot that submits `Alo`
+   explicitly.
+
+Use the no-network probe to document required evidence:
+
+```bash
+python scripts/verify_post_only_mapping.py --mode plan --output docs/post_only_probe_plan.json
+```
+
+Submit-mode probes require explicit acknowledgement and should be run only on
+testnet or tiny canary size:
+
+```bash
+$env:HYPERLIQUID_POST_ONLY_PROBE_ALLOW = "1"
+python scripts/verify_post_only_mapping.py --mode submit-crossing-alo --sandbox --amount <min_size> --acknowledge-real-orders --output docs/post_only_crossing_result.json
+python scripts/verify_post_only_mapping.py --mode submit-passive-alo --sandbox --amount <min_size> --acknowledge-real-orders --output docs/post_only_passive_result.json
+python scripts/verify_post_only_mapping.py --mode evaluate-evidence --crossing-result docs/post_only_crossing_result.json --passive-result docs/post_only_passive_result.json --output docs/post_only_evidence_report.json
+```
+
+The evidence report passes only when:
+
+- submitted params contain `timeInForce=Alo` and `postOnly=true`
+- the intentionally crossing ALO order has zero fill and rejects/cancels/expires
+- the passive ALO order rests, cancels, or fills maker-only
+- no result contains taker liquidity
+
+The automated safety gate writes an incomplete
+`docs/post_only_evidence_report.json` when submit artifacts are absent. That
+file should remain `ok=false` until real testnet/tiny exchange evidence is
+provided.
+
+## Direct SDK Fallback
+
+Because Freqtrade 2025.4 rejects Hyperliquid `PO`, the repo also includes a
+guarded direct SDK adapter:
+
+```bash
+python scripts/hyperliquid_alo_executor.py --mode plan --output docs/direct_alo_adapter_plan.json
+```
+
+The adapter builds SDK orders with:
+
+```python
+order_type = {"limit": {"tif": "Alo"}}
+```
+
+and requires local BBO maker-safety before submit. Submit mode is intentionally
+hard to invoke:
+
+```bash
+$env:HYPERLIQUID_DIRECT_ALO_ALLOW = "1"
+python scripts/hyperliquid_alo_executor.py --mode submit-alo --testnet --symbol ETH/USDC:USDC --side bid --size <min_size> --price <passive_bid> --best-bid <best_bid> --best-ask <best_ask> --acknowledge-real-orders --output docs/direct_alo_submit_result.json
+```
+
+This adapter is not wired into the Freqtrade strategy. It is the implementation
+scaffold for a future direct Hyperliquid execution layer if Freqtrade cannot be
+made maker-safe.

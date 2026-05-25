@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import subprocess
@@ -79,6 +80,32 @@ def load_mid_price(symbol: str, start_dir: Path) -> Optional[float]:
         return None
 
 
+def param_metadata_lines(symbol: str, *sources: dict) -> list[str]:
+    lines: list[str] = []
+    now = datetime.now(timezone.utc)
+    for name, source in zip(("kappa", "epsilon", "lambda"), sources):
+        entry = source.get(symbol, {}) if isinstance(source, dict) else {}
+        if not isinstance(entry, dict):
+            continue
+        schema = entry.get("schema_version", "v1_or_missing")
+        status = entry.get("status", "missing")
+        generated_at = entry.get("generated_at")
+        age_label = "unknown"
+        if generated_at:
+            try:
+                parsed = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                age_label = f"{(now - parsed.astimezone(timezone.utc)).total_seconds():.1f}s"
+            except Exception:
+                age_label = "invalid_timestamp"
+        extra = ""
+        if name == "lambda":
+            extra = f", lambda_source={entry.get('lambda_source', 'unknown')}"
+        lines.append(f"{name}: schema={schema}, status={status}, generated_at={generated_at}, age={age_label}{extra}")
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compute bid/ask spreads (bps from mid) using HJB deltas.")
     parser.add_argument("--crypto", "-c", default="ETH", help="Symbol key in JSON files (default ETH)")
@@ -91,26 +118,28 @@ def main():
     parser.add_argument("--asym-kappa", action="store_true", help="Use asymmetric-κ backward-Euler solver instead of symmetric closed form")
     parser.add_argument("--steps", type=int, default=200, help="Time steps for asymmetric solver (ignored for symmetric)")
     parser.add_argument("--minutes", "-t", type=int, default=30, help="Minutes of data to use when refreshing κ/ε/λ")
+    parser.add_argument("--skip-refresh", action="store_true", help="Use existing JSON params without running estimator scripts first")
     args = parser.parse_args()
 
     start_dir = Path(__file__).resolve().parent
 
     # Refresh κ/ε/λ
-    for script_name in ("get_kappa.py", "get_epsilon.py", "get_lambda.py"):
-        script_path = start_dir / script_name
-        if not script_path.exists():
-            raise SystemExit(f"Required script not found: {script_path}")
-        cmd = [
-            sys.executable,
-            str(script_path),
-            "--crypto",
-            args.crypto,
-            "--minutes",
-            str(args.minutes),
-        ]
-        result = subprocess.run(cmd, cwd=start_dir)
-        if result.returncode != 0:
-            raise SystemExit(f"{script_name} failed with exit code {result.returncode}")
+    if not args.skip_refresh:
+        for script_name in ("get_kappa.py", "get_epsilon.py", "get_lambda.py"):
+            script_path = start_dir / script_name
+            if not script_path.exists():
+                raise SystemExit(f"Required script not found: {script_path}")
+            cmd = [
+                sys.executable,
+                str(script_path),
+                "--crypto",
+                args.crypto,
+                "--minutes",
+                str(args.minutes),
+            ]
+            result = subprocess.run(cmd, cwd=start_dir)
+            if result.returncode != 0:
+                raise SystemExit(f"{script_name} failed with exit code {result.returncode}")
     kappa = load_json("kappa.json", start_dir)
     epsilon = load_json("epsilon.json", start_dir)
     lambdas = load_json("lambda.json", start_dir)
@@ -167,16 +196,38 @@ def main():
     print(f"Mid: {mid:.8f}")
     print(f"Inventory grid: q in [-{args.qmax}, {args.qmax}]")
     print(f"Parameters: kappa+={kappa_p}, kappa-={kappa_m}, epsilon+={eps_p}, epsilon-={eps_m}, lambda+={lam_p}, lambda-={lam_m}")
+    metadata = param_metadata_lines(sym, kappa, epsilon, lambdas)
+    if metadata:
+        print("Parameter metadata:")
+        for line in metadata:
+            print(f"  {line}")
     print("\nq\tbid_px\t\task_px\t\tbid_bps\t\task_bps")
 
     for q in range(-args.qmax, args.qmax + 1):
-        delta_bid = select_delta_from_hjb(hjb_res, "bid", q, args.qmax) + fee_cushion
-        delta_ask = select_delta_from_hjb(hjb_res, "ask", q, args.qmax) + fee_cushion
-        bid_px = mid - delta_bid
-        ask_px = mid + delta_ask
-        bid_bps = (delta_bid / mid) * 1e4
-        ask_bps = (delta_ask / mid) * 1e4
-        print(f"{q:+d}\t{bid_px:.8f}\t{ask_px:.8f}\t{bid_bps:.4f}\t\t{ask_bps:.4f}")
+        delta_bid_model = select_delta_from_hjb(hjb_res, "bid", q, args.qmax)
+        delta_ask_model = select_delta_from_hjb(hjb_res, "ask", q, args.qmax)
+
+        if np.isfinite(delta_bid_model):
+            delta_bid = delta_bid_model + fee_cushion
+            bid_px = f"{mid - delta_bid:.8f}"
+            bid_bps = f"{(delta_bid / mid) * 1e4:.4f}"
+        else:
+            bid_px = "DISABLED"
+            bid_bps = "DISABLED"
+
+        if np.isfinite(delta_ask_model):
+            delta_ask = delta_ask_model + fee_cushion
+            ask_px = f"{mid + delta_ask:.8f}"
+            ask_bps = f"{(delta_ask / mid) * 1e4:.4f}"
+        else:
+            ask_px = "DISABLED"
+            ask_bps = "DISABLED"
+
+        print(f"{q:+d}\t{bid_px}\t{ask_px}\t{bid_bps}\t\t{ask_bps}")
+
+    print("\nBoundary check:")
+    print(f"q = -{args.qmax} => ask {'DISABLED' if not np.isfinite(select_delta_from_hjb(hjb_res, 'ask', -args.qmax, args.qmax)) else 'ENABLED'}")
+    print(f"q = +{args.qmax} => bid {'DISABLED' if not np.isfinite(select_delta_from_hjb(hjb_res, 'bid', args.qmax, args.qmax)) else 'ENABLED'}")
 
 
 if __name__ == "__main__":

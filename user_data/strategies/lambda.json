@@ -1,7 +1,18 @@
 {
     "ETH": {
-        "lambda+": 0.36418718893812874,
-        "lambda-": 0.17005047555026997,
-        "unit": "trades_per_second"
+        "generated_at": "2026-05-25T00:00:00Z",
+        "lambda+": 0.1364138970843998,
+        "lambda-": 0.09516227408346505,
+        "lambda_source": "lambda0_fit",
+        "n_points_minus": 0,
+        "n_points_plus": 0,
+        "n_quotes": 0,
+        "n_trades": 0,
+        "r2_minus": null,
+        "r2_plus": null,
+        "schema_version": 2,
+        "status": "seeded_unverified",
+        "status_reason": "legacy_snapshot_preserved_for_reference_only",
+        "unit": "events_per_second"
     }
 }

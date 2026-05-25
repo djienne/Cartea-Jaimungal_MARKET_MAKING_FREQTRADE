@@ -4,6 +4,45 @@ import numpy as np
 from scipy.linalg import expm
 
 
+def _validate_common_inputs(
+    lambda_plus: float,
+    lambda_minus: float,
+    epsilon_plus: float,
+    epsilon_minus: float,
+    kappa_plus: float,
+    kappa_minus: float,
+    alpha: float,
+    phi: float,
+    T_seconds: float,
+    q_max: int,
+) -> None:
+    values = {
+        "lambda_plus": lambda_plus,
+        "lambda_minus": lambda_minus,
+        "epsilon_plus": epsilon_plus,
+        "epsilon_minus": epsilon_minus,
+        "kappa_plus": kappa_plus,
+        "kappa_minus": kappa_minus,
+        "alpha": alpha,
+        "phi": phi,
+        "T_seconds": T_seconds,
+    }
+    for name, value in values.items():
+        if not np.isfinite(float(value)):
+            raise ValueError(f"{name} must be finite")
+
+    if int(q_max) < 1:
+        raise ValueError("q_max must be >= 1")
+    if float(T_seconds) <= 0:
+        raise ValueError("T_seconds must be > 0")
+    if float(kappa_plus) <= 0 or float(kappa_minus) <= 0:
+        raise ValueError("kappa_plus and kappa_minus must be > 0")
+    if float(lambda_plus) < 0 or float(lambda_minus) < 0:
+        raise ValueError("lambda_plus and lambda_minus must be >= 0")
+    if float(alpha) < 0 or float(phi) < 0:
+        raise ValueError("alpha and phi must be >= 0")
+
+
 def _optimal_delta_and_value(
     lam: float,
     kappa: float,
@@ -66,9 +105,23 @@ def compute_h_symmetric(
     under symmetric κ (use average of κ+/κ-). Returns h(t=0, q) vector and
     corresponding δ+ / δ- optimal depths for each inventory state.
     """
-    kappa = max(1e-8, 0.5 * (float(kappa_plus) + float(kappa_minus)))
-    lam_p = max(float(lambda_plus), 0.0)
-    lam_m = max(float(lambda_minus), 0.0)
+    _validate_common_inputs(
+        lambda_plus,
+        lambda_minus,
+        epsilon_plus,
+        epsilon_minus,
+        kappa_plus,
+        kappa_minus,
+        alpha,
+        phi,
+        T_seconds,
+        q_max,
+    )
+
+    q_max = int(q_max)
+    kappa = 0.5 * (float(kappa_plus) + float(kappa_minus))
+    lam_p = float(lambda_plus)
+    lam_m = float(lambda_minus)
     eps_p = float(epsilon_plus)
     eps_m = float(epsilon_minus)
 
@@ -96,22 +149,28 @@ def compute_h_symmetric(
     log_omega = log_omega - np.max(log_omega)
     h = log_omega / kappa
 
-    # Optimal depths at t=0 for each q
-    delta_plus = []
-    delta_minus = []
+    # Boundary sides are disabled, not clamped: no ask at q_min, no bid at q_max.
+    delta_plus = np.full(d, np.inf, dtype=float)
+    delta_minus = np.full(d, np.inf, dtype=float)
     for i, q in enumerate(q_grid):
         h_q = h[i]
-        h_qm1 = h[i - 1] if i > 0 else h_q  # clamp at edge
-        h_qp1 = h[i + 1] if i < d - 1 else h_q
-        delta_plus.append((1.0 / kappa) + eps_p - (h_qm1 - h_q))
-        delta_minus.append((1.0 / kappa) + eps_m - (h_qp1 - h_q))
+        if i > 0:
+            h_qm1 = h[i - 1]
+            delta_plus[i] = (1.0 / kappa) + eps_p - (h_qm1 - h_q)
+        if i < d - 1:
+            h_qp1 = h[i + 1]
+            delta_minus[i] = (1.0 / kappa) + eps_m - (h_qp1 - h_q)
 
     return {
         "q_grid": q_grid,
         "h": h,
-        "delta_plus": np.array(delta_plus),
-        "delta_minus": np.array(delta_minus),
+        "delta_plus": delta_plus,
+        "delta_minus": delta_minus,
         "kappa_sym": kappa,
+        "method": "matrix_exponential",
+        "boundary_policy": "disabled_side_is_inf",
+        "q_min": int(q_grid[0]),
+        "q_max": int(q_grid[-1]),
     }
 
 
@@ -146,10 +205,24 @@ def compute_h_asymmetric(
     The scheme uses damped Newton iterations (finite-difference Jacobian)
     for each implicit step.
     """
-    kappa_p = max(1e-8, float(kappa_plus))
-    kappa_m = max(1e-8, float(kappa_minus))
-    lam_p = max(float(lambda_plus), 0.0)
-    lam_m = max(float(lambda_minus), 0.0)
+    _validate_common_inputs(
+        lambda_plus,
+        lambda_minus,
+        epsilon_plus,
+        epsilon_minus,
+        kappa_plus,
+        kappa_minus,
+        alpha,
+        phi,
+        T_seconds,
+        q_max,
+    )
+
+    q_max = int(q_max)
+    kappa_p = float(kappa_plus)
+    kappa_m = float(kappa_minus)
+    lam_p = float(lambda_plus)
+    lam_m = float(lambda_minus)
     eps_p = float(epsilon_plus)
     eps_m = float(epsilon_minus)
 
@@ -167,18 +240,30 @@ def compute_h_asymmetric(
         g_vec = np.zeros_like(h_vec)
         for i, q in enumerate(q_grid):
             h_q = h_vec[i]
-            h_qm1 = h_vec[i - 1] if i > 0 else h_q
-            h_qp1 = h_vec[i + 1] if i < d - 1 else h_q
+            value_total = -float(phi) * (float(q) ** 2)
 
-            _, val_p = _optimal_delta_and_value(
-                lam_p, kappa_p, eps_p, h_qm1 - h_q, clip_at_zero=clip_deltas
-            )
-            _, val_m = _optimal_delta_and_value(
-                lam_m, kappa_m, eps_m, h_qp1 - h_q, clip_at_zero=clip_deltas
-            )
+            if i > 0:
+                _, val_p = _optimal_delta_and_value(
+                    lam_p,
+                    kappa_p,
+                    eps_p,
+                    h_vec[i - 1] - h_q,
+                    clip_at_zero=clip_deltas,
+                )
+                value_total += val_p
+
+            if i < d - 1:
+                _, val_m = _optimal_delta_and_value(
+                    lam_m,
+                    kappa_m,
+                    eps_m,
+                    h_vec[i + 1] - h_q,
+                    clip_at_zero=clip_deltas,
+                )
+                value_total += val_m
 
             drift = float(q) * (lam_p * eps_p - lam_m * eps_m)
-            g_vec[i] = val_p + val_m + drift - float(phi) * (float(q) ** 2)
+            g_vec[i] = value_total + drift
         return g_vec
 
     fd_eps = 1e-6
@@ -221,17 +306,29 @@ def compute_h_asymmetric(
 
         h = h_new
 
-    # Optimal depths at t=0 for each q
-    delta_plus = np.zeros(d)
-    delta_minus = np.zeros(d)
+    # Boundary sides are disabled, not clamped: no ask at q_min, no bid at q_max.
+    delta_plus = np.full(d, np.inf, dtype=float)
+    delta_minus = np.full(d, np.inf, dtype=float)
     for i, q in enumerate(q_grid):
         h_q = h[i]
-        h_qm1 = h[i - 1] if i > 0 else h_q
-        h_qp1 = h[i + 1] if i < d - 1 else h_q
-        raw_plus = (1.0 / kappa_p) + eps_p - (h_qm1 - h_q)
-        raw_minus = (1.0 / kappa_m) + eps_m - (h_qp1 - h_q)
-        delta_plus[i] = max(0.0, raw_plus) if clip_deltas else raw_plus
-        delta_minus[i] = max(0.0, raw_minus) if clip_deltas else raw_minus
+        if i > 0:
+            raw_plus, _ = _optimal_delta_and_value(
+                lam_p,
+                kappa_p,
+                eps_p,
+                h[i - 1] - h_q,
+                clip_at_zero=clip_deltas,
+            )
+            delta_plus[i] = max(0.0, raw_plus) if clip_deltas else raw_plus
+        if i < d - 1:
+            raw_minus, _ = _optimal_delta_and_value(
+                lam_m,
+                kappa_m,
+                eps_m,
+                h[i + 1] - h_q,
+                clip_at_zero=clip_deltas,
+            )
+            delta_minus[i] = max(0.0, raw_minus) if clip_deltas else raw_minus
 
     return {
         "q_grid": q_grid,
@@ -241,6 +338,9 @@ def compute_h_asymmetric(
         "kappa_plus": kappa_p,
         "kappa_minus": kappa_m,
         "method": "backward_euler",
+        "boundary_policy": "disabled_side_is_inf",
+        "q_min": int(q_grid[0]),
+        "q_max": int(q_grid[-1]),
         "dt": dt,
         "n_steps": n_steps,
     }

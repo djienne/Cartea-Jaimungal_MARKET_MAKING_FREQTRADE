@@ -1,15 +1,15 @@
 {
     "max_open_trades": 1,
     "stake_currency": "USDC",
-    "stake_amount": "unlimited",
+    "stake_amount": 25,
     "available_capital": 1000,
-    "tradable_balance_ratio": 0.99,
+    "tradable_balance_ratio": 0.10,
     "amount_reserve_percent": 0.01,
     "dry_run_wallet": 1000,
     "max_entry_position_adjustment": -1,
     "position_adjustment_enable": false,
     "dry_run": true,
-    "fee": 0.0010,
+    "fee": 0.00015,
     "cancel_open_orders_on_exit": true,
     "trading_mode": "futures",
     "margin_mode": "isolated",
@@ -36,6 +36,7 @@
         "price_side": "ask",
         "order_book_top": 1
     },
+    "custom_price_max_distance_ratio": 0.05,
     "order_time_in_force": {
         "entry": "GTC",
         "exit": "GTC"
@@ -85,9 +86,9 @@
         "listen_port": 8080,
         "verbosity": "error",
         "enable_openapi": true,
-        "Force_entry": true,
-        "forcebuy_enable": true,
-        "force_entry_enable": true,
+        "Force_entry": false,
+        "forcebuy_enable": false,
+        "force_entry_enable": false,
         "jwt_secret_key": "d1654caf3c530f6b037ae59a999d9d9328dec66bdd68799112cf1ba7d65276a3",
         "CORS_origins": [
             "http://127.0.0.1:8080"
@@ -97,7 +98,7 @@
     },
     "bot_name": "MM_adv",
     "initial_state": "running",
-    "force_entry_enable": true,
+    "force_entry_enable": false,
     "internals": {
         "process_throttle_secs": 15
     }

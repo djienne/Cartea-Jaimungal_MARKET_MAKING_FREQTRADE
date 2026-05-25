@@ -1,0 +1,25 @@
+{
+  "component": "direct_hyperliquid_alo_executor",
+  "generated_at": "2026-05-25T13:57:00Z",
+  "order_type": {
+    "limit": {
+      "tif": "Alo"
+    }
+  },
+  "response_acceptance": [
+    "resting order status is acceptable",
+    "ALO post-only rejection/cancel without fill is acceptable",
+    "fills require explicit maker liquidity evidence",
+    "any taker liquidity fails"
+  ],
+  "safe_default": "no network call or order submission",
+  "sdk_method": "Exchange.order(name, is_buy, sz, limit_px, order_type, reduce_only)",
+  "submit_guards": [
+    "HYPERLIQUID_DIRECT_ALO_ALLOW=1",
+    "--acknowledge-real-orders",
+    "--best-bid and --best-ask local maker-safety inputs",
+    "bid price must be below best ask",
+    "ask price must be above best bid"
+  ],
+  "symbol": "ETH/USDC:USDC"
+}

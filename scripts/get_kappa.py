@@ -9,6 +9,15 @@ from scipy.optimize import curve_fit
 from scipy.stats import linregress
 import warnings
 
+from param_utils import (
+    PARAM_SCHEMA_VERSION,
+    atomic_write_json,
+    finite_or_none,
+    load_json_object,
+    timestamp_to_iso,
+    utc_now_iso,
+)
+
 # Verbosity control: 0=minimal, 1=verbose (previous default)
 VERBOSITY = 0
 
@@ -480,34 +489,41 @@ def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_
     plt.show()
 
 def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus,
-                              crypto: str, kappa_file: str = "kappa.json", lambda_file: str = "lambda.json"):
+                              crypto: str, kappa_file: str = "kappa.json", lambda_file: str = "lambda.json",
+                              metadata: dict | None = None):
     """Persist kappa and base lambda0 estimates (per second) to JSON files."""
-    def _load(path):
-        if os.path.exists(path):
-            try:
-                with open(path, 'r') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                return {}
-        return {}
-    
-    kappa_data = _load(kappa_file)
-    lambda_data = _load(lambda_file)
+    metadata = dict(metadata or {})
+    status = str(metadata.pop("status", "ok"))
+    metadata.setdefault("generated_at", utc_now_iso())
+    kappa_data = load_json_object(kappa_file)
+    lambda_data = load_json_object(lambda_file)
 
     kappa_data[crypto] = {
-        "kappa+": float(kappa_plus) if kappa_plus is not None else None,
-        "kappa-": float(kappa_minus) if kappa_minus is not None else None
+        "schema_version": PARAM_SCHEMA_VERSION,
+        "status": status,
+        "kappa+": finite_or_none(kappa_plus),
+        "kappa-": finite_or_none(kappa_minus),
+        "lambda+": finite_or_none(lambda_plus),
+        "lambda-": finite_or_none(lambda_minus),
+        "lambda_source": "lambda0_fit",
+        "unit": {
+            "kappa": "1/USDC",
+            "lambda": "events_per_second",
+        },
+        **metadata,
     }
     lambda_data[crypto] = {
-        "lambda+": float(lambda_plus) if lambda_plus is not None else None,
-        "lambda-": float(lambda_minus) if lambda_minus is not None else None,
-        "unit": "trades_per_second"
+        "schema_version": PARAM_SCHEMA_VERSION,
+        "status": status,
+        "lambda+": finite_or_none(lambda_plus),
+        "lambda-": finite_or_none(lambda_minus),
+        "lambda_source": "lambda0_fit",
+        "unit": "events_per_second",
+        **metadata,
     }
 
-    with open(kappa_file, 'w') as f:
-        json.dump(kappa_data, f, indent=4)
-    with open(lambda_file, 'w') as f:
-        json.dump(lambda_data, f, indent=4)
+    atomic_write_json(kappa_file, kappa_data)
+    atomic_write_json(lambda_file, lambda_data)
 
     print(f"[save] kappa -> {kappa_file}")
     print(f"[save] lambda0 -> {lambda_file}")
@@ -560,12 +576,43 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, bins: int = 20, do_plot
     else:
         print("  kappa-/lambda- unavailable (insufficient data)")
 
+    metadata = {
+        "window_start": timestamp_to_iso(df_quotes["timestamp"].min()) if not df_quotes.empty else None,
+        "window_end": timestamp_to_iso(df_quotes["timestamp"].max()) if not df_quotes.empty else None,
+        "generated_at": utc_now_iso(),
+        "n_quotes": int(len(df_quotes)),
+        "n_trades": int(len(df_trades)),
+        "r2_plus": finite_or_none(buy_est.get("r_squared")),
+        "r2_minus": finite_or_none(sell_est.get("r_squared")),
+        "n_points_plus": int(buy_est.get("n_points", 0) or 0),
+        "n_points_minus": int(sell_est.get("n_points", 0) or 0),
+    }
+    if (
+        finite_or_none(buy_est.get("kappa")) is None
+        or finite_or_none(sell_est.get("kappa")) is None
+        or finite_or_none(buy_est.get("lambda_0")) is None
+        or finite_or_none(sell_est.get("lambda_0")) is None
+        or metadata["n_points_plus"] < 2
+        or metadata["n_points_minus"] < 2
+    ):
+        metadata["status"] = "insufficient_data"
+    elif (
+        finite_or_none(buy_est.get("r_squared")) is None
+        or finite_or_none(sell_est.get("r_squared")) is None
+        or float(buy_est.get("r_squared")) < 0.0
+        or float(sell_est.get("r_squared")) < 0.0
+    ):
+        metadata["status"] = "poor_fit"
+    else:
+        metadata["status"] = "ok"
+
     save_kappa_lambda_to_json(
         buy_est['kappa'] if not np.isnan(buy_est['kappa']) else None,
         sell_est['kappa'] if not np.isnan(sell_est['kappa']) else None,
         buy_est['lambda_0'] if not np.isnan(buy_est['lambda_0']) else None,
         sell_est['lambda_0'] if not np.isnan(sell_est['lambda_0']) else None,
-        crypto
+        crypto,
+        metadata=metadata,
     )
 
     # Create visualization (optional)

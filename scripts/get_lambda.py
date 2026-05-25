@@ -20,6 +20,15 @@ from typing import Optional
 
 import pandas as pd
 
+from param_utils import (
+    PARAM_SCHEMA_VERSION,
+    atomic_write_json,
+    finite_or_none,
+    load_json_object,
+    timestamp_to_iso,
+    utc_now_iso,
+)
+
 
 def log_section(title: str) -> None:
     print("\n" + "=" * 60)
@@ -98,31 +107,27 @@ def compute_lambda_from_trades(df_trades: pd.DataFrame) -> Optional[LambdaResult
     )
 
 
-def save_lambda_to_json(lam_plus: float, lam_minus: float, crypto: str, filename: str = "lambda_trades.json"):
+def save_lambda_to_json(lam_plus: float, lam_minus: float, crypto: str, filename: str = "lambda_trades.json",
+                        metadata: dict | None = None):
     """Save raw trade lambda estimates (per second) to JSON, overwriting or appending the symbol entry."""
-    # Prepare values as plain floats
-    lam_plus_val = float(lam_plus) if pd.notna(lam_plus) else None
-    lam_minus_val = float(lam_minus) if pd.notna(lam_minus) else None
+    metadata = dict(metadata or {})
+    status = str(metadata.pop("status", "ok"))
+    metadata.setdefault("generated_at", utc_now_iso())
+    lam_plus_val = finite_or_none(lam_plus)
+    lam_minus_val = finite_or_none(lam_minus)
+    data = load_json_object(filename)
 
-    # Load existing file if present
-    data = {}
-    if os.path.exists(filename):
-        try:
-            with open(filename, 'r') as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            data = {}
-
-    # Update
     data[crypto] = {
+        "schema_version": PARAM_SCHEMA_VERSION,
+        "status": status,
         "lambda+": lam_plus_val,
         "lambda-": lam_minus_val,
-        "unit": "trades_per_second"
+        "lambda_source": "lambda_raw",
+        "unit": "events_per_second",
+        **metadata,
     }
 
-    # Write back
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=4)
+    atomic_write_json(filename, data)
 
     print(f"[save] lambda -> {filename}")
     print(f"[save] {crypto}: lambda+={lam_plus_val}, lambda-={lam_minus_val}")
@@ -186,7 +191,21 @@ def main():
     print(f"lambda (total): {results.lambda_total:.6f} trades/sec")
 
     # Save to monitoring file (does not overwrite lambda.json baseline)
-    save_lambda_to_json(results.lambda_plus, results.lambda_minus, args.crypto, filename=args.output)
+    save_lambda_to_json(
+        results.lambda_plus,
+        results.lambda_minus,
+        args.crypto,
+        filename=args.output,
+        metadata={
+            "status": "ok" if results.n_trades_total > 0 else "insufficient_data",
+            "window_start": timestamp_to_iso(results.start_time),
+            "window_end": timestamp_to_iso(results.end_time),
+            "generated_at": utc_now_iso(),
+            "n_trades_buy": int(results.n_trades_buy),
+            "n_trades_sell": int(results.n_trades_sell),
+            "n_trades_total": int(results.n_trades_total),
+        },
+    )
 
 
 if __name__ == '__main__':

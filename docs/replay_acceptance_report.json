@@ -1,0 +1,425 @@
+{
+  "acceptance": {
+    "min_days": 3.0,
+    "min_maker_ratio": 0.99,
+    "min_mean_markout_usdc": -0.01,
+    "min_net_realized_spread": 0.0,
+    "min_quote_attempts": 1000,
+    "q_max": 3
+  },
+  "base_params": {
+    "epsilon+": 0.0,
+    "epsilon-": 0.0,
+    "kappa+": 2.0,
+    "kappa-": 2.0,
+    "lambda+": 0.1,
+    "lambda-": 0.1
+  },
+  "config": {
+    "cancel_latency_ms": 250,
+    "data_dir": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\scripts\\HL_data",
+    "decision_latency_ms": 250,
+    "funding_rate_per_hour": 0.0,
+    "maker_fee": 0.00015,
+    "max_price_events": 2000,
+    "newest_per_stream": 25,
+    "order_ack_latency_ms": 250
+  },
+  "generated_at": "2026-05-25T14:04:14Z",
+  "ok": false,
+  "reasons": [
+    "baseline:insufficient_coverage_days:0.006385<min_3.000000",
+    "baseline:no_maker_fills",
+    "fee_2x:insufficient_coverage_days:0.006385<min_3.000000",
+    "fee_2x:no_maker_fills",
+    "latency_2x:insufficient_coverage_days:0.006385<min_3.000000",
+    "latency_2x:no_maker_fills",
+    "params_soft:insufficient_coverage_days:0.006385<min_3.000000",
+    "params_soft:no_maker_fills",
+    "params_hard:insufficient_coverage_days:0.006385<min_3.000000",
+    "params_hard:no_maker_fills"
+  ],
+  "symbol": "ETH",
+  "variants": [
+    {
+      "coverage_days": 0.0063849394791666665,
+      "markout_summary": {},
+      "metrics": {
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T14:03:44.022232533+00:00",
+        "data_start": "2026-05-25T13:54:32.363460779+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2115.95,
+        "funding_usdc": 0.0,
+        "input_files": {
+          "orderbooks": 25,
+          "prices": 25,
+          "trades": 25
+        },
+        "input_rows": {
+          "orderbooks": 860,
+          "prices": 2000,
+          "trades": 371
+        },
+        "inventory_base": 0.0,
+        "inventory_histogram": {
+          "0": 2000
+        },
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
+        "parameter_series": [
+          {
+            "epsilon_minus": 0.0,
+            "epsilon_plus": 0.0,
+            "kappa_minus": 2.0,
+            "kappa_plus": 2.0,
+            "lambda_minus": 0.1,
+            "lambda_plus": 0.1,
+            "symbol": "ETH"
+          }
+        ],
+        "pnl_by_side": {
+          "ask": 0.0,
+          "bid": 0.0
+        },
+        "post_only_reject_ratio": 0.0,
+        "post_only_rejects": 0,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
+        "taker_fills": 0,
+        "time_at_q_boundary": {
+          "q_max": 0,
+          "q_min": 2000
+        },
+        "toxicity_series": [
+          {
+            "symbol": "ETH",
+            "toxicity_minus": 0.0,
+            "toxicity_plus": 0.0
+          }
+        ]
+      },
+      "net_realized_spread_usdc": 0.0,
+      "ok": false,
+      "reasons": [
+        "insufficient_coverage_days:0.006385<min_3.000000",
+        "no_maker_fills"
+      ],
+      "variant": {
+        "epsilon_add": 0.0,
+        "latency_multiplier": 1.0,
+        "maker_fee_multiplier": 1.0,
+        "name": "baseline",
+        "params_multiplier": 1.0
+      }
+    },
+    {
+      "coverage_days": 0.0063849394791666665,
+      "markout_summary": {},
+      "metrics": {
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T14:03:44.022232533+00:00",
+        "data_start": "2026-05-25T13:54:32.363460779+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2115.95,
+        "funding_usdc": 0.0,
+        "input_files": {
+          "orderbooks": 25,
+          "prices": 25,
+          "trades": 25
+        },
+        "input_rows": {
+          "orderbooks": 860,
+          "prices": 2000,
+          "trades": 371
+        },
+        "inventory_base": 0.0,
+        "inventory_histogram": {
+          "0": 2000
+        },
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
+        "parameter_series": [
+          {
+            "epsilon_minus": 0.0,
+            "epsilon_plus": 0.0,
+            "kappa_minus": 2.0,
+            "kappa_plus": 2.0,
+            "lambda_minus": 0.1,
+            "lambda_plus": 0.1,
+            "symbol": "ETH"
+          }
+        ],
+        "pnl_by_side": {
+          "ask": 0.0,
+          "bid": 0.0
+        },
+        "post_only_reject_ratio": 0.0,
+        "post_only_rejects": 0,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
+        "taker_fills": 0,
+        "time_at_q_boundary": {
+          "q_max": 0,
+          "q_min": 2000
+        },
+        "toxicity_series": [
+          {
+            "symbol": "ETH",
+            "toxicity_minus": 0.0,
+            "toxicity_plus": 0.0
+          }
+        ]
+      },
+      "net_realized_spread_usdc": 0.0,
+      "ok": false,
+      "reasons": [
+        "insufficient_coverage_days:0.006385<min_3.000000",
+        "no_maker_fills"
+      ],
+      "variant": {
+        "epsilon_add": 0.0,
+        "latency_multiplier": 1.0,
+        "maker_fee_multiplier": 2.0,
+        "name": "fee_2x",
+        "params_multiplier": 1.0
+      }
+    },
+    {
+      "coverage_days": 0.0063849394791666665,
+      "markout_summary": {},
+      "metrics": {
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T14:03:44.022232533+00:00",
+        "data_start": "2026-05-25T13:54:32.363460779+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2115.95,
+        "funding_usdc": 0.0,
+        "input_files": {
+          "orderbooks": 25,
+          "prices": 25,
+          "trades": 25
+        },
+        "input_rows": {
+          "orderbooks": 860,
+          "prices": 2000,
+          "trades": 371
+        },
+        "inventory_base": 0.0,
+        "inventory_histogram": {
+          "0": 2000
+        },
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
+        "parameter_series": [
+          {
+            "epsilon_minus": 0.0,
+            "epsilon_plus": 0.0,
+            "kappa_minus": 2.0,
+            "kappa_plus": 2.0,
+            "lambda_minus": 0.1,
+            "lambda_plus": 0.1,
+            "symbol": "ETH"
+          }
+        ],
+        "pnl_by_side": {
+          "ask": 0.0,
+          "bid": 0.0
+        },
+        "post_only_reject_ratio": 0.0,
+        "post_only_rejects": 0,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
+        "taker_fills": 0,
+        "time_at_q_boundary": {
+          "q_max": 0,
+          "q_min": 2000
+        },
+        "toxicity_series": [
+          {
+            "symbol": "ETH",
+            "toxicity_minus": 0.0,
+            "toxicity_plus": 0.0
+          }
+        ]
+      },
+      "net_realized_spread_usdc": 0.0,
+      "ok": false,
+      "reasons": [
+        "insufficient_coverage_days:0.006385<min_3.000000",
+        "no_maker_fills"
+      ],
+      "variant": {
+        "epsilon_add": 0.0,
+        "latency_multiplier": 2.0,
+        "maker_fee_multiplier": 1.0,
+        "name": "latency_2x",
+        "params_multiplier": 1.0
+      }
+    },
+    {
+      "coverage_days": 0.0063849394791666665,
+      "markout_summary": {},
+      "metrics": {
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T14:03:44.022232533+00:00",
+        "data_start": "2026-05-25T13:54:32.363460779+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2115.95,
+        "funding_usdc": 0.0,
+        "input_files": {
+          "orderbooks": 25,
+          "prices": 25,
+          "trades": 25
+        },
+        "input_rows": {
+          "orderbooks": 860,
+          "prices": 2000,
+          "trades": 371
+        },
+        "inventory_base": 0.0,
+        "inventory_histogram": {
+          "0": 2000
+        },
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
+        "parameter_series": [
+          {
+            "epsilon_minus": 0.01,
+            "epsilon_plus": 0.01,
+            "kappa_minus": 1.6,
+            "kappa_plus": 1.6,
+            "lambda_minus": 0.08000000000000002,
+            "lambda_plus": 0.08000000000000002,
+            "symbol": "ETH"
+          }
+        ],
+        "pnl_by_side": {
+          "ask": 0.0,
+          "bid": 0.0
+        },
+        "post_only_reject_ratio": 0.0,
+        "post_only_rejects": 0,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
+        "taker_fills": 0,
+        "time_at_q_boundary": {
+          "q_max": 0,
+          "q_min": 2000
+        },
+        "toxicity_series": [
+          {
+            "symbol": "ETH",
+            "toxicity_minus": 0.016,
+            "toxicity_plus": 0.016
+          }
+        ]
+      },
+      "net_realized_spread_usdc": 0.0,
+      "ok": false,
+      "reasons": [
+        "insufficient_coverage_days:0.006385<min_3.000000",
+        "no_maker_fills"
+      ],
+      "variant": {
+        "epsilon_add": 0.01,
+        "latency_multiplier": 1.0,
+        "maker_fee_multiplier": 1.0,
+        "name": "params_soft",
+        "params_multiplier": 0.8
+      }
+    },
+    {
+      "coverage_days": 0.0063849394791666665,
+      "markout_summary": {},
+      "metrics": {
+        "cash_usdc": 0.0,
+        "data_end": "2026-05-25T14:03:44.022232533+00:00",
+        "data_start": "2026-05-25T13:54:32.363460779+00:00",
+        "fees_usdc": 0.0,
+        "fill_ratio_by_depth": {},
+        "final_mid": 2115.95,
+        "funding_usdc": 0.0,
+        "input_files": {
+          "orderbooks": 25,
+          "prices": 25,
+          "trades": 25
+        },
+        "input_rows": {
+          "orderbooks": 860,
+          "prices": 2000,
+          "trades": 371
+        },
+        "inventory_base": 0.0,
+        "inventory_histogram": {
+          "0": 2000
+        },
+        "maker_fills": 0,
+        "maker_ratio": 0.0,
+        "mark_to_market_pnl_usdc": 0.0,
+        "markout_samples": [],
+        "parameter_series": [
+          {
+            "epsilon_minus": 0.02,
+            "epsilon_plus": 0.02,
+            "kappa_minus": 2.4,
+            "kappa_plus": 2.4,
+            "lambda_minus": 0.12,
+            "lambda_plus": 0.12,
+            "symbol": "ETH"
+          }
+        ],
+        "pnl_by_side": {
+          "ask": 0.0,
+          "bid": 0.0
+        },
+        "post_only_reject_ratio": 0.0,
+        "post_only_rejects": 0,
+        "quote_attempts": 2000,
+        "realized_spread_usdc": 0.0,
+        "stale_quote_cancels": 2000,
+        "taker_fills": 0,
+        "time_at_q_boundary": {
+          "q_max": 0,
+          "q_min": 2000
+        },
+        "toxicity_series": [
+          {
+            "symbol": "ETH",
+            "toxicity_minus": 0.048,
+            "toxicity_plus": 0.048
+          }
+        ]
+      },
+      "net_realized_spread_usdc": 0.0,
+      "ok": false,
+      "reasons": [
+        "insufficient_coverage_days:0.006385<min_3.000000",
+        "no_maker_fills"
+      ],
+      "variant": {
+        "epsilon_add": 0.02,
+        "latency_multiplier": 1.0,
+        "maker_fee_multiplier": 1.0,
+        "name": "params_hard",
+        "params_multiplier": 1.2
+      }
+    }
+  ]
+}

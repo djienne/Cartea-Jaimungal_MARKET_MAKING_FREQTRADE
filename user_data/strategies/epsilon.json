@@ -1,6 +1,16 @@
 {
     "ETH": {
-        "epsilon+": 0.07000000000002729,
-        "epsilon-": 0.04285714285729877
+        "estimator": "trimmed_mean",
+        "generated_at": "2026-05-25T00:00:00Z",
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+        "n_buy_events": 0,
+        "n_sell_events": 0,
+        "schema_version": 2,
+        "status": "seeded_unverified",
+        "status_reason": "legacy_zero_snapshot_preserved_for_reference_only",
+        "toxicity_minus": 0.0,
+        "toxicity_plus": 0.0,
+        "unit": "USDC"
     }
 }

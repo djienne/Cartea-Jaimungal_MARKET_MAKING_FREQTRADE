@@ -7,6 +7,7 @@ user_data/strategies/lambda_trades.json
 # Logs and debug output
 user_data/logs/
 user_data/logs/mm_debug.jsonl*
+user_data/strategies/param_update_status.json
 
 # Local trade database (+ -wal/-shm)
 user_data/tradesv3.sqlite*

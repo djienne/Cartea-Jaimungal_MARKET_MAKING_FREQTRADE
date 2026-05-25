@@ -1,4 +1,3 @@
-version: '3'
 networks:
   default:
     driver: bridge
@@ -17,6 +16,11 @@ services:
       dockerfile: "./Dockerfile.technical"
     restart: unless-stopped
     container_name: MM_ADV
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: '1024M'
     volumes:
       - "./user_data:/freqtrade/user_data"
       - "./scripts:/freqtrade/scripts"
@@ -37,6 +41,11 @@ services:
       context: ./scripts
       dockerfile: Dockerfile
     container_name: hl-collector2
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: '1024M'
     environment:
       SYMBOLS: ${SYMBOLS:-ETH}
       OUTPUT_DIR: ${OUTPUT_DIR:-HL_data}

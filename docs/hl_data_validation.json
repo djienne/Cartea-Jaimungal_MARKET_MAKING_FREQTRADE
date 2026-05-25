@@ -1,0 +1,37 @@
+{
+  "bad_file_count": 0,
+  "bad_files": [],
+  "checked_files": 75,
+  "data_dir": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\scripts\\HL_data",
+  "fresh": true,
+  "generated_at": "2026-05-25T13:10:49Z",
+  "latest_file_age_seconds": 29.63495373725891,
+  "latest_file_mtime": "2026-05-25T13:10:19Z",
+  "max_age_seconds": 180,
+  "max_files": null,
+  "missing_streams": [],
+  "newest_per_stream": 25,
+  "ok": true,
+  "streams": {
+    "orderbooks": {
+      "bad_files": 0,
+      "files": 25,
+      "ok_files": 25,
+      "rows": 2780
+    },
+    "prices": {
+      "bad_files": 0,
+      "files": 25,
+      "ok_files": 25,
+      "rows": 14748
+    },
+    "trades": {
+      "bad_files": 0,
+      "files": 25,
+      "ok_files": 25,
+      "rows": 1316
+    }
+  },
+  "symbol": "ETH",
+  "total_rows": 18844
+}

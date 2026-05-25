@@ -1,0 +1,25 @@
+{
+  "crossing": {
+    "filled": null,
+    "has_alo_params": false,
+    "liquidity": null,
+    "ok": false,
+    "present": false,
+    "status": null
+  },
+  "gate": "hyperliquid_post_only_mapping",
+  "generated_at": "2026-05-25T13:57:00Z",
+  "ok": false,
+  "passive": {
+    "filled": null,
+    "has_alo_params": false,
+    "liquidity": null,
+    "ok": false,
+    "present": false,
+    "status": null
+  },
+  "reasons": [
+    "missing_crossing_result",
+    "missing_passive_result"
+  ]
+}
