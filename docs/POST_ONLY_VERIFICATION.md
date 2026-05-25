@@ -78,6 +78,22 @@ $env:HYPERLIQUID_DIRECT_ALO_ALLOW = "1"
 python scripts/hyperliquid_alo_executor.py --mode submit-alo --testnet --symbol ETH/USDC:USDC --side bid --size <min_size> --price <passive_bid> --best-bid <best_bid> --best-ask <best_ask> --acknowledge-real-orders --output docs/direct_alo_submit_result.json
 ```
 
+The canonical evidence checker also accepts direct SDK submit artifacts. It
+normalizes `sdk_order_args.order_type.limit.tif = Alo` into the same post-only
+evidence shape used for CCXT/Freqtrade probes and reads the direct adapter's
+`classification` block for resting, maker-fill, taker-fill, or ALO-rejection
+outcomes:
+
+```bash
+python scripts/verify_post_only_mapping.py --mode evaluate-evidence --crossing-result docs/direct_alo_reject_result.json --passive-result docs/direct_alo_submit_result.json --output docs/post_only_evidence_report.json
+```
+
+The direct adapter requires local maker-safety before normal submit mode, so an
+intentional crossing-order probe should use `verify_post_only_mapping.py`
+submit mode on testnet/tiny size. A direct SDK ALO rejection caused by market
+movement is still valid rejection evidence if the retained result shows zero
+fill and the classifier marks `alo_rejected=true`.
+
 This adapter is not wired into the Freqtrade strategy. It is the implementation
 scaffold for a future direct Hyperliquid execution layer if Freqtrade cannot be
 made maker-safe.

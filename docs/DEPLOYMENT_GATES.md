@@ -112,6 +112,11 @@ python scripts/verify_post_only_mapping.py --mode evaluate-evidence --crossing-r
 ```bash
 python scripts/hyperliquid_alo_executor.py --mode plan
 ```
+
+  Direct SDK submit artifacts from `hyperliquid_alo_executor.py` can be fed to
+  the same `verify_post_only_mapping.py --mode evaluate-evidence` checker. The
+  checker normalizes SDK `order_type={"limit": {"tif": "Alo"}}` and evaluates
+  the adapter's resting/rejected/fill classification.
 - `multi_day_event_replay`: the automated latest-data smoke proves the replay
   parser and conservative fill loop work on real shards, and the acceptance
   report records exactly which criteria are still failing. The remaining manual

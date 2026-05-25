@@ -67,6 +67,12 @@ def find_nested_value(payload: Any, keys: set[str]) -> Any:
 
 
 def filled_amount(payload: dict[str, Any]) -> float:
+    classification = payload.get("classification")
+    if isinstance(classification, dict) and classification.get("filled_total") is not None:
+        try:
+            return float(classification["filled_total"])
+        except Exception:
+            pass
     for key in ("filled", "filledAmount", "filledSz", "totalSz"):
         value = payload.get(key)
         if value is None and isinstance(payload.get("raw_result"), dict):
@@ -83,6 +89,14 @@ def filled_amount(payload: dict[str, Any]) -> float:
 
 
 def order_status(payload: dict[str, Any]) -> str:
+    classification = payload.get("classification")
+    if isinstance(classification, dict):
+        if classification.get("alo_rejected"):
+            return "rejected"
+        if classification.get("saw_resting"):
+            return "open"
+        if classification.get("saw_filled"):
+            return "filled"
     for key in ("order_status", "status"):
         value = payload.get(key)
         if value is None and isinstance(payload.get("raw_result"), dict):
@@ -94,6 +108,13 @@ def order_status(payload: dict[str, Any]) -> str:
 
 
 def liquidity_flag(payload: dict[str, Any]) -> str | None:
+    classification = payload.get("classification")
+    if isinstance(classification, dict):
+        reasons = {str(reason) for reason in classification.get("reasons", [])}
+        if "taker_liquidity_seen" in reasons:
+            return "taker"
+        if classification.get("saw_filled") and classification.get("ok"):
+            return "maker"
     value = find_nested_value(payload, {"liquidity", "liquiditytype", "maker"})
     if value is None:
         return None
@@ -109,6 +130,19 @@ def submitted_params(payload: dict[str, Any]) -> dict[str, Any]:
     params = payload.get("params")
     if isinstance(params, dict):
         return params
+    sdk_args = payload.get("sdk_order_args")
+    if isinstance(sdk_args, dict):
+        order_type = sdk_args.get("order_type")
+        if isinstance(order_type, dict):
+            limit_type = order_type.get("limit")
+            if isinstance(limit_type, dict):
+                tif = limit_type.get("tif") or limit_type.get("timeInForce")
+                if tif:
+                    return {
+                        "timeInForce": tif,
+                        "postOnly": str(tif).lower() == "alo",
+                        "source": "hyperliquid_sdk_order_type",
+                    }
     return {}
 
 

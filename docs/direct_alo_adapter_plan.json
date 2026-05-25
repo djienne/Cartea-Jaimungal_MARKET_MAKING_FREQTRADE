@@ -1,6 +1,6 @@
 {
   "component": "direct_hyperliquid_alo_executor",
-  "generated_at": "2026-05-25T13:57:00Z",
+  "generated_at": "2026-05-25T14:21:53Z",
   "order_type": {
     "limit": {
       "tif": "Alo"

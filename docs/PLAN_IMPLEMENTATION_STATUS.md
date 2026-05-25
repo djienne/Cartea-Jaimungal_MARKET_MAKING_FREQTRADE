@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 79 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 82 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -18,7 +18,10 @@ Generated from the current local worktree after the latest safety-gate run.
   `scripts/hyperliquid_alo_executor.py` builds Hyperliquid SDK orders with
   `order_type={"limit": {"tif": "Alo"}}`, applies local maker-safety from BBO,
   classifies SDK responses, and refuses submit mode without explicit
-  environment/CLI acknowledgements.
+  environment/CLI acknowledgements. Direct SDK submit artifacts are normalized
+  by `scripts/verify_post_only_mapping.py --mode evaluate-evidence`, so direct
+  execution evidence and CCXT/Freqtrade probe evidence use the same Gate 4
+  checker.
 - Fresh collector data validation:
   `docs/hl_data_validation.json` shows fresh ETH shards, 75 checked files, and
   0 bad files.

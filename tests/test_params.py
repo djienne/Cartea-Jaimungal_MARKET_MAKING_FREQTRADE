@@ -177,6 +177,57 @@ def test_post_only_evidence_report_passes_complete_safe_results():
     assert report["reasons"] == []
 
 
+def test_post_only_evaluator_accepts_direct_sdk_alo_rejection():
+    ok, reasons = evaluate_crossing_result(
+        {
+            "sdk_order_args": {"order_type": {"limit": {"tif": "Alo"}}},
+            "classification": {
+                "ok": True,
+                "alo_rejected": True,
+                "filled_total": 0.0,
+                "reasons": [],
+            },
+        }
+    )
+
+    assert ok
+    assert reasons == []
+
+
+def test_post_only_evaluator_accepts_direct_sdk_resting_order():
+    ok, reasons = evaluate_passive_result(
+        {
+            "sdk_order_args": {"order_type": {"limit": {"tif": "Alo"}}},
+            "classification": {
+                "ok": True,
+                "saw_resting": True,
+                "filled_total": 0.0,
+                "reasons": [],
+            },
+        }
+    )
+
+    assert ok
+    assert reasons == []
+
+
+def test_post_only_evaluator_rejects_direct_sdk_taker_fill():
+    ok, reasons = evaluate_passive_result(
+        {
+            "sdk_order_args": {"order_type": {"limit": {"tif": "Alo"}}},
+            "classification": {
+                "ok": False,
+                "saw_filled": True,
+                "filled_total": 0.01,
+                "reasons": ["taker_liquidity_seen"],
+            },
+        }
+    )
+
+    assert not ok
+    assert "passive_liquidity_taker" in reasons
+
+
 def test_config_uses_runtime_supported_tif_and_keeps_force_entry_off():
     config = json.loads((ROOT / "user_data" / "config.json").read_text(encoding="utf-8"))
 
