@@ -108,6 +108,26 @@ def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
     )
 
 
+def net_realized_spread_usdc(metrics: dict[str, Any]) -> float:
+    return float(metrics.get("realized_spread_usdc") or 0.0) - float(metrics.get("fees_usdc") or 0.0)
+
+
+def directional_pnl_proxy_usdc(metrics: dict[str, Any]) -> float:
+    """Approximate PnL not explained by realized spread capture after fees."""
+    mark_to_market = float(metrics.get("mark_to_market_pnl_usdc") or 0.0)
+    return mark_to_market - net_realized_spread_usdc(metrics)
+
+
+def directional_drift_ratio(metrics: dict[str, Any]) -> float:
+    directional = abs(directional_pnl_proxy_usdc(metrics))
+    scale = max(
+        abs(float(metrics.get("mark_to_market_pnl_usdc") or 0.0)),
+        abs(net_realized_spread_usdc(metrics)),
+        1e-12,
+    )
+    return directional / scale
+
+
 def evaluate_metrics(
     metrics: dict[str, Any],
     *,
@@ -117,6 +137,7 @@ def evaluate_metrics(
     min_maker_ratio: float,
     min_net_realized_spread: float,
     min_mean_markout_usdc: float,
+    max_directional_drift_ratio: float,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     days = coverage_days(metrics)
@@ -138,9 +159,15 @@ def evaluate_metrics(
     if maker_fills > 0 and maker_ratio < float(min_maker_ratio):
         reasons.append(f"maker_ratio_below_threshold:{maker_ratio:.6f}<min_{float(min_maker_ratio):.6f}")
 
-    net_spread = float(metrics.get("realized_spread_usdc") or 0.0) - float(metrics.get("fees_usdc") or 0.0)
+    net_spread = net_realized_spread_usdc(metrics)
     if maker_fills > 0 and net_spread < float(min_net_realized_spread):
         reasons.append(f"net_realized_spread_below_threshold:{net_spread:.8f}<min_{float(min_net_realized_spread):.8f}")
+
+    drift_ratio = directional_drift_ratio(metrics)
+    if maker_fills > 0 and drift_ratio > float(max_directional_drift_ratio):
+        reasons.append(
+            f"directional_drift_dominates_pnl:{drift_ratio:.6f}>max_{float(max_directional_drift_ratio):.6f}"
+        )
 
     inventory_histogram = metrics.get("inventory_histogram") or {}
     for raw_q in inventory_histogram.keys():
@@ -173,6 +200,7 @@ def build_report(
     min_maker_ratio: float,
     min_net_realized_spread: float,
     min_mean_markout_usdc: float,
+    max_directional_drift_ratio: float,
     variants: tuple[ReplayVariant, ...] = DEFAULT_VARIANTS,
 ) -> dict[str, Any]:
     variant_payloads: list[dict[str, Any]] = []
@@ -188,6 +216,7 @@ def build_report(
             min_maker_ratio=min_maker_ratio,
             min_net_realized_spread=min_net_realized_spread,
             min_mean_markout_usdc=min_mean_markout_usdc,
+            max_directional_drift_ratio=max_directional_drift_ratio,
         )
         variant_payloads.append(
             {
@@ -195,8 +224,9 @@ def build_report(
                 "ok": ok,
                 "reasons": reasons,
                 "coverage_days": coverage_days(metrics_payload),
-                "net_realized_spread_usdc": float(metrics_payload.get("realized_spread_usdc") or 0.0)
-                - float(metrics_payload.get("fees_usdc") or 0.0),
+                "net_realized_spread_usdc": net_realized_spread_usdc(metrics_payload),
+                "directional_pnl_proxy_usdc": directional_pnl_proxy_usdc(metrics_payload),
+                "directional_drift_ratio": directional_drift_ratio(metrics_payload),
                 "markout_summary": markout_summary(metrics_payload.get("markout_samples") or []),
                 "metrics": metrics_payload,
             }
@@ -214,6 +244,7 @@ def build_report(
             "min_maker_ratio": float(min_maker_ratio),
             "min_net_realized_spread": float(min_net_realized_spread),
             "min_mean_markout_usdc": float(min_mean_markout_usdc),
+            "max_directional_drift_ratio": float(max_directional_drift_ratio),
             "q_max": int(config.q_max),
         },
         "config": {
@@ -241,14 +272,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Variant Summary",
         "",
-        "| Variant | Status | Coverage days | Quotes | Maker fills | Taker fills | Net spread | Reasons |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Variant | Status | Coverage days | Quotes | Maker fills | Taker fills | Net spread | Directional ratio | Reasons |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for item in report["variants"]:
         metrics = item["metrics"]
         reasons = ", ".join(item["reasons"]) if item["reasons"] else "ok"
         lines.append(
-            "| {name} | {status} | {days:.6f} | {quotes} | {maker} | {taker} | {spread:.8f} | {reasons} |".format(
+            "| {name} | {status} | {days:.6f} | {quotes} | {maker} | {taker} | {spread:.8f} | {drift:.6f} | {reasons} |".format(
                 name=item["variant"]["name"],
                 status="PASS" if item["ok"] else "FAIL",
                 days=float(item["coverage_days"]),
@@ -256,6 +287,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                 maker=int(metrics.get("maker_fills") or 0),
                 taker=int(metrics.get("taker_fills") or 0),
                 spread=float(item["net_realized_spread_usdc"]),
+                drift=float(item.get("directional_drift_ratio") or 0.0),
                 reasons=reasons,
             )
         )
@@ -278,6 +310,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-maker-ratio", type=float, default=0.99)
     parser.add_argument("--min-net-realized-spread", type=float, default=0.0)
     parser.add_argument("--min-mean-markout-usdc", type=float, default=-0.01)
+    parser.add_argument("--max-directional-drift-ratio", type=float, default=0.75)
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
     parser.add_argument("--kappa-plus", type=float, required=True)
@@ -314,6 +347,7 @@ def main() -> int:
         min_maker_ratio=args.min_maker_ratio,
         min_net_realized_spread=args.min_net_realized_spread,
         min_mean_markout_usdc=args.min_mean_markout_usdc,
+        max_directional_drift_ratio=args.max_directional_drift_ratio,
     )
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

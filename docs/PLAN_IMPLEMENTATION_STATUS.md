@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 84 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 86 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -41,9 +41,10 @@ Generated from the current local worktree after the latest safety-gate run.
 - Replay acceptance report:
   `docs/replay_acceptance_report.json` and
   `docs/replay_acceptance_report.md` run baseline, fee, latency, and parameter
-  perturbation variants. The current report correctly fails because the local
-  data window is much shorter than the required multi-day coverage and has no
-  maker fills.
+  perturbation variants, including directional-drift attribution so PnL from
+  one-way price movement is reported separately from net realized spread. The
+  current report correctly fails because the local data window is much shorter
+  than the required multi-day coverage and has no maker fills.
 
 ## Phase Status
 
@@ -67,7 +68,7 @@ Generated from the current local worktree after the latest safety-gate run.
 - Multi-day event replay:
   run several days of collected data with fee, latency, and parameter
   perturbation sensitivity; review realized spread, markouts, maker ratio,
-  inventory boundaries, and directional drift.
+  inventory boundaries, and directional-drift attribution.
 - Live canary:
   only after every prior gate passes, using tiny fixed stake, hard loss limits,
   post-only required, and kill-on-taker-fill enabled.

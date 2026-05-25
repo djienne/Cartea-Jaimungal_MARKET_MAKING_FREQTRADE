@@ -58,7 +58,9 @@ Optional Docker runtime gates:
   parameter-perturbation replay variants and writes
   `docs/replay_acceptance_report.json` plus a markdown summary. The gate command
   uses `--allow-incomplete` so the artifact is always produced; the report's own
-  `ok` field remains false until the multi-day acceptance criteria are met.
+  `ok` field remains false until the multi-day acceptance criteria are met. The
+  report includes a directional-drift ratio so mark-to-market PnL that is not
+  explained by net realized spread cannot masquerade as maker edge.
 
 Data freshness/replay-readiness report:
 
@@ -123,7 +125,8 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   parser and conservative fill loop work on real shards, and the acceptance
   report records exactly which criteria are still failing. The remaining manual
   gate is a several-day replay with acceptable realized spread, markouts, maker
-  ratio, inventory, latency, fee sensitivity, and parameter perturbation.
+  ratio, inventory, latency, fee sensitivity, parameter perturbation, and
+  directional-drift attribution.
 - `live_canary`: only after all previous gates pass, with tiny fixed stake,
   one symbol, hard loss limits, post-only required, and kill-on-taker-fill
   enabled.
