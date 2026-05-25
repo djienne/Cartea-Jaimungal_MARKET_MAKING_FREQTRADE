@@ -535,6 +535,67 @@ def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
     assert bot._maker_fill_count == 1
 
 
+def test_fill_markout_events_are_logged_after_horizon():
+    bot = make_bot()
+    bot.fill_markout_horizons_ms = (100, 1_000)
+    bot.dp = DummyDP(best_bid=99.0, best_ask=101.0)
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    fill_ts = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    order = types.SimpleNamespace(
+        id="maker-2",
+        liquidity="maker",
+        order_type="limit",
+        time_in_force="GTC",
+        ft_order_side="buy",
+        price=99.0,
+        amount=0.5,
+    )
+
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.5), order, fill_ts)
+
+    assert [event for event, _ in events] == ["fill"]
+    bot._process_pending_fill_markouts("ETH/USDC:USDC", fill_ts + timedelta(milliseconds=100))
+
+    assert [event for event, _ in events] == ["fill", "fill_markout"]
+    markout = events[1][1]
+    assert markout["quote_side"] == "bid"
+    assert markout["horizon_ms"] == 100
+    assert markout["fill_price"] == 99.0
+    assert markout["future_mid"] == 100.0
+    assert markout["markout_usdc_per_base"] == 1.0
+    assert markout["markout_usdc"] == 0.5
+    assert len(bot._pending_fill_markouts) == 1
+
+
+def test_ask_fill_markout_uses_ask_sign_convention():
+    bot = make_bot()
+    bot.fill_markout_horizons_ms = (100,)
+    bot.dp = DummyDP(best_bid=99.0, best_ask=101.0)
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    fill_ts = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    order = types.SimpleNamespace(
+        id="maker-ask-1",
+        liquidity="maker",
+        order_type="limit",
+        time_in_force="GTC",
+        ft_order_side="sell",
+        price=101.0,
+        amount=0.5,
+    )
+
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.5), order, fill_ts)
+    bot._process_pending_fill_markouts("ETH/USDC:USDC", fill_ts + timedelta(milliseconds=100))
+
+    assert [event for event, _ in events] == ["fill", "fill_markout"]
+    markout = events[1][1]
+    assert markout["quote_side"] == "ask"
+    assert markout["markout_usdc_per_base"] == 1.0
+    assert markout["markout_usdc"] == 0.5
+    assert bot._pending_fill_markouts == []
+
+
 def test_amount_below_minimum_is_rejected():
     bot = make_bot()
     bot.trading_enabled = True

@@ -175,6 +175,7 @@ class Market_Making(IStrategy):
     max_post_only_reject_rate = 0.80
     min_post_only_reject_samples = 10
     kill_on_taker_fill = True
+    fill_markout_horizons_ms = (100, 1_000, 5_000, 30_000)
     min_kappa_fit_points = 2
     min_kappa_r2 = 0.0
     min_epsilon_events = 1
@@ -332,6 +333,7 @@ class Market_Making(IStrategy):
         pair = pairs[0] if pairs else None
         now = self._as_utc(current_time) or self._now_utc()
         if pair:
+            self._process_pending_fill_markouts(pair, now)
             self._log_health(pair, now)
 
         if bool(self._mm_config().get("disable_param_refresh", False)):
@@ -1232,6 +1234,107 @@ class Market_Making(IStrategy):
             configured = self.order_time_in_force.get("exit")
         return "Alo" if self.post_only_verified else configured
 
+    def _markout_value(self, quote_side: str | None, fill_price: float, future_mid_price: float) -> float | None:
+        if quote_side == "bid":
+            return float(future_mid_price) - float(fill_price)
+        if quote_side == "ask":
+            return float(fill_price) - float(future_mid_price)
+        return None
+
+    def _pending_fill_markout_entries(self) -> list[dict[str, Any]]:
+        pending = getattr(self, "_pending_fill_markouts", None)
+        if not isinstance(pending, list):
+            pending = []
+            self._pending_fill_markouts = pending
+        return pending
+
+    def _schedule_fill_markouts(self, fill_payload: dict[str, Any], current_time: datetime) -> None:
+        quote_side = fill_payload.get("quote_side")
+        fill_price = self._finite_float_or_none(fill_payload.get("price"))
+        amount = self._finite_float_or_none(fill_payload.get("amount"))
+        if quote_side not in {"bid", "ask"} or fill_price is None or amount is None or amount <= 0:
+            return
+
+        horizons = []
+        for horizon in getattr(self, "fill_markout_horizons_ms", ()):
+            try:
+                horizon_int = int(horizon)
+            except Exception:
+                continue
+            if horizon_int > 0:
+                horizons.append(horizon_int)
+        if not horizons:
+            return
+
+        fill_ts = self._as_utc(current_time) or self._now_utc()
+        self._pending_fill_markout_entries().append(
+            {
+                "pair": fill_payload.get("pair"),
+                "trade_id": fill_payload.get("trade_id"),
+                "order_id": fill_payload.get("order_id"),
+                "quote_side": quote_side,
+                "fill_price": float(fill_price),
+                "amount": float(amount),
+                "fill_ts": fill_ts,
+                "remaining_horizons_ms": sorted(set(horizons)),
+            }
+        )
+
+    def _process_pending_fill_markouts(self, pair: str, current_time: datetime) -> None:
+        pending = self._pending_fill_markout_entries()
+        if not pending:
+            return
+
+        now = self._as_utc(current_time) or self._now_utc()
+        keep: list[dict[str, Any]] = []
+        for entry in pending:
+            if entry.get("pair") != pair:
+                keep.append(entry)
+                continue
+
+            fill_ts = self._as_utc(entry.get("fill_ts"))
+            if fill_ts is None:
+                continue
+
+            due_horizons = []
+            remaining_horizons = []
+            for horizon_ms in entry.get("remaining_horizons_ms", []):
+                due_at = fill_ts + timedelta(milliseconds=int(horizon_ms))
+                if now >= due_at:
+                    due_horizons.append(int(horizon_ms))
+                else:
+                    remaining_horizons.append(int(horizon_ms))
+
+            if due_horizons:
+                future_mid = self.get_mid_price(pair, float(entry["fill_price"]))
+                for horizon_ms in due_horizons:
+                    markout = self._markout_value(entry.get("quote_side"), float(entry["fill_price"]), future_mid)
+                    if markout is None:
+                        continue
+                    self._debug_log_event(
+                        "fill_markout",
+                        {
+                            "pair": pair,
+                            "trade_id": entry.get("trade_id"),
+                            "order_id": entry.get("order_id"),
+                            "quote_side": entry.get("quote_side"),
+                            "horizon_ms": int(horizon_ms),
+                            "fill_ts": fill_ts.isoformat().replace("+00:00", "Z"),
+                            "markout_ts": now.isoformat().replace("+00:00", "Z"),
+                            "fill_price": float(entry["fill_price"]),
+                            "future_mid": float(future_mid),
+                            "amount": float(entry["amount"]),
+                            "markout_usdc_per_base": float(markout),
+                            "markout_usdc": float(markout) * float(entry["amount"]),
+                        },
+                    )
+
+            if remaining_horizons:
+                entry["remaining_horizons_ms"] = remaining_horizons
+                keep.append(entry)
+
+        self._pending_fill_markouts = keep
+
     def _extract_order_fee_paid(self, order: Order, price: float | None, amount: float | None) -> float | None:
         fee = getattr(order, "fee", None)
         if isinstance(fee, dict):
@@ -2124,6 +2227,7 @@ class Market_Making(IStrategy):
             **self._inventory_snapshot(pair),
         }
         self._debug_log_event("fill", payload)
+        self._schedule_fill_markouts(payload, current_time)
 
         if liquidity == "maker":
             self._maker_fill_count = int(getattr(self, "_maker_fill_count", 0)) + 1

@@ -48,7 +48,9 @@ Optional Docker runtime gates:
   `dry_run=true` and `trading_enabled=true` through a temporary config, and
   requires fresh collector data, fresh params, fresh HJB, an accepted quote
   decision, and dry-run order evidence. Checked-in config and checked-in params
-  remain fail-closed.
+  remain fail-closed. Strategy fill callbacks also schedule delayed
+  `fill_markout` audit events at 100 ms, 1 s, 5 s, and 30 s after fills when
+  fill price, size, and side are available.
 - `replay_latest_data_smoke`: after runtime collector gates have produced fresh
   shards, replays the newest local data window and writes
   `docs/replay_latest_smoke.json` with input coverage, maker/taker counts,
