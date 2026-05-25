@@ -103,6 +103,7 @@ def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
         maker_fee=float(base.maker_fee) * float(variant.maker_fee_multiplier),
         taker_fee=base.taker_fee,
         funding_rate_per_hour=base.funding_rate_per_hour,
+        queue_decay_per_second=base.queue_decay_per_second,
         newest_per_stream=base.newest_per_stream,
         max_price_events=base.max_price_events,
     )
@@ -367,6 +368,7 @@ def build_report(
             "maker_fee": config.maker_fee,
             "taker_fee": config.taker_fee,
             "funding_rate_per_hour": config.funding_rate_per_hour,
+            "queue_decay_per_second": config.queue_decay_per_second,
         },
         "base_params": params,
         "refusal_checks": refusal_checks,

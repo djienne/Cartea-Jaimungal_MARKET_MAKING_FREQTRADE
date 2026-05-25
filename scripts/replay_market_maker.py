@@ -38,6 +38,7 @@ class ReplayConfig:
     maker_fee: float = MAKER_FEE
     taker_fee: float = TAKER_FEE
     funding_rate_per_hour: float = 0.0
+    queue_decay_per_second: float = 0.05
     newest_per_stream: int | None = None
     max_price_events: int | None = None
 
@@ -60,6 +61,7 @@ class ReplayMetrics:
     final_mid: float | None = None
     mark_to_market_pnl_usdc: float = 0.0
     funding_usdc: float = 0.0
+    queue_decay_base: float = 0.0
     time_at_q_boundary: dict[str, int] = field(default_factory=lambda: {"q_min": 0, "q_max": 0})
     inventory_histogram: dict[int, int] = field(default_factory=dict)
     pnl_by_side: dict[str, float] = field(default_factory=lambda: {"bid": 0.0, "ask": 0.0})
@@ -90,6 +92,7 @@ class ReplayMetrics:
             "final_mid": self.final_mid,
             "mark_to_market_pnl_usdc": self.mark_to_market_pnl_usdc,
             "funding_usdc": self.funding_usdc,
+            "queue_decay_base": self.queue_decay_base,
             "time_at_q_boundary": self.time_at_q_boundary,
             "inventory_histogram": self.inventory_histogram,
             "pnl_by_side": self.pnl_by_side,
@@ -305,9 +308,31 @@ def is_joining_best(side: str, price: float, best_bid: float, best_ask: float) -
     return abs(float(price) - float(best_ask)) <= max(1e-9, abs(float(best_ask)) * 1e-9)
 
 
-def matching_trade(side: str, price: float, window: pd.DataFrame, queue_ahead: float) -> pd.Series | None:
+def matching_trade_with_queue_decay(
+    side: str,
+    price: float,
+    window: pd.DataFrame,
+    queue_ahead: float,
+    *,
+    queue_decay_per_second: float = 0.0,
+    active_at: pd.Timestamp | None = None,
+) -> tuple[pd.Series | None, float]:
     remaining_queue = max(0.0, float(queue_ahead))
+    initial_queue = remaining_queue
+    decay_rate = max(0.0, float(queue_decay_per_second))
+    queue_decay_base = 0.0
+    last_ts = pd.Timestamp(active_at) if active_at is not None else None
     for _, trade in window.iterrows():
+        trade_ts = trade.get("timestamp", None)
+        if last_ts is None and trade_ts is not None:
+            last_ts = pd.Timestamp(trade_ts)
+        if decay_rate > 0 and last_ts is not None and trade_ts is not None and remaining_queue > 0:
+            elapsed_seconds = max(0.0, (pd.Timestamp(trade_ts) - last_ts).total_seconds())
+            decay = min(remaining_queue, initial_queue * decay_rate * elapsed_seconds)
+            remaining_queue -= decay
+            queue_decay_base += decay
+            last_ts = pd.Timestamp(trade_ts)
+
         trade_price = float(trade.get("price", np.nan))
         if not np.isfinite(trade_price):
             continue
@@ -319,8 +344,28 @@ def matching_trade(side: str, price: float, window: pd.DataFrame, queue_ahead: f
             remaining_queue -= max(0.0, trade_size)
             if remaining_queue >= 0:
                 continue
-        return trade
-    return None
+        return trade, queue_decay_base
+    return None, queue_decay_base
+
+
+def matching_trade(
+    side: str,
+    price: float,
+    window: pd.DataFrame,
+    queue_ahead: float,
+    *,
+    queue_decay_per_second: float = 0.0,
+    active_at: pd.Timestamp | None = None,
+) -> pd.Series | None:
+    trade, _queue_decay_base = matching_trade_with_queue_decay(
+        side,
+        price,
+        window,
+        queue_ahead,
+        queue_decay_per_second=queue_decay_per_second,
+        active_at=active_at,
+    )
+    return trade
 
 
 def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
@@ -409,7 +454,15 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             queue_row = active_orderbook_row(orderbooks, active_at)
             queue_ahead = first_level_size(queue_row, side) if is_joining_best(side, price, best_bid, best_ask) else 0.0
             window = trades[(trades["timestamp"] >= active_at) & (trades["timestamp"] <= stale_at)]
-            fill_trade = matching_trade(side, price, window, queue_ahead)
+            fill_trade, queue_decay_base = matching_trade_with_queue_decay(
+                side,
+                price,
+                window,
+                queue_ahead,
+                queue_decay_per_second=config.queue_decay_per_second,
+                active_at=active_at,
+            )
+            metrics.queue_decay_base += queue_decay_base
 
             if fill_trade is None:
                 metrics.stale_quote_cancels += 1
@@ -506,6 +559,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
     parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
     parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
+    parser.add_argument(
+        "--queue-decay-per-second",
+        type=float,
+        default=0.05,
+        help="Conservative queue-ahead cancellation decay as a fraction of initial queue per second.",
+    )
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
     return parser.parse_args()
@@ -528,6 +587,7 @@ def main() -> int:
         maker_fee=args.maker_fee,
         taker_fee=args.taker_fee,
         funding_rate_per_hour=args.funding_rate_per_hour,
+        queue_decay_per_second=args.queue_decay_per_second,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,
     )

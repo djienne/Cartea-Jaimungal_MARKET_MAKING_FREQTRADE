@@ -19,6 +19,7 @@ from replay_market_maker import (  # noqa: E402
     first_level_size,
     inventory_q,
     matching_trade,
+    matching_trade_with_queue_decay,
     normalize_price_bbo,
     normalize_timestamp_column,
     post_only_check,
@@ -123,6 +124,87 @@ def test_matching_trade_waits_for_queue_ahead_volume():
 
     assert fill is not None
     assert fill["timestamp"] == trades.iloc[2]["timestamp"]
+
+
+def test_matching_trade_applies_conservative_queue_decay():
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    trades = pd.DataFrame(
+        [
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=500), "price": 100.0, "size": 0.6},
+        ]
+    )
+
+    no_decay = matching_trade("bid", 100.0, trades, queue_ahead=1.0, active_at=ts0)
+    fill, queue_decay = matching_trade_with_queue_decay(
+        "bid",
+        100.0,
+        trades,
+        queue_ahead=1.0,
+        queue_decay_per_second=1.0,
+        active_at=ts0,
+    )
+
+    assert no_decay is None
+    assert fill is not None
+    assert fill["timestamp"] == trades.iloc[0]["timestamp"]
+    assert queue_decay == 0.5
+
+
+def test_replay_records_queue_decay_metric(monkeypatch):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame(
+        [
+            {"timestamp": ts0, "bid": 100.0, "ask": 101.0},
+            {"timestamp": ts0 + pd.Timedelta(seconds=1), "bid": 100.0, "ask": 101.0},
+        ]
+    )
+    trades = pd.DataFrame(
+        [
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=500), "price": 100.0, "size": 0.6},
+        ]
+    )
+    orderbooks = pd.DataFrame(
+        [
+            {"timestamp": ts0, "bid_size_0": 1.0, "ask_size_0": 1.0},
+        ]
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, trades, orderbooks, {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.0, None, {}),
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.01,
+            q_max=3,
+            decision_latency_ms=0,
+            order_ack_latency_ms=0,
+            cancel_latency_ms=1000,
+            queue_decay_per_second=1.0,
+        ),
+        params,
+    )
+
+    assert metrics.maker_fills == 1
+    assert metrics.queue_decay_base == 0.5
+    assert metrics.to_dict()["queue_decay_base"] == 0.5
 
 
 def test_first_level_size_reads_nested_orderbook_levels():
