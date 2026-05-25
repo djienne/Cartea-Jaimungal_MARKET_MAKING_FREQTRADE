@@ -98,6 +98,12 @@ Optional Docker runtime gates:
   whose actual fee rate matches the configured maker fee. It is expected to be
   `ok=false` until testnet/tiny integration produces real fee-tier and fill-fee
   evidence.
+- `live_canary_evidence_report`: parses the audit log and prior gate artifacts,
+  then writes `docs/live_canary_report.json`. It is expected to be `ok=false`
+  until post-only, fee-tier, and multi-day replay gates are already `ok=true`
+  and several tiny live sessions provide non-dry-run health, fresh accepted
+  quotes, maker-only fill evidence, no parameter/HJB/collector errors, no kill
+  switches, and an explicit manual-monitoring acknowledgement.
 - `hl_data_validation_report`: reads the newest collector Parquet shards and
   validates required streams/columns plus the actual `timestamp` values inside
   the files. Freshness is based on row timestamps, not file modification time,
@@ -178,8 +184,18 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   This report must be `ok=true` before canary: config/strategy fee agreement is
   not enough without exchange/account fee and actual maker fill-fee evidence.
 - `live_canary`: only after all previous gates pass, with tiny fixed stake,
-  one symbol, hard loss limits, post-only required, and kill-on-taker-fill
-  enabled.
+  one symbol, hard loss limits, post-only required, kill-on-taker-fill enabled,
+  and manual monitoring. After the sessions, run:
+
+```bash
+python scripts/verify_live_canary.py --input user_data/logs/mm_debug.jsonl --manual-monitoring-ack --output docs/live_canary_report.json
+```
+
+  The report must be `ok=true` before any larger deployment. It checks the prior
+  post-only, fee, and replay artifacts, then rejects taker fills, unknown fill
+  liquidity, kill switches, stale accepted quotes, parameter/HJB/collector error
+  events, excessive stake, excessive symbols, missing live health, and missing
+  manual-monitoring acknowledgement.
 
 ## Current Safety Posture
 

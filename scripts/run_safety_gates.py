@@ -79,6 +79,7 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                 "tests/test_hjb.py",
                 "tests/test_hyperliquid_alo_executor.py",
                 "tests/test_fee_evidence.py",
+                "tests/test_live_canary.py",
                 "tests/test_strategy_guards.py",
                 "tests/test_params.py",
                 "tests/test_periodic_runner.py",
@@ -160,6 +161,18 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                 "docs/direct_alo_adapter_plan.json",
             ],
             [0],
+        ),
+        (
+            "live_canary_evidence_report",
+            [
+                py,
+                "scripts/verify_live_canary.py",
+                "--input",
+                "user_data/logs/mm_debug.jsonl",
+                "--output",
+                "docs/live_canary_report.json",
+            ],
+            [0, 1],
         ),
     ]
     if include_runtime:
@@ -328,7 +341,7 @@ def manual_gates(*, include_runtime: bool = False) -> list[dict[str, str]]:
         },
         {
             "name": "live_canary",
-            "reason": "Only allowed after every prior gate passes with post-only and kill-on-taker-fill verified.",
+            "reason": "Requires docs/live_canary_report.json to pass after several tiny live sessions with post-only, fee, replay, zero-taker, freshness, and kill-switch evidence.",
         },
     ]
     if not include_runtime:

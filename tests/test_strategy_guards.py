@@ -1282,6 +1282,8 @@ def test_quote_decision_logs_freshness_age_fields():
     assert payload["expected_tif_canonical"] == "post_only"
     assert payload["post_only"] is True
     assert payload["post_only_verified"] is True
+    assert payload["trading_enabled"] is False
+    assert payload["dry_run"] is True
     assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
     assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
 
@@ -1303,13 +1305,22 @@ def test_health_log_counts_open_orders_and_logs_position():
 
     assert events[0][0] == "health"
     payload = events[0][1]
+    assert payload["pair"] == "ETH/USDC:USDC"
+    assert payload["symbol"] == "ETH"
+    assert payload["dry_run"] is True
+    assert payload["stake_amount"] is None
     assert payload["open_orders"] == 2
     assert payload["open_orders_source"] == "exchange_open_orders"
     assert payload["position"] == 0.0
     assert payload["signed_base_position"] == 0.0
+    assert payload["kill_on_taker_fill"] is True
+    assert payload["expected_entry_time_in_force"] == "GTC"
+    assert payload["expected_entry_time_in_force_canonical"] == "gtc"
     assert payload["unrealized_pnl"] == 0.0
     assert payload["max_daily_loss_usdc"] == bot.max_daily_loss_usdc
     assert payload["max_consecutive_losses"] == bot.max_consecutive_losses
+    assert payload["max_post_only_reject_rate"] == bot.max_post_only_reject_rate
+    assert payload["max_abs_inventory_units"] == bot.max_abs_inventory_units
     assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
     assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
 

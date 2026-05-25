@@ -2077,11 +2077,14 @@ class Market_Making(IStrategy):
         book_ok, book_reason = self._book_is_fresh(pair, now)
         expected_tif = self._expected_time_in_force(side)
         expected_tif_canonical = self._canonical_tif(expected_tif)
+        config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
         payload = {
             "action": action,
             "pair": pair,
             "symbol": symbol,
             "side": side,
+            "trading_enabled": bool(self.trading_enabled),
+            "dry_run": bool(config.get("dry_run", True)),
             "decision": decision,
             "reason": reason,
             "mid": float(mid_price) if mid_price is not None else None,
@@ -2129,11 +2132,19 @@ class Market_Making(IStrategy):
         hjb_fresh = self.hjb_cache is not None and not self._hjb_is_stale(now)
         open_order_count = self._open_order_count(pair)
         open_order_source = getattr(self, "_last_open_order_count_source", "unavailable")
+        config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
+        entry_tif = self._expected_time_in_force("bid")
+        exit_tif = self._expected_time_in_force("ask")
         self._debug_log_event(
             "health",
             {
+                "pair": pair,
+                "symbol": symbol,
                 "trading_enabled": bool(self.trading_enabled),
                 "fail_closed_reason": self.fail_closed_reason,
+                "dry_run": bool(config.get("dry_run", True)),
+                "stake_amount": config.get("stake_amount"),
+                "tradable_balance_ratio": config.get("tradable_balance_ratio"),
                 "collector_fresh": collector_ok,
                 "collector_fresh_reason": collector_reason,
                 "collector_age_seconds": self._collector_age_seconds(symbol, now),
@@ -2146,6 +2157,13 @@ class Market_Making(IStrategy):
                 "hjb_fresh": hjb_fresh,
                 "hjb_age_seconds": self._hjb_age_seconds(now),
                 "post_only_verified": bool(self.post_only_verified),
+                "expected_entry_time_in_force": entry_tif,
+                "expected_exit_time_in_force": exit_tif,
+                "expected_entry_time_in_force_canonical": self._canonical_tif(entry_tif),
+                "expected_exit_time_in_force_canonical": self._canonical_tif(exit_tif),
+                "kill_on_taker_fill": bool(self.kill_on_taker_fill),
+                "kill_on_time_in_force_mismatch": bool(self.kill_on_time_in_force_mismatch),
+                "kill_on_unknown_liquidity_fill": bool(self.kill_on_unknown_liquidity_fill),
                 "fee_snapshot": self._fee_snapshot(pair),
                 "open_orders": open_order_count,
                 "open_orders_source": open_order_source,
@@ -2154,12 +2172,14 @@ class Market_Making(IStrategy):
                 "maker_fills": int(getattr(self, "_maker_fill_count", 0)),
                 "taker_fills": int(getattr(self, "_taker_fill_count", 0)),
                 "post_only_rejects": int(getattr(self, "_post_only_rejects", 0)),
+                "max_post_only_reject_rate": float(self.max_post_only_reject_rate),
                 "quote_decisions": int(getattr(self, "_quote_decisions_count", 0)),
                 "realized_pnl": float(getattr(self, "_daily_realized_pnl_usdc", 0.0)),
                 "max_daily_loss_usdc": float(self.max_daily_loss_usdc),
                 "unrealized_pnl": self._unrealized_pnl_usdc(pair),
                 "consecutive_losses": int(getattr(self, "_consecutive_losses", 0)),
                 "max_consecutive_losses": int(self.max_consecutive_losses),
+                "max_abs_inventory_units": int(self.max_abs_inventory_units),
                 **self._inventory_snapshot(pair),
             },
         )
