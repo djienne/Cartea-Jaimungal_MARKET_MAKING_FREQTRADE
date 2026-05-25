@@ -177,6 +177,7 @@ class Market_Making(IStrategy):
     kill_on_taker_fill = True
     fill_markout_horizons_ms = (100, 1_000, 5_000, 30_000)
     fee_snapshot_cache_seconds = 300
+    require_exchange_fee_match_live = True
     min_kappa_fit_points = 2
     min_kappa_r2 = 0.0
     min_epsilon_events = 1
@@ -285,6 +286,16 @@ class Market_Making(IStrategy):
 
         requested_enabled = bool(mm_config.get("trading_enabled"))
         is_dry_run = bool(getattr(self, "config", {}).get("dry_run", True))
+        ok, reason = self._config_fee_state_valid()
+        if requested_enabled and not ok:
+            self.trading_enabled = False
+            self.fail_closed_reason = reason
+            self._debug_log_event(
+                "trading_enable_rejected",
+                {"reason": reason, "dry_run": is_dry_run},
+            )
+            return
+
         if requested_enabled and not is_dry_run and not self.post_only_verified:
             self.trading_enabled = False
             self.fail_closed_reason = "post_only_not_verified"
@@ -996,6 +1007,10 @@ class Market_Making(IStrategy):
         if not ok:
             return False, reason
 
+        ok, reason = self._fee_state_valid(pair)
+        if not ok:
+            return False, reason
+
         ok, reason = self._book_is_fresh(pair, current_time)
         if not ok:
             return False, "stale_orderbook" if reason == "empty_orderbook" else reason
@@ -1241,6 +1256,14 @@ class Market_Making(IStrategy):
             return None
         return self._finite_float_or_none(config.get("fee"))
 
+    def _config_fee_state_valid(self) -> tuple[bool, str]:
+        config_fee = self._config_fee_rate()
+        if config_fee is None:
+            return False, "missing_config_fee"
+        if not self._fee_rate_matches(float(self.fees_maker_HL), config_fee):
+            return False, "config_fee_mismatch"
+        return True, "ok"
+
     def _fee_rate_matches(self, expected: float | None, observed: float | None, tolerance: float = 1e-9) -> bool | None:
         if expected is None or observed is None:
             return None
@@ -1366,6 +1389,27 @@ class Market_Making(IStrategy):
             "actual_fee_matches_strategy": actual_matches,
             "fee_agreement_ok": all(observed_matches) if observed_matches else None,
         }
+
+    def _fee_state_valid(self, pair: str) -> tuple[bool, str]:
+        ok, reason = self._config_fee_state_valid()
+        if not ok:
+            return False, reason
+
+        snapshot = self._fee_snapshot(pair)
+        if snapshot.get("exchange_maker_fee_matches_strategy") is False:
+            return False, "exchange_fee_mismatch"
+
+        is_dry_run = bool(getattr(self, "config", {}).get("dry_run", True))
+        if (
+            bool(self.trading_enabled)
+            and not is_dry_run
+            and bool(self.post_only_verified)
+            and bool(self.require_exchange_fee_match_live)
+            and snapshot.get("exchange_maker_fee_rate") is None
+        ):
+            return False, "exchange_fee_unavailable"
+
+        return True, "ok"
 
     def _markout_value(self, quote_side: str | None, fill_price: float, future_mid_price: float) -> float | None:
         if quote_side == "bid":

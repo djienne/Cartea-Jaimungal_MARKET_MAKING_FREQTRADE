@@ -242,6 +242,7 @@ def test_dry_run_config_can_enable_research_mode_without_post_only():
     bot = make_bot()
     bot.config = {
         "dry_run": True,
+        "fee": 0.00015,
         "market_making": {
             "trading_enabled": True,
             "post_only_verified": False,
@@ -258,10 +259,33 @@ def test_dry_run_config_can_enable_research_mode_without_post_only():
     assert bot.max_collector_age_seconds == 180
 
 
+def test_runtime_enable_rejects_fee_mismatch():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot.config = {
+        "dry_run": True,
+        "fee": 0.001,
+        "market_making": {"trading_enabled": True, "post_only_verified": False},
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "config_fee_mismatch"
+    assert events == [
+        (
+            "trading_enable_rejected",
+            {"reason": "config_fee_mismatch", "dry_run": True},
+        )
+    ]
+
+
 def test_live_config_cannot_enable_without_post_only_verification():
     bot = make_bot()
     bot.config = {
         "dry_run": False,
+        "fee": 0.00015,
         "market_making": {"trading_enabled": True, "post_only_verified": False},
     }
 
@@ -399,6 +423,75 @@ def test_stale_params_reject_entry():
         "mm_bid",
         "long",
     )
+
+
+def test_confirm_entry_rejects_config_fee_mismatch():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.config["fee"] = 0.001
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        99.5,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert events[0][0] == "entry_rejected"
+    assert events[0][1]["reason"] == "config_fee_mismatch"
+
+
+def test_confirm_entry_rejects_exchange_fee_mismatch():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.exchange.markets["ETH/USDC:USDC"]["maker"] = 0.001
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        99.5,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert events[0][0] == "entry_rejected"
+    assert events[0][1]["reason"] == "exchange_fee_mismatch"
+
+
+def test_live_entry_requires_exchange_fee_evidence_after_post_only_verification():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.post_only_verified = True
+    bot.config = {"dry_run": False, "fee": 0.00015}
+    bot.exchange.markets["ETH/USDC:USDC"].pop("maker")
+    bot.exchange.markets["ETH/USDC:USDC"].pop("taker")
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        99.5,
+        "Alo",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert events[0][0] == "entry_rejected"
+    assert events[0][1]["reason"] == "exchange_fee_unavailable"
 
 
 def test_live_mode_requires_post_only_verification():
