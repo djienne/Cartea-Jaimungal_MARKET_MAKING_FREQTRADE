@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 127 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 129 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -44,8 +44,10 @@ Generated from the current local worktree after the latest safety-gate run.
   them, and verified post-only mode rejects non-post-only TIF values before
   order submission. If a fill is still reported with a non-post-only or missing
   TIF while post-only mode is asserted, the strategy triggers a kill switch.
-  Repeated non-post-only TIF confirmation rejects also count toward the
-  post-only reject-rate kill switch.
+  Verified post-only mode also requires fills to report maker/taker liquidity;
+  unknown liquidity triggers `unknown_fill_liquidity` so live/testnet evidence
+  cannot silently omit the field. Repeated non-post-only TIF confirmation
+  rejects also count toward the post-only reject-rate kill switch.
 - Latest-data replay smoke:
   `docs/replay_latest_smoke.json` replays the newest local shards and records
   input coverage, post-only rejects, stale cancels, maker/taker counts,

@@ -784,6 +784,59 @@ def test_post_only_fill_time_in_force_mismatch_triggers_kill_switch():
     assert events[1][1]["reason"] == "unexpected_time_in_force"
 
 
+def test_post_only_unknown_fill_liquidity_triggers_kill_switch():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.post_only_verified = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    order = types.SimpleNamespace(
+        id="unknown-liquidity-1",
+        liquidity="unknown",
+        order_type="limit",
+        time_in_force="Alo",
+        ft_order_side="buy",
+        price=100.0,
+        amount=1.0,
+        fee={"cost": 0.015, "rate": 0.00015},
+    )
+
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.01), order, datetime.now(timezone.utc))
+
+    assert not bot.trading_enabled
+    assert bot.fail_closed_reason == "unknown_fill_liquidity"
+    assert [event for event, _ in events] == ["fill", "kill_switch"]
+    fill_payload = events[0][1]
+    assert fill_payload["liquidity"] == "unknown"
+    assert fill_payload["tif_canonical"] == "post_only"
+    assert fill_payload["tif_matches_expected"] is True
+    assert events[1][1]["reason"] == "unknown_fill_liquidity"
+
+
+def test_unknown_fill_liquidity_does_not_kill_before_post_only_verified():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.post_only_verified = False
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    order = types.SimpleNamespace(
+        id="unknown-liquidity-dryrun-1",
+        liquidity="unknown",
+        order_type="limit",
+        time_in_force="GTC",
+        ft_order_side="buy",
+        price=100.0,
+        amount=1.0,
+        fee={"cost": 0.015, "rate": 0.00015},
+    )
+
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.01), order, datetime.now(timezone.utc))
+
+    assert bot.trading_enabled
+    assert [event for event, _ in events] == ["fill"]
+    assert events[0][1]["liquidity"] == "unknown"
+
+
 def test_fill_markout_events_are_logged_after_horizon():
     bot = make_bot()
     bot.fill_markout_horizons_ms = (100, 1_000)
@@ -1003,6 +1056,7 @@ def test_market_data_fresh_uses_thirty_second_default():
 
 def test_quote_decision_logs_freshness_age_fields():
     bot = make_bot()
+    bot.post_only_verified = True
     events = []
     bot._debug_log_event = lambda event, payload: events.append((event, payload))
     bot._collector_age_seconds = lambda symbol, now=None: 12.4
@@ -1032,6 +1086,10 @@ def test_quote_decision_logs_freshness_age_fields():
     assert payload["params_fresh"] is True
     assert payload["collector_fresh"] is True
     assert payload["book_fresh"] is True
+    assert payload["expected_tif"] == "Alo"
+    assert payload["expected_tif_canonical"] == "post_only"
+    assert payload["post_only"] is True
+    assert payload["post_only_verified"] is True
     assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
     assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
 

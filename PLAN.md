@@ -947,6 +947,7 @@ Implement:
 
 ```python
 kill_on_taker_fill = True
+kill_on_unknown_liquidity_fill = True
 max_param_age_seconds = 90
 max_book_age_seconds = 5
 max_toxicity = 1.5

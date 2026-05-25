@@ -176,6 +176,7 @@ class Market_Making(IStrategy):
     min_post_only_reject_samples = 10
     kill_on_taker_fill = True
     kill_on_time_in_force_mismatch = True
+    kill_on_unknown_liquidity_fill = True
     fill_markout_horizons_ms = (100, 1_000, 5_000, 30_000)
     fee_snapshot_cache_seconds = 300
     require_exchange_fee_match_live = True
@@ -267,6 +268,8 @@ class Market_Making(IStrategy):
             self.param_update_status_path = str(mm_config.get("param_update_status_path") or "")
         elif self._param_config_dir() is not None:
             self.param_update_status_path = str(self._param_config_dir() / "param_update_status.json")
+        if "kill_on_unknown_liquidity_fill" in mm_config:
+            self.kill_on_unknown_liquidity_fill = bool(mm_config.get("kill_on_unknown_liquidity_fill"))
         for numeric_key in (
             "max_param_age_seconds",
             "max_collector_age_seconds",
@@ -1938,6 +1941,8 @@ class Market_Making(IStrategy):
         params_ok, params_reason = self._params_are_valid(pair)
         collector_ok, collector_reason = self._market_data_fresh(symbol)
         book_ok, book_reason = self._book_is_fresh(pair, now)
+        expected_tif = self._expected_time_in_force(side)
+        expected_tif_canonical = self._canonical_tif(expected_tif)
         payload = {
             "action": action,
             "pair": pair,
@@ -1966,6 +1971,9 @@ class Market_Making(IStrategy):
             "collector_fresh_reason": collector_reason,
             "book_fresh": bool(book_ok),
             "book_fresh_reason": book_reason if snapshot else book_snapshot_reason,
+            "expected_tif": expected_tif,
+            "expected_tif_canonical": expected_tif_canonical,
+            "post_only": expected_tif_canonical == "post_only",
             "post_only_verified": bool(self.post_only_verified),
             "params": self._params_snapshot(symbol),
             "fee_snapshot": self._fee_snapshot(pair),
@@ -2471,6 +2479,13 @@ class Market_Making(IStrategy):
         tif_mismatch = payload["tif_matches_expected"] is False or tif_missing_when_required
         if self.kill_on_time_in_force_mismatch and self.post_only_verified and tif_mismatch:
             self._trigger_kill_switch("unexpected_time_in_force", payload)
+
+        if (
+            self.kill_on_unknown_liquidity_fill
+            and self.post_only_verified
+            and liquidity not in {"maker", "taker"}
+        ):
+            self._trigger_kill_switch("unknown_fill_liquidity", payload)
 
         if self.kill_on_taker_fill and liquidity == "taker":
             self._trigger_kill_switch("unexpected_taker_fill", payload)
