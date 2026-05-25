@@ -75,7 +75,10 @@ Optional Docker runtime gates:
   queue model includes queue-ahead traded volume plus conservative cancellation
   decay, reported as `queue_decay_base`. The report also includes refusal checks
   for bad parameters and stale collector data, proving those scenarios reject
-  quoting instead of silently producing orders.
+  quoting instead of silently producing orders. Replay metrics also track
+  starting equity, leverage, notional exposure, margin used, maintenance margin,
+  equity, liquidation buffer, and maintenance-margin breach counts; acceptance
+  fails any variant with a maintenance-margin breach.
 
 Data freshness/replay-readiness report:
 

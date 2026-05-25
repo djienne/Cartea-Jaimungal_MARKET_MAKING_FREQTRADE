@@ -1,10 +1,11 @@
 {
   "cash_usdc": 0.0,
-  "data_end": "2026-05-25T20:44:06.401771784+00:00",
-  "data_start": "2026-05-25T20:41:44.250709772+00:00",
+  "data_end": "2026-05-25T21:10:54.515171766+00:00",
+  "data_start": "2026-05-25T21:06:23.866743565+00:00",
+  "equity_usdc": 1000.0,
   "fees_usdc": 0.0,
   "fill_ratio_by_depth": {},
-  "final_mid": 2111.25,
+  "final_mid": 2110.1499999999996,
   "funding_usdc": 0.0,
   "input_files": {
     "orderbooks": 10,
@@ -12,18 +13,25 @@
     "trades": 10
   },
   "input_rows": {
-    "orderbooks": 263,
+    "orderbooks": 505,
     "prices": 1000,
-    "trades": 593
+    "trades": 187
   },
   "inventory_base": 0.0,
   "inventory_histogram": {
     "0": 1000
   },
+  "liquidation_breach_events": 0,
+  "maintenance_margin_usdc": 0.0,
   "maker_fills": 0,
   "maker_ratio": 0.0,
+  "margin_used_usdc": 0.0,
   "mark_to_market_pnl_usdc": 0.0,
   "markout_samples": [],
+  "max_margin_used_usdc": 0.0,
+  "min_equity_usdc": 1000.0,
+  "min_liquidation_buffer_usdc": 1000.0,
+  "notional_exposure_usdc": 0.0,
   "parameter_series": [
     {
       "epsilon_minus": 0.0,
@@ -45,6 +53,7 @@
   "quote_attempts": 1000,
   "realized_spread_usdc": 0.0,
   "stale_quote_cancels": 1000,
+  "starting_equity_usdc": 1000.0,
   "taker_fills": 0,
   "time_at_q_boundary": {
     "q_max": 0,

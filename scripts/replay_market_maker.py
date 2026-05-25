@@ -38,6 +38,9 @@ class ReplayConfig:
     maker_fee: float = MAKER_FEE
     taker_fee: float = TAKER_FEE
     funding_rate_per_hour: float = 0.0
+    starting_equity_usdc: float = 1000.0
+    leverage: float = 1.0
+    maintenance_margin_rate: float = 0.05
     queue_decay_per_second: float = 0.05
     newest_per_stream: int | None = None
     max_price_events: int | None = None
@@ -61,6 +64,15 @@ class ReplayMetrics:
     final_mid: float | None = None
     mark_to_market_pnl_usdc: float = 0.0
     funding_usdc: float = 0.0
+    starting_equity_usdc: float = 0.0
+    equity_usdc: float = 0.0
+    min_equity_usdc: float | None = None
+    notional_exposure_usdc: float = 0.0
+    margin_used_usdc: float = 0.0
+    max_margin_used_usdc: float = 0.0
+    maintenance_margin_usdc: float = 0.0
+    min_liquidation_buffer_usdc: float | None = None
+    liquidation_breach_events: int = 0
     queue_decay_base: float = 0.0
     time_at_q_boundary: dict[str, int] = field(default_factory=lambda: {"q_min": 0, "q_max": 0})
     inventory_histogram: dict[int, int] = field(default_factory=dict)
@@ -92,6 +104,15 @@ class ReplayMetrics:
             "final_mid": self.final_mid,
             "mark_to_market_pnl_usdc": self.mark_to_market_pnl_usdc,
             "funding_usdc": self.funding_usdc,
+            "starting_equity_usdc": self.starting_equity_usdc,
+            "equity_usdc": self.equity_usdc,
+            "min_equity_usdc": self.min_equity_usdc,
+            "notional_exposure_usdc": self.notional_exposure_usdc,
+            "margin_used_usdc": self.margin_used_usdc,
+            "max_margin_used_usdc": self.max_margin_used_usdc,
+            "maintenance_margin_usdc": self.maintenance_margin_usdc,
+            "min_liquidation_buffer_usdc": self.min_liquidation_buffer_usdc,
+            "liquidation_breach_events": self.liquidation_breach_events,
             "queue_decay_base": self.queue_decay_base,
             "time_at_q_boundary": self.time_at_q_boundary,
             "inventory_histogram": self.inventory_histogram,
@@ -273,6 +294,31 @@ def markout_value(side: str, fill_price: float, future_mid_price: float) -> floa
     return fill_price - future_mid_price
 
 
+def update_margin_metrics(metrics: ReplayMetrics, config: ReplayConfig, mid: float) -> None:
+    notional = abs(float(metrics.inventory_base)) * float(mid)
+    leverage = max(float(config.leverage), 1e-12)
+    maintenance_rate = max(float(config.maintenance_margin_rate), 0.0)
+    equity = float(config.starting_equity_usdc) + float(metrics.cash_usdc) + float(metrics.inventory_base) * float(mid)
+    margin_used = notional / leverage
+    maintenance_margin = notional * maintenance_rate
+    liquidation_buffer = equity - maintenance_margin
+
+    metrics.starting_equity_usdc = float(config.starting_equity_usdc)
+    metrics.equity_usdc = equity
+    metrics.min_equity_usdc = equity if metrics.min_equity_usdc is None else min(metrics.min_equity_usdc, equity)
+    metrics.notional_exposure_usdc = notional
+    metrics.margin_used_usdc = margin_used
+    metrics.max_margin_used_usdc = max(float(metrics.max_margin_used_usdc), margin_used)
+    metrics.maintenance_margin_usdc = maintenance_margin
+    metrics.min_liquidation_buffer_usdc = (
+        liquidation_buffer
+        if metrics.min_liquidation_buffer_usdc is None
+        else min(metrics.min_liquidation_buffer_usdc, liquidation_buffer)
+    )
+    if notional > 0 and liquidation_buffer < 0:
+        metrics.liquidation_breach_events += 1
+
+
 def active_orderbook_row(orderbooks: pd.DataFrame, ts: pd.Timestamp) -> pd.Series | None:
     if orderbooks.empty or "timestamp" not in orderbooks:
         return None
@@ -372,6 +418,10 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     prices, trades, orderbooks, input_files = load_symbol_data(config)
     metrics = ReplayMetrics()
     metrics.input_files = input_files
+    metrics.starting_equity_usdc = float(config.starting_equity_usdc)
+    metrics.equity_usdc = float(config.starting_equity_usdc)
+    metrics.min_equity_usdc = float(config.starting_equity_usdc)
+    metrics.min_liquidation_buffer_usdc = float(config.starting_equity_usdc)
 
     if prices.empty:
         return metrics
@@ -508,6 +558,8 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                     "markout_usdc": markout * fill_size,
                 })
 
+        update_margin_metrics(metrics, config, mid)
+
     if metrics.final_mid is not None:
         metrics.mark_to_market_pnl_usdc = metrics.cash_usdc + metrics.inventory_base * metrics.final_mid
 
@@ -559,6 +611,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
     parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
     parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
+    parser.add_argument("--starting-equity-usdc", type=float, default=1000.0)
+    parser.add_argument("--leverage", type=float, default=1.0)
+    parser.add_argument("--maintenance-margin-rate", type=float, default=0.05)
     parser.add_argument(
         "--queue-decay-per-second",
         type=float,
@@ -587,6 +642,9 @@ def main() -> int:
         maker_fee=args.maker_fee,
         taker_fee=args.taker_fee,
         funding_rate_per_hour=args.funding_rate_per_hour,
+        starting_equity_usdc=args.starting_equity_usdc,
+        leverage=args.leverage,
+        maintenance_margin_rate=args.maintenance_margin_rate,
         queue_decay_per_second=args.queue_decay_per_second,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,

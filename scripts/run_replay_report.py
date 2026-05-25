@@ -103,6 +103,9 @@ def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
         maker_fee=float(base.maker_fee) * float(variant.maker_fee_multiplier),
         taker_fee=base.taker_fee,
         funding_rate_per_hour=base.funding_rate_per_hour,
+        starting_equity_usdc=base.starting_equity_usdc,
+        leverage=base.leverage,
+        maintenance_margin_rate=base.maintenance_margin_rate,
         queue_decay_per_second=base.queue_decay_per_second,
         newest_per_stream=base.newest_per_stream,
         max_price_events=base.max_price_events,
@@ -260,6 +263,10 @@ def evaluate_metrics(
     if maker_fills <= 0:
         reasons.append("no_maker_fills")
 
+    liquidation_breaches = int(metrics.get("liquidation_breach_events") or 0)
+    if liquidation_breaches:
+        reasons.append(f"maintenance_margin_breached:{liquidation_breaches}")
+
     maker_ratio = float(metrics.get("maker_ratio") or 0.0)
     if maker_fills > 0 and maker_ratio < float(min_maker_ratio):
         reasons.append(f"maker_ratio_below_threshold:{maker_ratio:.6f}<min_{float(min_maker_ratio):.6f}")
@@ -368,6 +375,9 @@ def build_report(
             "maker_fee": config.maker_fee,
             "taker_fee": config.taker_fee,
             "funding_rate_per_hour": config.funding_rate_per_hour,
+            "starting_equity_usdc": config.starting_equity_usdc,
+            "leverage": config.leverage,
+            "maintenance_margin_rate": config.maintenance_margin_rate,
             "queue_decay_per_second": config.queue_decay_per_second,
         },
         "base_params": params,
@@ -447,6 +457,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-directional-drift-ratio", type=float, default=0.75)
     parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
     parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
+    parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
+    parser.add_argument("--starting-equity-usdc", type=float, default=1000.0)
+    parser.add_argument("--leverage", type=float, default=1.0)
+    parser.add_argument("--maintenance-margin-rate", type=float, default=0.05)
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
     parser.add_argument("--kappa-plus", type=float, required=True)
@@ -474,6 +488,10 @@ def main() -> int:
         mid_fallback=args.mid,
         maker_fee=args.maker_fee,
         taker_fee=args.taker_fee,
+        funding_rate_per_hour=args.funding_rate_per_hour,
+        starting_equity_usdc=args.starting_equity_usdc,
+        leverage=args.leverage,
+        maintenance_margin_rate=args.maintenance_margin_rate,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,
     )

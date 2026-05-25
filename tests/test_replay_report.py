@@ -112,6 +112,22 @@ def test_evaluate_metrics_rejects_taker_and_out_of_bounds_inventory():
     assert "inventory_out_of_bounds:4" in reasons
 
 
+def test_evaluate_metrics_rejects_maintenance_margin_breach():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(liquidation_breach_events=2),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+    )
+
+    assert not ok
+    assert "maintenance_margin_breached:2" in reasons
+
+
 def test_directional_drift_proxy_detects_unexplained_pnl():
     metrics = minimal_metrics(mark_to_market_pnl_usdc=10.0)
 

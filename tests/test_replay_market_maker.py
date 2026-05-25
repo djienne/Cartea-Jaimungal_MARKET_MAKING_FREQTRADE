@@ -207,6 +207,116 @@ def test_replay_records_queue_decay_metric(monkeypatch):
     assert metrics.to_dict()["queue_decay_base"] == 0.5
 
 
+def test_replay_tracks_margin_equity_and_liquidation_buffer(monkeypatch):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame(
+        [
+            {"timestamp": ts0, "bid": 100.0, "ask": 101.0},
+            {"timestamp": ts0 + pd.Timedelta(seconds=1), "bid": 100.0, "ask": 101.0},
+        ]
+    )
+    trades = pd.DataFrame(
+        [
+            {"timestamp": ts0, "price": 100.0, "size": 0.01},
+        ]
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.0, None, {}),
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.01,
+            q_max=3,
+            decision_latency_ms=0,
+            order_ack_latency_ms=0,
+            cancel_latency_ms=1000,
+            starting_equity_usdc=10.0,
+            leverage=2.0,
+            maintenance_margin_rate=0.1,
+        ),
+        params,
+    )
+
+    assert metrics.maker_fills == 1
+    assert round(metrics.notional_exposure_usdc, 6) == 1.005
+    assert round(metrics.margin_used_usdc, 6) == 0.5025
+    assert round(metrics.maintenance_margin_usdc, 6) == 0.1005
+    assert metrics.max_margin_used_usdc == metrics.margin_used_usdc
+    assert metrics.min_liquidation_buffer_usdc > 0
+    assert metrics.liquidation_breach_events == 0
+    payload = metrics.to_dict()
+    assert payload["starting_equity_usdc"] == 10.0
+    assert payload["equity_usdc"] == metrics.equity_usdc
+
+
+def test_replay_counts_maintenance_margin_breaches(monkeypatch):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame(
+        [
+            {"timestamp": ts0, "bid": 100.0, "ask": 101.0},
+            {"timestamp": ts0 + pd.Timedelta(seconds=1), "bid": 100.0, "ask": 101.0},
+        ]
+    )
+    trades = pd.DataFrame([{"timestamp": ts0, "price": 100.0, "size": 0.01}])
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.0, None, {}),
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.01,
+            q_max=3,
+            decision_latency_ms=0,
+            order_ack_latency_ms=0,
+            cancel_latency_ms=1000,
+            starting_equity_usdc=0.0,
+            leverage=2.0,
+            maintenance_margin_rate=0.5,
+        ),
+        params,
+    )
+
+    assert metrics.liquidation_breach_events > 0
+    assert metrics.min_liquidation_buffer_usdc < 0
+
+
 def test_first_level_size_reads_nested_orderbook_levels():
     row = pd.Series({"bids": [[100.0, 1.25]], "asks": [[101.0, 2.5]]})
 
