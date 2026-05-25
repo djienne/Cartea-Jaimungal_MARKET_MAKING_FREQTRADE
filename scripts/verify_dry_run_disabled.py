@@ -7,14 +7,22 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from param_utils import PARAM_SCHEMA_VERSION, atomic_write_json  # noqa: E402
+
 DEFAULT_LOG_PATH = ROOT / "user_data" / "logs" / "freqtrade_gate_disabled.log"
 DEFAULT_MM_DEBUG_PATH = ROOT / "user_data" / "logs" / "mm_debug.jsonl"
+DEFAULT_CONFIG_PATH = ROOT / "user_data" / "logs" / "mm_gate_disabled_config.json"
 ORDER_PATTERNS = (
     "order dry_run",
     "order was created",
@@ -103,6 +111,116 @@ def recent_health_events(mm_debug_path: Path, since: datetime) -> list[dict]:
     return events
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def write_gate_params(param_dir: Path) -> None:
+    param_dir.mkdir(parents=True, exist_ok=True)
+    now = utc_now_iso()
+    common = {
+        "schema_version": PARAM_SCHEMA_VERSION,
+        "status": "ok",
+        "generated_at": now,
+        "window_start": now,
+        "window_end": now,
+    }
+    atomic_write_json(
+        param_dir / "kappa.json",
+        {
+            "ETH": {
+                **common,
+                "kappa+": 2.0,
+                "kappa-": 2.0,
+                "lambda+": 0.1,
+                "lambda-": 0.1,
+                "lambda_source": "lambda0_fit",
+                "unit": {"kappa": "1/USDC", "lambda": "events_per_second"},
+                "n_quotes": 100,
+                "n_trades": 50,
+                "n_points_plus": 5,
+                "n_points_minus": 5,
+                "r2_plus": 0.5,
+                "r2_minus": 0.5,
+            }
+        },
+    )
+    atomic_write_json(
+        param_dir / "lambda.json",
+        {
+            "ETH": {
+                **common,
+                "lambda+": 0.1,
+                "lambda-": 0.1,
+                "lambda_source": "lambda0_fit",
+                "unit": "events_per_second",
+                "n_trades": 50,
+            }
+        },
+    )
+    atomic_write_json(
+        param_dir / "epsilon.json",
+        {
+            "ETH": {
+                **common,
+                "epsilon+": 0.0,
+                "epsilon-": 0.0,
+                "unit": "USDC",
+                "estimator": "gate_static",
+                "window_ms": 200,
+                "n_buy_events": 10,
+                "n_sell_events": 10,
+                "toxicity_plus": 0.0,
+                "toxicity_minus": 0.0,
+            }
+        },
+    )
+
+
+def write_gate_config(
+    base_config: Path,
+    output_config: Path,
+    *,
+    container_param_dir: str,
+    max_collector_age_seconds: int,
+) -> None:
+    config = json.loads(base_config.read_text(encoding="utf-8"))
+    config["dry_run"] = True
+    config["force_entry_enable"] = False
+    config["stake_amount"] = 25
+    config["tradable_balance_ratio"] = 0.10
+    config["fee"] = 0.00015
+    mm_config = config.get("market_making")
+    if not isinstance(mm_config, dict):
+        mm_config = {}
+    mm_config.update(
+        {
+            "trading_enabled": False,
+            "post_only_verified": False,
+            "disable_param_refresh": True,
+            "param_dir": container_param_dir,
+            "max_param_age_seconds": int(max_collector_age_seconds),
+            "max_collector_age_seconds": int(max_collector_age_seconds),
+        }
+    )
+    config["market_making"] = mm_config
+    api_server = config.get("api_server")
+    if isinstance(api_server, dict):
+        api_server["forcebuy_enable"] = False
+        api_server["force_entry_enable"] = False
+        api_server["Force_entry"] = False
+    output_config.parent.mkdir(parents=True, exist_ok=True)
+    output_config.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def remove_gate_database_files(log_dir: Path) -> None:
+    for path in log_dir.glob("mm_gate_disabled_trades.sqlite*"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def run_gate(
     seconds: int,
     log_path: Path,
@@ -116,6 +234,7 @@ def run_gate(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if log_path.exists():
         log_path.unlink()
+    remove_gate_database_files(log_path.parent)
 
     collector_start: subprocess.CompletedProcess[str] | None = None
     collector_stop: subprocess.CompletedProcess[str] | None = None
@@ -123,9 +242,45 @@ def run_gate(
         collector_start = run(["docker", "compose", "up", "-d", "--no-deps", collector_service], timeout=180)
         time.sleep(max(0, int(collector_warmup_seconds)))
 
+    config_path = DEFAULT_CONFIG_PATH if log_path == DEFAULT_LOG_PATH else log_path.with_name("mm_gate_disabled_config.json")
+    param_dir = log_path.parent / "mm_gate_disabled_params"
+    container_log_path = "/freqtrade/user_data/logs/freqtrade_gate_disabled.log"
+    container_config_path = "/freqtrade/user_data/logs/mm_gate_disabled_config.json"
+    container_param_dir = "/freqtrade/user_data/logs/mm_gate_disabled_params"
+    db_path = "/freqtrade/user_data/logs/mm_gate_disabled_trades.sqlite"
+    max_collector_age = max(90, int(seconds) + int(collector_warmup_seconds) + 120)
+    write_gate_params(param_dir)
+    write_gate_config(
+        ROOT / "user_data" / "config.json",
+        config_path,
+        container_param_dir=container_param_dir,
+        max_collector_age_seconds=max_collector_age,
+    )
+
     started_at = datetime.now(timezone.utc)
     cleanup_before = run(["docker", "rm", "-f", "MM_ADV"], timeout=60)
-    start = run(["docker", "compose", "up", "-d", "--no-deps", "freqtrade"], timeout=180)
+    start = run(
+        [
+            "docker",
+            "compose",
+            "run",
+            "-d",
+            "--name",
+            "MM_ADV",
+            "--no-deps",
+            "freqtrade",
+            "trade",
+            "--logfile",
+            container_log_path,
+            "--db-url",
+            f"sqlite:///{db_path}",
+            "--config",
+            container_config_path,
+            "--strategy",
+            "Market_Making",
+        ],
+        timeout=180,
+    )
     time.sleep(seconds)
     logs = run(["docker", "logs", "MM_ADV"], timeout=60)
     stop = run(["docker", "stop", "MM_ADV"], timeout=60)
@@ -165,6 +320,8 @@ def run_gate(
         "collector_warmup_seconds": int(collector_warmup_seconds) if start_collector else None,
         "collector_start_returncode": collector_start.returncode if collector_start is not None else None,
         "collector_stop_returncode": collector_stop.returncode if collector_stop is not None else None,
+        "config_path": str(config_path),
+        "max_collector_age_seconds": max_collector_age,
         "health_events": len(health_events),
         "latest_health": latest_health,
         "evidence": evidence,

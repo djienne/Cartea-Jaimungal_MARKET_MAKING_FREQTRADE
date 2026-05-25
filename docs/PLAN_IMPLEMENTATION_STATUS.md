@@ -30,8 +30,10 @@ Generated from the current local worktree after the latest safety-gate run.
   `docs/hl_data_validation.json` shows fresh ETH shards, 75 checked files, and
   0 bad files.
 - Locked dry-run evidence:
-  `docs/dry_run_disabled_gate.json` shows `trading_enabled=false`,
-  `collector_fresh=true`, health logging, and zero order creation.
+  `docs/dry_run_disabled_gate.json` uses temporary ignored params/config and
+  shows `trading_enabled=false`, `params_fresh=true`,
+  `collector_fresh=true`, health logging, HJB freshness, and zero order
+  creation.
 - Enabled dry-run evidence:
   `docs/dry_run_enabled_gate.json` uses temporary ignored params/config and
   shows `trading_enabled=true`, `params_fresh=true`, `collector_fresh=true`,
