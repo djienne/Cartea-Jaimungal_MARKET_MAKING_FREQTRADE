@@ -1353,6 +1353,41 @@ class Market_Making(IStrategy):
             return count
         return None
 
+    def _unrealized_pnl_usdc(self, pair: str) -> float | None:
+        mid_price = self.get_mid_price(pair, 0.0)
+        if not np.isfinite(float(mid_price)) or float(mid_price) <= 0:
+            return None
+
+        signed_base = self._signed_base_position(pair)
+        if abs(float(signed_base)) <= 1e-12:
+            return 0.0
+
+        try:
+            open_trades = list(Trade.get_trades(is_open=True, pair=pair) or [])
+        except Exception:
+            open_trades = []
+
+        pnl = 0.0
+        measured_base = 0.0
+        for trade in open_trades:
+            amount = self._finite_float_or_none(getattr(trade, "amount", None))
+            open_rate = self._finite_float_or_none(getattr(trade, "open_rate", None))
+            if amount is None or open_rate is None or open_rate <= 0:
+                continue
+            amount = abs(float(amount))
+            if amount <= 0:
+                continue
+            if bool(getattr(trade, "is_short", False)):
+                pnl += (float(open_rate) - float(mid_price)) * amount
+                measured_base -= amount
+            else:
+                pnl += (float(mid_price) - float(open_rate)) * amount
+                measured_base += amount
+
+        if abs(measured_base) <= 1e-12:
+            return None
+        return float(pnl)
+
     def _debug_log_path(self) -> Path:
         try:
             base = Path(__file__).resolve().parent.parent  # user_data
@@ -1545,7 +1580,7 @@ class Market_Making(IStrategy):
                 "post_only_rejects": int(getattr(self, "_post_only_rejects", 0)),
                 "quote_decisions": int(getattr(self, "_quote_decisions_count", 0)),
                 "realized_pnl": float(getattr(self, "_daily_realized_pnl_usdc", 0.0)),
-                "unrealized_pnl": None,
+                "unrealized_pnl": self._unrealized_pnl_usdc(pair),
                 "consecutive_losses": int(getattr(self, "_consecutive_losses", 0)),
                 **self._inventory_snapshot(pair),
             },

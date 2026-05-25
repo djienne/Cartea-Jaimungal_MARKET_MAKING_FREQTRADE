@@ -724,3 +724,21 @@ def test_health_log_counts_open_orders_and_logs_position():
     assert payload["open_orders"] == 2
     assert payload["position"] == 0.0
     assert payload["signed_base_position"] == 0.0
+    assert payload["unrealized_pnl"] == 0.0
+
+
+def test_health_log_marks_open_trade_to_mid_price():
+    bot = make_bot()
+    bot.dp = DummyDP(best_bid=109.0, best_ask=111.0)
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    events = []
+    DummyTrade._open_trades = [DummyTrade(amount=0.02, open_rate=100.0)]
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    bot._log_health("ETH/USDC:USDC", now)
+
+    assert events[0][0] == "health"
+    payload = events[0][1]
+    assert payload["signed_base_position"] == 0.02
+    assert payload["q"] == 2
+    assert payload["unrealized_pnl"] == 0.2

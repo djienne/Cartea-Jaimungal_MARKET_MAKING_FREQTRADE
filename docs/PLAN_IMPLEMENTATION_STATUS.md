@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 102 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 103 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -66,7 +66,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 4 - maker safety | Partial | Local maker guards, fee alignment, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` is not verified. |
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, schema v2 tests, status locking, freshness validation. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
-| Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, freshness-age fields, fill accounting, and kill-switch tests/log artifacts exist. |
+| Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, freshness-age fields, open-order counts, mark-to-mid unrealized PnL, fill accounting, and kill-switch tests/log artifacts exist. |
 | Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gates 4-6 require external/manual evidence. |
 
 ## Remaining Required Gates
