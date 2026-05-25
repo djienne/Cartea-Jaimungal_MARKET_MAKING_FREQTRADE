@@ -1107,6 +1107,17 @@ class Market_Making(IStrategy):
 
         return True, "ok", rounded
 
+    def _is_limit_order_type(self, order_type: str | None) -> bool:
+        return str(order_type or "").strip().lower() == "limit"
+
+    def _entry_side_rejection_reason(self, side: str | None) -> str | None:
+        side_text = str(side or "").strip().lower()
+        if side_text in {"short", "sell", "ask", "open_short"} and not self.can_short:
+            return "short_entries_disabled"
+        if side_text not in {"long", "buy", "bid", "entry", ""}:
+            return "unsupported_entry_side"
+        return None
+
     def _trigger_kill_switch(self, reason: str, payload: dict[str, Any] | None = None) -> None:
         self.trading_enabled = False
         self.fail_closed_reason = reason
@@ -1675,11 +1686,47 @@ class Market_Making(IStrategy):
         side: str,
         **kwargs,
     ) -> bool:
+        side_reason = self._entry_side_rejection_reason(side)
+        if side_reason is not None:
+            self._debug_log_event(
+                "entry_rejected",
+                {
+                    "pair": pair,
+                    "reason": side_reason,
+                    "rate": float(rate),
+                    "side": side,
+                    "order_type": order_type,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
+        if not self._is_limit_order_type(order_type):
+            self._debug_log_event(
+                "entry_rejected",
+                {
+                    "pair": pair,
+                    "reason": "non_limit_order_type",
+                    "rate": float(rate),
+                    "side": side,
+                    "order_type": order_type,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
         ok, reason = self._quote_state_valid(pair, "bid", rate, current_time)
         if not ok:
             self._debug_log_event(
                 "entry_rejected",
-                {"pair": pair, "reason": reason, "rate": float(rate), "side": side, **self._inventory_snapshot(pair)},
+                {
+                    "pair": pair,
+                    "reason": reason,
+                    "rate": float(rate),
+                    "side": side,
+                    "order_type": order_type,
+                    **self._inventory_snapshot(pair),
+                },
             )
             return False
 
@@ -1722,8 +1769,32 @@ class Market_Making(IStrategy):
         current_time: datetime,
         **kwargs,
     ) -> bool:
-        if exit_reason in {"stop_loss", "stoploss_on_exchange", "liquidation", "emergency_exit"}:
+        protected_exit_reasons = {
+            "stop_loss",
+            "stoploss",
+            "stoploss_on_exchange",
+            "liquidation",
+            "emergency_exit",
+            "force_exit",
+            "force_sell",
+        }
+        if exit_reason in protected_exit_reasons:
             return True
+
+        if not self._is_limit_order_type(order_type):
+            self._debug_log_event(
+                "exit_rejected",
+                {
+                    "pair": pair,
+                    "reason": "non_limit_order_type",
+                    "rate": float(rate),
+                    "order_type": order_type,
+                    "exit_reason": exit_reason,
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
 
         ok, reason = self._quote_state_valid(pair, "ask", rate, current_time)
         if not ok:

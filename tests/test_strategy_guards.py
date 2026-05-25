@@ -284,6 +284,49 @@ def test_confirm_entry_rejects_when_trading_disabled_even_with_valid_quote():
     assert events[0][1]["reason"] == "initial_safety_lock"
 
 
+def test_confirm_entry_rejects_short_side_in_long_only_mode():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        99.5,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_short",
+        "short",
+    )
+
+    assert events[0][0] == "entry_rejected"
+    assert events[0][1]["reason"] == "short_entries_disabled"
+
+
+def test_confirm_entry_rejects_non_limit_order_type():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "market",
+        0.01,
+        99.5,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert events[0][0] == "entry_rejected"
+    assert events[0][1]["reason"] == "non_limit_order_type"
+    assert events[0][1]["order_type"] == "market"
+
+
 def test_param_snapshot_status_must_be_ok():
     bot = make_bot()
     bot.kappas["ETH"]["status"] = "seeded_unverified"
@@ -364,17 +407,48 @@ def test_stop_loss_exit_is_not_blocked():
     bot = make_bot()
     bot.hjb_cache = None
 
-    for exit_reason in ("stop_loss", "stoploss_on_exchange", "liquidation", "emergency_exit"):
+    for exit_reason in (
+        "stop_loss",
+        "stoploss",
+        "stoploss_on_exchange",
+        "liquidation",
+        "emergency_exit",
+        "force_exit",
+        "force_sell",
+    ):
         assert bot.confirm_trade_exit(
             "ETH/USDC:USDC",
             DummyTrade(amount=0.01),
-            "limit",
+            "market",
             0.01,
             90.0,
             "GTC",
             exit_reason,
             datetime.now(timezone.utc),
         )
+
+
+def test_confirm_exit_rejects_non_limit_passive_order_type():
+    bot = make_bot()
+    bot.trading_enabled = True
+    DummyTrade._open_trades = [DummyTrade(amount=0.01)]
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_exit(
+        "ETH/USDC:USDC",
+        DummyTrade(amount=0.01),
+        "market",
+        0.01,
+        101.5,
+        "GTC",
+        "mm_ask",
+        datetime.now(timezone.utc),
+    )
+
+    assert events[0][0] == "exit_rejected"
+    assert events[0][1]["reason"] == "non_limit_order_type"
+    assert events[0][1]["order_type"] == "market"
 
 
 def test_taker_fill_triggers_kill_switch():

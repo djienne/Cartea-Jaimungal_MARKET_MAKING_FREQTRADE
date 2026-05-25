@@ -27,18 +27,18 @@
     "order_ack_latency_ms": 250,
     "taker_fee": 0.00045
   },
-  "generated_at": "2026-05-25T17:58:23Z",
+  "generated_at": "2026-05-25T18:11:25Z",
   "ok": false,
   "reasons": [
-    "baseline:insufficient_coverage_days:0.004680<min_3.000000",
+    "baseline:insufficient_coverage_days:0.005027<min_3.000000",
     "baseline:no_maker_fills",
-    "fee_2x:insufficient_coverage_days:0.004680<min_3.000000",
+    "fee_2x:insufficient_coverage_days:0.005027<min_3.000000",
     "fee_2x:no_maker_fills",
-    "latency_2x:insufficient_coverage_days:0.004680<min_3.000000",
+    "latency_2x:insufficient_coverage_days:0.005027<min_3.000000",
     "latency_2x:no_maker_fills",
-    "params_soft:insufficient_coverage_days:0.004680<min_3.000000",
+    "params_soft:insufficient_coverage_days:0.005027<min_3.000000",
     "params_soft:no_maker_fills",
-    "params_hard:insufficient_coverage_days:0.004680<min_3.000000",
+    "params_hard:insufficient_coverage_days:0.005027<min_3.000000",
     "params_hard:no_maker_fills"
   ],
   "refusal_checks": [
@@ -69,17 +69,17 @@
   "symbol": "ETH",
   "variants": [
     {
-      "coverage_days": 0.004679742881944444,
+      "coverage_days": 0.005027021018518518,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
       "metrics": {
         "cash_usdc": 0.0,
-        "data_end": "2026-05-25T17:57:53.727254391+00:00",
-        "data_start": "2026-05-25T17:51:09.397469044+00:00",
+        "data_end": "2026-05-25T18:10:56.859058142+00:00",
+        "data_start": "2026-05-25T18:03:42.524441719+00:00",
         "fees_usdc": 0.0,
         "fill_ratio_by_depth": {},
-        "final_mid": 2128.1499999999996,
+        "final_mid": 2132.8500000000004,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -87,9 +87,9 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 665,
+          "orderbooks": 722,
           "prices": 2000,
-          "trades": 313
+          "trades": 339
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
@@ -135,7 +135,7 @@
       "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.004680<min_3.000000",
+        "insufficient_coverage_days:0.005027<min_3.000000",
         "no_maker_fills"
       ],
       "variant": {
@@ -147,17 +147,17 @@
       }
     },
     {
-      "coverage_days": 0.004679742881944444,
+      "coverage_days": 0.005027021018518518,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
       "metrics": {
         "cash_usdc": 0.0,
-        "data_end": "2026-05-25T17:57:53.727254391+00:00",
-        "data_start": "2026-05-25T17:51:09.397469044+00:00",
+        "data_end": "2026-05-25T18:10:56.859058142+00:00",
+        "data_start": "2026-05-25T18:03:42.524441719+00:00",
         "fees_usdc": 0.0,
         "fill_ratio_by_depth": {},
-        "final_mid": 2128.1499999999996,
+        "final_mid": 2132.8500000000004,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -165,9 +165,9 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 665,
+          "orderbooks": 722,
           "prices": 2000,
-          "trades": 313
+          "trades": 339
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
@@ -213,7 +213,7 @@
       "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.004680<min_3.000000",
+        "insufficient_coverage_days:0.005027<min_3.000000",
         "no_maker_fills"
       ],
       "variant": {
@@ -225,17 +225,17 @@
       }
     },
     {
-      "coverage_days": 0.004679742881944444,
+      "coverage_days": 0.005027021018518518,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
       "metrics": {
         "cash_usdc": 0.0,
-        "data_end": "2026-05-25T17:57:53.727254391+00:00",
-        "data_start": "2026-05-25T17:51:09.397469044+00:00",
+        "data_end": "2026-05-25T18:10:56.859058142+00:00",
+        "data_start": "2026-05-25T18:03:42.524441719+00:00",
         "fees_usdc": 0.0,
         "fill_ratio_by_depth": {},
-        "final_mid": 2128.1499999999996,
+        "final_mid": 2132.8500000000004,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -243,9 +243,9 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 665,
+          "orderbooks": 722,
           "prices": 2000,
-          "trades": 313
+          "trades": 339
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
@@ -291,7 +291,7 @@
       "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.004680<min_3.000000",
+        "insufficient_coverage_days:0.005027<min_3.000000",
         "no_maker_fills"
       ],
       "variant": {
@@ -303,17 +303,17 @@
       }
     },
     {
-      "coverage_days": 0.004679742881944444,
+      "coverage_days": 0.005027021018518518,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
       "metrics": {
         "cash_usdc": 0.0,
-        "data_end": "2026-05-25T17:57:53.727254391+00:00",
-        "data_start": "2026-05-25T17:51:09.397469044+00:00",
+        "data_end": "2026-05-25T18:10:56.859058142+00:00",
+        "data_start": "2026-05-25T18:03:42.524441719+00:00",
         "fees_usdc": 0.0,
         "fill_ratio_by_depth": {},
-        "final_mid": 2128.1499999999996,
+        "final_mid": 2132.8500000000004,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -321,9 +321,9 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 665,
+          "orderbooks": 722,
           "prices": 2000,
-          "trades": 313
+          "trades": 339
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
@@ -369,7 +369,7 @@
       "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.004680<min_3.000000",
+        "insufficient_coverage_days:0.005027<min_3.000000",
         "no_maker_fills"
       ],
       "variant": {
@@ -381,17 +381,17 @@
       }
     },
     {
-      "coverage_days": 0.004679742881944444,
+      "coverage_days": 0.005027021018518518,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
       "metrics": {
         "cash_usdc": 0.0,
-        "data_end": "2026-05-25T17:57:53.727254391+00:00",
-        "data_start": "2026-05-25T17:51:09.397469044+00:00",
+        "data_end": "2026-05-25T18:10:56.859058142+00:00",
+        "data_start": "2026-05-25T18:03:42.524441719+00:00",
         "fees_usdc": 0.0,
         "fill_ratio_by_depth": {},
-        "final_mid": 2128.1499999999996,
+        "final_mid": 2132.8500000000004,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -399,9 +399,9 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 665,
+          "orderbooks": 722,
           "prices": 2000,
-          "trades": 313
+          "trades": 339
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
@@ -447,7 +447,7 @@
       "net_realized_spread_usdc": 0.0,
       "ok": false,
       "reasons": [
-        "insufficient_coverage_days:0.004680<min_3.000000",
+        "insufficient_coverage_days:0.005027<min_3.000000",
         "no_maker_fills"
       ],
       "variant": {
