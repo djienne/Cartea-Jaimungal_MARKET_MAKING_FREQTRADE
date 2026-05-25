@@ -1146,6 +1146,98 @@ class Market_Making(IStrategy):
                     return value
         return None
 
+    def _finite_float_or_none(self, value: Any) -> float | None:
+        try:
+            value_float = float(value)
+        except Exception:
+            return None
+        return value_float if np.isfinite(value_float) else None
+
+    def _normalize_liquidity(self, liquidity: Any) -> str:
+        if liquidity is None:
+            return "unknown"
+        text = str(liquidity).strip().lower()
+        if text in {"maker", "m", "add_liquidity", "added_liquidity", "post_only"}:
+            return "maker"
+        if text in {"taker", "t", "remove_liquidity", "removed_liquidity"}:
+            return "taker"
+        return text or "unknown"
+
+    def _quote_side_from_order_side(self, side: Any) -> str | None:
+        if side is None:
+            return None
+        text = str(side).strip().lower()
+        if text in {"buy", "long", "bid", "entry", "open_long", "close_short"}:
+            return "bid"
+        if text in {"sell", "short", "ask", "exit", "open_short", "close_long"}:
+            return "ask"
+        return text or None
+
+    def _canonical_tif(self, tif: Any) -> str | None:
+        if tif is None:
+            return None
+        text = str(tif).strip().lower().replace("-", "_")
+        if text in {"alo", "po", "post_only", "postonly"}:
+            return "post_only"
+        if text in {"gtc", "good_til_cancelled", "good_till_cancelled"}:
+            return "gtc"
+        if text in {"ioc", "immediate_or_cancel"}:
+            return "ioc"
+        return text or None
+
+    def _expected_time_in_force(self, quote_side: str | None) -> str | None:
+        configured = None
+        if quote_side == "bid":
+            configured = self.order_time_in_force.get("entry")
+        elif quote_side == "ask":
+            configured = self.order_time_in_force.get("exit")
+        return "Alo" if self.post_only_verified else configured
+
+    def _extract_order_fee_paid(self, order: Order, price: float | None, amount: float | None) -> float | None:
+        fee = getattr(order, "fee", None)
+        if isinstance(fee, dict):
+            for key in ("cost", "fee_cost", "paid", "amount"):
+                value = self._finite_float_or_none(fee.get(key))
+                if value is not None:
+                    return value
+            rate = self._finite_float_or_none(fee.get("rate"))
+            if rate is not None and price is not None and amount is not None:
+                return abs(float(price) * float(amount) * rate)
+        else:
+            value = self._finite_float_or_none(fee)
+            if value is not None:
+                return value
+
+        for attr in ("fee_cost", "ft_fee_cost", "cost"):
+            value = self._finite_float_or_none(getattr(order, attr, None))
+            if value is not None:
+                return value
+        return None
+
+    def _extract_order_fee_rate(
+        self,
+        order: Order,
+        fee_paid: float | None,
+        price: float | None,
+        amount: float | None,
+    ) -> float | None:
+        fee = getattr(order, "fee", None)
+        if isinstance(fee, dict):
+            value = self._finite_float_or_none(fee.get("rate"))
+            if value is not None:
+                return value
+
+        for attr in ("fee_rate", "ft_fee_rate"):
+            value = self._finite_float_or_none(getattr(order, attr, None))
+            if value is not None:
+                return value
+
+        if fee_paid is not None and price is not None and amount is not None:
+            notional = abs(float(price) * float(amount))
+            if notional > 0:
+                return abs(float(fee_paid)) / notional
+        return None
+
     def _record_realized_pnl(self, pair: str, pnl_usdc: float, current_time: datetime, payload: dict[str, Any]) -> None:
         self._reset_daily_risk_if_needed(current_time)
         event_id = payload.get("order_id")
@@ -1665,47 +1757,70 @@ class Market_Making(IStrategy):
         return True
 
     def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:
-        liquidity = (
+        raw_liquidity = (
             getattr(order, "liquidity", None)
             or getattr(order, "ft_liquidity", None)
             or getattr(order, "filled_liquidity", None)
             or "unknown"
         )
+        liquidity = self._normalize_liquidity(raw_liquidity)
         order_type = getattr(order, "order_type", None) or getattr(order, "type", None)
         tif = getattr(order, "time_in_force", None) or getattr(order, "ft_time_in_force", None)
-        side = getattr(order, "ft_order_side", None) or getattr(order, "side", None)
-        fee = getattr(order, "fee", None) or getattr(order, "fee_cost", None)
+        raw_side = getattr(order, "ft_order_side", None) or getattr(order, "side", None)
+        quote_side = self._quote_side_from_order_side(raw_side)
         price = getattr(order, "price", None) or getattr(order, "safe_price", None)
         amount = getattr(order, "amount", None) or getattr(order, "filled", None)
+        price_float = self._finite_float_or_none(price)
+        amount_float = self._finite_float_or_none(amount)
+        fee_paid = self._extract_order_fee_paid(order, price_float, amount_float)
+        fee_rate = self._extract_order_fee_rate(order, fee_paid, price_float, amount_float)
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None) or getattr(order, "ft_order_id", None)
         realized_pnl = self._extract_realized_pnl_usdc(trade, order)
+        expected_tif = self._expected_time_in_force(quote_side)
+        tif_canonical = self._canonical_tif(tif)
+        expected_tif_canonical = self._canonical_tif(expected_tif)
 
         payload = {
             "pair": pair,
             "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
             "order_id": order_id,
+            "raw_liquidity": raw_liquidity,
             "liquidity": liquidity,
+            "liquidity_normalized": liquidity,
+            "is_maker_fill": liquidity == "maker",
+            "is_taker_fill": liquidity == "taker",
             "expected_fee_rate": float(self.fees_maker_HL),
-            "actual_fee_paid": fee,
+            "actual_fee_paid": float(fee_paid) if fee_paid is not None else None,
+            "actual_fee_rate": float(fee_rate) if fee_rate is not None else None,
             "order_type": order_type,
             "tif": tif,
-            "quote_side": side,
-            "price": float(price) if price is not None else None,
-            "amount": float(amount) if amount is not None else None,
+            "tif_canonical": tif_canonical,
+            "expected_tif": expected_tif,
+            "expected_tif_canonical": expected_tif_canonical,
+            "tif_matches_expected": (
+                tif_canonical == expected_tif_canonical
+                if tif_canonical is not None and expected_tif_canonical is not None
+                else None
+            ),
+            "raw_order_side": raw_side,
+            "quote_side": quote_side,
+            "post_only_verified": bool(self.post_only_verified),
+            "price": price_float,
+            "amount": amount_float,
             "realized_pnl": float(realized_pnl) if realized_pnl is not None else None,
             **self._inventory_snapshot(pair),
         }
         self._debug_log_event("fill", payload)
 
-        if str(liquidity).lower() == "maker":
+        if liquidity == "maker":
             self._maker_fill_count = int(getattr(self, "_maker_fill_count", 0)) + 1
-        if str(liquidity).lower() == "taker":
+        if liquidity == "taker":
             self._taker_fill_count = int(getattr(self, "_taker_fill_count", 0)) + 1
 
         if realized_pnl is not None:
             self._record_realized_pnl(pair, realized_pnl, current_time, payload)
 
-        if self.kill_on_taker_fill and str(liquidity).lower() == "taker":
+        if self.kill_on_taker_fill and liquidity == "taker":
             self._trigger_kill_switch("unexpected_taker_fill", payload)
 
     def adjust_entry_price(self, trade: Trade, order: Order, pair: str,

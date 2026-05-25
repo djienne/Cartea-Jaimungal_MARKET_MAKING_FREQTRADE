@@ -355,7 +355,10 @@ def test_stop_loss_exit_is_not_blocked():
 def test_taker_fill_triggers_kill_switch():
     bot = make_bot()
     bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
     order = types.SimpleNamespace(
+        id="taker-1",
         liquidity="taker",
         order_type="limit",
         time_in_force="GTC",
@@ -368,6 +371,48 @@ def test_taker_fill_triggers_kill_switch():
 
     assert not bot.trading_enabled
     assert bot.fail_closed_reason == "unexpected_taker_fill"
+    assert [event for event, _ in events] == ["fill", "kill_switch"]
+    assert events[0][1]["liquidity"] == "taker"
+    assert events[0][1]["quote_side"] == "bid"
+    assert events[0][1]["is_taker_fill"] is True
+    assert events[1][1]["reason"] == "unexpected_taker_fill"
+
+
+def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
+    bot = make_bot()
+    bot.post_only_verified = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    order = types.SimpleNamespace(
+        id="maker-1",
+        liquidity="maker",
+        order_type="limit",
+        time_in_force="Alo",
+        ft_order_side="buy",
+        price=100.0,
+        amount=1.0,
+        fee={"cost": 0.015, "rate": 0.00015},
+    )
+
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.01), order, datetime.now(timezone.utc))
+
+    assert len(events) == 1
+    event, payload = events[0]
+    assert event == "fill"
+    assert payload["liquidity"] == "maker"
+    assert payload["liquidity_normalized"] == "maker"
+    assert payload["is_maker_fill"] is True
+    assert payload["is_taker_fill"] is False
+    assert payload["raw_order_side"] == "buy"
+    assert payload["quote_side"] == "bid"
+    assert payload["actual_fee_paid"] == 0.015
+    assert payload["actual_fee_rate"] == 0.00015
+    assert payload["expected_fee_rate"] == bot.fees_maker_HL
+    assert payload["expected_tif"] == "Alo"
+    assert payload["tif_canonical"] == "post_only"
+    assert payload["expected_tif_canonical"] == "post_only"
+    assert payload["tif_matches_expected"] is True
+    assert bot._maker_fill_count == 1
 
 
 def test_amount_below_minimum_is_rejected():
