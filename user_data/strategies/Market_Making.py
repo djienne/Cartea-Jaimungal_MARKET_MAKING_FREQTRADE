@@ -184,6 +184,8 @@ class Market_Making(IStrategy):
     _last_param_update: datetime | None = None
     _last_health_log: datetime | None = None
     _quote_decisions_count: int = 0
+    _accepted_order_attempts: int = 0
+    _cancel_open_order_requests: int = 0
     _post_only_rejects: int = 0
     _maker_fill_count: int = 0
     _taker_fill_count: int = 0
@@ -1155,6 +1157,12 @@ class Market_Making(IStrategy):
                 {"pair": pair, "quote_decisions": attempts, "post_only_rejects": rejects},
             )
 
+    def _record_order_attempt_accepted(self) -> None:
+        self._accepted_order_attempts = int(getattr(self, "_accepted_order_attempts", 0)) + 1
+
+    def _record_open_order_cancel_request(self) -> None:
+        self._cancel_open_order_requests = int(getattr(self, "_cancel_open_order_requests", 0)) + 1
+
     def _reset_daily_risk_if_needed(self, current_time: datetime) -> None:
         now = self._as_utc(current_time) or self._now_utc()
         day = now.date().isoformat()
@@ -1312,46 +1320,175 @@ class Market_Making(IStrategy):
 
     def _open_order_count(self, pair: str) -> int | None:
         exchange = getattr(self, "exchange", None)
-        if exchange is None:
-            return None
-
-        for method_name in ("fetch_open_orders", "get_open_orders"):
-            method = getattr(exchange, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                orders = method(pair)
-            except TypeError:
+        if exchange is not None:
+            for method_name in ("fetch_open_orders", "get_open_orders"):
+                method = getattr(exchange, method_name, None)
+                if not callable(method):
+                    continue
                 try:
-                    orders = method()
+                    orders = method(pair)
+                except TypeError:
+                    try:
+                        orders = method()
+                    except Exception:
+                        continue
                 except Exception:
                     continue
-            except Exception:
-                continue
-            try:
-                return len(list(orders or []))
-            except Exception:
-                return None
+                try:
+                    self._last_open_order_count_source = method_name
+                    return len(list(orders or []))
+                except Exception:
+                    return None
 
-        orders = getattr(exchange, "open_orders", None)
-        if isinstance(orders, dict):
-            if pair in orders and isinstance(orders[pair], list):
-                return len(orders[pair])
+            orders = getattr(exchange, "open_orders", None)
+            if isinstance(orders, dict):
+                if pair in orders and isinstance(orders[pair], list):
+                    self._last_open_order_count_source = "exchange_open_orders"
+                    return len(orders[pair])
+                count = 0
+                for value in orders.values():
+                    if isinstance(value, list):
+                        count += len(value)
+                self._last_open_order_count_source = "exchange_open_orders"
+                return count
+            if isinstance(orders, list):
+                count = 0
+                for order in orders:
+                    if not isinstance(order, dict):
+                        continue
+                    symbol = order.get("symbol") or order.get("pair")
+                    if symbol is None or str(symbol) == pair:
+                        count += 1
+                self._last_open_order_count_source = "exchange_open_orders"
+                return count
+        return self._open_order_count_from_trades(pair)
+
+    def _open_order_count_from_trades(self, pair: str) -> int | None:
+        open_order_trades = self._freqtrade_open_order_trades(pair)
+        if open_order_trades:
             count = 0
-            for value in orders.values():
-                if isinstance(value, list):
-                    count += len(value)
+            for trade in open_order_trades:
+                order_count = self._open_order_count_for_trade(trade)
+                count += order_count if order_count is not None else 1
+            self._last_open_order_count_source = "freqtrade_open_order_trades"
             return count
-        if isinstance(orders, list):
-            count = 0
-            for order in orders:
-                if not isinstance(order, dict):
-                    continue
-                symbol = order.get("symbol") or order.get("pair")
-                if symbol is None or str(symbol) == pair:
+
+        try:
+            open_trades = list(Trade.get_trades(is_open=True, pair=pair) or [])
+        except Exception:
+            return self._estimated_open_order_count()
+
+        if not open_trades:
+            self._last_open_order_count_source = "freqtrade_open_trades"
+            return 0
+
+        count = 0
+        observed_order_state = False
+        for trade in open_trades:
+            orders = getattr(trade, "orders", None)
+            if callable(orders):
+                try:
+                    orders = orders()
+                except Exception:
+                    orders = None
+            if orders is not None:
+                try:
+                    order_list = list(orders)
+                except TypeError:
+                    order_list = []
+                observed_order_state = True
+                count += sum(1 for order in order_list if self._order_looks_open(order))
+                continue
+
+            has_open_orders = getattr(trade, "has_open_orders", None)
+            if callable(has_open_orders):
+                try:
+                    has_open_orders = has_open_orders()
+                except Exception:
+                    has_open_orders = None
+            if has_open_orders is not None:
+                observed_order_state = True
+                if bool(has_open_orders):
                     count += 1
+
+        if observed_order_state:
+            self._last_open_order_count_source = "freqtrade_open_trades"
             return count
+        return self._estimated_open_order_count()
+
+    def _estimated_open_order_count(self) -> int:
+        attempts = int(getattr(self, "_accepted_order_attempts", 0))
+        fills = int(getattr(self, "_maker_fill_count", 0)) + int(getattr(self, "_taker_fill_count", 0))
+        cancels = int(getattr(self, "_cancel_open_order_requests", 0))
+        self._last_open_order_count_source = "accepted_confirmation_estimate"
+        return max(0, attempts - fills - cancels)
+
+    def _freqtrade_open_order_trades(self, pair: str) -> list[Any] | None:
+        method = getattr(Trade, "get_open_order_trades", None)
+        if not callable(method):
+            return None
+        try:
+            trades = list(method() or [])
+        except Exception:
+            return None
+
+        matching = []
+        for trade in trades:
+            trade_pair = getattr(trade, "pair", None)
+            if trade_pair is None or str(trade_pair) == pair:
+                matching.append(trade)
+        return matching
+
+    def _open_order_count_for_trade(self, trade: Any) -> int | None:
+        orders = getattr(trade, "orders", None)
+        if callable(orders):
+            try:
+                orders = orders()
+            except Exception:
+                orders = None
+        if orders is not None:
+            try:
+                order_list = list(orders)
+            except TypeError:
+                order_list = []
+            return sum(1 for order in order_list if self._order_looks_open(order))
+
+        has_open_orders = getattr(trade, "has_open_orders", None)
+        if callable(has_open_orders):
+            try:
+                has_open_orders = has_open_orders()
+            except Exception:
+                has_open_orders = None
+        if has_open_orders is not None:
+            return 1 if bool(has_open_orders) else 0
         return None
+
+    def _order_looks_open(self, order: Any) -> bool:
+        if isinstance(order, dict):
+            status = order.get("status")
+            is_open = order.get("is_open")
+            remaining = order.get("remaining", order.get("safe_remaining"))
+        else:
+            status = getattr(order, "status", None)
+            is_open = getattr(order, "is_open", None)
+            remaining = getattr(order, "remaining", getattr(order, "safe_remaining", None))
+
+        if is_open is not None:
+            return bool(is_open)
+
+        text = str(status).strip().lower() if status is not None else ""
+        if text in {"closed", "filled", "canceled", "cancelled", "expired", "rejected"}:
+            return False
+
+        remaining_float = self._finite_float_or_none(remaining)
+        if remaining_float is not None and remaining_float > 0:
+            return True
+
+        if not text:
+            return False
+        if text in {"open", "new", "created", "pending", "partially_filled", "partially-filled"}:
+            return True
+        return False
 
     def _unrealized_pnl_usdc(self, pair: str) -> float | None:
         mid_price = self.get_mid_price(pair, 0.0)
@@ -1557,6 +1694,8 @@ class Market_Making(IStrategy):
         collector_ok, collector_reason = self._market_data_fresh(symbol)
         book_ok, book_reason = self._book_is_fresh(pair, now)
         hjb_fresh = self.hjb_cache is not None and not self._hjb_is_stale(now)
+        open_order_count = self._open_order_count(pair)
+        open_order_source = getattr(self, "_last_open_order_count_source", "unavailable")
         self._debug_log_event(
             "health",
             {
@@ -1574,7 +1713,10 @@ class Market_Making(IStrategy):
                 "hjb_fresh": hjb_fresh,
                 "hjb_age_seconds": self._hjb_age_seconds(now),
                 "post_only_verified": bool(self.post_only_verified),
-                "open_orders": self._open_order_count(pair),
+                "open_orders": open_order_count,
+                "open_orders_source": open_order_source,
+                "accepted_order_attempts": int(getattr(self, "_accepted_order_attempts", 0)),
+                "open_order_cancels_requested": int(getattr(self, "_cancel_open_order_requests", 0)),
                 "maker_fills": int(getattr(self, "_maker_fill_count", 0)),
                 "taker_fills": int(getattr(self, "_taker_fill_count", 0)),
                 "post_only_rejects": int(getattr(self, "_post_only_rejects", 0)),
@@ -1834,6 +1976,7 @@ class Market_Making(IStrategy):
             )
             return False
 
+        self._record_order_attempt_accepted()
         return True
 
     def confirm_trade_exit(
@@ -1923,6 +2066,7 @@ class Market_Making(IStrategy):
             )
             return False
 
+        self._record_order_attempt_accepted()
         return True
 
     def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:
@@ -2023,6 +2167,7 @@ class Market_Making(IStrategy):
                     "cancel_open_order": True,
                 },
             )
+            self._record_open_order_cancel_request()
             return None
 
         q_level = self._inventory_level(pair)
@@ -2045,6 +2190,7 @@ class Market_Making(IStrategy):
                     "cancel_open_order": True,
                 },
             )
+            self._record_open_order_cancel_request()
             return None
         delta_source = "hjb_grid"
         delta_model = float(delta_m)
@@ -2079,6 +2225,7 @@ class Market_Making(IStrategy):
         )
 
         if not ok:
+            self._record_open_order_cancel_request()
             return None
         return returned_rate
 
@@ -2113,6 +2260,7 @@ class Market_Making(IStrategy):
                     "cancel_open_order": True,
                 },
             )
+            self._record_open_order_cancel_request()
             return None
 
         q_level = self._inventory_level(pair)
@@ -2136,6 +2284,7 @@ class Market_Making(IStrategy):
                     "cancel_open_order": True,
                 },
             )
+            self._record_open_order_cancel_request()
             return None
 
         delta_source = "hjb_grid"
@@ -2172,6 +2321,7 @@ class Market_Making(IStrategy):
         )
 
         if not ok:
+            self._record_open_order_cancel_request()
             return None
         return returned_rate
 

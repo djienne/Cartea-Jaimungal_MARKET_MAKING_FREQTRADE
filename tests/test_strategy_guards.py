@@ -20,16 +20,35 @@ for path in (STRATEGIES, SCRIPTS):
 
 class DummyTrade:
     _open_trades = []
+    _open_order_trades = []
 
-    def __init__(self, amount=0.0, is_short=False, trade_id=1, open_rate=100.0):
+    def __init__(
+        self,
+        amount=0.0,
+        is_short=False,
+        trade_id=1,
+        open_rate=100.0,
+        has_open_orders=None,
+        orders=None,
+        pair="ETH/USDC:USDC",
+    ):
         self.amount = amount
         self.is_short = is_short
         self.id = trade_id
         self.open_rate = open_rate
+        self.pair = pair
+        if has_open_orders is not None:
+            self.has_open_orders = has_open_orders
+        if orders is not None:
+            self.orders = orders
 
     @classmethod
     def get_trades(cls, **kwargs):
         return list(cls._open_trades)
+
+    @classmethod
+    def get_open_order_trades(cls):
+        return list(cls._open_order_trades)
 
 
 def install_freqtrade_stubs():
@@ -119,6 +138,7 @@ class DummyExchange:
 
 def make_bot() -> Market_Making:
     DummyTrade._open_trades = []
+    DummyTrade._open_order_trades = []
     bot = Market_Making()
     bot.dp = DummyDP()
     bot.exchange = DummyExchange()
@@ -722,9 +742,78 @@ def test_health_log_counts_open_orders_and_logs_position():
     assert events[0][0] == "health"
     payload = events[0][1]
     assert payload["open_orders"] == 2
+    assert payload["open_orders_source"] == "exchange_open_orders"
     assert payload["position"] == 0.0
     assert payload["signed_base_position"] == 0.0
     assert payload["unrealized_pnl"] == 0.0
+
+
+def test_health_log_counts_open_orders_from_trades_when_exchange_unavailable():
+    bot = make_bot()
+    delattr(bot.exchange, "open_orders")
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    events = []
+    DummyTrade._open_trades = [
+        DummyTrade(
+            amount=0.01,
+            orders=[
+                {"status": "open", "remaining": 0.01},
+                {"status": "closed", "remaining": 0.0},
+            ],
+        ),
+        DummyTrade(amount=0.01, has_open_orders=True),
+    ]
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    bot._log_health("ETH/USDC:USDC", now)
+
+    assert events[0][0] == "health"
+    assert events[0][1]["open_orders"] == 2
+    assert events[0][1]["open_orders_source"] == "freqtrade_open_trades"
+
+
+def test_health_log_counts_freqtrade_open_order_trades():
+    bot = make_bot()
+    delattr(bot.exchange, "open_orders")
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    events = []
+    DummyTrade._open_order_trades = [
+        DummyTrade(
+            amount=0.01,
+            orders=[
+                {"status": "open", "remaining": 0.01},
+                {"status": "cancelled", "remaining": 0.01},
+            ],
+        ),
+        DummyTrade(amount=0.01, has_open_orders=True),
+        DummyTrade(amount=0.01, has_open_orders=True, pair="BTC/USDC:USDC"),
+    ]
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    bot._log_health("ETH/USDC:USDC", now)
+
+    assert events[0][0] == "health"
+    assert events[0][1]["open_orders"] == 2
+    assert events[0][1]["open_orders_source"] == "freqtrade_open_order_trades"
+
+
+def test_health_log_uses_accepted_order_estimate_when_runtime_sources_are_hidden():
+    bot = make_bot()
+    delattr(bot.exchange, "open_orders")
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    events = []
+    DummyTrade._open_trades = [DummyTrade(amount=0.01)]
+    bot._accepted_order_attempts = 2
+    bot._maker_fill_count = 1
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    bot._log_health("ETH/USDC:USDC", now)
+
+    assert events[0][0] == "health"
+    payload = events[0][1]
+    assert payload["open_orders"] == 1
+    assert payload["open_orders_source"] == "accepted_confirmation_estimate"
+    assert payload["accepted_order_attempts"] == 2
 
 
 def test_health_log_marks_open_trade_to_mid_price():
