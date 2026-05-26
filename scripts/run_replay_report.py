@@ -47,6 +47,8 @@ DEFAULT_VARIANTS = (
 )
 
 REQUIRED_MARKOUT_HORIZONS_MS = (100, 1_000, 5_000, 30_000)
+DEFAULT_MAX_POST_ONLY_REJECT_RATIO = 0.80
+DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO = 0.99
 
 
 def parse_ts(value: str | None) -> pd.Timestamp | None:
@@ -326,6 +328,72 @@ def add_pnl_by_side_reasons(metrics: dict[str, Any], reasons: list[str]) -> None
             reasons.append(f"pnl_by_side_total_mismatch:{observed:.12f}!={expected:.12f}")
 
 
+def add_quote_quality_reasons(
+    metrics: dict[str, Any],
+    reasons: list[str],
+    *,
+    max_post_only_reject_ratio: float,
+    max_stale_quote_cancel_ratio: float,
+) -> None:
+    quote_attempts = int(metrics.get("quote_attempts") or 0)
+    if quote_attempts <= 0:
+        return
+
+    try:
+        post_only_rejects = int(metrics.get("post_only_rejects") or 0)
+    except Exception:
+        reasons.append("noninteger_post_only_rejects")
+        post_only_rejects = 0
+    if post_only_rejects < 0:
+        reasons.append(f"negative_post_only_rejects:{post_only_rejects}")
+    if post_only_rejects > quote_attempts:
+        reasons.append(f"post_only_rejects_exceed_quote_attempts:{post_only_rejects}>{quote_attempts}")
+
+    reject_ratio_raw = metrics.get("post_only_reject_ratio")
+    if not is_finite_number(reject_ratio_raw):
+        reasons.append("missing_or_invalid_post_only_reject_ratio")
+    else:
+        reject_ratio = float(reject_ratio_raw)
+        expected = max(post_only_rejects, 0) / max(quote_attempts, 1)
+        if reject_ratio < 0.0 or reject_ratio > 1.0:
+            reasons.append(f"post_only_reject_ratio_out_of_range:{reject_ratio:.6f}")
+        elif abs(reject_ratio - expected) > 1e-12:
+            reasons.append(f"post_only_reject_ratio_mismatch:{reject_ratio:.12f}!={expected:.12f}")
+        elif reject_ratio > float(max_post_only_reject_ratio):
+            reasons.append(
+                f"post_only_reject_ratio_above_threshold:{reject_ratio:.6f}>max_{float(max_post_only_reject_ratio):.6f}"
+            )
+
+    try:
+        stale_quote_cancels = int(metrics.get("stale_quote_cancels") or 0)
+    except Exception:
+        reasons.append("noninteger_stale_quote_cancels")
+        stale_quote_cancels = 0
+    if stale_quote_cancels < 0:
+        reasons.append(f"negative_stale_quote_cancels:{stale_quote_cancels}")
+    if stale_quote_cancels > quote_attempts:
+        reasons.append(f"stale_quote_cancels_exceed_quote_attempts:{stale_quote_cancels}>{quote_attempts}")
+
+    expected_stale_ratio = max(stale_quote_cancels, 0) / max(quote_attempts, 1)
+    stale_ratio_raw = metrics.get("stale_quote_cancel_ratio")
+    if stale_ratio_raw is None:
+        stale_ratio = expected_stale_ratio
+    elif not is_finite_number(stale_ratio_raw):
+        reasons.append("invalid_stale_quote_cancel_ratio")
+        stale_ratio = expected_stale_ratio
+    else:
+        stale_ratio = float(stale_ratio_raw)
+        if stale_ratio < 0.0 or stale_ratio > 1.0:
+            reasons.append(f"stale_quote_cancel_ratio_out_of_range:{stale_ratio:.6f}")
+        elif abs(stale_ratio - expected_stale_ratio) > 1e-12:
+            reasons.append(f"stale_quote_cancel_ratio_mismatch:{stale_ratio:.12f}!={expected_stale_ratio:.12f}")
+
+    if stale_ratio > float(max_stale_quote_cancel_ratio):
+        reasons.append(
+            f"stale_quote_cancel_ratio_above_threshold:{stale_ratio:.6f}>max_{float(max_stale_quote_cancel_ratio):.6f}"
+        )
+
+
 def replay_data_fresh_guard(
     metrics: dict[str, Any],
     *,
@@ -412,6 +480,8 @@ def evaluate_metrics(
     min_net_realized_spread: float,
     min_mean_markout_usdc: float,
     max_directional_drift_ratio: float,
+    max_post_only_reject_ratio: float = DEFAULT_MAX_POST_ONLY_REJECT_RATIO,
+    max_stale_quote_cancel_ratio: float = DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     add_series_evidence_reasons(
@@ -428,6 +498,12 @@ def evaluate_metrics(
     )
     add_depth_ratio_reasons(metrics, reasons)
     add_pnl_by_side_reasons(metrics, reasons)
+    add_quote_quality_reasons(
+        metrics,
+        reasons,
+        max_post_only_reject_ratio=max_post_only_reject_ratio,
+        max_stale_quote_cancel_ratio=max_stale_quote_cancel_ratio,
+    )
 
     days = coverage_days(metrics)
     if days < float(min_days):
@@ -498,6 +574,8 @@ def build_report(
     min_net_realized_spread: float,
     min_mean_markout_usdc: float,
     max_directional_drift_ratio: float,
+    max_post_only_reject_ratio: float,
+    max_stale_quote_cancel_ratio: float,
     variants: tuple[ReplayVariant, ...] = DEFAULT_VARIANTS,
 ) -> dict[str, Any]:
     variant_payloads: list[dict[str, Any]] = []
@@ -514,6 +592,8 @@ def build_report(
             min_net_realized_spread=min_net_realized_spread,
             min_mean_markout_usdc=min_mean_markout_usdc,
             max_directional_drift_ratio=max_directional_drift_ratio,
+            max_post_only_reject_ratio=max_post_only_reject_ratio,
+            max_stale_quote_cancel_ratio=max_stale_quote_cancel_ratio,
         )
         variant_payloads.append(
             {
@@ -548,6 +628,8 @@ def build_report(
             "min_net_realized_spread": float(min_net_realized_spread),
             "min_mean_markout_usdc": float(min_mean_markout_usdc),
             "max_directional_drift_ratio": float(max_directional_drift_ratio),
+            "max_post_only_reject_ratio": float(max_post_only_reject_ratio),
+            "max_stale_quote_cancel_ratio": float(max_stale_quote_cancel_ratio),
             "q_max": int(config.q_max),
         },
         "config": {
@@ -581,20 +663,22 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Variant Summary",
         "",
-        "| Variant | Status | Coverage days | Quotes | Maker fills | Taker fills | Net spread | Directional ratio | Reasons |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Variant | Status | Coverage days | Quotes | Maker fills | Taker fills | Post-only reject % | Stale cancel % | Net spread | Directional ratio | Reasons |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for item in report["variants"]:
         metrics = item["metrics"]
         reasons = ", ".join(item["reasons"]) if item["reasons"] else "ok"
         lines.append(
-            "| {name} | {status} | {days:.6f} | {quotes} | {maker} | {taker} | {spread:.8f} | {drift:.6f} | {reasons} |".format(
+            "| {name} | {status} | {days:.6f} | {quotes} | {maker} | {taker} | {post_reject:.2%} | {stale_cancel:.2%} | {spread:.8f} | {drift:.6f} | {reasons} |".format(
                 name=item["variant"]["name"],
                 status="PASS" if item["ok"] else "FAIL",
                 days=float(item["coverage_days"]),
                 quotes=int(metrics.get("quote_attempts") or 0),
                 maker=int(metrics.get("maker_fills") or 0),
                 taker=int(metrics.get("taker_fills") or 0),
+                post_reject=float(metrics.get("post_only_reject_ratio") or 0.0),
+                stale_cancel=float(metrics.get("stale_quote_cancel_ratio") or 0.0),
                 spread=float(item["net_realized_spread_usdc"]),
                 drift=float(item.get("directional_drift_ratio") or 0.0),
                 reasons=reasons,
@@ -640,6 +724,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-net-realized-spread", type=float, default=0.0)
     parser.add_argument("--min-mean-markout-usdc", type=float, default=-0.01)
     parser.add_argument("--max-directional-drift-ratio", type=float, default=0.75)
+    parser.add_argument("--max-post-only-reject-ratio", type=float, default=DEFAULT_MAX_POST_ONLY_REJECT_RATIO)
+    parser.add_argument("--max-stale-quote-cancel-ratio", type=float, default=DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO)
     parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
     parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
     parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
@@ -689,6 +775,8 @@ def main() -> int:
         min_net_realized_spread=args.min_net_realized_spread,
         min_mean_markout_usdc=args.min_mean_markout_usdc,
         max_directional_drift_ratio=args.max_directional_drift_ratio,
+        max_post_only_reject_ratio=args.max_post_only_reject_ratio,
+        max_stale_quote_cancel_ratio=args.max_stale_quote_cancel_ratio,
     )
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

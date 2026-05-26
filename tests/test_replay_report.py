@@ -27,9 +27,13 @@ def minimal_metrics(**overrides):
         "data_start": "2026-05-25T00:00:00Z",
         "data_end": "2026-05-28T00:00:00Z",
         "quote_attempts": 1000,
+        "post_only_rejects": 0,
+        "post_only_reject_ratio": 0.0,
         "maker_fills": 10,
         "taker_fills": 0,
         "maker_ratio": 1.0,
+        "stale_quote_cancels": 0,
+        "stale_quote_cancel_ratio": 0.0,
         "realized_spread_usdc": 1.0,
         "fees_usdc": 0.1,
         "mark_to_market_pnl_usdc": 0.9,
@@ -175,6 +179,52 @@ def test_evaluate_metrics_rejects_inconsistent_pnl_by_side():
 
     assert not ok
     assert "pnl_by_side_total_mismatch:0.200000000000!=0.900000000000" in reasons
+
+
+def test_evaluate_metrics_rejects_bad_quote_quality_ratios():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(
+            post_only_rejects=810,
+            post_only_reject_ratio=0.81,
+            stale_quote_cancels=1000,
+            stale_quote_cancel_ratio=1.0,
+        ),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+        max_post_only_reject_ratio=0.80,
+        max_stale_quote_cancel_ratio=0.99,
+    )
+
+    assert not ok
+    assert "post_only_reject_ratio_above_threshold:0.810000>max_0.800000" in reasons
+    assert "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000" in reasons
+
+
+def test_evaluate_metrics_rejects_inconsistent_quote_quality_ratios():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(
+            post_only_rejects=10,
+            post_only_reject_ratio=0.02,
+            stale_quote_cancels=10,
+            stale_quote_cancel_ratio=0.02,
+        ),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+    )
+
+    assert not ok
+    assert "post_only_reject_ratio_mismatch:0.020000000000!=0.010000000000" in reasons
+    assert "stale_quote_cancel_ratio_mismatch:0.020000000000!=0.010000000000" in reasons
 
 
 def test_evaluate_metrics_rejects_corrupt_parameter_and_toxicity_series():

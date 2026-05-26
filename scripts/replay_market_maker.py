@@ -107,6 +107,7 @@ class ReplayMetrics:
             "taker_fills": self.taker_fills,
             "maker_ratio": self.maker_fills / max(fills, 1),
             "stale_quote_cancels": self.stale_quote_cancels,
+            "stale_quote_cancel_ratio": self.stale_quote_cancels / attempts,
             "realized_spread_usdc": self.realized_spread_usdc,
             "fees_usdc": self.fees_usdc,
             "cash_usdc": self.cash_usdc,

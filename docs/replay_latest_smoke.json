@@ -1,14 +1,14 @@
 {
   "cash_usdc": 0.0,
-  "data_end": "2026-05-26T08:47:35.660349607+00:00",
-  "data_start": "2026-05-26T08:43:51.503988981+00:00",
+  "data_end": "2026-05-26T09:03:34.327990055+00:00",
+  "data_start": "2026-05-26T09:00:20.178872347+00:00",
   "equity_usdc": 1000.0,
   "fees_usdc": 0.0,
   "fill_ratio_by_depth": {
     "bid:5.55bps": 0.0
   },
   "fills_by_depth": {},
-  "final_mid": 2097.8500000000004,
+  "final_mid": 2095.95,
   "funding_usdc": 0.0,
   "input_files": {
     "orderbooks": 10,
@@ -16,9 +16,9 @@
     "trades": 10
   },
   "input_rows": {
-    "orderbooks": 417,
+    "orderbooks": 360,
     "prices": 1000,
-    "trades": 90
+    "trades": 96
   },
   "inventory_base": 0.0,
   "inventory_histogram": {
@@ -37,8 +37,8 @@
   "notional_exposure_usdc": 0.0,
   "parameter_series": [
     {
-      "data_end": "2026-05-26T08:47:35.660349607+00:00",
-      "data_start": "2026-05-26T08:43:51.503988981+00:00",
+      "data_end": "2026-05-26T09:03:34.327990055+00:00",
+      "data_start": "2026-05-26T09:00:20.178872347+00:00",
       "epsilon_minus": 0.0,
       "epsilon_plus": 0.0,
       "kappa_minus": 2.0,
@@ -48,7 +48,7 @@
       "schema_version": 1,
       "source": "static_replay_params",
       "symbol": "ETH",
-      "ts": "2026-05-26T08:43:51.503988981+00:00",
+      "ts": "2026-05-26T09:00:20.178872347+00:00",
       "unit": {
         "epsilon": "USDC",
         "kappa": "1/USDC",
@@ -68,6 +68,7 @@
     "bid:5.55bps": 1000
   },
   "realized_spread_usdc": 0.0,
+  "stale_quote_cancel_ratio": 1.0,
   "stale_quote_cancels": 1000,
   "starting_equity_usdc": 1000.0,
   "taker_fills": 0,
@@ -77,15 +78,15 @@
   },
   "toxicity_series": [
     {
-      "data_end": "2026-05-26T08:47:35.660349607+00:00",
-      "data_start": "2026-05-26T08:43:51.503988981+00:00",
+      "data_end": "2026-05-26T09:03:34.327990055+00:00",
+      "data_start": "2026-05-26T09:00:20.178872347+00:00",
       "formula": "kappa * epsilon",
       "schema_version": 1,
       "source": "static_replay_params",
       "symbol": "ETH",
       "toxicity_minus": 0.0,
       "toxicity_plus": 0.0,
-      "ts": "2026-05-26T08:43:51.503988981+00:00",
+      "ts": "2026-05-26T09:00:20.178872347+00:00",
       "unit": "kappa_times_epsilon"
     }
   ]
