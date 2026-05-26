@@ -1,37 +1,37 @@
 {
   "accepted_quotes_by_depth": {
-    "bid:5.00-6.00bps": 428
+    "bid:5.00-6.00bps": 430
   },
   "accepted_quotes_by_side": {
-    "bid": 428
+    "bid": 430
   },
   "actual_fee_rate": {
     "count": 0,
     "max": null,
     "mean": null,
     "min": null,
-    "outlier_count": 15,
+    "outlier_count": 16,
     "outlier_threshold": 0.01
   },
   "fill_probability_by_depth": {
     "bid:5.00-6.00bps": 0.0
   },
   "fill_probability_by_side": {
-    "bid": 0.035046728971962614
+    "bid": 0.037209302325581395
   },
   "fills_by_side": {
-    "bid": 15
+    "bid": 16
   },
-  "generated_at": "2026-05-26T13:19:27Z",
+  "generated_at": "2026-05-26T13:45:11Z",
   "input_paths": [
     "user_data\\logs\\mm_debug.jsonl"
   ],
   "inputs": {
-    "accepted_quotes": 428,
-    "accepted_quotes_with_quote_id": 42,
+    "accepted_quotes": 430,
+    "accepted_quotes_with_quote_id": 44,
     "bucket_bps": 1.0,
-    "events": 3129,
-    "fills": 15,
+    "events": 3165,
+    "fills": 16,
     "fills_with_quote_id": 0,
     "match_window_seconds": 300.0,
     "max_fee_rate": 0.01,
@@ -43,27 +43,27 @@
   "maker_ratio": 0.0,
   "markout_summary": {
     "100": {
-      "count": 14.0,
+      "count": 15.0,
       "max_usdc": 0.00400000000000091,
-      "mean_usdc": -0.004178571428571689,
+      "mean_usdc": -0.003933333333333697,
       "min_usdc": -0.012500000000004547
     },
     "1000": {
-      "count": 14.0,
+      "count": 15.0,
       "max_usdc": 0.00400000000000091,
-      "mean_usdc": -0.004607142857142728,
+      "mean_usdc": -0.004933333333333092,
       "min_usdc": -0.0175
     },
     "30000": {
-      "count": 14.0,
+      "count": 15.0,
       "max_usdc": 0.01850000000000364,
-      "mean_usdc": -0.001607142857142857,
+      "mean_usdc": -0.0015333333333334544,
       "min_usdc": -0.03349999999999909
     },
     "5000": {
-      "count": 14.0,
+      "count": 15.0,
       "max_usdc": 0.016500000000005458,
-      "mean_usdc": -0.0014285714285704545,
+      "mean_usdc": -0.0019666666666656365,
       "min_usdc": -0.0175
     }
   },
@@ -71,11 +71,11 @@
   "matched_fills_by_quote_id": {},
   "reasons": [
     "insufficient_maker_fills:0<min_10",
-    "unknown_liquidity_fills:15",
+    "unknown_liquidity_fills:16",
     "no_fills_matched_to_quotes"
   ],
   "taker_fills": 0,
-  "unknown_liquidity_fills": 15,
-  "unmatched_fills": 15,
+  "unknown_liquidity_fills": 16,
+  "unmatched_fills": 16,
   "usable_for_calibration": false
 }

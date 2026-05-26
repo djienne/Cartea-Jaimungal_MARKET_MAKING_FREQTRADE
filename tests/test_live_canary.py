@@ -22,6 +22,17 @@ def ok_report(now: datetime) -> dict:
     return {"ok": True, "reasons": [], "generated_at": iso(now)}
 
 
+def manual_ack_event(session_id: str, ts: datetime, *, acknowledged: bool = True) -> dict:
+    return {
+        "event": "manual_monitoring_ack",
+        "ts": iso(ts),
+        "session_id": session_id,
+        "acknowledged": acknowledged,
+        "trading_enabled": True,
+        "dry_run": False,
+    }
+
+
 def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> list[dict]:
     common = {"session_id": session_id}
     return [
@@ -97,6 +108,7 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
             "symbol": "ETH",
             **common,
         },
+        manual_ack_event(session_id, start + timedelta(minutes=minutes)),
     ]
 
 
@@ -121,6 +133,7 @@ def test_live_canary_report_passes_when_all_evidence_is_present():
     assert report["ok"] is True
     assert report["reasons"] == []
     assert report["eligible_sessions"] == 3
+    assert report["manual_monitoring"]["fresh"] == 3
     assert report["fills"]["maker"] == 3
     assert report["fills"]["taker"] == 0
     assert report["fill_reconciliation"]["matched_live_maker_fills"] == 3
@@ -468,9 +481,60 @@ def test_live_canary_report_rejects_stale_dependency_reports_and_events():
     assert "post_only_report_stale" in report["reasons"]
     assert "fee_report_stale" in report["reasons"]
     assert "replay_report_stale" in report["reasons"]
-    assert "canary_event_stale:5" in report["reasons"]
+    assert "canary_event_stale:6" in report["reasons"]
     assert report["dependencies"]["post_only"]["freshness_reason"] == "stale"
-    assert report["event_freshness"]["stale"] == 5
+    assert report["event_freshness"]["stale"] == 6
+
+
+def test_live_canary_report_requires_manual_monitoring_ack_event():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = [
+        event
+        for event in canary_session("s1", start, minutes=2)
+        if event.get("event") != "manual_monitoring_ack"
+    ]
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "manual_monitoring_ack_event_missing" in report["reasons"]
+    assert report["manual_monitoring"]["present"] == 0
+
+
+def test_live_canary_report_rejects_stale_manual_monitoring_ack_event():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    for event in events:
+        if event.get("event") == "manual_monitoring_ack":
+            event["ts"] = iso(start - timedelta(days=8))
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        max_canary_event_age_seconds=604_800,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "manual_monitoring_ack_event_stale:1" in report["reasons"]
+    assert report["manual_monitoring"]["fresh"] == 0
+    assert report["manual_monitoring"]["stale"] == 1
 
 
 def test_live_canary_report_requires_dependency_generated_at():

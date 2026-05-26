@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 252 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 254 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -202,8 +202,11 @@ Generated from the current local worktree after the latest safety-gate run.
   current dependency artifacts. The runner withholds the manual monitoring
   acknowledgement by default and only passes it through with the explicit
   `--manual-monitoring-ack` flag after actual monitored canary sessions. It
-  also accepts `--audit-log-input` so retained canary logs can be evaluated by
-  the same full gate runner. Accepted quote and fill evidence must now carry
+  also requires the audit log to contain a fresh `manual_monitoring_ack` or
+  `canary_manual_monitoring_ack` event with `acknowledged=true`; the CLI flag
+  alone is not enough to satisfy the gate. The runner accepts
+  `--audit-log-input` so retained canary logs can be evaluated by the same full
+  gate runner. Accepted quote and fill evidence must now carry
   `trading_enabled=true` and `dry_run=false`, so live health events cannot be
   combined with unrelated research/dry-run quotes to satisfy canary session
   eligibility. Live maker fills must carry an order id plus side/price/amount
@@ -258,8 +261,9 @@ Generated from the current local worktree after the latest safety-gate run.
   inventory boundaries, and directional-drift attribution.
 - Live canary:
   only after every prior gate passes, using tiny fixed stake, hard loss limits,
-  post-only required, kill-on-taker-fill enabled, manual monitoring acknowledged,
-  and `docs/live_canary_report.json` becomes `ok=true`.
+  post-only required, kill-on-taker-fill enabled, manual monitoring acknowledged
+  by both CLI flag and fresh audit-log acknowledgement event, and
+  `docs/live_canary_report.json` becomes `ok=true`.
 
 Until those remaining gates have evidence, the project is still a fail-closed
 research/dry-run implementation, not a production-ready live market maker.

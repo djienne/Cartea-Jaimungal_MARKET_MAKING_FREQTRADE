@@ -20,6 +20,7 @@ DEFAULT_OUTPUT = Path("docs/live_canary_report.json")
 DEFAULT_POST_ONLY_REPORT = Path("docs/post_only_evidence_report.json")
 DEFAULT_FEE_REPORT = Path("docs/fee_evidence_report.json")
 DEFAULT_REPLAY_REPORT = Path("docs/replay_acceptance_report.json")
+MANUAL_MONITORING_ACK_EVENTS = {"manual_monitoring_ack", "canary_manual_monitoring_ack"}
 
 
 def utc_now_iso() -> str:
@@ -330,6 +331,56 @@ def canary_event_freshness(
         "max_age_seconds": max(ages) if ages else None,
         "max_allowed_age_seconds": float(max_event_age_seconds),
     }
+
+
+def manual_monitoring_ack_status(
+    events: list[dict[str, Any]],
+    *,
+    now: datetime,
+    max_event_age_seconds: float,
+) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "present": 0,
+        "acknowledged": 0,
+        "not_acknowledged": 0,
+        "fresh": 0,
+        "stale": 0,
+        "timestamp_missing": 0,
+        "latest_ts": None,
+        "max_allowed_age_seconds": float(max_event_age_seconds),
+    }
+    latest_dt: datetime | None = None
+
+    for event in events:
+        event_name = str(event.get("event") or "").strip().lower()
+        if event_name not in MANUAL_MONITORING_ACK_EVENTS:
+            continue
+
+        status["present"] += 1
+        acknowledged = bool_value(event.get("acknowledged"))
+        if acknowledged is None:
+            acknowledged = bool_value(event.get("manual_monitoring_ack"))
+        if acknowledged is not True:
+            status["not_acknowledged"] += 1
+            continue
+
+        status["acknowledged"] += 1
+        dt = event_time(event)
+        if dt is None:
+            status["timestamp_missing"] += 1
+            continue
+
+        if latest_dt is None or dt > latest_dt:
+            latest_dt = dt
+        age_seconds = max(0.0, (now - dt).total_seconds())
+        if max_event_age_seconds > 0 and age_seconds > float(max_event_age_seconds):
+            status["stale"] += 1
+        else:
+            status["fresh"] += 1
+
+    if latest_dt is not None:
+        status["latest_ts"] = latest_dt.isoformat().replace("+00:00", "Z")
+    return status
 
 
 def accepted_quote_failures(events: list[dict[str, Any]]) -> dict[str, int]:
@@ -715,6 +766,27 @@ def build_live_canary_report(
     if event_freshness["stale"]:
         reasons.append(f"canary_event_stale:{event_freshness['stale']}")
 
+    manual_ack = manual_monitoring_ack_status(
+        events,
+        now=reference_time,
+        max_event_age_seconds=float(max_canary_event_age_seconds),
+    )
+    if bool(manual_monitoring_ack) and int(manual_ack["fresh"]) <= 0:
+        if int(manual_ack["present"]) <= 0:
+            reasons.append("manual_monitoring_ack_event_missing")
+        if int(manual_ack["not_acknowledged"]):
+            reasons.append(f"manual_monitoring_ack_event_not_acknowledged:{manual_ack['not_acknowledged']}")
+        if int(manual_ack["timestamp_missing"]):
+            reasons.append(f"manual_monitoring_ack_event_timestamp_missing:{manual_ack['timestamp_missing']}")
+        if int(manual_ack["stale"]):
+            reasons.append(f"manual_monitoring_ack_event_stale:{manual_ack['stale']}")
+        if not any(
+            reason.startswith("manual_monitoring_ack_event_")
+            for reason in reasons
+            if reason != "manual_monitoring_not_acknowledged"
+        ):
+            reasons.append("manual_monitoring_ack_event_missing_or_stale")
+
     sessions = group_sessions(events, session_gap_minutes=session_gap_minutes)
     eligible_sessions = [
         session
@@ -786,6 +858,7 @@ def build_live_canary_report(
         "dependencies": dependencies,
         "event_count": len(events),
         "event_freshness": event_freshness,
+        "manual_monitoring": manual_ack,
         "sessions": sessions,
         "eligible_sessions": len(eligible_sessions),
         "fills": {

@@ -168,10 +168,14 @@ Optional Docker runtime gates:
   and several tiny live sessions provide non-dry-run health, fresh accepted
   quotes, final accepted post-only order attempts with quote IDs, maker-only
   fill evidence with quote IDs, no parameter/HJB/collector errors, no kill
-  switches, and an explicit manual-monitoring acknowledgement. Prior gate
-  reports must carry fresh `generated_at` timestamps, and the canary session
-  events themselves must be recent, so a newly generated report cannot reuse old
-  live evidence. When `run_safety_gates.py --include-runtime` is used, this gate
+  switches, and explicit manual-monitoring acknowledgement evidence. The
+  acknowledgement requires both the `--manual-monitoring-ack` operator flag and
+  a fresh audit-log event named `manual_monitoring_ack` or
+  `canary_manual_monitoring_ack` with `acknowledged=true`; the CLI flag alone
+  cannot satisfy the gate. Prior gate reports must carry fresh `generated_at`
+  timestamps, and the canary session events themselves must be recent, so a
+  newly generated report cannot reuse old live evidence. When
+  `run_safety_gates.py --include-runtime` is used, this gate
   runs after fee and replay artifacts are regenerated so it evaluates the
   current dependency reports. Use `--audit-log-input` together with
   `--manual-monitoring-ack` after actual monitored live-canary sessions, plus
@@ -286,10 +290,11 @@ python scripts/run_safety_gates.py --include-runtime --audit-log-input docs/live
   are not live/post-only/quote-linked, fills missing quote IDs, fills that do
   not reconcile to a prior accepted order attempt, parameter/HJB/collector
   error events, excessive stake, excessive symbols, missing live health, and
-  missing manual-monitoring acknowledgement. The default dependency-report age is 86400
-  seconds, and the default live canary event age is 604800 seconds; tighten
-  those windows with `--max-dependency-report-age-seconds` and
-  `--max-canary-event-age-seconds` when promoting a canary run.
+  missing or stale manual-monitoring acknowledgement evidence in the audit log.
+  The default dependency-report age is 86400 seconds, and the default live
+  canary event age is 604800 seconds; tighten those windows with
+  `--max-dependency-report-age-seconds` and `--max-canary-event-age-seconds`
+  when promoting a canary run.
 
 Full `run_safety_gates.py --include-runtime` runs automatically verify the
 human-readable PLAN status against the latest machine-readable gate evidence and
