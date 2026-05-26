@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 201 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 202 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -147,7 +147,9 @@ Generated from the current local worktree after the latest safety-gate run.
   switches, and no parameter/HJB/collector error events. It also requires fresh
   `generated_at` timestamps on dependency gate reports and recent timestamps on
   canary session events, so stale canary evidence cannot pass by regenerating a
-  new report. The safety-gate runner now generates this artifact after
+  new report. One-symbol canary validation is enforced across health, quote, and
+  fill events rather than health events alone. The safety-gate runner now
+  generates this artifact after
   regenerating fee and replay reports in runtime mode, so it summarizes the
   current dependency artifacts. The runner withholds the manual monitoring
   acknowledgement by default and only passes it through with the explicit

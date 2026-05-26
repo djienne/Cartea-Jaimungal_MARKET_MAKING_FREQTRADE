@@ -131,6 +131,14 @@ def event_session_key(event: dict[str, Any]) -> str | None:
     return None
 
 
+def event_symbol(event: dict[str, Any]) -> str | None:
+    for key in ("symbol", "pair"):
+        value = event.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
 def group_sessions(events: Iterable[dict[str, Any]], *, session_gap_minutes: float) -> list[dict[str, Any]]:
     timed = [(event_time(event), event) for event in events]
     timed = [(dt, event) for dt, event in timed if dt is not None]
@@ -336,11 +344,7 @@ def health_failures(
         for event in health
         if bool_value(event.get("trading_enabled")) is True and bool_value(event.get("dry_run")) is False
     ]
-    symbols = {
-        str(event.get("symbol") or event.get("pair") or "")
-        for event in live_health
-        if event.get("symbol") or event.get("pair")
-    }
+    symbols = {symbol for symbol in (event_symbol(event) for event in events) if symbol}
     stakes = [finite_float(event.get("stake_amount")) for event in live_health]
     stakes = [stake for stake in stakes if stake is not None]
     daily_loss_limits = [finite_float(event.get("max_daily_loss_usdc")) for event in live_health]
@@ -359,6 +363,8 @@ def health_failures(
         failures["missing_stake_amount"] = True
     if len(symbols) > int(max_symbols):
         failures["too_many_symbols"] = sorted(symbols)
+    if live_health and not symbols:
+        failures["missing_symbol"] = True
     if any(abs(limit) > abs(float(max_daily_loss_usdc)) for limit in daily_loss_limits):
         failures["daily_loss_limit_above_canary_limit"] = max(daily_loss_limits)
     if live_health and not daily_loss_limits:

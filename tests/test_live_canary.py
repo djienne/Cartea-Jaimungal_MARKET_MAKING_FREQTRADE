@@ -184,6 +184,43 @@ def test_live_canary_report_rejects_unsafe_live_health():
     assert "stake_amount_above_canary_limit" in report["reasons"]
 
 
+def test_live_canary_report_rejects_second_symbol_in_quote_events():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events.append(
+        {
+            "event": "quote_decision",
+            "ts": iso(start + timedelta(seconds=30)),
+            "session_id": "s1",
+            "symbol": "BTC",
+            "decision": "accept",
+            "params_fresh": True,
+            "collector_fresh": True,
+            "book_fresh": True,
+            "post_only": True,
+            "post_only_verified": True,
+            "fee_snapshot": {"fee_agreement_ok": True},
+        }
+    )
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        max_symbols=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "too_many_symbols" in report["reasons"]
+    assert report["health_failures"]["too_many_symbols"] == ["BTC", "ETH"]
+
+
 def test_live_canary_report_rejects_param_or_hjb_errors():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
     now = start + timedelta(hours=1)
