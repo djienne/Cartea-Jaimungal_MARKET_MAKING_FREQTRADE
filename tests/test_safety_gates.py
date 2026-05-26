@@ -23,6 +23,21 @@ def gate_expected_returncodes(name: str, *, include_runtime: bool) -> list[int]:
     raise AssertionError(f"missing gate {name}")
 
 
+def gate_command(
+    name: str,
+    *,
+    include_runtime: bool,
+    manual_monitoring_ack: bool = False,
+) -> list[str]:
+    for gate_name, command, _ in local_gates(
+        include_runtime=include_runtime,
+        manual_monitoring_ack=manual_monitoring_ack,
+    ):
+        if gate_name == name:
+            return command
+    raise AssertionError(f"missing gate {name}")
+
+
 def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     names = gate_names(include_runtime=True)
 
@@ -41,6 +56,22 @@ def test_external_evidence_report_gates_accept_incomplete_and_complete_returncod
     assert gate_expected_returncodes("post_only_evidence_report", include_runtime=True) == [0, 1]
     assert gate_expected_returncodes("fee_evidence_report", include_runtime=True) == [0, 1]
     assert gate_expected_returncodes("live_canary_evidence_report", include_runtime=True) == [0, 1]
+
+
+def test_live_canary_gate_does_not_ack_manual_monitoring_by_default():
+    command = gate_command("live_canary_evidence_report", include_runtime=True)
+
+    assert "--manual-monitoring-ack" not in command
+
+
+def test_live_canary_gate_can_pass_manual_monitoring_acknowledgement():
+    command = gate_command(
+        "live_canary_evidence_report",
+        include_runtime=True,
+        manual_monitoring_ack=True,
+    )
+
+    assert "--manual-monitoring-ack" in command
 
 
 def test_plan_status_audit_command_uses_latest_gate_json_and_output():

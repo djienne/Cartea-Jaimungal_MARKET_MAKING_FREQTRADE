@@ -87,7 +87,25 @@ def load_json_report(path: Path) -> tuple[dict | None, str | None]:
     return payload, None
 
 
-def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], list[int]]]:
+def live_canary_evidence_command(py: str, *, manual_monitoring_ack: bool = False) -> list[str]:
+    command = [
+        py,
+        "scripts/verify_live_canary.py",
+        "--input",
+        "user_data/logs/mm_debug.jsonl",
+        "--output",
+        "docs/live_canary_report.json",
+    ]
+    if manual_monitoring_ack:
+        command.append("--manual-monitoring-ack")
+    return command
+
+
+def local_gates(
+    *,
+    include_runtime: bool = False,
+    manual_monitoring_ack: bool = False,
+) -> list[tuple[str, list[str], list[int]]]:
     py = sys.executable
     gates = [
         ("compileall", [py, "-m", "compileall", "scripts", "user_data/strategies"], [0]),
@@ -359,14 +377,10 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                 ),
                 (
                     "live_canary_evidence_report",
-                    [
+                    live_canary_evidence_command(
                         sys.executable,
-                        "scripts/verify_live_canary.py",
-                        "--input",
-                        "user_data/logs/mm_debug.jsonl",
-                        "--output",
-                        "docs/live_canary_report.json",
-                    ],
+                        manual_monitoring_ack=manual_monitoring_ack,
+                    ),
                     [0, 1],
                 ),
             ]
@@ -375,14 +389,7 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
         gates.append(
             (
                 "live_canary_evidence_report",
-                [
-                    py,
-                    "scripts/verify_live_canary.py",
-                    "--input",
-                    "user_data/logs/mm_debug.jsonl",
-                    "--output",
-                    "docs/live_canary_report.json",
-                ],
+                live_canary_evidence_command(py, manual_monitoring_ack=manual_monitoring_ack),
                 [0, 1],
             )
         )
@@ -544,6 +551,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--markdown-output", type=Path, default=None, help="Optional path for markdown summary.")
     parser.add_argument("--include-runtime", action="store_true", help="Also run non-trading Docker/Freqtrade load gates.")
     parser.add_argument(
+        "--manual-monitoring-ack",
+        action="store_true",
+        help=(
+            "Pass the live-canary manual monitoring acknowledgement through to "
+            "scripts/verify_live_canary.py. Use only after actual monitored canary sessions."
+        ),
+    )
+    parser.add_argument(
         "--plan-status-audit-output",
         type=Path,
         default=Path("docs/plan_status_audit.json"),
@@ -556,7 +571,10 @@ def main() -> int:
     args = parse_args()
     results = [
         run_command(name, command, expected_returncodes)
-        for name, command, expected_returncodes in local_gates(include_runtime=args.include_runtime)
+        for name, command, expected_returncodes in local_gates(
+            include_runtime=args.include_runtime,
+            manual_monitoring_ack=args.manual_monitoring_ack,
+        )
     ]
     manual_gate_list = manual_gates(include_runtime=args.include_runtime)
     deployment_blockers = [str(gate["name"]) for gate in manual_gate_list if gate.get("passed") is not True]
@@ -571,6 +589,7 @@ def main() -> int:
         "deployment_ready": bool(all_local_passed and not deployment_blockers),
         "deployment_blockers": deployment_blockers,
         "runtime_gates_included": bool(args.include_runtime),
+        "manual_monitoring_ack": bool(args.manual_monitoring_ack),
     }
 
     if args.include_runtime:

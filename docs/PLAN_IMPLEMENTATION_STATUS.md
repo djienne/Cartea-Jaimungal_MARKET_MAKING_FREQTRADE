@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 186 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 188 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -133,8 +133,11 @@ Generated from the current local worktree after the latest safety-gate run.
   canary session events, so stale canary evidence cannot pass by regenerating a
   new report. The safety-gate runner now generates this artifact after
   regenerating fee and replay reports in runtime mode, so it summarizes the
-  current dependency artifacts. The current report is expected to be `ok=false`
-  until Gates 4-5 pass and real canary sessions are supplied.
+  current dependency artifacts. The runner withholds the manual monitoring
+  acknowledgement by default and only passes it through with the explicit
+  `--manual-monitoring-ack` flag after actual monitored canary sessions. The
+  current report is expected to be `ok=false` until Gates 4-5 pass and real
+  canary sessions are supplied.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and
