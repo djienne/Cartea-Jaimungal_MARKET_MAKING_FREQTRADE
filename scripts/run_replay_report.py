@@ -295,6 +295,37 @@ def add_depth_ratio_reasons(metrics: dict[str, Any], reasons: list[str]) -> None
         reasons.append("no_positive_fill_ratio_by_depth")
 
 
+def add_pnl_by_side_reasons(metrics: dict[str, Any], reasons: list[str]) -> None:
+    maker_fills = int(metrics.get("maker_fills") or 0)
+    pnl_by_side = metrics.get("pnl_by_side") or {}
+    if maker_fills > 0 and not isinstance(pnl_by_side, dict):
+        reasons.append("invalid_pnl_by_side")
+        return
+    if maker_fills > 0 and not pnl_by_side:
+        reasons.append("missing_pnl_by_side")
+        return
+
+    parsed: dict[str, float] = {}
+    for side in ("bid", "ask"):
+        if side not in pnl_by_side:
+            reasons.append(f"missing_pnl_by_side:{side}")
+            continue
+        if not is_finite_number(pnl_by_side.get(side)):
+            reasons.append(f"nonfinite_pnl_by_side:{side}")
+            continue
+        parsed[side] = float(pnl_by_side[side])
+
+    unexpected_sides = sorted(set(str(key) for key in pnl_by_side) - {"bid", "ask"})
+    for side in unexpected_sides:
+        reasons.append(f"unexpected_pnl_by_side:{side}")
+
+    if maker_fills > 0 and len(parsed) == 2:
+        expected = net_realized_spread_usdc(metrics)
+        observed = parsed["bid"] + parsed["ask"]
+        if abs(observed - expected) > 1e-8:
+            reasons.append(f"pnl_by_side_total_mismatch:{observed:.12f}!={expected:.12f}")
+
+
 def replay_data_fresh_guard(
     metrics: dict[str, Any],
     *,
@@ -396,6 +427,7 @@ def evaluate_metrics(
         numeric_fields=TOXICITY_SERIES_FIELDS,
     )
     add_depth_ratio_reasons(metrics, reasons)
+    add_pnl_by_side_reasons(metrics, reasons)
 
     days = coverage_days(metrics)
     if days < float(min_days):

@@ -33,6 +33,7 @@ def minimal_metrics(**overrides):
         "realized_spread_usdc": 1.0,
         "fees_usdc": 0.1,
         "mark_to_market_pnl_usdc": 0.9,
+        "pnl_by_side": {"bid": 0.8, "ask": 0.1},
         "inventory_histogram": {"0": 900, "1": 100},
         "quote_attempts_by_depth": {"bid:5.00bps": 900, "ask:5.00bps": 100},
         "fills_by_depth": {"bid:5.00bps": 9, "ask:5.00bps": 1},
@@ -158,6 +159,22 @@ def test_evaluate_metrics_rejects_inconsistent_fill_ratio_by_depth():
     assert not ok
     assert "fills_by_depth_total_mismatch:2!=10" in reasons
     assert "fill_ratio_by_depth_mismatch:bid:5.00bps:0.100000000000!=0.200000000000" in reasons
+
+
+def test_evaluate_metrics_rejects_inconsistent_pnl_by_side():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(pnl_by_side={"bid": 0.1, "ask": 0.1}),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+    )
+
+    assert not ok
+    assert "pnl_by_side_total_mismatch:0.200000000000!=0.900000000000" in reasons
 
 
 def test_evaluate_metrics_rejects_corrupt_parameter_and_toxicity_series():

@@ -381,9 +381,15 @@ def test_replay_reports_fill_ratio_by_depth_as_ratio(monkeypatch):
     payload = metrics.to_dict()
     assert metrics.quote_attempts_by_depth == {depth_key: 2}
     assert metrics.fills_by_depth == {depth_key: 1}
+    assert round(metrics.pnl_by_side["bid"], 8) == 0.00485
+    assert round(sum(metrics.pnl_by_side.values()), 8) == round(
+        metrics.realized_spread_usdc - metrics.fees_usdc,
+        8,
+    )
     assert payload["quote_attempts_by_depth"] == {depth_key: 2}
     assert payload["fills_by_depth"] == {depth_key: 1}
     assert payload["fill_ratio_by_depth"] == {depth_key: 0.5}
+    assert payload["pnl_by_side"]["bid"] == metrics.pnl_by_side["bid"]
 
 
 def test_first_level_size_reads_nested_orderbook_levels():

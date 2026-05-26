@@ -623,17 +623,19 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                 continue
             notional = fill_size * price
             fee = notional * config.maker_fee
+            gross_spread = abs(mid - price) * fill_size
+            side_pnl = gross_spread - fee
             metrics.maker_fills += 1
             metrics.fees_usdc += fee
             if side == "bid":
                 metrics.inventory_base += fill_size
                 metrics.cash_usdc -= notional + fee
-                metrics.pnl_by_side["bid"] -= fee
+                metrics.pnl_by_side["bid"] += side_pnl
             else:
                 metrics.inventory_base -= fill_size
                 metrics.cash_usdc += notional - fee
-                metrics.pnl_by_side["ask"] -= fee
-            metrics.realized_spread_usdc += abs(mid - price) * fill_size
+                metrics.pnl_by_side["ask"] += side_pnl
+            metrics.realized_spread_usdc += gross_spread
             metrics.fills_by_depth[depth_key] = metrics.fills_by_depth.get(depth_key, 0) + 1
             fill_ts = fill_trade["timestamp"]
             for horizon_ms in MARKOUT_HORIZONS_MS:

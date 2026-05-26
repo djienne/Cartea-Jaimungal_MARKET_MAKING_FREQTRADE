@@ -1,14 +1,14 @@
 {
   "cash_usdc": 0.0,
-  "data_end": "2026-05-26T08:06:25.446534157+00:00",
-  "data_start": "2026-05-26T08:02:42.450190306+00:00",
+  "data_end": "2026-05-26T08:20:00.858208656+00:00",
+  "data_start": "2026-05-26T08:17:02.046458721+00:00",
   "equity_usdc": 1000.0,
   "fees_usdc": 0.0,
   "fill_ratio_by_depth": {
     "bid:5.55bps": 0.0
   },
   "fills_by_depth": {},
-  "final_mid": 2094.45,
+  "final_mid": 2099.1499999999996,
   "funding_usdc": 0.0,
   "input_files": {
     "orderbooks": 10,
@@ -16,9 +16,9 @@
     "trades": 10
   },
   "input_rows": {
-    "orderbooks": 413,
+    "orderbooks": 331,
     "prices": 1000,
-    "trades": 98
+    "trades": 197
   },
   "inventory_base": 0.0,
   "inventory_histogram": {
@@ -37,8 +37,8 @@
   "notional_exposure_usdc": 0.0,
   "parameter_series": [
     {
-      "data_end": "2026-05-26T08:06:25.446534157+00:00",
-      "data_start": "2026-05-26T08:02:42.450190306+00:00",
+      "data_end": "2026-05-26T08:20:00.858208656+00:00",
+      "data_start": "2026-05-26T08:17:02.046458721+00:00",
       "epsilon_minus": 0.0,
       "epsilon_plus": 0.0,
       "kappa_minus": 2.0,
@@ -48,7 +48,7 @@
       "schema_version": 1,
       "source": "static_replay_params",
       "symbol": "ETH",
-      "ts": "2026-05-26T08:02:42.450190306+00:00",
+      "ts": "2026-05-26T08:17:02.046458721+00:00",
       "unit": {
         "epsilon": "USDC",
         "kappa": "1/USDC",
@@ -77,15 +77,15 @@
   },
   "toxicity_series": [
     {
-      "data_end": "2026-05-26T08:06:25.446534157+00:00",
-      "data_start": "2026-05-26T08:02:42.450190306+00:00",
+      "data_end": "2026-05-26T08:20:00.858208656+00:00",
+      "data_start": "2026-05-26T08:17:02.046458721+00:00",
       "formula": "kappa * epsilon",
       "schema_version": 1,
       "source": "static_replay_params",
       "symbol": "ETH",
       "toxicity_minus": 0.0,
       "toxicity_plus": 0.0,
-      "ts": "2026-05-26T08:02:42.450190306+00:00",
+      "ts": "2026-05-26T08:17:02.046458721+00:00",
       "unit": "kappa_times_epsilon"
     }
   ]
