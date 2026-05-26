@@ -179,20 +179,17 @@ async def _run_once(found: Dict[str, Optional[Path]], crypto: str) -> None:
 
 def _copy_if_needed(src: Path, dst: Path) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    import shutil
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
     try:
-        shutil.copy2(src, dst)
+        tmp.write_bytes(src.read_bytes())
+        tmp.replace(dst)
         return True
-    except PermissionError as e:
-        # Filesystems or Docker volumes may block copystat/utime; fall back to data-only copy.
-        try:
-            shutil.copyfile(src, dst)
-            print(f"{_ts()} [copy] Falling back to copyfile for {dst} (metadata not preserved): {e}")
-            return True
-        except Exception as inner:
-            print(f"{_ts()} [copy] ERROR copying {src} -> {dst} via copyfile: {inner}")
-            return False
     except OSError as e:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
         print(f"{_ts()} [copy] ERROR copying {src} -> {dst}: {e}")
         return False
 

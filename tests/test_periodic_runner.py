@@ -143,3 +143,16 @@ def test_runner_executes_estimators_in_dependency_order(monkeypatch, tmp_path):
 
     assert [name for name, _cmd_tail, _cwd in calls] == ["get_kappa.py", "get_epsilon.py", "get_lambda.py"]
     assert all(cmd_tail == ["--crypto", "ETH"] for _name, cmd_tail, _cwd in calls)
+
+
+def test_runner_copies_strategy_snapshots_atomically(tmp_path):
+    src = tmp_path / "source.json"
+    dst = tmp_path / "strategy" / "kappa.json"
+    src.write_text(json.dumps({"ETH": {"schema_version": 2}}), encoding="utf-8")
+    dst.parent.mkdir()
+    dst.write_text("old", encoding="utf-8")
+
+    assert periodic_test_runner._copy_if_needed(src, dst)
+
+    assert json.loads(dst.read_text(encoding="utf-8")) == {"ETH": {"schema_version": 2}}
+    assert not dst.with_suffix(".json.tmp").exists()
