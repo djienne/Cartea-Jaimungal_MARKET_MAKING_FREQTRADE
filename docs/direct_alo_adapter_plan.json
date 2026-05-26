@@ -8,7 +8,7 @@
     "--best-bid and --best-ask crossing evidence inputs",
     "bid probe price is best ask; ask probe price is best bid"
   ],
-  "generated_at": "2026-05-26T11:17:37Z",
+  "generated_at": "2026-05-26T11:45:39Z",
   "order_type": {
     "limit": {
       "tif": "Alo"

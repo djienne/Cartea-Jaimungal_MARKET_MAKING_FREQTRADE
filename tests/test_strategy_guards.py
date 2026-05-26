@@ -156,6 +156,8 @@ def make_bot() -> Market_Making:
     bot.trading_enabled = False
     bot.post_only_verified = False
     bot._quote_id_sequence = 0
+    bot._accepted_quote_decisions = []
+    bot._accepted_order_attempt_links = []
     bot.param_update_status_path = ""
     bot.hjb_cache = {
         "q_grid": np.array([-1, 0, 1]),
@@ -808,6 +810,41 @@ def test_post_only_verified_accepts_alo_entry_time_in_force():
     )
 
 
+def test_accepted_order_attempt_logs_matching_quote_id():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    now = datetime.now(timezone.utc)
+
+    rate = bot.custom_entry_price(
+        "ETH/USDC:USDC",
+        None,
+        now,
+        proposed_rate=99.5,
+        entry_tag="mm_bid",
+        side="long",
+    )
+
+    assert bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.02,
+        rate,
+        "GTC",
+        now + timedelta(seconds=1),
+        "mm_bid",
+        "long",
+    )
+
+    quote_payload = events[0][1]
+    accepted_payload = events[1][1]
+    assert events[0][0] == "quote_decision"
+    assert events[1][0] == "order_attempt_accepted"
+    assert accepted_payload["quote_id"] == quote_payload["quote_id"]
+    assert accepted_payload["quote_id_source"] == "quote_decision_cache"
+
+
 def test_post_only_verified_rejects_gtc_exit_time_in_force():
     bot = make_bot()
     bot.trading_enabled = True
@@ -1202,6 +1239,7 @@ def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
     event, payload = events[0]
     assert event == "fill"
     assert payload["quote_id"] == "quote-000000000123"
+    assert payload["quote_id_source"] == "order_attribute"
     assert payload["liquidity"] == "maker"
     assert payload["liquidity_normalized"] == "maker"
     assert payload["is_maker_fill"] is True
@@ -1220,6 +1258,50 @@ def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
     assert payload["expected_tif_canonical"] == "post_only"
     assert payload["tif_matches_expected"] is True
     assert bot._maker_fill_count == 1
+
+
+def test_fill_log_infers_quote_id_from_accepted_order_attempt():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    now = datetime.now(timezone.utc)
+
+    rate = bot.custom_entry_price(
+        "ETH/USDC:USDC",
+        None,
+        now,
+        proposed_rate=99.5,
+        entry_tag="mm_bid",
+        side="long",
+    )
+    assert bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.02,
+        rate,
+        "GTC",
+        now + timedelta(seconds=1),
+        "mm_bid",
+        "long",
+    )
+    quote_id = events[0][1]["quote_id"]
+    events.clear()
+    order = types.SimpleNamespace(
+        id="maker-no-quote-id",
+        liquidity="maker",
+        order_type="limit",
+        time_in_force="GTC",
+        ft_order_side="buy",
+        price=rate,
+        amount=0.02,
+    )
+
+    bot.order_filled("ETH/USDC:USDC", DummyTrade(amount=0.02), order, now + timedelta(seconds=10))
+
+    assert events[0][0] == "fill"
+    assert events[0][1]["quote_id"] == quote_id
+    assert events[0][1]["quote_id_source"] == "accepted_order_attempt"
 
 
 def test_post_only_fill_time_in_force_mismatch_triggers_kill_switch():

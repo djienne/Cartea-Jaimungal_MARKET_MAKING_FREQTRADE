@@ -179,6 +179,8 @@ class Market_Making(IStrategy):
     max_consecutive_losses = 10
     max_post_only_reject_rate = 0.80
     min_post_only_reject_samples = 10
+    quote_link_max_age_seconds = 900
+    quote_link_cache_limit = 500
     kill_on_taker_fill = True
     kill_on_time_in_force_mismatch = True
     kill_on_unknown_liquidity_fill = True
@@ -1398,6 +1400,94 @@ class Market_Making(IStrategy):
         self._quote_id_sequence = sequence
         return f"quote-{sequence:012d}"
 
+    def _quote_link_tolerance(self, rate: float | None) -> float:
+        if rate is None:
+            return 1e-8
+        return max(1e-8, abs(float(rate)) * 1e-9)
+
+    def _trim_quote_link_cache(self, cache: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        limit = max(1, int(getattr(self, "quote_link_cache_limit", 500)))
+        return cache[-limit:]
+
+    def _remember_quote_decision(self, payload: dict[str, Any], timestamp: datetime) -> None:
+        if payload.get("decision") != "accept":
+            return
+        price = self._finite_float_or_none(payload.get("rounded_price"))
+        quote_id = payload.get("quote_id")
+        if price is None or quote_id in (None, ""):
+            return
+        cache = list(getattr(self, "_accepted_quote_decisions", []) or [])
+        cache.append(
+            {
+                "quote_id": str(quote_id),
+                "ts": timestamp,
+                "pair": payload.get("pair"),
+                "side": payload.get("side"),
+                "action": payload.get("action"),
+                "price": float(price),
+            }
+        )
+        self._accepted_quote_decisions = self._trim_quote_link_cache(cache)
+
+    def _match_quote_link_cache(
+        self,
+        cache_name: str,
+        pair: str,
+        quote_side: str | None,
+        rate: float | None,
+        current_time: datetime,
+    ) -> dict[str, Any] | None:
+        price = self._finite_float_or_none(rate)
+        side = str(quote_side or "").strip().lower()
+        now = self._as_utc(current_time) or self._now_utc()
+        if price is None or side not in {"bid", "ask"}:
+            return None
+        tolerance = self._quote_link_tolerance(float(price))
+        max_age = max(0.0, float(getattr(self, "quote_link_max_age_seconds", 900)))
+        candidates: list[dict[str, Any]] = []
+        for item in getattr(self, cache_name, []) or []:
+            item_ts = self._as_utc(item.get("ts"))
+            item_price = self._finite_float_or_none(item.get("price"))
+            if item_ts is None or item_price is None:
+                continue
+            age = (now - item_ts).total_seconds()
+            if age < -1.0 or age > max_age:
+                continue
+            if item.get("pair") != pair or item.get("side") != side:
+                continue
+            if abs(float(item_price) - float(price)) > tolerance:
+                continue
+            candidates.append(item)
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: self._as_utc(item.get("ts")) or datetime.min.replace(tzinfo=timezone.utc))
+
+    def _remember_order_attempt(
+        self,
+        *,
+        pair: str,
+        quote_side: str,
+        rate: float,
+        amount: float,
+        current_time: datetime,
+        time_in_force: str | None,
+        quote_match: dict[str, Any] | None,
+    ) -> None:
+        quote_id = quote_match.get("quote_id") if quote_match else None
+        cache = list(getattr(self, "_accepted_order_attempt_links", []) or [])
+        cache.append(
+            {
+                "quote_id": str(quote_id) if quote_id not in (None, "") else None,
+                "ts": self._as_utc(current_time) or self._now_utc(),
+                "pair": pair,
+                "side": quote_side,
+                "price": float(rate),
+                "amount": float(amount),
+                "time_in_force": time_in_force,
+            }
+        )
+        self._accepted_order_attempt_links = self._trim_quote_link_cache(cache)
+
     def _record_quote_decision(self, pair: str, decision: str, reason: str) -> None:
         self._quote_decisions_count = int(getattr(self, "_quote_decisions_count", 0)) + 1
         post_only_reasons = {
@@ -1424,8 +1514,40 @@ class Market_Making(IStrategy):
                 {"pair": pair, "quote_decisions": attempts, "post_only_rejects": rejects},
             )
 
-    def _record_order_attempt_accepted(self) -> None:
+    def _record_order_attempt_accepted(
+        self,
+        *,
+        pair: str,
+        quote_side: str,
+        rate: float,
+        amount: float,
+        time_in_force: str | None,
+        current_time: datetime,
+    ) -> None:
         self._accepted_order_attempts = int(getattr(self, "_accepted_order_attempts", 0)) + 1
+        quote_match = self._match_quote_link_cache("_accepted_quote_decisions", pair, quote_side, rate, current_time)
+        self._remember_order_attempt(
+            pair=pair,
+            quote_side=quote_side,
+            rate=float(rate),
+            amount=float(amount),
+            current_time=current_time,
+            time_in_force=time_in_force,
+            quote_match=quote_match,
+        )
+        self._debug_log_event(
+            "order_attempt_accepted",
+            {
+                "pair": pair,
+                "side": quote_side,
+                "rate": float(rate),
+                "amount": float(amount),
+                "time_in_force": time_in_force,
+                "quote_id": quote_match.get("quote_id") if quote_match else None,
+                "quote_id_source": "quote_decision_cache" if quote_match else "unmatched",
+                "accepted_order_attempts": int(getattr(self, "_accepted_order_attempts", 0)),
+            },
+        )
 
     def _record_open_order_cancel_request(self, count: int = 1) -> None:
         self._cancel_open_order_requests = int(getattr(self, "_cancel_open_order_requests", 0)) + max(1, int(count))
@@ -2411,6 +2533,7 @@ class Market_Making(IStrategy):
         }
         if action in {"entry", "exit", "adjust_entry", "adjust_exit"}:
             self._record_quote_decision(pair, decision, reason)
+        self._remember_quote_decision(payload, now)
         self._debug_log_event("quote_decision", payload)
 
     def _log_health(self, pair: str, current_time: datetime) -> None:
@@ -2805,7 +2928,14 @@ class Market_Making(IStrategy):
             )
             return False
 
-        self._record_order_attempt_accepted()
+        self._record_order_attempt_accepted(
+            pair=pair,
+            quote_side="bid",
+            rate=float(rate),
+            amount=float(amount),
+            time_in_force=time_in_force,
+            current_time=current_time,
+        )
         return True
 
     def confirm_trade_exit(
@@ -2930,7 +3060,14 @@ class Market_Making(IStrategy):
             )
             return False
 
-        self._record_order_attempt_accepted()
+        self._record_order_attempt_accepted(
+            pair=pair,
+            quote_side="ask",
+            rate=float(rate),
+            amount=float(amount),
+            time_in_force=time_in_force,
+            current_time=current_time,
+        )
         return True
 
     def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:
@@ -2958,7 +3095,26 @@ class Market_Making(IStrategy):
             or getattr(order, "clientOrderId", None)
             or getattr(order, "ft_client_order_id", None)
         )
-        quote_id = getattr(order, "quote_id", None) or getattr(order, "ft_quote_id", None) or client_order_id
+        order_quote_id = getattr(order, "quote_id", None) or getattr(order, "ft_quote_id", None)
+        quote_id = order_quote_id or client_order_id
+        quote_id_source = None
+        if order_quote_id not in (None, ""):
+            quote_id_source = "order_attribute"
+        elif client_order_id not in (None, ""):
+            quote_id_source = "client_order_id"
+        elif price_float is not None and quote_side is not None:
+            quote_match = self._match_quote_link_cache(
+                "_accepted_order_attempt_links",
+                pair,
+                quote_side,
+                price_float,
+                current_time,
+            )
+            if quote_match and quote_match.get("quote_id") not in (None, ""):
+                quote_id = quote_match.get("quote_id")
+                quote_id_source = "accepted_order_attempt"
+        if quote_id_source is None:
+            quote_id_source = "unavailable"
         realized_pnl = self._extract_realized_pnl_usdc(trade, order)
         expected_tif = self._expected_time_in_force(quote_side)
         tif_canonical = self._canonical_tif(tif)
@@ -2972,6 +3128,7 @@ class Market_Making(IStrategy):
             "order_id": order_id,
             "client_order_id": client_order_id,
             "quote_id": quote_id,
+            "quote_id_source": quote_id_source,
             "raw_liquidity": raw_liquidity,
             "liquidity": liquidity,
             "liquidity_normalized": liquidity,
