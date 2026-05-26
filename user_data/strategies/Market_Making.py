@@ -3,6 +3,7 @@
 # isort: skip_file
 # --- Do not remove these libs ---
 from warnings import simplefilter
+import hashlib
 import math
 import numpy as np  # noqa
 import pandas as pd  # noqa
@@ -136,6 +137,8 @@ class Market_Making(IStrategy):
     _hjb_generation: int = 0
     _hjb_last_refresh_ts: str | None = None
     _hjb_last_refresh_dt: datetime | None = None
+    _hjb_param_fingerprint: str | None = None
+    _hjb_params_snapshot: dict[str, Any] | None = None
 
     debug_json_log: bool = True
     debug_json_log_filename: str = "mm_debug.jsonl"
@@ -739,6 +742,8 @@ class Market_Making(IStrategy):
             epsilon_m = float(self.epsilons[symbol]["epsilon-"])
             lambda_p = float(self.lambdas.get(symbol, {}).get("lambda+", 0.0)) if isinstance(self.lambdas, dict) else 0.0
             lambda_m = float(self.lambdas.get(symbol, {}).get("lambda-", 0.0)) if isinstance(self.lambdas, dict) else 0.0
+            params_snapshot = self._params_snapshot(symbol)
+            params_fingerprint = self._params_fingerprint(params_snapshot)
         except Exception as e:
             logger.warning(f"HJB refresh skipped (missing/invalid params for {symbol}): {e}")
             self._debug_log_event(
@@ -785,6 +790,8 @@ class Market_Making(IStrategy):
             )
             self.hjb_cache = hjb_res
             self._hjb_generation += 1
+            self._hjb_params_snapshot = params_snapshot
+            self._hjb_param_fingerprint = params_fingerprint
             self._hjb_last_refresh_dt = self._now_utc()
             self._hjb_last_refresh_ts = self._hjb_last_refresh_dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
             self._debug_log_event(
@@ -805,6 +812,8 @@ class Market_Making(IStrategy):
                         "T_seconds": float(self.hjb_horizon_seconds),
                         "q_max": int(self.hjb_q_max),
                     },
+                    "params": params_snapshot,
+                    "param_fingerprint": params_fingerprint,
                     "hjb_generation": self._hjb_generation,
                     "hjb_last_refresh_ts": self._hjb_last_refresh_ts,
                     "hjb": self._hjb_snapshot(),
@@ -2239,23 +2248,39 @@ class Market_Making(IStrategy):
             return
 
     def _params_snapshot(self, symbol: str) -> dict[str, Any]:
-        snapshot: dict[str, Any] = {"symbol": symbol}
+        snapshot: dict[str, Any] = {"symbol": symbol, "sources": {}}
+        sources: dict[str, Any] = snapshot["sources"]
         try:
             if isinstance(self.kappas, dict):
-                snapshot["kappa_plus"] = float(self.kappas[symbol]["kappa+"])
-                snapshot["kappa_minus"] = float(self.kappas[symbol]["kappa-"])
+                entry = self.kappas[symbol]
+                snapshot["kappa_plus"] = float(entry["kappa+"])
+                snapshot["kappa_minus"] = float(entry["kappa-"])
+                sources["kappa"] = self._param_source_metadata(
+                    entry,
+                    extra_keys=("n_points_plus", "n_points_minus", "r2_plus", "r2_minus", "window_start", "window_end"),
+                )
         except Exception:
             pass
         try:
             if isinstance(self.epsilons, dict):
-                snapshot["epsilon_plus"] = float(self.epsilons[symbol]["epsilon+"])
-                snapshot["epsilon_minus"] = float(self.epsilons[symbol]["epsilon-"])
+                entry = self.epsilons[symbol]
+                snapshot["epsilon_plus"] = float(entry["epsilon+"])
+                snapshot["epsilon_minus"] = float(entry["epsilon-"])
+                sources["epsilon"] = self._param_source_metadata(
+                    entry,
+                    extra_keys=("n_buy_events", "n_sell_events", "estimator", "window_ms", "window_start", "window_end"),
+                )
         except Exception:
             pass
         try:
             if isinstance(self.lambdas, dict):
-                snapshot["lambda_plus"] = float(self.lambdas.get(symbol, {}).get("lambda+", 0.0))
-                snapshot["lambda_minus"] = float(self.lambdas.get(symbol, {}).get("lambda-", 0.0))
+                entry = self.lambdas.get(symbol, {})
+                snapshot["lambda_plus"] = float(entry.get("lambda+", 0.0))
+                snapshot["lambda_minus"] = float(entry.get("lambda-", 0.0))
+                sources["lambda"] = self._param_source_metadata(
+                    entry,
+                    extra_keys=("lambda_source", "n_trades", "n_trades_total", "window_start", "window_end"),
+                )
         except Exception:
             pass
 
@@ -2267,6 +2292,19 @@ class Market_Making(IStrategy):
         snapshot["use_asymmetric_kappa"] = bool(self.use_asymmetric_kappa)
 
         return snapshot
+
+    def _param_source_metadata(self, entry: Any, *, extra_keys: tuple[str, ...]) -> dict[str, Any]:
+        if not isinstance(entry, dict):
+            return {}
+        metadata: dict[str, Any] = {}
+        for key in ("schema_version", "status", "generated_at", *extra_keys):
+            if key in entry:
+                metadata[key] = entry.get(key)
+        return metadata
+
+    def _params_fingerprint(self, snapshot: dict[str, Any]) -> str:
+        payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     def _hjb_snapshot(self) -> dict[str, Any] | None:
         cache = self.hjb_cache
@@ -2342,6 +2380,7 @@ class Market_Making(IStrategy):
             "delta_total": float(delta_total) if delta_total is not None else None,
             "hjb_generation": int(self._hjb_generation),
             "hjb_last_refresh_ts": self._hjb_last_refresh_ts,
+            "hjb_param_fingerprint": self._hjb_param_fingerprint,
             "hjb_age_seconds": self._hjb_age_seconds(now),
             "param_age_seconds": self._param_age_seconds(symbol, now),
             "collector_age_seconds": self._collector_age_seconds(symbol, now),
@@ -2357,6 +2396,7 @@ class Market_Making(IStrategy):
             "post_only": expected_tif_canonical == "post_only",
             "post_only_verified": bool(self.post_only_verified),
             "params": self._params_snapshot(symbol),
+            "hjb_params": self._hjb_params_snapshot,
             "fee_snapshot": self._fee_snapshot(pair),
             **self._inventory_snapshot(pair),
             **(extra or {}),

@@ -1739,6 +1739,8 @@ def test_quote_state_maps_missing_collector_stream_to_stale_collector_data():
 def test_quote_decision_logs_freshness_age_fields():
     bot = make_bot()
     bot.post_only_verified = True
+    bot._hjb_params_snapshot = bot._params_snapshot("ETH")
+    bot._hjb_param_fingerprint = bot._params_fingerprint(bot._hjb_params_snapshot)
     events = []
     bot._debug_log_event = lambda event, payload: events.append((event, payload))
     bot._collector_age_seconds = lambda symbol, now=None: 12.4
@@ -1774,8 +1776,39 @@ def test_quote_decision_logs_freshness_age_fields():
     assert payload["post_only_verified"] is True
     assert payload["trading_enabled"] is False
     assert payload["dry_run"] is True
+    assert payload["hjb_param_fingerprint"] == bot._hjb_param_fingerprint
+    assert payload["hjb_params"]["sources"]["kappa"]["schema_version"] == 2
+    assert payload["hjb_params"]["sources"]["kappa"]["generated_at"] == bot.kappas["ETH"]["generated_at"]
+    assert payload["hjb_params"]["sources"]["lambda"]["lambda_source"] == "lambda0_fit"
+    assert payload["params"]["sources"]["epsilon"]["n_buy_events"] == 3
     assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
     assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
+
+
+def test_hjb_refresh_logs_parameter_fingerprint():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    class DummySolver:
+        @staticmethod
+        def compute_h_asymmetric(**kwargs):
+            return {
+                "method": "test_solver",
+                "q_grid": np.array([-1, 0, 1]),
+                "delta_plus": np.array([np.inf, 0.5, 0.4]),
+                "delta_minus": np.array([0.4, 0.5, np.inf]),
+            }
+
+    bot.hjb_solver = DummySolver
+
+    bot._refresh_hjb("ETH/USDC:USDC")
+
+    refresh = [payload for event, payload in events if event == "hjb_refresh"][0]
+    assert refresh["param_fingerprint"] == bot._hjb_param_fingerprint
+    assert refresh["params"]["sources"]["kappa"]["schema_version"] == 2
+    assert refresh["params"]["sources"]["epsilon"]["n_sell_events"] == 3
+    assert bot._hjb_params_snapshot == refresh["params"]
 
 
 def test_health_log_counts_open_orders_and_logs_position():
