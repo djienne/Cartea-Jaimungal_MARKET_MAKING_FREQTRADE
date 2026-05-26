@@ -29,8 +29,19 @@ def gate_payload(pytest_count: int = 173) -> dict:
         "replay_acceptance_report_artifact",
         "live_canary_evidence_report",
     ]
+    manual_gates = [
+        {"name": "hyperliquid_post_only_mapping"},
+        {"name": "multi_day_event_replay"},
+        {"name": "hyperliquid_fee_tier"},
+        {"name": "live_canary"},
+    ]
+    deployment_blockers = [gate["name"] for gate in manual_gates]
     return {
         "all_local_passed": True,
+        "all_automated_passed": True,
+        "deployment_ready": False,
+        "deployment_blockers": deployment_blockers,
+        "manual_gates_remaining": len(manual_gates),
         "runtime_gates_included": True,
         "local_gates": [
             {
@@ -40,12 +51,7 @@ def gate_payload(pytest_count: int = 173) -> dict:
             }
             for name in required_local
         ],
-        "manual_gates": [
-            {"name": "hyperliquid_post_only_mapping"},
-            {"name": "multi_day_event_replay"},
-            {"name": "hyperliquid_fee_tier"},
-            {"name": "live_canary"},
-        ],
+        "manual_gates": manual_gates,
     }
 
 
@@ -104,3 +110,23 @@ def test_plan_status_audit_rejects_missing_remaining_gate_text():
 
     assert report["ok"] is False
     assert "status_missing_phrase:live_canary_gate" in report["reasons"]
+
+
+def test_plan_status_audit_rejects_deployment_ready_with_manual_blockers():
+    payload = gate_payload()
+    payload["deployment_ready"] = True
+
+    report = audit_for(status_text(), payload)
+
+    assert report["ok"] is False
+    assert "deployment_ready_true_before_manual_gates" in report["reasons"]
+
+
+def test_plan_status_audit_rejects_manual_gate_count_drift():
+    payload = gate_payload()
+    payload["manual_gates_remaining"] = 0
+
+    report = audit_for(status_text(), payload)
+
+    assert report["ok"] is False
+    assert "manual_gates_remaining_mismatch:0!=4" in report["reasons"]

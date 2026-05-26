@@ -427,6 +427,12 @@ def run_plan_status_audit(payload: dict, gates_path: Path, output_path: Path) ->
 
 def render_markdown(payload: dict) -> str:
     lines = ["# Safety Gate Results", ""]
+    automated_status = "PASS" if payload.get("all_automated_passed") else "FAIL"
+    deployment_status = "YES" if payload.get("deployment_ready") else "NO"
+    lines.append(f"Automated gates: {automated_status}")
+    lines.append(f"Deployment ready: {deployment_status}")
+    lines.append(f"Manual gates remaining: {payload.get('manual_gates_remaining', len(payload.get('manual_gates', [])))}")
+    lines.append("")
     for result in payload["local_gates"]:
         status = "PASS" if result["passed"] else "FAIL"
         lines.append(f"- {status} `{result['name']}` ({result['elapsed_seconds']}s)")
@@ -478,12 +484,18 @@ def main() -> int:
         run_command(name, command, expected_returncodes)
         for name, command, expected_returncodes in local_gates(include_runtime=args.include_runtime)
     ]
+    manual_gate_list = manual_gates(include_runtime=args.include_runtime)
+    deployment_blockers = [gate["name"] for gate in manual_gate_list]
+    all_local_passed = all(result.passed for result in results)
     payload = {
         "local_gates": [asdict(result) for result in results],
-        "manual_gates": manual_gates(include_runtime=args.include_runtime),
-        "all_local_passed": all(result.passed for result in results),
+        "manual_gates": manual_gate_list,
+        "manual_gates_remaining": len(deployment_blockers),
+        "all_local_passed": all_local_passed,
         "post_run_audits": [],
-        "all_passed": all(result.passed for result in results),
+        "all_automated_passed": all_local_passed,
+        "deployment_ready": bool(all_local_passed and not deployment_blockers),
+        "deployment_blockers": deployment_blockers,
         "runtime_gates_included": bool(args.include_runtime),
     }
 
@@ -497,7 +509,8 @@ def main() -> int:
                 audit_result = run_plan_status_audit(payload, audit_gate_path, args.plan_status_audit_output)
 
         payload["post_run_audits"] = [asdict(audit_result)]
-        payload["all_passed"] = bool(payload["all_local_passed"] and audit_result.passed)
+        payload["all_automated_passed"] = bool(payload["all_local_passed"] and audit_result.passed)
+        payload["deployment_ready"] = bool(payload["all_automated_passed"] and not deployment_blockers)
 
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
@@ -509,7 +522,7 @@ def main() -> int:
         args.markdown_output.write_text(markdown, encoding="utf-8")
     print(markdown)
 
-    return 0 if payload["all_passed"] else 1
+    return 0 if payload["all_automated_passed"] else 1
 
 
 if __name__ == "__main__":

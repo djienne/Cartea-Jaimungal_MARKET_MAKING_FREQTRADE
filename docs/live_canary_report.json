@@ -12,9 +12,9 @@
   },
   "dependencies": {
     "fee": {
-      "age_seconds": 21.525738,
+      "age_seconds": 21.292059,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T02:36:02Z",
+      "generated_at": "2026-05-26T02:50:58Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -27,9 +27,9 @@
       "report_ok": false
     },
     "post_only": {
-      "age_seconds": 568.525738,
+      "age_seconds": 570.292059,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T02:26:55Z",
+      "generated_at": "2026-05-26T02:41:49Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -41,23 +41,23 @@
       "report_ok": false
     },
     "replay": {
-      "age_seconds": 0.525738,
+      "age_seconds": 0.292059,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T02:36:23Z",
+      "generated_at": "2026-05-26T02:51:19Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
-        "baseline:insufficient_coverage_days:0.004493<min_3.000000",
+        "baseline:insufficient_coverage_days:0.002904<min_3.000000",
         "baseline:no_maker_fills",
-        "fee_2x:insufficient_coverage_days:0.004493<min_3.000000",
+        "fee_2x:insufficient_coverage_days:0.002904<min_3.000000",
         "fee_2x:no_maker_fills",
-        "latency_2x:insufficient_coverage_days:0.004493<min_3.000000",
+        "latency_2x:insufficient_coverage_days:0.002904<min_3.000000",
         "latency_2x:no_maker_fills",
-        "params_soft:insufficient_coverage_days:0.004493<min_3.000000",
+        "params_soft:insufficient_coverage_days:0.002904<min_3.000000",
         "params_soft:no_maker_fills",
-        "params_hard:insufficient_coverage_days:0.004493<min_3.000000",
+        "params_hard:insufficient_coverage_days:0.002904<min_3.000000",
         "params_hard:no_maker_fills"
       ],
       "report_ok": false
@@ -68,10 +68,10 @@
     "param_update_failed": 9,
     "param_update_rejected": 6
   },
-  "event_count": 1582,
+  "event_count": 1616,
   "event_freshness": {
-    "fresh": 1582,
-    "max_age_seconds": 46048.795738,
+    "fresh": 1616,
+    "max_age_seconds": 46944.562059,
     "max_allowed_age_seconds": 604800.0,
     "stale": 0,
     "timestamp_missing": 0
@@ -82,7 +82,7 @@
     "taker": 0,
     "unknown_liquidity": 10
   },
-  "generated_at": "2026-05-26T02:36:23Z",
+  "generated_at": "2026-05-26T02:51:19Z",
   "health_failures": {
     "no_live_health_events": true
   },
@@ -90,8 +90,8 @@
   "ok": false,
   "quote_failures": {
     "accepted_quote_missing_fee_agreement": 101,
-    "accepted_quote_not_post_only": 213,
-    "accepted_quote_post_only_unverified": 213,
+    "accepted_quote_not_post_only": 218,
+    "accepted_quote_post_only_unverified": 218,
     "accepted_quote_stale_collector": 10,
     "accepted_quote_stale_orderbook": 10,
     "accepted_quote_stale_params": 10
@@ -104,8 +104,8 @@
     "insufficient_canary_sessions:0<min_3",
     "unknown_fill_liquidity:10",
     "accepted_quote_missing_fee_agreement:101",
-    "accepted_quote_not_post_only:213",
-    "accepted_quote_post_only_unverified:213",
+    "accepted_quote_not_post_only:218",
+    "accepted_quote_post_only_unverified:218",
     "accepted_quote_stale_collector:10",
     "accepted_quote_stale_orderbook:10",
     "accepted_quote_stale_params:10",
@@ -115,15 +115,15 @@
   ],
   "sessions": [
     {
-      "accepted_quotes": 213,
-      "duration_minutes": 766.8545833333334,
-      "end_ts": "2026-05-26T02:35:46.005000Z",
-      "events": 1582,
-      "health_events": 252,
+      "accepted_quotes": 218,
+      "duration_minutes": 781.60455,
+      "end_ts": "2026-05-26T02:50:31.003000Z",
+      "events": 1616,
+      "health_events": 257,
       "kill_switches": 0,
       "live_health_events": 0,
       "maker_fills": 0,
-      "quote_decisions": 213,
+      "quote_decisions": 218,
       "session_id": "implicit-1",
       "start_ts": "2026-05-25T13:48:54.730000Z",
       "taker_fills": 0

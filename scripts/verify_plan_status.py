@@ -100,6 +100,8 @@ def build_plan_status_audit(
 
     if gates_payload.get("all_local_passed") is not True:
         reasons.append("latest_safety_gates_not_all_passed")
+    if gates_payload.get("all_automated_passed") is not True:
+        reasons.append("latest_automated_gates_not_all_passed")
     if gates_payload.get("runtime_gates_included") is not True:
         reasons.append("latest_safety_gates_missing_runtime")
 
@@ -125,9 +127,22 @@ def build_plan_status_audit(
         for gate in gates_payload.get("manual_gates", [])
         if isinstance(gate, dict)
     }
+    manual_gates_remaining = gates_payload.get("manual_gates_remaining")
+    if manual_gates_remaining != len(manual_gate_names):
+        reasons.append(f"manual_gates_remaining_mismatch:{manual_gates_remaining}!={len(manual_gate_names)}")
+    deployment_blockers = {
+        str(name)
+        for name in gates_payload.get("deployment_blockers", [])
+        if name not in (None, "")
+    }
+    if gates_payload.get("deployment_ready") is True and deployment_blockers:
+        reasons.append("deployment_ready_true_before_manual_gates")
     missing_manual_gates = sorted(REQUIRED_MANUAL_GATES - manual_gate_names)
     for name in missing_manual_gates:
         reasons.append(f"missing_manual_gate:{name}")
+    missing_deployment_blockers = sorted(REQUIRED_MANUAL_GATES - deployment_blockers)
+    for name in missing_deployment_blockers:
+        reasons.append(f"missing_deployment_blocker:{name}")
 
     pytest_count = extract_pytest_count(gates_payload)
     status_count = extract_status_test_count(status_text)
@@ -172,6 +187,12 @@ def build_plan_status_audit(
             "required": sorted(REQUIRED_MANUAL_GATES),
             "present": sorted(manual_gate_names),
             "missing": missing_manual_gates,
+        },
+        "deployment": {
+            "ready": bool(gates_payload.get("deployment_ready")),
+            "blockers": sorted(deployment_blockers),
+            "missing_blockers": missing_deployment_blockers,
+            "manual_gates_remaining": manual_gates_remaining,
         },
         "status_phrases": {
             "missing": missing_phrases,

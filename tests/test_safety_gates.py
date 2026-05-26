@@ -44,6 +44,9 @@ def test_plan_status_audit_command_uses_latest_gate_json_and_output():
 def test_render_markdown_includes_post_run_audits():
     markdown = render_markdown(
         {
+            "all_automated_passed": True,
+            "deployment_ready": False,
+            "manual_gates_remaining": 1,
             "local_gates": [
                 {
                     "name": "compileall",
@@ -66,5 +69,8 @@ def test_render_markdown_includes_post_run_audits():
         }
     )
 
+    assert "Automated gates: PASS" in markdown
+    assert "Deployment ready: NO" in markdown
+    assert "Manual gates remaining: 1" in markdown
     assert "Post-run audits:" in markdown
     assert "PASS `plan_status_audit`" in markdown
