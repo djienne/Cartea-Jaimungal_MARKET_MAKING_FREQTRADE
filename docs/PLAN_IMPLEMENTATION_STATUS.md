@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 209 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 213 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -176,7 +176,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 0 - fail closed | Automated pass | Default strategy/config remain locked; locked dry-run gate proves zero orders. |
 | Phase 1 - HJB math | Automated pass | `tests/test_hjb.py`; `compute_spreads_boundary_smoke`. |
 | Phase 2 - inventory/units/risk | Automated pass for long-only research mode | Strategy guard tests, `docs/UNITS.md`, quote logs include signed base and q. |
-| Phase 3 - Freqtrade fail-closed wiring | Automated pass | Confirm gates, callback signature tests, disabled and enabled dry-run smokes. |
+| Phase 3 - Freqtrade fail-closed wiring | Automated pass | Confirm gates, callback signature tests, proposed-rate fallback rejection tests, inventory-limit custom-pricing rejection tests, disabled and enabled dry-run smokes. |
 | Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, fee evidence evaluator, price and amount rounding guards, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` and account fee-tier evidence are not verified. |
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, atomic strategy-facing snapshot copies, schema v2 tests, status locking, process-level estimator locking, deterministic kappa -> epsilon -> raw-lambda updater order, snapshot validation for timestamped windows/fit diagnostics/toxicity diagnostics, `lambda0_fit` enforcement for HJB lambda, row-timestamp-based collector freshness validation, and no hardcoded symbol fallback when the strategy has no active pair. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |

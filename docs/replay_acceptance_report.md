@@ -2,17 +2,17 @@
 
 - status: FAIL
 - symbol: `ETH`
-- generated_at: `2026-05-26T07:08:43Z`
+- generated_at: `2026-05-26T07:23:35Z`
 
 ## Variant Summary
 
 | Variant | Status | Coverage days | Quotes | Maker fills | Taker fills | Net spread | Directional ratio | Reasons |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| baseline | FAIL | 0.003453 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.003453<min_3.000000, no_maker_fills |
-| fee_2x | FAIL | 0.003453 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.003453<min_3.000000, no_maker_fills |
-| latency_2x | FAIL | 0.003453 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.003453<min_3.000000, no_maker_fills |
-| params_soft | FAIL | 0.003453 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.003453<min_3.000000, no_maker_fills |
-| params_hard | FAIL | 0.003453 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.003453<min_3.000000, no_maker_fills |
+| baseline | FAIL | 0.004192 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.004192<min_3.000000, no_maker_fills |
+| fee_2x | FAIL | 0.004192 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.004192<min_3.000000, no_maker_fills |
+| latency_2x | FAIL | 0.004192 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.004192<min_3.000000, no_maker_fills |
+| params_soft | FAIL | 0.004192 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.004192<min_3.000000, no_maker_fills |
+| params_hard | FAIL | 0.004192 | 2000 | 0 | 0 | 0.00000000 | 0.000000 | insufficient_coverage_days:0.004192<min_3.000000, no_maker_fills |
 
 ## Refusal Checks
 
@@ -24,13 +24,13 @@
 
 ## Blocking Reasons
 
-- `baseline:insufficient_coverage_days:0.003453<min_3.000000`
+- `baseline:insufficient_coverage_days:0.004192<min_3.000000`
 - `baseline:no_maker_fills`
-- `fee_2x:insufficient_coverage_days:0.003453<min_3.000000`
+- `fee_2x:insufficient_coverage_days:0.004192<min_3.000000`
 - `fee_2x:no_maker_fills`
-- `latency_2x:insufficient_coverage_days:0.003453<min_3.000000`
+- `latency_2x:insufficient_coverage_days:0.004192<min_3.000000`
 - `latency_2x:no_maker_fills`
-- `params_soft:insufficient_coverage_days:0.003453<min_3.000000`
+- `params_soft:insufficient_coverage_days:0.004192<min_3.000000`
 - `params_soft:no_maker_fills`
-- `params_hard:insufficient_coverage_days:0.003453<min_3.000000`
+- `params_hard:insufficient_coverage_days:0.004192<min_3.000000`
 - `params_hard:no_maker_fills`

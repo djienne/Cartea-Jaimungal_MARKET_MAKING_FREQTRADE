@@ -2445,6 +2445,18 @@ class Market_Making(IStrategy):
                 proposed_rate=proposed_rate,
             )
             return proposed_rate
+        if not self._inventory_allows_bid(pair):
+            self._log_quote_decision(
+                pair=pair,
+                symbol=symbol,
+                side="bid",
+                action="entry",
+                decision="reject",
+                reason="position_limit_reached",
+                mid_price=mid_price,
+                proposed_rate=proposed_rate,
+            )
+            return proposed_rate
         delta_source = "hjb_grid"
 
         # Add maker fee cushion (price units)
@@ -2560,6 +2572,19 @@ class Market_Making(IStrategy):
                 action="exit",
                 decision="reject",
                 reason="boundary_side_disabled" if delta_p is not None else "no_hjb_delta",
+                mid_price=mid_price,
+                proposed_rate=proposed_rate,
+                extra={"trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None},
+            )
+            return proposed_rate
+        if not self._inventory_allows_ask(pair):
+            self._log_quote_decision(
+                pair=pair,
+                symbol=symbol,
+                side="ask",
+                action="exit",
+                decision="reject",
+                reason="position_limit_reached",
                 mid_price=mid_price,
                 proposed_rate=proposed_rate,
                 extra={"trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None},

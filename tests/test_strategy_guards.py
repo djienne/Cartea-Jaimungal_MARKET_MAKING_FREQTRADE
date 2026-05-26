@@ -954,6 +954,118 @@ def test_confirm_entry_rejects_boundary_inf_delta():
     )
 
 
+def test_custom_entry_price_fallback_still_rejects_boundary_order():
+    bot = make_bot()
+    bot.trading_enabled = True
+    DummyTrade._open_trades = [DummyTrade(amount=0.01)]
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    returned = bot.custom_entry_price(
+        "ETH/USDC:USDC",
+        None,
+        datetime.now(timezone.utc),
+        proposed_rate=99.5,
+        entry_tag="mm_bid",
+        side="long",
+    )
+    allowed = bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        returned,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert returned == 99.5
+    assert not allowed
+    assert events[0][0] == "quote_decision"
+    assert events[0][1]["reason"] == "boundary_side_disabled"
+    assert events[1][0] == "entry_rejected"
+    assert events[1][1]["reason"] == "boundary_side_disabled"
+
+
+def test_confirm_exit_rejects_boundary_inf_delta():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.hjb_cache["delta_plus"][1] = np.inf
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_exit(
+        "ETH/USDC:USDC",
+        DummyTrade(amount=0.0),
+        "limit",
+        0.01,
+        101.0,
+        "GTC",
+        "mm_ask",
+        datetime.now(timezone.utc),
+    )
+
+    assert events[0][0] == "exit_rejected"
+    assert events[0][1]["reason"] == "boundary_side_disabled"
+
+
+def test_custom_exit_price_fallback_still_rejects_boundary_order():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.hjb_cache["delta_plus"][1] = np.inf
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    trade = DummyTrade(amount=0.0)
+
+    returned = bot.custom_exit_price(
+        "ETH/USDC:USDC",
+        trade,
+        datetime.now(timezone.utc),
+        proposed_rate=101.0,
+        current_profit=0.0,
+        exit_tag="mm_ask",
+    )
+    allowed = bot.confirm_trade_exit(
+        "ETH/USDC:USDC",
+        trade,
+        "limit",
+        0.01,
+        returned,
+        "GTC",
+        "mm_ask",
+        datetime.now(timezone.utc),
+    )
+
+    assert returned == 101.0
+    assert not allowed
+    assert events[0][0] == "quote_decision"
+    assert events[0][1]["reason"] == "boundary_side_disabled"
+    assert events[1][0] == "exit_rejected"
+    assert events[1][1]["reason"] == "boundary_side_disabled"
+
+
+def test_custom_exit_price_rejects_when_inventory_disallows_ask():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    returned = bot.custom_exit_price(
+        "ETH/USDC:USDC",
+        DummyTrade(amount=0.0),
+        datetime.now(timezone.utc),
+        proposed_rate=101.0,
+        current_profit=0.0,
+        exit_tag="mm_ask",
+    )
+
+    assert returned == 101.0
+    assert events[0][0] == "quote_decision"
+    assert events[0][1]["decision"] == "reject"
+    assert events[0][1]["reason"] == "position_limit_reached"
+
+
 def test_confirm_entry_rejects_crossing_bid():
     bot = make_bot()
     bot.trading_enabled = True
