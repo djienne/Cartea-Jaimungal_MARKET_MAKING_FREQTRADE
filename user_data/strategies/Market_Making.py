@@ -469,6 +469,9 @@ class Market_Making(IStrategy):
         if pair:
             self._process_pending_fill_markouts(pair, now)
             self._log_health(pair, now)
+        else:
+            self._debug_log_event("param_update_skipped", {"reason": "no_pair"})
+            return
 
         if bool(self._mm_config().get("disable_param_refresh", False)):
             self._debug_log_event("param_update_skipped", {"reason": "disabled_by_config"})
@@ -488,7 +491,7 @@ class Market_Making(IStrategy):
         self._param_update_running = True
         try:
             logger.info('Refreshing market making parameters')
-            schedule_tests(run_once=True, crypto=self._symbol_from_pair(pair) if pair else "ETH")
+            schedule_tests(run_once=True, crypto=self._symbol_from_pair(pair))
             new_kappas, new_epsilons, new_lambdas = load_configs(start_dir=self._param_config_dir())
             self._last_param_update = now
             old_params = (self.kappas, self.epsilons, self.lambdas)

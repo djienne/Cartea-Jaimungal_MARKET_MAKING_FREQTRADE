@@ -113,6 +113,11 @@ class DummyDP:
         return payload
 
 
+class EmptyWhitelistDP(DummyDP):
+    def current_whitelist(self):
+        return []
+
+
 class DummyExchange:
     def __init__(self):
         self.markets = {
@@ -1213,6 +1218,21 @@ def test_amount_below_minimum_is_rejected():
         "mm_bid",
         "long",
     )
+
+
+def test_param_refresh_skips_without_hardcoded_symbol_fallback(monkeypatch):
+    module = sys.modules["Market_Making"]
+    calls = []
+    monkeypatch.setattr(module, "schedule_tests", lambda **kwargs: calls.append(kwargs))
+    bot = make_bot()
+    bot.dp = EmptyWhitelistDP()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    bot.bot_loop_start(datetime.now(timezone.utc))
+
+    assert calls == []
+    assert events == [("param_update_skipped", {"reason": "no_pair"})]
 
 
 def test_exchange_position_takes_priority_over_open_trade_count():
