@@ -39,6 +39,7 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
         },
         {
             "event": "quote_decision",
+            "quote_id": f"{session_id}-quote",
             "ts": iso(start + timedelta(seconds=10)),
             "decision": "accept",
             "pair": "ETH/USDC:USDC",
@@ -56,6 +57,7 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
         },
         {
             "event": "fill",
+            "quote_id": f"{session_id}-quote",
             "ts": iso(start + timedelta(seconds=20)),
             "pair": "ETH/USDC:USDC",
             "trading_enabled": True,
@@ -107,6 +109,8 @@ def test_live_canary_report_passes_when_all_evidence_is_present():
     assert report["fills"]["maker"] == 3
     assert report["fills"]["taker"] == 0
     assert report["fill_reconciliation"]["matched_live_maker_fills"] == 3
+    assert report["fill_reconciliation"]["accepted_live_quotes_with_quote_id"] == 3
+    assert report["fill_reconciliation"]["live_maker_fills_with_quote_id"] == 3
 
 
 def test_live_canary_report_requires_prior_gates_and_sessions():
@@ -308,6 +312,29 @@ def test_live_canary_report_rejects_live_maker_fill_without_order_id():
     assert report["ok"] is False
     assert "live_maker_fills_missing_order_id:1" in report["reasons"]
     assert report["fill_reconciliation"]["matched_live_maker_fills"] == 1
+
+
+def test_live_canary_report_prefers_quote_id_over_price_match():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events[2]["quote_id"] = "different-quote"
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "live_maker_fills_without_matching_quote:1" in report["reasons"]
+    assert report["fill_reconciliation"]["matched_live_maker_fills"] == 0
+    assert report["fill_reconciliation"]["unmatched"][0]["quote_id"] == "different-quote"
 
 
 def test_live_canary_report_rejects_param_or_hjb_errors():

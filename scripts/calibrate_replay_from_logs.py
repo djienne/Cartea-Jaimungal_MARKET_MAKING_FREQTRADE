@@ -31,6 +31,7 @@ class AcceptedQuote:
     side: str
     price: float
     depth_bucket: str
+    quote_id: str | None = None
 
 
 def parse_ts(value: Any) -> pd.Timestamp | None:
@@ -51,6 +52,13 @@ def finite_float(value: Any) -> float | None:
     except Exception:
         return None
     return parsed if np.isfinite(parsed) else None
+
+
+def text_or_none(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def read_jsonl_events(paths: list[Path]) -> list[dict[str, Any]]:
@@ -106,6 +114,7 @@ def quote_from_event(event: dict[str, Any], *, bucket_bps: float) -> AcceptedQuo
         side=side,
         price=price,
         depth_bucket=depth_bucket(event, bucket_bps),
+        quote_id=text_or_none(event.get("quote_id")),
     )
 
 
@@ -126,6 +135,19 @@ def match_quote(
     pair = str(fill_event.get("pair") or "")
     if fill_ts is None or fill_price is None or fill_side not in {"bid", "ask"} or not pair:
         return None
+
+    fill_quote_id = text_or_none(fill_event.get("quote_id"))
+    if fill_quote_id is not None:
+        quote_id_candidates = [
+            quote
+            for quote in accepted_quotes
+            if quote.quote_id == fill_quote_id
+            and quote.pair == pair
+            and quote.side == fill_side
+            and abs(float(quote.price) - float(fill_price)) <= float(price_tolerance)
+        ]
+        if quote_id_candidates:
+            return max(quote_id_candidates, key=lambda quote: quote.ts)
 
     earliest = fill_ts - pd.Timedelta(seconds=float(match_window_seconds))
     candidates = [
@@ -195,6 +217,8 @@ def build_calibration_report(
     unknown_liquidity_fills = 0
     matched_fills_by_depth: dict[str, int] = {}
     unmatched_fills = 0
+    fills_with_quote_id = 0
+    matched_fills_by_quote_id: dict[str, int] = {}
     actual_fee_rates: list[float] = []
     actual_fee_rate_outliers = 0
 
@@ -209,6 +233,9 @@ def build_calibration_report(
             taker_fills += 1
         else:
             unknown_liquidity_fills += 1
+
+        if text_or_none(fill.get("quote_id")) is not None:
+            fills_with_quote_id += 1
 
         actual_fee_rate = finite_float(fill.get("actual_fee_rate"))
         if actual_fee_rate is not None:
@@ -227,6 +254,8 @@ def build_calibration_report(
             unmatched_fills += 1
         else:
             increment(matched_fills_by_depth, f"{matched.side}:{matched.depth_bucket}")
+            if matched.quote_id is not None:
+                increment(matched_fills_by_quote_id, matched.quote_id)
 
     reasons: list[str] = []
     if len(accepted_quotes) < int(min_quotes):
@@ -248,7 +277,9 @@ def build_calibration_report(
         "inputs": {
             "events": len(events),
             "accepted_quotes": len(accepted_quotes),
+            "accepted_quotes_with_quote_id": sum(1 for quote in accepted_quotes if quote.quote_id is not None),
             "fills": len(fills),
+            "fills_with_quote_id": int(fills_with_quote_id),
             "bucket_bps": float(bucket_bps),
             "match_window_seconds": float(match_window_seconds),
             "price_tolerance": float(price_tolerance),
@@ -260,6 +291,7 @@ def build_calibration_report(
         "accepted_quotes_by_depth": accepted_by_depth,
         "fills_by_side": fills_by_side,
         "matched_fills_by_depth": matched_fills_by_depth,
+        "matched_fills_by_quote_id": matched_fills_by_quote_id,
         "unmatched_fills": int(unmatched_fills),
         "maker_fills": int(maker_fills),
         "taker_fills": int(taker_fills),

@@ -66,6 +66,13 @@ def finite_float(value: Any) -> float | None:
     return number
 
 
+def text_or_none(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def parse_time(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -387,6 +394,7 @@ def live_maker_fill_reconciliation(
                 "symbol": normalized_symbol(event_symbol(event)),
                 "side": side,
                 "price": price,
+                "quote_id": text_or_none(event.get("quote_id")),
             }
         )
 
@@ -399,12 +407,16 @@ def live_maker_fill_reconciliation(
     ]
     unmatched: list[dict[str, Any]] = []
     matched = 0
+    fills_with_quote_id = 0
     for fill in fills:
         fill_ts = event_time(fill)
         fill_side = quote_side(fill.get("quote_side") or fill.get("side"))
         fill_price = event_price(fill, ("price", "fill_price", "rate"))
         fill_amount = event_price(fill, ("amount", "filled", "fill_size", "size"))
         fill_order_id = fill.get("order_id")
+        fill_quote_id = text_or_none(fill.get("quote_id"))
+        if fill_quote_id is not None:
+            fills_with_quote_id += 1
         if fill_order_id in (None, ""):
             counters["live_maker_fills_missing_order_id"] += 1
         if fill_side is None:
@@ -421,7 +433,12 @@ def live_maker_fill_reconciliation(
         fill_session = event_session_key(fill)
         fill_symbol = normalized_symbol(event_symbol(fill))
         matched_quote = None
-        for quote in accepted_quotes:
+        candidate_quotes = (
+            [quote for quote in accepted_quotes if quote.get("quote_id") == fill_quote_id]
+            if fill_quote_id is not None
+            else accepted_quotes
+        )
+        for quote in candidate_quotes:
             if fill_session is not None and quote["session"] is not None and fill_session != quote["session"]:
                 continue
             if fill_symbol is not None and quote["symbol"] is not None and fill_symbol != quote["symbol"]:
@@ -444,6 +461,7 @@ def live_maker_fill_reconciliation(
                     "symbol": fill_symbol,
                     "quote_side": fill_side,
                     "price": fill_price,
+                    "quote_id": fill_quote_id,
                 }
             )
         else:
@@ -452,6 +470,8 @@ def live_maker_fill_reconciliation(
     return {
         "live_maker_fills": len(fills),
         "accepted_live_quotes_with_match_fields": len(accepted_quotes),
+        "accepted_live_quotes_with_quote_id": sum(1 for quote in accepted_quotes if quote.get("quote_id")),
+        "live_maker_fills_with_quote_id": int(fills_with_quote_id),
         "matched_live_maker_fills": matched,
         "failures": {key: value for key, value in counters.items() if value},
         "unmatched": unmatched[:50],

@@ -194,6 +194,7 @@ class Market_Making(IStrategy):
     _param_update_running: bool = False
     _last_param_update: datetime | None = None
     _last_health_log: datetime | None = None
+    _quote_id_sequence: int = 0
     _quote_decisions_count: int = 0
     _accepted_order_attempts: int = 0
     _cancel_open_order_requests: int = 0
@@ -1392,6 +1393,11 @@ class Market_Making(IStrategy):
             payload["cancel_error"] = str(exc)
         self._debug_log_event("kill_switch", {"reason": reason, **payload})
 
+    def _next_quote_id(self) -> str:
+        sequence = int(getattr(self, "_quote_id_sequence", 0)) + 1
+        self._quote_id_sequence = sequence
+        return f"quote-{sequence:012d}"
+
     def _record_quote_decision(self, pair: str, decision: str, reason: str) -> None:
         self._quote_decisions_count = int(getattr(self, "_quote_decisions_count", 0)) + 1
         post_only_reasons = {
@@ -2353,6 +2359,7 @@ class Market_Making(IStrategy):
         extra: dict[str, Any] | None = None,
     ) -> None:
         now = self._now_utc()
+        quote_id = self._next_quote_id()
         snapshot, book_snapshot_reason = self._book_snapshot(pair)
         params_ok, params_reason = self._params_are_valid(pair)
         collector_ok, collector_reason = self._market_data_fresh(symbol)
@@ -2361,6 +2368,7 @@ class Market_Making(IStrategy):
         expected_tif_canonical = self._canonical_tif(expected_tif)
         config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
         payload = {
+            "quote_id": quote_id,
             "action": action,
             "pair": pair,
             "symbol": symbol,
@@ -2945,6 +2953,12 @@ class Market_Making(IStrategy):
         fee_paid = self._extract_order_fee_paid(order, price_float, amount_float)
         fee_rate = self._extract_order_fee_rate(order, fee_paid, price_float, amount_float)
         order_id = getattr(order, "id", None) or getattr(order, "order_id", None) or getattr(order, "ft_order_id", None)
+        client_order_id = (
+            getattr(order, "client_order_id", None)
+            or getattr(order, "clientOrderId", None)
+            or getattr(order, "ft_client_order_id", None)
+        )
+        quote_id = getattr(order, "quote_id", None) or getattr(order, "ft_quote_id", None) or client_order_id
         realized_pnl = self._extract_realized_pnl_usdc(trade, order)
         expected_tif = self._expected_time_in_force(quote_side)
         tif_canonical = self._canonical_tif(tif)
@@ -2956,6 +2970,8 @@ class Market_Making(IStrategy):
             "dry_run": bool(config.get("dry_run", True)),
             "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
             "order_id": order_id,
+            "client_order_id": client_order_id,
+            "quote_id": quote_id,
             "raw_liquidity": raw_liquidity,
             "liquidity": liquidity,
             "liquidity_normalized": liquidity,

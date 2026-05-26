@@ -155,6 +155,7 @@ def make_bot() -> Market_Making:
     bot.debug_json_log = False
     bot.trading_enabled = False
     bot.post_only_verified = False
+    bot._quote_id_sequence = 0
     bot.param_update_status_path = ""
     bot.hjb_cache = {
         "q_grid": np.array([-1, 0, 1]),
@@ -1185,6 +1186,7 @@ def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
     bot._debug_log_event = lambda event, payload: events.append((event, payload))
     order = types.SimpleNamespace(
         id="maker-1",
+        quote_id="quote-000000000123",
         liquidity="maker",
         order_type="limit",
         time_in_force="Alo",
@@ -1199,6 +1201,7 @@ def test_fill_log_normalizes_quote_side_fee_and_tif_fields():
     assert len(events) == 1
     event, payload = events[0]
     assert event == "fill"
+    assert payload["quote_id"] == "quote-000000000123"
     assert payload["liquidity"] == "maker"
     assert payload["liquidity_normalized"] == "maker"
     assert payload["is_maker_fill"] is True
@@ -1764,6 +1767,7 @@ def test_quote_decision_logs_freshness_age_fields():
 
     assert events[0][0] == "quote_decision"
     payload = events[0][1]
+    assert payload["quote_id"] == "quote-000000000001"
     assert payload["param_age_seconds"] is not None
     assert payload["collector_age_seconds"] == 12.4
     assert payload["book_age_ms"] == 180.0
@@ -1783,6 +1787,29 @@ def test_quote_decision_logs_freshness_age_fields():
     assert payload["params"]["sources"]["epsilon"]["n_buy_events"] == 3
     assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
     assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
+
+
+def test_quote_decision_ids_are_monotonic():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    for side in ("bid", "ask"):
+        bot._log_quote_decision(
+            pair="ETH/USDC:USDC",
+            symbol="ETH",
+            side=side,
+            action="entry" if side == "bid" else "exit",
+            decision="reject",
+            reason="test_reason",
+            mid_price=100.0,
+            proposed_rate=100.0,
+        )
+
+    assert [payload["quote_id"] for _, payload in events] == [
+        "quote-000000000001",
+        "quote-000000000002",
+    ]
 
 
 def test_hjb_refresh_logs_parameter_fingerprint():
