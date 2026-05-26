@@ -112,10 +112,14 @@ Optional Docker runtime gates:
   `ok` field remains false until the multi-day acceptance criteria are met. By
   default the safety runner caps this artifact to a short local data window; for
   a promotion run, pass `--replay-acceptance-newest-per-stream 0`,
-  `--replay-acceptance-max-price-events 0`, and optionally
-  `--replay-acceptance-require-pass` so the same runner evaluates the full
-  multi-day dataset instead of overwriting it with the smoke-sized report. The
-  report includes a directional-drift ratio so mark-to-market PnL that is not
+  `--replay-acceptance-max-price-events 0`, tune
+  `--replay-acceptance-min-price-events-per-day` and
+  `--replay-acceptance-max-price-gap-seconds` if the source cadence differs,
+  and optionally `--replay-acceptance-require-pass` so the same runner evaluates
+  the full multi-day dataset instead of overwriting it with the smoke-sized
+  report. The report includes price-event density and maximum inter-event gap
+  checks so isolated start/end timestamps cannot satisfy multi-day coverage. It
+  also includes a directional-drift ratio so mark-to-market PnL that is not
   explained by net realized spread cannot masquerade as maker edge. Replay
   quotes and fill accounting both use the configured maker fee, so fee
   sensitivity changes quote distances as well as realized fees. The replay
