@@ -75,6 +75,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="JSONL audit log to append to.")
     parser.add_argument("--session-id", default=None, help="Optional canary session id to include in the event.")
     parser.add_argument("--operator", default=default_operator(), help="Operator name for audit evidence.")
+    parser.add_argument("--timestamp", default=None, help="Optional ISO-8601 event timestamp. Defaults to now.")
     parser.add_argument("--note", default=None, help="Optional short human note.")
     parser.add_argument("--deployment-stage", choices=["canary", "production"], default="canary")
     parser.add_argument(
@@ -94,6 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     event = build_manual_monitoring_ack_event(
         session_id=args.session_id,
         operator=str(args.operator),
+        ts=args.timestamp,
         note=args.note,
         deployment_stage=str(args.deployment_stage),
     )

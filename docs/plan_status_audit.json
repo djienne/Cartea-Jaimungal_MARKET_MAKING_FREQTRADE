@@ -11,7 +11,7 @@
     "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-05-26T14:09:53Z",
+  "generated_at": "2026-05-26T14:22:20Z",
   "local_gates": {
     "failed": [],
     "missing": [],
@@ -83,8 +83,8 @@
   },
   "ok": true,
   "pytest_count": {
-    "latest_gates": 258,
-    "status": 258
+    "latest_gates": 260,
+    "status": 260
   },
   "reasons": [],
   "status_path": "docs\\PLAN_IMPLEMENTATION_STATUS.md",

@@ -310,6 +310,7 @@ def canary_event_freshness(
     max_event_age_seconds: float,
 ) -> dict[str, Any]:
     timestamp_missing = 0
+    future = 0
     stale = 0
     fresh = 0
     ages: list[float] = []
@@ -318,7 +319,10 @@ def canary_event_freshness(
         if dt is None:
             timestamp_missing += 1
             continue
-        age_seconds = max(0.0, (now - dt).total_seconds())
+        age_seconds = (now - dt).total_seconds()
+        if age_seconds < 0:
+            future += 1
+            continue
         ages.append(age_seconds)
         if max_event_age_seconds > 0 and age_seconds > float(max_event_age_seconds):
             stale += 1
@@ -327,6 +331,7 @@ def canary_event_freshness(
     return {
         "fresh": fresh,
         "stale": stale,
+        "future": future,
         "timestamp_missing": timestamp_missing,
         "max_age_seconds": max(ages) if ages else None,
         "max_allowed_age_seconds": float(max_event_age_seconds),
@@ -345,6 +350,7 @@ def manual_monitoring_ack_status(
         "not_acknowledged": 0,
         "fresh": 0,
         "stale": 0,
+        "future": 0,
         "timestamp_missing": 0,
         "latest_ts": None,
         "max_allowed_age_seconds": float(max_event_age_seconds),
@@ -372,7 +378,10 @@ def manual_monitoring_ack_status(
 
         if latest_dt is None or dt > latest_dt:
             latest_dt = dt
-        age_seconds = max(0.0, (now - dt).total_seconds())
+        age_seconds = (now - dt).total_seconds()
+        if age_seconds < 0:
+            status["future"] += 1
+            continue
         if max_event_age_seconds > 0 and age_seconds > float(max_event_age_seconds):
             status["stale"] += 1
         else:
@@ -763,6 +772,8 @@ def build_live_canary_report(
     )
     if event_freshness["timestamp_missing"]:
         reasons.append(f"canary_event_timestamp_missing:{event_freshness['timestamp_missing']}")
+    if event_freshness["future"]:
+        reasons.append(f"canary_event_future_timestamp:{event_freshness['future']}")
     if event_freshness["stale"]:
         reasons.append(f"canary_event_stale:{event_freshness['stale']}")
 
@@ -778,6 +789,8 @@ def build_live_canary_report(
             reasons.append(f"manual_monitoring_ack_event_not_acknowledged:{manual_ack['not_acknowledged']}")
         if int(manual_ack["timestamp_missing"]):
             reasons.append(f"manual_monitoring_ack_event_timestamp_missing:{manual_ack['timestamp_missing']}")
+        if int(manual_ack["future"]):
+            reasons.append(f"manual_monitoring_ack_event_future_timestamp:{manual_ack['future']}")
         if int(manual_ack["stale"]):
             reasons.append(f"manual_monitoring_ack_event_stale:{manual_ack['stale']}")
         if not any(

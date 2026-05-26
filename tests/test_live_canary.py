@@ -537,6 +537,28 @@ def test_live_canary_report_rejects_stale_manual_monitoring_ack_event():
     assert report["manual_monitoring"]["stale"] == 1
 
 
+def test_live_canary_report_rejects_future_canary_event_timestamp():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events[1]["ts"] = iso(now + timedelta(minutes=1))
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "canary_event_future_timestamp:1" in report["reasons"]
+    assert report["event_freshness"]["future"] == 1
+
+
 def test_live_canary_report_requires_dependency_generated_at():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
     now = start + timedelta(hours=1)

@@ -174,7 +174,8 @@ Optional Docker runtime gates:
   `canary_manual_monitoring_ack` with `acknowledged=true`; the CLI flag alone
   cannot satisfy the gate. Prior gate reports must carry fresh `generated_at`
   timestamps, and the canary session events themselves must be recent, so a
-  newly generated report cannot reuse old live evidence. When
+  newly generated report cannot reuse old live evidence. Future-dated canary
+  events are rejected instead of being treated as fresh. When
   `run_safety_gates.py --include-runtime` is used, this gate
   runs after fee and replay artifacts are regenerated so it evaluates the
   current dependency reports. Use `--audit-log-input` together with

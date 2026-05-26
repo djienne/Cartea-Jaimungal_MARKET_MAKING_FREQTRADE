@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 258 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 260 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -207,6 +207,8 @@ Generated from the current local worktree after the latest safety-gate run.
   alone is not enough to satisfy the gate.
   `scripts/record_manual_monitoring_ack.py` appends that event to a retained
   JSONL audit log and refuses to write it unless `--acknowledge-risk` is passed.
+  Canary evidence with future-dated timestamps is rejected rather than treated
+  as age-zero evidence.
   The runner accepts `--audit-log-input` so retained canary logs can be
   evaluated by the same full gate runner. Accepted quote and fill evidence must
   now carry

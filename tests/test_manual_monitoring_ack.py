@@ -67,6 +67,8 @@ def test_recorded_manual_monitoring_ack_satisfies_canary_ack_requirement(tmp_pat
             "canary-1",
             "--operator",
             "tester",
+            "--timestamp",
+            iso(start + timedelta(minutes=3)),
             "--note",
             "monitored quotes and fills",
             "--acknowledge-risk",
@@ -93,6 +95,49 @@ def test_recorded_manual_monitoring_ack_satisfies_canary_ack_requirement(tmp_pat
 
     assert "manual_monitoring_ack_event_missing" not in report["reasons"]
     assert report["manual_monitoring"]["fresh"] == 1
+
+
+def test_recorded_future_manual_monitoring_ack_is_rejected(tmp_path):
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    output = tmp_path / "mm_debug.jsonl"
+    events = [
+        event
+        for event in canary_session("canary-1", start, minutes=2)
+        if event.get("event") != "manual_monitoring_ack"
+    ]
+    for event in events:
+        append_jsonl_event(output, event)
+
+    result = main(
+        [
+            "--output",
+            str(output),
+            "--session-id",
+            "canary-1",
+            "--operator",
+            "tester",
+            "--timestamp",
+            iso(now + timedelta(minutes=5)),
+            "--acknowledge-risk",
+        ]
+    )
+
+    assert result == 0
+    report = build_live_canary_report(
+        read_jsonl_events(output),
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "manual_monitoring_ack_event_future_timestamp:1" in report["reasons"]
+    assert report["manual_monitoring"]["future"] == 1
 
 
 def test_append_jsonl_event_writes_one_json_object_per_line(tmp_path):
