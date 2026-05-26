@@ -57,6 +57,11 @@ class ReplayMetrics:
     input_rows: dict[str, int] = field(default_factory=dict)
     data_start: str | None = None
     data_end: str | None = None
+    data_span_seconds: float = 0.0
+    price_event_count: int = 0
+    price_events_per_day: float = 0.0
+    max_price_gap_seconds: float | None = None
+    p95_price_gap_seconds: float | None = None
     quote_attempts: int = 0
     post_only_rejects: int = 0
     maker_fills: int = 0
@@ -100,6 +105,11 @@ class ReplayMetrics:
             "input_rows": self.input_rows,
             "data_start": self.data_start,
             "data_end": self.data_end,
+            "data_span_seconds": self.data_span_seconds,
+            "price_event_count": self.price_event_count,
+            "price_events_per_day": self.price_events_per_day,
+            "max_price_gap_seconds": self.max_price_gap_seconds,
+            "p95_price_gap_seconds": self.p95_price_gap_seconds,
             "quote_attempts": self.quote_attempts,
             "post_only_rejects": self.post_only_rejects,
             "post_only_reject_ratio": self.post_only_rejects / attempts,
@@ -532,6 +542,17 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     }
     metrics.data_start = prices.iloc[0]["timestamp"].isoformat()
     metrics.data_end = prices.iloc[-1]["timestamp"].isoformat()
+    metrics.price_event_count = int(len(prices))
+    metrics.data_span_seconds = max(
+        0.0,
+        float((prices.iloc[-1]["timestamp"] - prices.iloc[0]["timestamp"]).total_seconds()),
+    )
+    if metrics.data_span_seconds > 0:
+        metrics.price_events_per_day = float(metrics.price_event_count) / (metrics.data_span_seconds / 86_400.0)
+    gaps = prices["timestamp"].diff().dt.total_seconds().dropna()
+    if not gaps.empty:
+        metrics.max_price_gap_seconds = float(gaps.max())
+        metrics.p95_price_gap_seconds = float(gaps.quantile(0.95))
     snapshot_ts = prices.iloc[0]["timestamp"]
     metrics.parameter_series.append(
         replay_parameter_snapshot(

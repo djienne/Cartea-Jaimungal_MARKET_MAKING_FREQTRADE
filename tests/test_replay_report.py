@@ -26,6 +26,12 @@ def minimal_metrics(**overrides):
     payload = {
         "data_start": "2026-05-25T00:00:00Z",
         "data_end": "2026-05-28T00:00:00Z",
+        "input_rows": {"prices": 3000, "trades": 300, "orderbooks": 300},
+        "data_span_seconds": 259200.0,
+        "price_event_count": 3000,
+        "price_events_per_day": 1000.0,
+        "max_price_gap_seconds": 60.0,
+        "p95_price_gap_seconds": 60.0,
         "quote_attempts": 1000,
         "post_only_rejects": 0,
         "post_only_reject_ratio": 0.0,
@@ -203,6 +209,30 @@ def test_evaluate_metrics_rejects_bad_quote_quality_ratios():
     assert not ok
     assert "post_only_reject_ratio_above_threshold:0.810000>max_0.800000" in reasons
     assert "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000" in reasons
+
+
+def test_evaluate_metrics_rejects_sparse_or_gappy_price_coverage():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(
+            input_rows={"prices": 30, "trades": 300, "orderbooks": 300},
+            price_event_count=30,
+            price_events_per_day=10.0,
+            max_price_gap_seconds=600.0,
+        ),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+        min_price_events_per_day=1000.0,
+        max_price_gap_seconds=300.0,
+    )
+
+    assert not ok
+    assert "insufficient_price_events_per_day:10.000000<min_1000.000000" in reasons
+    assert "max_price_gap_seconds_above_threshold:600.000000>max_300.000000" in reasons
 
 
 def test_evaluate_metrics_rejects_inconsistent_quote_quality_ratios():

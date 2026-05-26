@@ -49,6 +49,8 @@ DEFAULT_VARIANTS = (
 REQUIRED_MARKOUT_HORIZONS_MS = (100, 1_000, 5_000, 30_000)
 DEFAULT_MAX_POST_ONLY_REJECT_RATIO = 0.80
 DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO = 0.99
+DEFAULT_MIN_PRICE_EVENTS_PER_DAY = 1_000.0
+DEFAULT_MAX_PRICE_GAP_SECONDS = 300.0
 
 
 def parse_ts(value: str | None) -> pd.Timestamp | None:
@@ -394,6 +396,50 @@ def add_quote_quality_reasons(
         )
 
 
+def add_data_coverage_quality_reasons(
+    metrics: dict[str, Any],
+    reasons: list[str],
+    *,
+    min_price_events_per_day: float,
+    max_price_gap_seconds: float,
+) -> None:
+    input_rows = metrics.get("input_rows") if isinstance(metrics.get("input_rows"), dict) else {}
+    try:
+        price_event_count = int(metrics.get("price_event_count") or input_rows.get("prices") or 0)
+    except Exception:
+        reasons.append("noninteger_price_event_count")
+        price_event_count = 0
+    if price_event_count <= 0:
+        reasons.append("missing_price_events")
+        return
+
+    days = coverage_days(metrics)
+    if days > 0:
+        events_per_day_raw = metrics.get("price_events_per_day")
+        if is_finite_number(events_per_day_raw):
+            events_per_day = float(events_per_day_raw)
+            expected = price_event_count / max(days, 1e-12)
+            if abs(events_per_day - expected) > max(1e-9, expected * 1e-9):
+                reasons.append(f"price_events_per_day_mismatch:{events_per_day:.6f}!={expected:.6f}")
+        else:
+            events_per_day = price_event_count / max(days, 1e-12)
+        if events_per_day < float(min_price_events_per_day):
+            reasons.append(
+                f"insufficient_price_events_per_day:{events_per_day:.6f}<min_{float(min_price_events_per_day):.6f}"
+            )
+
+    if price_event_count > 1:
+        gap_raw = metrics.get("max_price_gap_seconds")
+        if not is_finite_number(gap_raw):
+            reasons.append("missing_max_price_gap_seconds")
+        else:
+            gap = float(gap_raw)
+            if gap < 0:
+                reasons.append(f"negative_max_price_gap_seconds:{gap:.6f}")
+            elif gap > float(max_price_gap_seconds):
+                reasons.append(f"max_price_gap_seconds_above_threshold:{gap:.6f}>max_{float(max_price_gap_seconds):.6f}")
+
+
 def replay_data_fresh_guard(
     metrics: dict[str, Any],
     *,
@@ -482,6 +528,8 @@ def evaluate_metrics(
     max_directional_drift_ratio: float,
     max_post_only_reject_ratio: float = DEFAULT_MAX_POST_ONLY_REJECT_RATIO,
     max_stale_quote_cancel_ratio: float = DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO,
+    min_price_events_per_day: float = DEFAULT_MIN_PRICE_EVENTS_PER_DAY,
+    max_price_gap_seconds: float = DEFAULT_MAX_PRICE_GAP_SECONDS,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     add_series_evidence_reasons(
@@ -503,6 +551,12 @@ def evaluate_metrics(
         reasons,
         max_post_only_reject_ratio=max_post_only_reject_ratio,
         max_stale_quote_cancel_ratio=max_stale_quote_cancel_ratio,
+    )
+    add_data_coverage_quality_reasons(
+        metrics,
+        reasons,
+        min_price_events_per_day=min_price_events_per_day,
+        max_price_gap_seconds=max_price_gap_seconds,
     )
 
     days = coverage_days(metrics)
@@ -576,6 +630,8 @@ def build_report(
     max_directional_drift_ratio: float,
     max_post_only_reject_ratio: float,
     max_stale_quote_cancel_ratio: float,
+    min_price_events_per_day: float,
+    max_price_gap_seconds: float,
     variants: tuple[ReplayVariant, ...] = DEFAULT_VARIANTS,
 ) -> dict[str, Any]:
     variant_payloads: list[dict[str, Any]] = []
@@ -594,6 +650,8 @@ def build_report(
             max_directional_drift_ratio=max_directional_drift_ratio,
             max_post_only_reject_ratio=max_post_only_reject_ratio,
             max_stale_quote_cancel_ratio=max_stale_quote_cancel_ratio,
+            min_price_events_per_day=min_price_events_per_day,
+            max_price_gap_seconds=max_price_gap_seconds,
         )
         variant_payloads.append(
             {
@@ -630,6 +688,8 @@ def build_report(
             "max_directional_drift_ratio": float(max_directional_drift_ratio),
             "max_post_only_reject_ratio": float(max_post_only_reject_ratio),
             "max_stale_quote_cancel_ratio": float(max_stale_quote_cancel_ratio),
+            "min_price_events_per_day": float(min_price_events_per_day),
+            "max_price_gap_seconds": float(max_price_gap_seconds),
             "q_max": int(config.q_max),
         },
         "config": {
@@ -663,17 +723,19 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Variant Summary",
         "",
-        "| Variant | Status | Coverage days | Quotes | Maker fills | Taker fills | Post-only reject % | Stale cancel % | Net spread | Directional ratio | Reasons |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Variant | Status | Coverage days | Price events/day | Max gap s | Quotes | Maker fills | Taker fills | Post-only reject % | Stale cancel % | Net spread | Directional ratio | Reasons |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for item in report["variants"]:
         metrics = item["metrics"]
         reasons = ", ".join(item["reasons"]) if item["reasons"] else "ok"
         lines.append(
-            "| {name} | {status} | {days:.6f} | {quotes} | {maker} | {taker} | {post_reject:.2%} | {stale_cancel:.2%} | {spread:.8f} | {drift:.6f} | {reasons} |".format(
+            "| {name} | {status} | {days:.6f} | {events_per_day:.2f} | {max_gap:.3f} | {quotes} | {maker} | {taker} | {post_reject:.2%} | {stale_cancel:.2%} | {spread:.8f} | {drift:.6f} | {reasons} |".format(
                 name=item["variant"]["name"],
                 status="PASS" if item["ok"] else "FAIL",
                 days=float(item["coverage_days"]),
+                events_per_day=float(metrics.get("price_events_per_day") or 0.0),
+                max_gap=float(metrics.get("max_price_gap_seconds") or 0.0),
                 quotes=int(metrics.get("quote_attempts") or 0),
                 maker=int(metrics.get("maker_fills") or 0),
                 taker=int(metrics.get("taker_fills") or 0),
@@ -726,6 +788,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-directional-drift-ratio", type=float, default=0.75)
     parser.add_argument("--max-post-only-reject-ratio", type=float, default=DEFAULT_MAX_POST_ONLY_REJECT_RATIO)
     parser.add_argument("--max-stale-quote-cancel-ratio", type=float, default=DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO)
+    parser.add_argument("--min-price-events-per-day", type=float, default=DEFAULT_MIN_PRICE_EVENTS_PER_DAY)
+    parser.add_argument("--max-price-gap-seconds", type=float, default=DEFAULT_MAX_PRICE_GAP_SECONDS)
     parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
     parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
     parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
@@ -777,6 +841,8 @@ def main() -> int:
         max_directional_drift_ratio=args.max_directional_drift_ratio,
         max_post_only_reject_ratio=args.max_post_only_reject_ratio,
         max_stale_quote_cancel_ratio=args.max_stale_quote_cancel_ratio,
+        min_price_events_per_day=args.min_price_events_per_day,
+        max_price_gap_seconds=args.max_price_gap_seconds,
     )
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

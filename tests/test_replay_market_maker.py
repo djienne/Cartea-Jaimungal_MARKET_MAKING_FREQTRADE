@@ -109,6 +109,14 @@ def test_replay_applies_latency_and_records_markouts(monkeypatch):
     assert metrics.markout_samples
     assert metrics.mark_to_market_pnl_usdc != 0.0
     assert metrics.input_rows["prices"] == 3
+    assert metrics.price_event_count == 3
+    assert metrics.data_span_seconds == 2.0
+    assert metrics.price_events_per_day == 129600.0
+    assert metrics.max_price_gap_seconds == 1.0
+    assert metrics.p95_price_gap_seconds == 1.0
+    metrics_payload = metrics.to_dict()
+    assert metrics_payload["price_event_count"] == 3
+    assert metrics_payload["max_price_gap_seconds"] == 1.0
     parameter_snapshot = metrics.parameter_series[0]
     toxicity_snapshot = metrics.toxicity_series[0]
     assert parameter_snapshot["ts"] == ts0.isoformat()
