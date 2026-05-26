@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 244 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 247 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -50,9 +50,10 @@ Generated from the current local worktree after the latest safety-gate run.
 - Direct `Alo` fallback scaffold:
   `scripts/hyperliquid_alo_executor.py` builds Hyperliquid SDK orders with
   `order_type={"limit": {"tif": "Alo"}}`, applies local maker-safety from BBO,
-  classifies SDK responses, and refuses submit mode without explicit
-  environment/CLI acknowledgements. Direct SDK submit artifacts are normalized
-  by `scripts/verify_post_only_mapping.py --mode evaluate-evidence`, so direct
+  applies a default 25 USDC submit-notional cap for evidence probes, classifies
+  SDK responses, and refuses submit mode without explicit environment/CLI
+  acknowledgements. Direct SDK submit artifacts are normalized by
+  `scripts/verify_post_only_mapping.py --mode evaluate-evidence`, so direct
   execution evidence and CCXT/Freqtrade probe evidence use the same Gate 4
   checker. The direct adapter now has a separate guarded
   `submit-crossing-alo` mode for ALO rejection evidence and a guarded

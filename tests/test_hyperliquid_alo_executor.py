@@ -18,6 +18,8 @@ from hyperliquid_alo_executor import (  # noqa: E402
     crossing_probe_check,
     crossing_probe_intent,
     maker_safe,
+    notional_limit_check,
+    notional_usdc,
     normalize_coin,
     render_plan,
 )
@@ -52,6 +54,28 @@ def test_maker_safe_rejects_crossing_bid_and_ask():
 def test_maker_safe_accepts_passive_quotes():
     assert maker_safe(AloOrderIntent("ETH", "bid", 0.01, 100.0), 99.0, 101.0) == (True, "ok")
     assert maker_safe(AloOrderIntent("ETH", "ask", 0.01, 100.5), 99.0, 101.0) == (True, "ok")
+
+
+def test_notional_limit_check_rejects_oversized_submit_intent():
+    intent = AloOrderIntent("ETH", "bid", 0.02, 2000.0)
+
+    ok, reason, payload = notional_limit_check(intent, 25.0)
+
+    assert notional_usdc(intent) == 40.0
+    assert ok is False
+    assert reason == "notional_limit_exceeded"
+    assert payload["notional_usdc"] == 40.0
+    assert payload["max_notional_usdc"] == 25.0
+
+
+def test_notional_limit_check_accepts_tiny_submit_intent():
+    intent = AloOrderIntent("ETH", "bid", 0.01, 2000.0)
+
+    ok, reason, payload = notional_limit_check(intent, 25.0)
+
+    assert ok is True
+    assert reason == "ok"
+    assert payload["notional_usdc"] == 20.0
 
 
 def test_crossing_probe_intent_uses_opposite_best_price():
@@ -144,5 +168,6 @@ def test_plan_documents_submit_guards():
 
     assert plan["order_type"] == {"limit": {"tif": "Alo"}}
     assert any("HYPERLIQUID_DIRECT_ALO_ALLOW" in item for item in plan["submit_guards"])
+    assert any("--max-notional-usdc" in item for item in plan["submit_guards"])
     assert any("--allow-crossing-probe" in item for item in plan["crossing_probe_guards"])
     assert any("--allow-passive-probe" in item for item in plan["passive_probe_guards"])

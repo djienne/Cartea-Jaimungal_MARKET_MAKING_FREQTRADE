@@ -18,6 +18,7 @@ from typing import Any
 
 
 DIRECT_ALO_ALLOW_ENV = "HYPERLIQUID_DIRECT_ALO_ALLOW"
+DEFAULT_MAX_SUBMIT_NOTIONAL_USDC = 25.0
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,21 @@ def build_sdk_order_args(intent: AloOrderIntent) -> dict[str, Any]:
         "order_type": alo_order_type(),
         "reduce_only": bool(intent.reduce_only),
     }
+
+
+def notional_usdc(intent: AloOrderIntent) -> float:
+    return abs(float(intent.size) * float(intent.price))
+
+
+def notional_limit_check(intent: AloOrderIntent, max_notional_usdc: float | None) -> tuple[bool, str, dict[str, Any]]:
+    notional = notional_usdc(intent)
+    payload = {
+        "notional_usdc": notional,
+        "max_notional_usdc": float(max_notional_usdc) if max_notional_usdc is not None else None,
+    }
+    if max_notional_usdc is not None and float(max_notional_usdc) > 0 and notional > float(max_notional_usdc):
+        return False, "notional_limit_exceeded", payload
+    return True, "ok", payload
 
 
 def maker_safe(intent: AloOrderIntent, best_bid: float, best_ask: float) -> tuple[bool, str]:
@@ -266,6 +282,12 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
     ok, reason = maker_safe(intent, float(args.best_bid), float(args.best_ask))
     if not ok:
         raise SystemExit(f"local maker-safety failed: {reason}")
+    notional_ok, notional_reason, notional_payload = notional_limit_check(intent, args.max_notional_usdc)
+    if not notional_ok:
+        raise SystemExit(
+            f"notional guard failed: {notional_reason} "
+            f"({notional_payload['notional_usdc']:.8f} > {notional_payload['max_notional_usdc']:.8f} USDC)"
+        )
 
     exchange = load_sdk_exchange(args)
     order_args = build_sdk_order_args(intent)
@@ -276,6 +298,7 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "submit-alo",
         "intent": asdict(intent),
         "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
+        "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
         "classification": classification,
         "raw_result": result,
@@ -307,6 +330,12 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
     ok, reason = crossing_probe_check(intent, float(args.best_bid), float(args.best_ask))
     if not ok:
         raise SystemExit(f"crossing probe check failed: {reason}")
+    notional_ok, notional_reason, notional_payload = notional_limit_check(intent, args.max_notional_usdc)
+    if not notional_ok:
+        raise SystemExit(
+            f"notional guard failed: {notional_reason} "
+            f"({notional_payload['notional_usdc']:.8f} > {notional_payload['max_notional_usdc']:.8f} USDC)"
+        )
 
     exchange = load_sdk_exchange(args)
     order_args = build_sdk_order_args(intent)
@@ -317,6 +346,7 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "submit-crossing-alo",
         "intent": asdict(intent),
         "crossing_probe_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
+        "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
         "classification": classification,
         "raw_result": result,
@@ -345,6 +375,12 @@ def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
     ok, reason = maker_safe(intent, float(args.best_bid), float(args.best_ask))
     if not ok:
         raise SystemExit(f"local maker-safety failed: {reason}")
+    notional_ok, notional_reason, notional_payload = notional_limit_check(intent, args.max_notional_usdc)
+    if not notional_ok:
+        raise SystemExit(
+            f"notional guard failed: {notional_reason} "
+            f"({notional_payload['notional_usdc']:.8f} > {notional_payload['max_notional_usdc']:.8f} USDC)"
+        )
 
     exchange = load_sdk_exchange(args)
     order_args = build_sdk_order_args(intent)
@@ -356,6 +392,7 @@ def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "submit-passive-alo",
         "intent": asdict(intent),
         "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
+        "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
         "classification": classification,
         "cancel_results": cancel_results,
@@ -374,6 +411,7 @@ def render_plan(symbol: str) -> dict[str, Any]:
         "submit_guards": [
             f"{DIRECT_ALO_ALLOW_ENV}=1",
             "--acknowledge-real-orders",
+            f"--max-notional-usdc defaults to {DEFAULT_MAX_SUBMIT_NOTIONAL_USDC}",
             "--best-bid and --best-ask local maker-safety inputs",
             "bid price must be below best ask",
             "ask price must be above best bid",
@@ -382,6 +420,7 @@ def render_plan(symbol: str) -> dict[str, Any]:
             f"{DIRECT_ALO_ALLOW_ENV}=1",
             "--acknowledge-real-orders",
             "--allow-crossing-probe",
+            f"--max-notional-usdc defaults to {DEFAULT_MAX_SUBMIT_NOTIONAL_USDC}",
             "--testnet, or --allow-mainnet-crossing-probe for tiny mainnet evidence",
             "--best-bid and --best-ask crossing evidence inputs",
             "bid probe price is best ask; ask probe price is best bid",
@@ -390,6 +429,7 @@ def render_plan(symbol: str) -> dict[str, Any]:
             f"{DIRECT_ALO_ALLOW_ENV}=1",
             "--acknowledge-real-orders",
             "--allow-passive-probe",
+            f"--max-notional-usdc defaults to {DEFAULT_MAX_SUBMIT_NOTIONAL_USDC}",
             "--testnet, or --allow-mainnet-passive-probe for tiny mainnet evidence",
             "--best-bid and --best-ask local maker-safety inputs",
             "resting order ids are canceled after evidence capture",
@@ -422,6 +462,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--private-key", default=None)
     parser.add_argument("--account-address", default=None)
     parser.add_argument("--acknowledge-real-orders", action="store_true")
+    parser.add_argument("--max-notional-usdc", type=float, default=DEFAULT_MAX_SUBMIT_NOTIONAL_USDC)
     parser.add_argument("--allow-crossing-probe", action="store_true")
     parser.add_argument("--allow-mainnet-crossing-probe", action="store_true")
     parser.add_argument("--allow-passive-probe", action="store_true")

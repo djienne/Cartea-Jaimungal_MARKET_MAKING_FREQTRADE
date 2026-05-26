@@ -567,7 +567,10 @@ def manual_gate_specs(*, include_runtime: bool = False) -> list[ManualGateSpec]:
     gates = [
         ManualGateSpec(
             name="hyperliquid_post_only_mapping",
-            reason="Requires testnet/tiny integration evidence that Freqtrade/CCXT PO maps to Hyperliquid Alo.",
+            reason=(
+                "Requires testnet/tiny integration evidence that either Freqtrade/CCXT PO maps to "
+                "Hyperliquid Alo or the direct SDK Alo fallback submits native post-only orders safely."
+            ),
             report_path="docs/post_only_evidence_report.json",
         ),
         ManualGateSpec(

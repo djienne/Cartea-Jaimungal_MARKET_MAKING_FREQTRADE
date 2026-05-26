@@ -204,6 +204,13 @@ def test_manual_gate_status_rejects_stale_ok_reports(tmp_path, monkeypatch):
     assert all(str(status["freshness_reason"]).endswith(">max_86400.0s") for status in statuses)
 
 
+def test_post_only_manual_gate_reason_mentions_direct_sdk_fallback():
+    statuses = manual_gate_statuses(include_runtime=True)
+    post_only = next(status for status in statuses if status["name"] == "hyperliquid_post_only_mapping")
+
+    assert "direct SDK Alo fallback" in str(post_only["reason"])
+
+
 def test_plan_status_audit_command_uses_latest_gate_json_and_output():
     command = plan_status_audit_command(Path("docs/last_safety_gates.json"), Path("docs/plan_status_audit.json"))
     normalized = [item.replace("\\", "/") for item in command]

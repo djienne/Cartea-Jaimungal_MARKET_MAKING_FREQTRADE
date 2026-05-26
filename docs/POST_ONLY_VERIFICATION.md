@@ -85,7 +85,9 @@ order_type = {"limit": {"tif": "Alo"}}
 ```
 
 and requires local BBO maker-safety before submit. Submit mode is intentionally
-hard to invoke:
+hard to invoke. It also caps submit notional at 25 USDC by default through
+`--max-notional-usdc`; raise that only when the exchange minimum requires it and
+record the reason with the retained evidence.
 
 ```bash
 $env:HYPERLIQUID_DIRECT_ALO_ALLOW = "1"

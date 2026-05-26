@@ -70,6 +70,8 @@ These gates do not require a live exchange connection:
 - `direct_alo_adapter_plan`: writes `docs/direct_alo_adapter_plan.json`,
   documenting the no-network direct Hyperliquid SDK fallback path that submits
   `order_type={"limit": {"tif": "Alo"}}` only after local BBO maker-safety.
+  The direct adapter also applies a default 25 USDC submit-notional cap for
+  evidence probes unless the operator explicitly raises `--max-notional-usdc`.
 
 Optional Docker runtime gates:
 
@@ -234,8 +236,9 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   `hyperliquid_alo_executor.py --mode submit-crossing-alo` for a direct SDK
   rejection probe and `--mode submit-passive-alo` for passive resting/maker
   evidence with automatic cancellation of any resting order ids returned by the
-  SDK. Plain `--mode submit-alo` is reserved for the future direct execution
-  layer and may leave a passive order working.
+  SDK. These submit modes enforce a default 25 USDC notional cap. Plain
+  `--mode submit-alo` is reserved for the future direct execution layer and may
+  leave a passive order working.
 - `multi_day_event_replay`: the automated latest-data smoke proves the replay
   parser and conservative fill loop work on real shards, and the acceptance
   report records exactly which criteria are still failing. The remaining manual
