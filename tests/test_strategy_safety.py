@@ -32,6 +32,9 @@ class Market_Making:
     kill_on_time_in_force_mismatch = True
     kill_on_unknown_liquidity_fill = True
 
+    def _price_tick_safe(self, pair, quote_side, rate):
+        pass
+
     def custom_entry_price(self, pair, trade, current_time, proposed_rate, entry_tag, side, **kwargs):
         pass
 
@@ -39,10 +42,10 @@ class Market_Making:
         pass
 
     def confirm_trade_entry(self):
-        pass
+        self._price_tick_safe(pair, "bid", rate)
 
     def confirm_trade_exit(self):
-        pass
+        self._price_tick_safe(pair, "ask", rate)
 
     def adjust_entry_price(self):
         pass
@@ -101,3 +104,12 @@ def test_strategy_safety_rejects_disabled_risk_and_kill_switches():
     assert "hjb_alpha_not_positive" in report["reasons"]
     assert "hjb_phi_not_positive" in report["reasons"]
     assert "kill_on_taker_fill_not_true" in report["reasons"]
+
+
+def test_strategy_safety_rejects_missing_final_price_tick_guard():
+    source = SAFE_SOURCE.replace('self._price_tick_safe(pair, "bid", rate)', "pass")
+
+    report = report_for(source)
+
+    assert report["ok"] is False
+    assert "entry_price_tick_guard_missing" in report["reasons"]

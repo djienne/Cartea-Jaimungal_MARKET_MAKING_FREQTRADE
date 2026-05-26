@@ -100,11 +100,12 @@ def build_strategy_safety_report(
     reasons: list[str] = []
     defaults: dict[str, Any] = {}
     signatures: dict[str, list[str]] = {}
+    source_text = source or ""
     parse_error = None
     if load_error is not None:
         reasons.append(load_error)
     else:
-        defaults, signatures, parse_error = parse_strategy_source(source or "")
+        defaults, signatures, parse_error = parse_strategy_source(source_text)
         if parse_error is not None:
             reasons.append(parse_error)
 
@@ -158,6 +159,12 @@ def build_strategy_safety_report(
     for callback in ("confirm_trade_entry", "confirm_trade_exit", "custom_exit_price", "adjust_entry_price", "adjust_exit_price"):
         if callback not in signatures:
             reasons.append(f"{callback}_missing")
+    if "_price_tick_safe" not in signatures:
+        reasons.append("price_tick_safe_guard_missing")
+    if 'self._price_tick_safe(pair, "bid", rate)' not in source_text:
+        reasons.append("entry_price_tick_guard_missing")
+    if 'self._price_tick_safe(pair, "ask", rate)' not in source_text:
+        reasons.append("exit_price_tick_guard_missing")
 
     return {
         "generated_at": utc_now_iso(),
@@ -196,6 +203,7 @@ def build_strategy_safety_report(
                     "confirm_trade_exit",
                     "adjust_entry_price",
                     "adjust_exit_price",
+                    "_price_tick_safe",
                 )
             },
         },

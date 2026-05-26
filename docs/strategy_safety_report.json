@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-26T10:06:12Z",
+  "generated_at": "2026-05-26T10:21:28Z",
   "observed": {
     "defaults": {
       "can_short": false,
@@ -29,6 +29,12 @@
       "use_exit_signal": true
     },
     "signatures": {
+      "_price_tick_safe": [
+        "self",
+        "pair",
+        "quote_side",
+        "rate"
+      ],
       "adjust_entry_price": [
         "self",
         "trade",

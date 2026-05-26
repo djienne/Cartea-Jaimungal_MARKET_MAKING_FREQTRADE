@@ -714,6 +714,28 @@ def test_confirm_entry_rejects_non_limit_order_type():
     assert events[0][1]["order_type"] == "market"
 
 
+def test_confirm_entry_rejects_price_not_on_exchange_tick():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        99.505,
+        "GTC",
+        datetime.now(timezone.utc),
+        "mm_bid",
+        "long",
+    )
+
+    assert events[0][0] == "entry_rejected"
+    assert events[0][1]["reason"] == "price_not_tick_safe"
+    assert events[0][1]["rounded_price"] == 99.5
+
+
 def test_post_only_verified_rejects_gtc_entry_time_in_force():
     bot = make_bot()
     bot.trading_enabled = True
@@ -1354,6 +1376,30 @@ def test_amount_below_minimum_is_rejected():
         "mm_bid",
         "long",
     )
+
+
+def test_confirm_exit_rejects_price_not_on_exchange_tick():
+    bot = make_bot()
+    bot.trading_enabled = True
+    DummyTrade._open_trades = [DummyTrade(amount=0.01)]
+    trade = DummyTrade(amount=0.01)
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    assert not bot.confirm_trade_exit(
+        "ETH/USDC:USDC",
+        trade,
+        "limit",
+        0.01,
+        100.005,
+        "GTC",
+        "exit_signal",
+        datetime.now(timezone.utc),
+    )
+
+    assert events[0][0] == "exit_rejected"
+    assert events[0][1]["reason"] == "price_not_tick_safe"
+    assert events[0][1]["rounded_price"] == 100.01
 
 
 def test_param_refresh_skips_without_hardcoded_symbol_fallback(monkeypatch):

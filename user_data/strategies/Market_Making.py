@@ -1346,6 +1346,21 @@ class Market_Making(IStrategy):
 
         return True, "ok", rounded
 
+    def _price_tick_safe(self, pair: str, quote_side: str, rate: float) -> tuple[bool, str, float]:
+        try:
+            rate = float(rate)
+        except Exception:
+            return False, "invalid_rate", 0.0
+        if not np.isfinite(rate) or rate <= 0:
+            return False, "invalid_rate", 0.0
+
+        rounded = self._round_quote_price(pair, quote_side, rate)
+        if not np.isfinite(float(rounded)) or float(rounded) <= 0:
+            return False, "invalid_rate", float(rounded)
+        if abs(float(rounded) - rate) > max(1e-12, abs(rate) * 1e-9):
+            return False, "price_not_tick_safe", float(rounded)
+        return True, "ok", float(rounded)
+
     def _is_limit_order_type(self, order_type: str | None) -> bool:
         return str(order_type or "").strip().lower() == "limit"
 
@@ -2701,6 +2716,22 @@ class Market_Making(IStrategy):
             )
             return False
 
+        price_ok, price_reason, rounded_rate = self._price_tick_safe(pair, "bid", rate)
+        if not price_ok:
+            self._debug_log_event(
+                "entry_rejected",
+                {
+                    "pair": pair,
+                    "reason": price_reason,
+                    "rate": float(rate),
+                    "rounded_price": float(rounded_rate),
+                    "side": side,
+                    "order_type": order_type,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
         amount_ok, amount_reason, rounded_amount = self._amount_lot_safe(pair, amount, rate)
         if not amount_ok:
             self._debug_log_event(
@@ -2795,6 +2826,22 @@ class Market_Making(IStrategy):
                     "pair": pair,
                     "reason": reason,
                     "rate": float(rate),
+                    "exit_reason": exit_reason,
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
+        price_ok, price_reason, rounded_rate = self._price_tick_safe(pair, "ask", rate)
+        if not price_ok:
+            self._debug_log_event(
+                "exit_rejected",
+                {
+                    "pair": pair,
+                    "reason": price_reason,
+                    "rate": float(rate),
+                    "rounded_price": float(rounded_rate),
                     "exit_reason": exit_reason,
                     "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                     **self._inventory_snapshot(pair),
