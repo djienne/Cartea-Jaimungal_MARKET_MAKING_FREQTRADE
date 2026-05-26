@@ -14,7 +14,7 @@
     "status": null
   },
   "gate": "hyperliquid_post_only_mapping",
-  "generated_at": "2026-05-26T21:33:19Z",
+  "generated_at": "2026-05-26T22:01:34Z",
   "max_evidence_age_seconds": 86400.0,
   "ok": false,
   "passive": {

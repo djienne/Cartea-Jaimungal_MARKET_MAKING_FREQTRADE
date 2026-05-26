@@ -12,6 +12,8 @@ if str(SCRIPTS) not in sys.path:
 from hyperliquid_alo_executor import (  # noqa: E402
     AloOrderIntent,
     alo_order_type,
+    build_client_order_id,
+    build_hyperliquid_cloid,
     build_sdk_order_args,
     cancel_resting_orders,
     classify_order_result,
@@ -21,6 +23,7 @@ from hyperliquid_alo_executor import (  # noqa: E402
     notional_limit_check,
     notional_usdc,
     normalize_coin,
+    quote_link_payload,
     render_plan,
 )
 
@@ -44,6 +47,42 @@ def test_build_sdk_order_args_uses_alo_order_type():
         "reduce_only": False,
     }
     assert alo_order_type()["limit"]["tif"] == "Alo"
+
+
+def test_quote_link_payload_builds_deterministic_hyperliquid_cloid():
+    link = quote_link_payload(
+        quote_id="quote-000000000123",
+        side="bid",
+        hjb_generation=42,
+        session_id="session-a",
+    )
+
+    assert link["client_order_id"] == "mm|sess=session-a|qid=quote-000000000123|side=bid|hjb=42"
+    assert link["cloid"].startswith("0x")
+    assert len(link["cloid"]) == 34
+    assert link["cloid"] == build_hyperliquid_cloid(link["client_order_id"])
+    assert quote_link_payload(client_order_id=link["client_order_id"])["cloid"] == link["cloid"]
+
+
+def test_build_sdk_order_args_includes_cloid_when_quote_linked():
+    client_order_id = build_client_order_id(
+        quote_id="quote-000000000123",
+        side="bid",
+        hjb_generation=42,
+        session_id="session-a",
+    )
+    intent = AloOrderIntent(
+        "ETH/USDC:USDC",
+        "bid",
+        0.01,
+        2000.0,
+        cloid=build_hyperliquid_cloid(client_order_id),
+        client_order_id=client_order_id,
+    )
+
+    args = build_sdk_order_args(intent)
+
+    assert args["cloid"] == build_hyperliquid_cloid(client_order_id)
 
 
 def test_maker_safe_rejects_crossing_bid_and_ask():
@@ -167,7 +206,10 @@ def test_plan_documents_submit_guards():
     plan = render_plan("ETH/USDC:USDC")
 
     assert plan["order_type"] == {"limit": {"tif": "Alo"}}
+    assert plan["quote_linking"]["sdk_arg"] == "cloid"
+    assert "quote_id" in plan["quote_linking"]["client_order_id_fields"]
     assert any("HYPERLIQUID_DIRECT_ALO_ALLOW" in item for item in plan["submit_guards"])
     assert any("--max-notional-usdc" in item for item in plan["submit_guards"])
+    assert any("--quote-id" in item for item in plan["submit_guards"])
     assert any("--allow-crossing-probe" in item for item in plan["crossing_probe_guards"])
     assert any("--allow-passive-probe" in item for item in plan["passive_probe_guards"])

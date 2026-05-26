@@ -96,6 +96,12 @@ $env:HYPERLIQUID_DIRECT_ALO_ALLOW = "1"
 python scripts/hyperliquid_alo_executor.py --mode submit-alo --testnet --symbol ETH/USDC:USDC --side bid --size <min_size> --price <passive_bid> --best-bid <best_bid> --best-ask <best_ask> --acknowledge-real-orders --output docs/direct_alo_submit_result.json
 ```
 
+For quote-linked evidence, pass `--quote-id`, `--session-id`, and
+`--hjb-generation`. The adapter stores the readable client order id in the
+artifact and submits a deterministic Hyperliquid `cloid` (`0x` plus 16 bytes)
+derived from those fields, so later fills can reconcile
+`quote_id -> client_order_id/cloid -> exchange order/fill`.
+
 For evidence generation, prefer the passive probe mode. It submits the same
 native `Alo` order, classifies the response, and cancels any resting order ids
 reported by the SDK:

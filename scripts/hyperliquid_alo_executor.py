@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,8 @@ class AloOrderIntent:
     size: float
     price: float
     reduce_only: bool = False
+    cloid: str | None = None
+    client_order_id: str | None = None
 
     @property
     def coin(self) -> str:
@@ -55,12 +58,66 @@ def alo_order_type() -> dict[str, dict[str, str]]:
     return {"limit": {"tif": "Alo"}}
 
 
+def build_client_order_id(
+    *,
+    quote_id: str | None,
+    side: str | None,
+    hjb_generation: int | None,
+    session_id: str | None,
+) -> str:
+    parts = [
+        "mm",
+        f"sess={session_id or 'unknown'}",
+        f"qid={quote_id or 'unknown'}",
+        f"side={side or 'unknown'}",
+        f"hjb={hjb_generation if hjb_generation is not None else 'unknown'}",
+    ]
+    return "|".join(parts)
+
+
+def build_hyperliquid_cloid(client_order_id: str) -> str:
+    """Build a Hyperliquid CLOID string: 0x plus 16 bytes of deterministic hex."""
+    digest = hashlib.sha256(str(client_order_id).encode("utf-8")).hexdigest()[:32]
+    return "0x" + digest
+
+
+def quote_link_payload(
+    *,
+    quote_id: str | None = None,
+    side: str | None = None,
+    hjb_generation: int | None = None,
+    session_id: str | None = None,
+    client_order_id: str | None = None,
+    cloid: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "quote_id": quote_id or None,
+        "side": side or None,
+        "hjb_generation": int(hjb_generation) if hjb_generation is not None else None,
+        "session_id": session_id or None,
+        "client_order_id": client_order_id or None,
+        "cloid": cloid or None,
+    }
+    if payload["client_order_id"] is None and any(
+        payload.get(key) is not None for key in ("quote_id", "side", "hjb_generation", "session_id")
+    ):
+        payload["client_order_id"] = build_client_order_id(
+            quote_id=payload["quote_id"],
+            side=payload["side"],
+            hjb_generation=payload["hjb_generation"],
+            session_id=payload["session_id"],
+        )
+    if payload["cloid"] is None and payload["client_order_id"] is not None:
+        payload["cloid"] = build_hyperliquid_cloid(payload["client_order_id"])
+    return payload
+
+
 def build_sdk_order_args(intent: AloOrderIntent) -> dict[str, Any]:
     if intent.size <= 0:
         raise ValueError("size must be positive")
     if intent.price <= 0:
         raise ValueError("price must be positive")
-    return {
+    order_args = {
         "name": intent.coin,
         "is_buy": intent.is_buy,
         "sz": float(intent.size),
@@ -68,6 +125,21 @@ def build_sdk_order_args(intent: AloOrderIntent) -> dict[str, Any]:
         "order_type": alo_order_type(),
         "reduce_only": bool(intent.reduce_only),
     }
+    if intent.cloid:
+        order_args["cloid"] = intent.cloid
+    return order_args
+
+
+def order_args_for_submit(order_args: dict[str, Any]) -> dict[str, Any]:
+    submit_args = dict(order_args)
+    raw_cloid = submit_args.get("cloid")
+    if raw_cloid:
+        try:
+            from hyperliquid.utils.types import Cloid  # type: ignore
+        except Exception as exc:
+            raise SystemExit(f"hyperliquid-python-sdk is required to submit a CLOID: {exc}")
+        submit_args["cloid"] = Cloid.from_str(str(raw_cloid))
+    return submit_args
 
 
 def notional_usdc(intent: AloOrderIntent) -> float:
@@ -272,12 +344,22 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
     if args.best_bid is None or args.best_ask is None:
         raise SystemExit("--best-bid and --best-ask are required so local maker-safety is explicit")
 
+    quote_link = quote_link_payload(
+        quote_id=args.quote_id,
+        side=args.side,
+        hjb_generation=args.hjb_generation,
+        session_id=args.session_id,
+        client_order_id=args.client_order_id,
+        cloid=args.cloid,
+    )
     intent = AloOrderIntent(
         symbol=args.symbol,
         side=args.side,
         size=float(args.size),
         price=float(args.price),
         reduce_only=bool(args.reduce_only),
+        cloid=quote_link.get("cloid"),
+        client_order_id=quote_link.get("client_order_id"),
     )
     ok, reason = maker_safe(intent, float(args.best_bid), float(args.best_ask))
     if not ok:
@@ -291,12 +373,13 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
 
     exchange = load_sdk_exchange(args)
     order_args = build_sdk_order_args(intent)
-    result = exchange.order(**order_args)
+    result = exchange.order(**order_args_for_submit(order_args))
     classification = classify_order_result(result if isinstance(result, dict) else {"raw_result": result})
     return {
         "generated_at": utc_now_iso(),
         "mode": "submit-alo",
         "intent": asdict(intent),
+        "quote_link": quote_link,
         "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
@@ -337,14 +420,32 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
             f"({notional_payload['notional_usdc']:.8f} > {notional_payload['max_notional_usdc']:.8f} USDC)"
         )
 
+    quote_link = quote_link_payload(
+        quote_id=args.quote_id,
+        side=args.side,
+        hjb_generation=args.hjb_generation,
+        session_id=args.session_id,
+        client_order_id=args.client_order_id,
+        cloid=args.cloid,
+    )
+    intent = AloOrderIntent(
+        symbol=intent.symbol,
+        side=intent.side,
+        size=intent.size,
+        price=intent.price,
+        reduce_only=intent.reduce_only,
+        cloid=quote_link.get("cloid"),
+        client_order_id=quote_link.get("client_order_id"),
+    )
     exchange = load_sdk_exchange(args)
     order_args = build_sdk_order_args(intent)
-    result = exchange.order(**order_args)
+    result = exchange.order(**order_args_for_submit(order_args))
     classification = classify_order_result(result if isinstance(result, dict) else {"raw_result": result})
     return {
         "generated_at": utc_now_iso(),
         "mode": "submit-crossing-alo",
         "intent": asdict(intent),
+        "quote_link": quote_link,
         "crossing_probe_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
@@ -365,12 +466,22 @@ def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
     if args.best_bid is None or args.best_ask is None:
         raise SystemExit("--best-bid and --best-ask are required so local maker-safety is explicit")
 
+    quote_link = quote_link_payload(
+        quote_id=args.quote_id,
+        side=args.side,
+        hjb_generation=args.hjb_generation,
+        session_id=args.session_id,
+        client_order_id=args.client_order_id,
+        cloid=args.cloid,
+    )
     intent = AloOrderIntent(
         symbol=args.symbol,
         side=args.side,
         size=float(args.size),
         price=float(args.price),
         reduce_only=bool(args.reduce_only),
+        cloid=quote_link.get("cloid"),
+        client_order_id=quote_link.get("client_order_id"),
     )
     ok, reason = maker_safe(intent, float(args.best_bid), float(args.best_ask))
     if not ok:
@@ -384,13 +495,14 @@ def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
 
     exchange = load_sdk_exchange(args)
     order_args = build_sdk_order_args(intent)
-    result = exchange.order(**order_args)
+    result = exchange.order(**order_args_for_submit(order_args))
     classification = classify_order_result(result if isinstance(result, dict) else {"raw_result": result})
     cancel_results = cancel_resting_orders(exchange, intent.coin, classification.get("resting_oids", []))
     return {
         "generated_at": utc_now_iso(),
         "mode": "submit-passive-alo",
         "intent": asdict(intent),
+        "quote_link": quote_link,
         "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
@@ -406,8 +518,14 @@ def render_plan(symbol: str) -> dict[str, Any]:
         "component": "direct_hyperliquid_alo_executor",
         "safe_default": "no network call or order submission",
         "symbol": symbol,
-        "sdk_method": "Exchange.order(name, is_buy, sz, limit_px, order_type, reduce_only)",
+        "sdk_method": "Exchange.order(name, is_buy, sz, limit_px, order_type, reduce_only, cloid)",
         "order_type": alo_order_type(),
+        "quote_linking": {
+            "sdk_arg": "cloid",
+            "cloid_format": "0x + 16-byte hex",
+            "client_order_id_fields": ["session_id", "quote_id", "side", "hjb_generation"],
+            "raw_client_order_id_stored_in_artifact": True,
+        },
         "submit_guards": [
             f"{DIRECT_ALO_ALLOW_ENV}=1",
             "--acknowledge-real-orders",
@@ -415,6 +533,7 @@ def render_plan(symbol: str) -> dict[str, Any]:
             "--best-bid and --best-ask local maker-safety inputs",
             "bid price must be below best ask",
             "ask price must be above best bid",
+            "--quote-id/--session-id/--hjb-generation produce deterministic CLOID evidence",
         ],
         "crossing_probe_guards": [
             f"{DIRECT_ALO_ALLOW_ENV}=1",
@@ -424,6 +543,7 @@ def render_plan(symbol: str) -> dict[str, Any]:
             "--testnet, or --allow-mainnet-crossing-probe for tiny mainnet evidence",
             "--best-bid and --best-ask crossing evidence inputs",
             "bid probe price is best ask; ask probe price is best bid",
+            "--quote-id/--session-id/--hjb-generation produce deterministic CLOID evidence",
         ],
         "passive_probe_guards": [
             f"{DIRECT_ALO_ALLOW_ENV}=1",
@@ -433,6 +553,7 @@ def render_plan(symbol: str) -> dict[str, Any]:
             "--testnet, or --allow-mainnet-passive-probe for tiny mainnet evidence",
             "--best-bid and --best-ask local maker-safety inputs",
             "resting order ids are canceled after evidence capture",
+            "--quote-id/--session-id/--hjb-generation produce deterministic CLOID evidence",
         ],
         "response_acceptance": [
             "resting order status is acceptable",
@@ -467,6 +588,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-mainnet-crossing-probe", action="store_true")
     parser.add_argument("--allow-passive-probe", action="store_true")
     parser.add_argument("--allow-mainnet-passive-probe", action="store_true")
+    parser.add_argument("--quote-id", default=None)
+    parser.add_argument("--session-id", default=None)
+    parser.add_argument("--hjb-generation", type=int, default=None)
+    parser.add_argument("--client-order-id", default=None)
+    parser.add_argument("--cloid", default=None)
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
@@ -476,7 +602,23 @@ def main() -> int:
     if args.mode == "plan":
         payload = render_plan(args.symbol)
     elif args.mode == "build-order":
-        intent = AloOrderIntent(args.symbol, args.side, args.size, args.price, args.reduce_only)
+        quote_link = quote_link_payload(
+            quote_id=args.quote_id,
+            side=args.side,
+            hjb_generation=args.hjb_generation,
+            session_id=args.session_id,
+            client_order_id=args.client_order_id,
+            cloid=args.cloid,
+        )
+        intent = AloOrderIntent(
+            args.symbol,
+            args.side,
+            args.size,
+            args.price,
+            args.reduce_only,
+            cloid=quote_link.get("cloid"),
+            client_order_id=quote_link.get("client_order_id"),
+        )
         maker_check = None
         if args.best_bid is not None and args.best_ask is not None:
             ok, reason = maker_safe(intent, args.best_bid, args.best_ask)
@@ -484,6 +626,7 @@ def main() -> int:
         payload = {
             "generated_at": utc_now_iso(),
             "intent": asdict(intent),
+            "quote_link": quote_link,
             "sdk_order_args": build_sdk_order_args(intent),
             "local_maker_check": maker_check,
         }

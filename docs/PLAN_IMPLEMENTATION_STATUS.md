@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 289 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 291 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -63,7 +63,10 @@ Generated from the current local worktree after the latest safety-gate run.
   `submit-crossing-alo` mode for ALO rejection evidence and a guarded
   `submit-passive-alo` evidence mode that cancels any resting order ids after
   classification. Regular `submit-alo` remains locally maker-safe for the future
-  direct execution layer. The safety-gate runner can consume post-only
+  direct execution layer. The adapter accepts `--quote-id`, `--session-id`, and
+  `--hjb-generation`, stores a readable client order id in the artifact, and
+  submits a deterministic Hyperliquid `cloid` derived from those fields for
+  future quote-to-fill reconciliation. The safety-gate runner can consume post-only
   crossing/passive evidence through explicit artifact path flags, and it also
   auto-detects the conventional `docs/post_only_crossing_result.json` and
   `docs/post_only_passive_result.json` paths when they exist.

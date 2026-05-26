@@ -83,6 +83,8 @@ These gates do not require a live exchange connection:
   `order_type={"limit": {"tif": "Alo"}}` only after local BBO maker-safety.
   The direct adapter also applies a default 25 USDC submit-notional cap for
   evidence probes unless the operator explicitly raises `--max-notional-usdc`.
+  Direct SDK orders can include quote-linked `cloid` evidence generated from
+  `session_id`, `quote_id`, side, and HJB generation.
 
 Optional Docker runtime gates:
 
@@ -284,7 +286,9 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   evidence with automatic cancellation of any resting order ids returned by the
   SDK. These submit modes enforce a default 25 USDC notional cap. Plain
   `--mode submit-alo` is reserved for the future direct execution layer and may
-  leave a passive order working.
+  leave a passive order working. For evidence tied to strategy decisions, pass
+  `--quote-id`, `--session-id`, and `--hjb-generation`; the artifact stores the
+  readable client order id and the submitted Hyperliquid `cloid`.
 - `multi_day_event_replay`: the automated latest-data smoke proves the replay
   parser and conservative fill loop work on real shards, and the acceptance
   report records exactly which criteria are still failing. The remaining manual
