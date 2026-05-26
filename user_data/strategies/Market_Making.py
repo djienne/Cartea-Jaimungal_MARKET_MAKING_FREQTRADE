@@ -1351,13 +1351,13 @@ class Market_Making(IStrategy):
     def _trigger_kill_switch(self, reason: str, payload: dict[str, Any] | None = None) -> None:
         self.trading_enabled = False
         self.fail_closed_reason = reason
+        payload = dict(payload or {})
+        pair = payload.get("pair")
         try:
-            pair = (payload or {}).get("pair")
-            if pair and getattr(self, "exchange", None) and hasattr(self.exchange, "cancel_all_orders"):
-                self.exchange.cancel_all_orders(pair)
+            payload.update(self._cancel_open_orders_for_kill_switch(pair))
         except Exception as exc:
-            payload = {**(payload or {}), "cancel_error": str(exc)}
-        self._debug_log_event("kill_switch", {"reason": reason, **(payload or {})})
+            payload["cancel_error"] = str(exc)
+        self._debug_log_event("kill_switch", {"reason": reason, **payload})
 
     def _record_quote_decision(self, pair: str, decision: str, reason: str) -> None:
         self._quote_decisions_count = int(getattr(self, "_quote_decisions_count", 0)) + 1
@@ -1388,8 +1388,8 @@ class Market_Making(IStrategy):
     def _record_order_attempt_accepted(self) -> None:
         self._accepted_order_attempts = int(getattr(self, "_accepted_order_attempts", 0)) + 1
 
-    def _record_open_order_cancel_request(self) -> None:
-        self._cancel_open_order_requests = int(getattr(self, "_cancel_open_order_requests", 0)) + 1
+    def _record_open_order_cancel_request(self, count: int = 1) -> None:
+        self._cancel_open_order_requests = int(getattr(self, "_cancel_open_order_requests", 0)) + max(1, int(count))
 
     def _reset_daily_risk_if_needed(self, current_time: datetime) -> None:
         now = self._as_utc(current_time) or self._now_utc()
@@ -1897,6 +1897,118 @@ class Market_Making(IStrategy):
                 self._last_open_order_count_source = "exchange_open_orders"
                 return count
         return self._open_order_count_from_trades(pair)
+
+    def _exchange_open_orders_for_pair(self, pair: str) -> tuple[list[Any] | None, str | None]:
+        exchange = getattr(self, "exchange", None)
+        if exchange is None:
+            return None, None
+
+        for method_name in ("fetch_open_orders", "get_open_orders"):
+            method = getattr(exchange, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                orders = method(pair)
+            except TypeError:
+                try:
+                    orders = method()
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            try:
+                order_list = list(orders or [])
+            except TypeError:
+                order_list = []
+            return [order for order in order_list if self._order_matches_pair(order, pair)], method_name
+
+        orders = getattr(exchange, "open_orders", None)
+        if isinstance(orders, dict):
+            if pair in orders and isinstance(orders[pair], list):
+                return list(orders[pair]), "exchange_open_orders"
+            order_list: list[Any] = []
+            for value in orders.values():
+                if isinstance(value, list):
+                    order_list.extend(value)
+            return [order for order in order_list if self._order_matches_pair(order, pair)], "exchange_open_orders"
+        if isinstance(orders, list):
+            return [order for order in orders if self._order_matches_pair(order, pair)], "exchange_open_orders"
+        return None, None
+
+    def _order_matches_pair(self, order: Any, pair: str) -> bool:
+        if isinstance(order, dict):
+            symbol = order.get("symbol") or order.get("pair")
+        else:
+            symbol = getattr(order, "symbol", None) or getattr(order, "pair", None)
+        return symbol is None or str(symbol) == pair
+
+    def _order_id_for_cancel(self, order: Any) -> Any:
+        if isinstance(order, dict):
+            for key in ("id", "order_id", "ft_order_id", "clientOrderId", "client_order_id"):
+                value = order.get(key)
+                if value not in (None, ""):
+                    return value
+            return None
+        for attr in ("id", "order_id", "ft_order_id", "clientOrderId", "client_order_id"):
+            value = getattr(order, attr, None)
+            if value not in (None, ""):
+                return value
+        return None
+
+    def _cancel_open_orders_for_kill_switch(self, pair: Any) -> dict[str, Any]:
+        if not pair:
+            return {"cancel_open_orders_requested": 0, "cancel_method": "no_pair"}
+        exchange = getattr(self, "exchange", None)
+        if exchange is None:
+            return {"cancel_open_orders_requested": 0, "cancel_method": "no_exchange"}
+
+        cancel_all = getattr(exchange, "cancel_all_orders", None)
+        if callable(cancel_all):
+            cancel_count = self._open_order_count(str(pair))
+            cancel_all(pair)
+            requested = int(cancel_count) if cancel_count is not None else 1
+            if requested > 0:
+                self._record_open_order_cancel_request(requested)
+            return {
+                "cancel_open_orders_requested": requested,
+                "cancel_method": "cancel_all_orders",
+            }
+
+        cancel_one = getattr(exchange, "cancel_order", None) or getattr(exchange, "cancel", None)
+        if not callable(cancel_one):
+            return {"cancel_open_orders_requested": 0, "cancel_method": "unavailable"}
+
+        orders, source = self._exchange_open_orders_for_pair(str(pair))
+        if orders is None:
+            return {"cancel_open_orders_requested": 0, "cancel_method": "no_open_order_source"}
+
+        cancelled_ids: list[str] = []
+        cancel_errors: list[dict[str, Any]] = []
+        for order in orders:
+            if not self._order_looks_open(order):
+                continue
+            order_id = self._order_id_for_cancel(order)
+            if order_id is None:
+                cancel_errors.append({"order_id": None, "error": "missing_order_id"})
+                continue
+            try:
+                try:
+                    cancel_one(order_id, str(pair))
+                except TypeError:
+                    cancel_one(order_id)
+                cancelled_ids.append(str(order_id))
+            except Exception as exc:
+                cancel_errors.append({"order_id": str(order_id), "error": str(exc)})
+
+        if cancelled_ids:
+            self._record_open_order_cancel_request(len(cancelled_ids))
+        return {
+            "cancel_open_orders_requested": len(cancelled_ids),
+            "cancel_method": getattr(cancel_one, "__name__", "cancel_order"),
+            "cancel_source": source,
+            "cancelled_order_ids": cancelled_ids,
+            "cancel_errors": cancel_errors,
+        }
 
     def _open_order_count_from_trades(self, pair: str) -> int | None:
         open_order_trades = self._freqtrade_open_order_trades(pair)

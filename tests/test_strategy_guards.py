@@ -1232,10 +1232,55 @@ def test_unexpected_short_position_rejects_entry_and_kills_strategy():
         "reason": "unexpected_short_position",
         "pair": "ETH/USDC:USDC",
         "signed_base_position": -0.02,
+        "cancel_open_orders_requested": 0,
+        "cancel_method": "cancel_all_orders",
     }
     assert events[1][1]["reason"] == "unexpected_short_position"
     assert events[1][1]["signed_base_position"] == -0.02
     assert events[1][1]["q"] == 0
+
+
+def test_kill_switch_cancels_open_orders_with_cancel_order_fallback():
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    class CancelOrderExchange:
+        def __init__(self):
+            self.open_orders = [
+                {"symbol": "ETH/USDC:USDC", "id": "eth-open", "status": "open", "remaining": 0.01},
+                {"symbol": "ETH/USDC:USDC", "id": "eth-closed", "status": "closed", "remaining": 0.0},
+                {"symbol": "BTC/USDC:USDC", "id": "btc-open", "status": "open", "remaining": 0.01},
+            ]
+            self.cancel_calls = []
+
+        def cancel_order(self, order_id, pair):
+            self.cancel_calls.append((order_id, pair))
+
+    exchange = CancelOrderExchange()
+    bot.exchange = exchange
+
+    bot._trigger_kill_switch("manual_test", {"pair": "ETH/USDC:USDC"})
+
+    assert not bot.trading_enabled
+    assert bot.fail_closed_reason == "manual_test"
+    assert exchange.cancel_calls == [("eth-open", "ETH/USDC:USDC")]
+    assert bot._cancel_open_order_requests == 1
+    assert events == [
+        (
+            "kill_switch",
+            {
+                "reason": "manual_test",
+                "pair": "ETH/USDC:USDC",
+                "cancel_open_orders_requested": 1,
+                "cancel_method": "cancel_order",
+                "cancel_source": "exchange_open_orders",
+                "cancelled_order_ids": ["eth-open"],
+                "cancel_errors": [],
+            },
+        )
+    ]
 
 
 def test_daily_loss_triggers_kill_switch():
