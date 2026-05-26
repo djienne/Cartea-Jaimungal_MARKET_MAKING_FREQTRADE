@@ -125,7 +125,9 @@ Optional Docker runtime gates:
   switches, and an explicit manual-monitoring acknowledgement. Prior gate
   reports must carry fresh `generated_at` timestamps, and the canary session
   events themselves must be recent, so a newly generated report cannot reuse old
-  live evidence.
+  live evidence. When `run_safety_gates.py --include-runtime` is used, this gate
+  runs after fee and replay artifacts are regenerated so it evaluates the
+  current dependency reports.
 - `hl_data_validation_report`: reads the newest collector Parquet shards and
   validates required streams/columns plus the actual `timestamp` values inside
   the files. Freshness is based on row timestamps, not file modification time,

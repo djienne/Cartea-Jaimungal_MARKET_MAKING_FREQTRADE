@@ -86,6 +86,7 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                 "tests/test_replay_market_maker.py",
                 "tests/test_replay_log_calibration.py",
                 "tests/test_replay_report.py",
+                "tests/test_safety_gates.py",
             ],
             [0],
         ),
@@ -161,18 +162,6 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                 "docs/direct_alo_adapter_plan.json",
             ],
             [0],
-        ),
-        (
-            "live_canary_evidence_report",
-            [
-                py,
-                "scripts/verify_live_canary.py",
-                "--input",
-                "user_data/logs/mm_debug.jsonl",
-                "--output",
-                "docs/live_canary_report.json",
-            ],
-            [0, 1],
         ),
     ]
     if include_runtime:
@@ -320,7 +309,34 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                     ],
                     [0],
                 ),
+                (
+                    "live_canary_evidence_report",
+                    [
+                        sys.executable,
+                        "scripts/verify_live_canary.py",
+                        "--input",
+                        "user_data/logs/mm_debug.jsonl",
+                        "--output",
+                        "docs/live_canary_report.json",
+                    ],
+                    [0, 1],
+                ),
             ]
+        )
+    else:
+        gates.append(
+            (
+                "live_canary_evidence_report",
+                [
+                    py,
+                    "scripts/verify_live_canary.py",
+                    "--input",
+                    "user_data/logs/mm_debug.jsonl",
+                    "--output",
+                    "docs/live_canary_report.json",
+                ],
+                [0, 1],
+            )
         )
     return gates
 

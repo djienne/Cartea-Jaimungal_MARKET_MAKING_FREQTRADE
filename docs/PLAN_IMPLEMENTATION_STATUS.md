@@ -103,8 +103,10 @@ Generated from the current local worktree after the latest safety-gate run.
   switches, and no parameter/HJB/collector error events. It also requires fresh
   `generated_at` timestamps on dependency gate reports and recent timestamps on
   canary session events, so stale canary evidence cannot pass by regenerating a
-  new report. The current report is expected to be `ok=false` until Gates 4-5
-  pass and real canary sessions are supplied.
+  new report. The safety-gate runner now generates this artifact after
+  regenerating fee and replay reports in runtime mode, so it summarizes the
+  current dependency artifacts. The current report is expected to be `ok=false`
+  until Gates 4-5 pass and real canary sessions are supplied.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and
