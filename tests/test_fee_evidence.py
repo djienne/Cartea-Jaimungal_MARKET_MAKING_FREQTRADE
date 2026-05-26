@@ -40,17 +40,28 @@ def fee_snapshot_event(**overrides):
     return event
 
 
+def maker_fill_event(**overrides):
+    event = {
+        "event": "fill",
+        "ts": fresh_ts(),
+        "liquidity": "maker",
+        "quote_side": "bid",
+        "order_type": "limit",
+        "tif": "Alo",
+        "expected_fee_rate": 0.00015,
+        "actual_fee_paid": 0.015,
+        "actual_fee_rate": 0.00015,
+        "order_id": "maker-1",
+    }
+    event.update(overrides)
+    return event
+
+
 def test_fee_evidence_passes_with_exchange_and_maker_fill_fee():
     report = build_fee_evidence_report(
         [
             fee_snapshot_event(),
-            {
-                "event": "fill",
-                "ts": fresh_ts(),
-                "liquidity": "maker",
-                "actual_fee_rate": 0.00015,
-                "order_id": "maker-1",
-            },
+            maker_fill_event(),
         ]
     )
 
@@ -82,13 +93,7 @@ def test_fee_evidence_rejects_taker_or_mismatched_fee():
     report = build_fee_evidence_report(
         [
             fee_snapshot_event(exchange_maker_fee_rate=0.001, exchange_maker_fee_matches_strategy=False),
-            {
-                "event": "fill",
-                "ts": fresh_ts(),
-                "liquidity": "maker",
-                "actual_fee_rate": 0.001,
-                "order_id": "bad-maker",
-            },
+            maker_fill_event(actual_fee_rate=0.001, order_id="bad-maker"),
             {
                 "event": "fill",
                 "ts": fresh_ts(),
@@ -110,12 +115,7 @@ def test_fee_evidence_requires_timestamps_on_proof_events():
     report = build_fee_evidence_report(
         [
             fee_snapshot_event(ts=None),
-            {
-                "event": "fill",
-                "liquidity": "maker",
-                "actual_fee_rate": 0.00015,
-                "order_id": "timestampless-maker",
-            },
+            maker_fill_event(ts=None, order_id="timestampless-maker"),
         ]
     )
 
@@ -135,13 +135,7 @@ def test_fee_evidence_rejects_stale_proof_events():
     report = build_fee_evidence_report(
         [
             fee_snapshot_event(ts=stale_ts),
-            {
-                "event": "fill",
-                "ts": stale_ts,
-                "liquidity": "maker",
-                "actual_fee_rate": 0.00015,
-                "order_id": "stale-maker",
-            },
+            maker_fill_event(ts=stale_ts, order_id="stale-maker"),
         ],
         now=now,
         max_evidence_age_seconds=86_400,
@@ -155,6 +149,28 @@ def test_fee_evidence_rejects_stale_proof_events():
     assert report["fee_snapshots"]["stale"] == 1
     assert report["fills"]["maker_actual_fee_stale"] == 1
     assert report["mismatches"] == []
+
+
+def test_fee_evidence_requires_fill_accounting_fields():
+    report = build_fee_evidence_report(
+        [
+            fee_snapshot_event(),
+            {
+                "event": "fill",
+                "ts": fresh_ts(),
+                "liquidity": "maker",
+                "actual_fee_rate": 0.00015,
+                "order_id": "partial-maker",
+            },
+        ]
+    )
+
+    assert report["ok"] is False
+    assert "maker_fill_quote_side_invalid:1" in report["reasons"]
+    assert "maker_fill_order_type_invalid:1" in report["reasons"]
+    assert "maker_fill_tif_invalid:1" in report["reasons"]
+    assert "maker_fill_expected_fee_invalid:1" in report["reasons"]
+    assert "maker_fill_actual_fee_paid_missing:1" in report["reasons"]
 
 
 def test_read_jsonl_events_skips_invalid_lines(tmp_path):

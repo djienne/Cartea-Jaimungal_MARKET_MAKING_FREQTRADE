@@ -18,6 +18,8 @@ from typing import Any, Iterable
 
 DEFAULT_INPUT = Path("user_data/logs/mm_debug.jsonl")
 DEFAULT_OUTPUT = Path("docs/fee_evidence_report.json")
+VALID_QUOTE_SIDES = {"bid", "ask"}
+POST_ONLY_TIFS = {"alo", "po", "post_only", "postonly"}
 
 
 def utc_now_iso() -> str:
@@ -81,6 +83,14 @@ def fee_rate_matches(expected: float | None, observed: float | None, tolerance: 
     if expected is None or observed is None:
         return None
     return abs(float(expected) - float(observed)) <= float(tolerance)
+
+
+def normalized_text(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def is_post_only_tif(value: Any) -> bool:
+    return normalized_text(value) in POST_ONLY_TIFS
 
 
 def read_jsonl_events(path: Path) -> list[dict[str, Any]]:
@@ -200,8 +210,31 @@ def build_fee_evidence_report(
     maker_actual_fee_stale = 0
     maker_actual_fee_fresh = 0
     maker_actual_fee_age_seconds: list[float] = []
+    maker_fill_quote_side_invalid = 0
+    maker_fill_order_type_invalid = 0
+    maker_fill_tif_invalid = 0
+    maker_fill_expected_fee_invalid = 0
+    maker_fill_actual_fee_paid_missing = 0
 
     for fill in maker_fills:
+        quote_side = normalized_text(fill.get("quote_side"))
+        if quote_side not in VALID_QUOTE_SIDES:
+            maker_fill_quote_side_invalid += 1
+
+        if normalized_text(fill.get("order_type")) != "limit":
+            maker_fill_order_type_invalid += 1
+
+        if not is_post_only_tif(fill.get("tif") or fill.get("time_in_force")):
+            maker_fill_tif_invalid += 1
+
+        expected_fee_rate = finite_float(fill.get("expected_fee_rate"))
+        if fee_rate_matches(expected_maker_fee_rate, expected_fee_rate, tolerance) is not True:
+            maker_fill_expected_fee_invalid += 1
+
+        actual_fee_paid = finite_float(fill.get("actual_fee_paid"))
+        if actual_fee_paid is None:
+            maker_fill_actual_fee_paid_missing += 1
+
         actual_fee_rate = finite_float(fill.get("actual_fee_rate"))
         if actual_fee_rate is None:
             continue
@@ -259,6 +292,16 @@ def build_fee_evidence_report(
         reasons.append(f"actual_maker_fee_stale:{maker_actual_fee_stale}")
     if maker_actual_fee_mismatches:
         reasons.append(f"actual_maker_fee_mismatches:{maker_actual_fee_mismatches}")
+    if maker_fill_quote_side_invalid:
+        reasons.append(f"maker_fill_quote_side_invalid:{maker_fill_quote_side_invalid}")
+    if maker_fill_order_type_invalid:
+        reasons.append(f"maker_fill_order_type_invalid:{maker_fill_order_type_invalid}")
+    if maker_fill_tif_invalid:
+        reasons.append(f"maker_fill_tif_invalid:{maker_fill_tif_invalid}")
+    if maker_fill_expected_fee_invalid:
+        reasons.append(f"maker_fill_expected_fee_invalid:{maker_fill_expected_fee_invalid}")
+    if maker_fill_actual_fee_paid_missing:
+        reasons.append(f"maker_fill_actual_fee_paid_missing:{maker_fill_actual_fee_paid_missing}")
     if any(item.get("field") in {"config_fee_rate", "exchange_maker_fee_rate"} for item in mismatches):
         reasons.append("fee_snapshot_mismatch")
 
@@ -294,6 +337,11 @@ def build_fee_evidence_report(
             "maker_actual_fee_timestamp_missing": maker_actual_fee_timestamp_missing,
             "maker_actual_fee_stale": maker_actual_fee_stale,
             "maker_actual_fee_max_age_seconds": max(maker_actual_fee_age_seconds) if maker_actual_fee_age_seconds else None,
+            "maker_fill_quote_side_invalid": maker_fill_quote_side_invalid,
+            "maker_fill_order_type_invalid": maker_fill_order_type_invalid,
+            "maker_fill_tif_invalid": maker_fill_tif_invalid,
+            "maker_fill_expected_fee_invalid": maker_fill_expected_fee_invalid,
+            "maker_fill_actual_fee_paid_missing": maker_fill_actual_fee_paid_missing,
             "min_maker_fills": int(min_maker_fills),
         },
         "mismatches": mismatches[:50],

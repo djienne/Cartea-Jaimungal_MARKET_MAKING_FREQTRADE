@@ -1,11 +1,11 @@
 {
   "cash_usdc": 0.0,
-  "data_end": "2026-05-26T06:27:05.850917339+00:00",
-  "data_start": "2026-05-26T06:24:09.982619286+00:00",
+  "data_end": "2026-05-26T06:40:48.369166851+00:00",
+  "data_start": "2026-05-26T06:38:30.905276299+00:00",
   "equity_usdc": 1000.0,
   "fees_usdc": 0.0,
   "fill_ratio_by_depth": {},
-  "final_mid": 2098.95,
+  "final_mid": 2102.1499999999996,
   "funding_usdc": 0.0,
   "input_files": {
     "orderbooks": 10,
@@ -13,9 +13,9 @@
     "trades": 10
   },
   "input_rows": {
-    "orderbooks": 325,
+    "orderbooks": 255,
     "prices": 1000,
-    "trades": 60
+    "trades": 201
   },
   "inventory_base": 0.0,
   "inventory_histogram": {
@@ -34,8 +34,8 @@
   "notional_exposure_usdc": 0.0,
   "parameter_series": [
     {
-      "data_end": "2026-05-26T06:27:05.850917339+00:00",
-      "data_start": "2026-05-26T06:24:09.982619286+00:00",
+      "data_end": "2026-05-26T06:40:48.369166851+00:00",
+      "data_start": "2026-05-26T06:38:30.905276299+00:00",
       "epsilon_minus": 0.0,
       "epsilon_plus": 0.0,
       "kappa_minus": 2.0,
@@ -45,7 +45,7 @@
       "schema_version": 1,
       "source": "static_replay_params",
       "symbol": "ETH",
-      "ts": "2026-05-26T06:24:09.982619286+00:00",
+      "ts": "2026-05-26T06:38:30.905276299+00:00",
       "unit": {
         "epsilon": "USDC",
         "kappa": "1/USDC",
@@ -71,15 +71,15 @@
   },
   "toxicity_series": [
     {
-      "data_end": "2026-05-26T06:27:05.850917339+00:00",
-      "data_start": "2026-05-26T06:24:09.982619286+00:00",
+      "data_end": "2026-05-26T06:40:48.369166851+00:00",
+      "data_start": "2026-05-26T06:38:30.905276299+00:00",
       "formula": "kappa * epsilon",
       "schema_version": 1,
       "source": "static_replay_params",
       "symbol": "ETH",
       "toxicity_minus": 0.0,
       "toxicity_plus": 0.0,
-      "ts": "2026-05-26T06:24:09.982619286+00:00",
+      "ts": "2026-05-26T06:38:30.905276299+00:00",
       "unit": "kappa_times_epsilon"
     }
   ]
