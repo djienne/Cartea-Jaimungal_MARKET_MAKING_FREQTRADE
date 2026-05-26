@@ -304,6 +304,10 @@ python scripts/hyperliquid_risk_executor.py --mode plan
   `--reference-price`, and testnet unless `--allow-mainnet-flatten` is supplied.
   This path is for emergency inventory reduction after quoting is disabled and
   open maker orders have been cancelled; it is not maker-PnL evidence.
+  Strategy kill switches emit `risk_flatten_requested` audit events when a
+  non-zero signed base position remains visible, including the reduce-only IOC
+  side/size, reference price, risk action id, readable client order id, and
+  deterministic Hyperliquid `cloid` to use with this executor.
 - `multi_day_event_replay`: the automated latest-data smoke proves the replay
   parser and conservative fill loop work on real shards, and the acceptance
   report records exactly which criteria are still failing. The remaining manual

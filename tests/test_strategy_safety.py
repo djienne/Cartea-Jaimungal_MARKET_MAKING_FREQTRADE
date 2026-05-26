@@ -61,6 +61,12 @@ class Market_Making:
 
     def adjust_exit_price(self):
         pass
+
+    def _risk_flatten_request_payload(self, pair, reason, kill_payload):
+        pass
+
+    def _risk_flatten_cloid(self, client_order_id):
+        pass
 """
 
 
@@ -173,3 +179,15 @@ def test_strategy_safety_rejects_internal_estimator_calls():
 
     assert report["ok"] is False
     assert "internal_estimator_call_present" in report["reasons"]
+
+
+def test_strategy_safety_rejects_missing_risk_flatten_hook():
+    source = SAFE_SOURCE.replace(
+        "\n    def _risk_flatten_request_payload(self, pair, reason, kill_payload):\n        pass\n",
+        "\n",
+    )
+
+    report = report_for(source)
+
+    assert report["ok"] is False
+    assert "_risk_flatten_request_payload_missing" in report["reasons"]

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-26T22:29:30Z",
+  "generated_at": "2026-05-26T22:56:31Z",
   "observed": {
     "defaults": {
       "can_short": false,
@@ -42,6 +42,16 @@
         "pair",
         "quote_side",
         "rate"
+      ],
+      "_risk_flatten_cloid": [
+        "self",
+        "client_order_id"
+      ],
+      "_risk_flatten_request_payload": [
+        "self",
+        "pair",
+        "reason",
+        "kill_payload"
       ],
       "adjust_entry_price": [
         "self",

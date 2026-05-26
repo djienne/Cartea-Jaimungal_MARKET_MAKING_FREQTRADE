@@ -216,7 +216,17 @@ def build_strategy_safety_report(
     ]
     if signatures.get("custom_stake_amount", [])[:9] != expected_stake_signature:
         reasons.append("custom_stake_amount_signature_mismatch")
-    for callback in ("confirm_trade_entry", "confirm_trade_exit", "custom_exit_price", "custom_stake_amount", "leverage", "adjust_entry_price", "adjust_exit_price"):
+    for callback in (
+        "confirm_trade_entry",
+        "confirm_trade_exit",
+        "custom_exit_price",
+        "custom_stake_amount",
+        "leverage",
+        "adjust_entry_price",
+        "adjust_exit_price",
+        "_risk_flatten_request_payload",
+        "_risk_flatten_cloid",
+    ):
         if callback not in signatures:
             reasons.append(f"{callback}_missing")
     if "_price_tick_safe" not in signatures:
@@ -270,6 +280,8 @@ def build_strategy_safety_report(
                     "confirm_trade_exit",
                     "adjust_entry_price",
                     "adjust_exit_price",
+                    "_risk_flatten_request_payload",
+                    "_risk_flatten_cloid",
                     "_price_tick_safe",
                 )
             },

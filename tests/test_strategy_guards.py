@@ -1757,17 +1757,29 @@ def test_unexpected_short_position_rejects_entry_and_kills_strategy():
     assert not bot.trading_enabled
     assert bot.fail_closed_reason == "unexpected_short_position"
     assert bot.exchange.cancelled_pair == "ETH/USDC:USDC"
-    assert [event for event, _ in events] == ["kill_switch", "entry_rejected"]
+    assert [event for event, _ in events] == ["kill_switch", "risk_flatten_requested", "entry_rejected"]
     assert events[0][1] == {
         "reason": "unexpected_short_position",
         "pair": "ETH/USDC:USDC",
         "signed_base_position": -0.02,
         "cancel_open_orders_requested": 0,
         "cancel_method": "cancel_all_orders",
+        "risk_flatten_request_emitted": True,
+        "risk_action_id": "risk-000000000001",
     }
+    assert events[1][1]["risk_action_id"] == "risk-000000000001"
     assert events[1][1]["reason"] == "unexpected_short_position"
-    assert events[1][1]["signed_base_position"] == -0.02
-    assert events[1][1]["q"] == 0
+    assert events[1][1]["flatten_side"] == "buy"
+    assert events[1][1]["size_base"] == 0.02
+    assert events[1][1]["reference_price"] == 100.0
+    assert events[1][1]["order_type"] == "limit"
+    assert events[1][1]["time_in_force"] == "Ioc"
+    assert events[1][1]["reduce_only"] is True
+    assert events[1][1]["client_order_id"].startswith("risk|sess=freqtrade|rid=risk-000000000001|mode=flatten")
+    assert events[1][1]["cloid"].startswith("0x")
+    assert events[2][1]["reason"] == "unexpected_short_position"
+    assert events[2][1]["signed_base_position"] == -0.02
+    assert events[2][1]["q"] == 0
 
 
 def test_kill_switch_cancels_open_orders_with_cancel_order_fallback():
@@ -1808,9 +1820,35 @@ def test_kill_switch_cancels_open_orders_with_cancel_order_fallback():
                 "cancel_source": "exchange_open_orders",
                 "cancelled_order_ids": ["eth-open"],
                 "cancel_errors": [],
+                "risk_flatten_request_emitted": False,
             },
         )
     ]
+
+
+def test_kill_switch_emits_reduce_only_flatten_request_for_remaining_long_position():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.exchange.positions = [{"symbol": "ETH/USDC:USDC", "side": "long", "contracts": "0.02"}]
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    bot._trigger_kill_switch("position_limit_reached", {"pair": "ETH/USDC:USDC", "price": 125.0})
+
+    assert [event for event, _ in events] == ["kill_switch", "risk_flatten_requested"]
+    assert events[0][1]["risk_flatten_request_emitted"] is True
+    flatten = events[1][1]
+    assert flatten["risk_action_id"] == "risk-000000000001"
+    assert flatten["reason"] == "position_limit_reached"
+    assert flatten["signed_base_position"] == 0.02
+    assert flatten["flatten_side"] == "sell"
+    assert flatten["size_base"] == 0.02
+    assert flatten["reference_price"] == 125.0
+    assert flatten["notional_usdc"] == 2.5
+    assert flatten["executor"] == "hyperliquid_risk_executor.py"
+    assert flatten["executor_mode"] == "submit-flatten"
+    assert flatten["requires_env"] == "HYPERLIQUID_RISK_FLATTEN_ALLOW=1"
+    assert flatten["requires_acknowledgement"] == "--acknowledge-risk-reducing-taker"
 
 
 def test_daily_loss_triggers_kill_switch():
@@ -1900,6 +1938,9 @@ def test_duplicate_fill_does_not_double_count_realized_pnl():
 def test_adjust_exit_price_reprices_passive_ask():
     bot = make_bot()
     bot.trading_enabled = True
+    bot.config["custom_price_max_distance_ratio"] = 0.05
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
     DummyTrade._open_trades = [DummyTrade(amount=0.01)]
     trade = DummyTrade(amount=0.01)
     order = types.SimpleNamespace()
@@ -1916,6 +1957,11 @@ def test_adjust_exit_price_reprices_passive_ask():
     )
 
     assert adjusted > 100.0
+    assert events[0][0] == "quote_decision"
+    assert events[0][1]["action"] == "adjust_exit"
+    assert events[0][1]["decision"] == "accept"
+    assert events[0][1]["custom_price_distance_ratio"] is not None
+    assert events[0][1]["custom_price_max_distance_ratio"] == 0.05
 
 
 def test_adjust_entry_price_cancels_open_order_when_params_are_stale():

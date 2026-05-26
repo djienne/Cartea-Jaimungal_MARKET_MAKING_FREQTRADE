@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 301 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 303 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -220,9 +220,14 @@ Generated from the current local worktree after the latest safety-gate run.
   daily loss limits, consecutive-loss counts, and consecutive-loss limits.
   Kill switches now try `cancel_all_orders` when available and fall back to
   per-order cancellation from exchange open-order sources when possible, while
-  logging the cancel method, order ids, request count, and cancel errors. Tests
-  cover drawdown kills, consecutive-loss kills, duplicate fill-PnL
-  deduplication, and cancel-order fallback behavior.
+  logging the cancel method, order ids, request count, and cancel errors. If a
+  non-zero signed base position remains visible after the kill switch, the
+  strategy emits a `risk_flatten_requested` audit event with a deterministic
+  risk action id, reduce-only IOC side/size, reference price, readable client
+  order id, Hyperliquid `cloid`, and explicit external-executor
+  acknowledgement requirements. Tests cover drawdown kills, consecutive-loss
+  kills, duplicate fill-PnL deduplication, flatten request logging, and
+  cancel-order fallback behavior.
 - HJB parameter audit trail:
   HJB refresh events and quote decisions now carry a compact parameter snapshot
   plus `hjb_param_fingerprint`, so a quote can be tied back to the exact kappa,
@@ -299,7 +304,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, fee evidence evaluator and capture normalizer, price and amount rounding guards, final confirm-time tick/lot safety guards, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` and account fee-tier evidence are not verified. |
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, atomic strategy-facing snapshot copies, schema v2 tests, status locking, process-level estimator locking, deterministic kappa -> epsilon -> raw-lambda updater order, snapshot validation for timestamped windows/fit diagnostics/toxicity diagnostics, `lambda0_fit` enforcement for HJB lambda, row-timestamp-based collector freshness validation, and no hardcoded symbol fallback when the strategy has no active pair. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, quote-quality ratio gates, price-density/max-gap coverage gates, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
-| Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, accepted-order quote linkage, fill-to-order-attempt reconciliation, freshness-age fields, stable quote IDs, HJB parameter fingerprints, fee agreement snapshots, canary-relevant health fields, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, realized-PnL risk updates, delayed fill markouts, post-only reject-rate enforcement, kill-switch cancellation fallback, guarded reduce-only IOC flatten scaffold, and kill-switch tests/log artifacts exist. |
+| Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, accepted-order quote linkage, fill-to-order-attempt reconciliation, freshness-age fields, stable quote IDs, HJB parameter fingerprints, fee agreement snapshots, canary-relevant health fields, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, realized-PnL risk updates, delayed fill markouts, post-only reject-rate enforcement, kill-switch cancellation fallback, strategy-side `risk_flatten_requested` audit events, guarded reduce-only IOC flatten scaffold, and kill-switch tests/log artifacts exist. |
 | Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gate 6 now has a log/artifact verifier with live fill-to-quote reconciliation, and live strategy enablement is gated on deployment-stage artifacts. Gates 4-6 still require external/manual evidence. |
 
 ## Remaining Required Gates

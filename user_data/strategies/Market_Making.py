@@ -212,6 +212,7 @@ class Market_Making(IStrategy):
     _daily_realized_pnl_usdc: float = 0.0
     _daily_risk_date: str | None = None
     _consecutive_losses: int = 0
+    _risk_action_sequence: int = 0
 
     # Use limit orders for all operations to ensure maker fees
     order_types = {
@@ -1577,7 +1578,114 @@ class Market_Making(IStrategy):
             payload.update(self._cancel_open_orders_for_kill_switch(pair))
         except Exception as exc:
             payload["cancel_error"] = str(exc)
+        flatten_request = None
+        try:
+            flatten_request = self._risk_flatten_request_payload(str(pair), reason, payload) if pair else None
+            if flatten_request is not None:
+                payload["risk_flatten_request_emitted"] = True
+                payload["risk_action_id"] = flatten_request.get("risk_action_id")
+            else:
+                payload["risk_flatten_request_emitted"] = False
+        except Exception as exc:
+            payload["risk_flatten_request_emitted"] = False
+            payload["risk_flatten_request_error"] = str(exc)
         self._debug_log_event("kill_switch", {"reason": reason, **payload})
+        if flatten_request is not None:
+            self._debug_log_event("risk_flatten_requested", flatten_request)
+
+    def _next_risk_action_id(self) -> str:
+        sequence = int(getattr(self, "_risk_action_sequence", 0)) + 1
+        self._risk_action_sequence = sequence
+        return f"risk-{sequence:012d}"
+
+    def _risk_session_id(self) -> str:
+        mm_config = self._mm_config()
+        for value in (
+            mm_config.get("session_id"),
+            getattr(self, "config", {}).get("bot_name") if isinstance(getattr(self, "config", {}), dict) else None,
+        ):
+            if value not in (None, ""):
+                return str(value)
+        return "freqtrade"
+
+    def _risk_flatten_client_order_id(self, session_id: str, risk_action_id: str, side: str, reason: str) -> str:
+        return "|".join(
+            [
+                "risk",
+                f"sess={session_id or 'unknown'}",
+                f"rid={risk_action_id or 'unknown'}",
+                "mode=flatten",
+                f"side={side}",
+                f"reason={reason or 'unspecified'}",
+            ]
+        )
+
+    def _risk_flatten_cloid(self, client_order_id: str) -> str:
+        return "0x" + hashlib.sha256(str(client_order_id).encode("utf-8")).hexdigest()[:32]
+
+    def _risk_flatten_reference_price(
+        self,
+        pair: str,
+        payload: dict[str, Any],
+    ) -> tuple[float | None, str]:
+        for key in ("price", "reference_rate", "mid", "current_rate", "proposed_rate", "rate"):
+            value = self._finite_float_or_none(payload.get(key))
+            if value is not None and value > 0:
+                return float(value), str(key)
+        snapshot, book_reason = self._book_snapshot(pair)
+        if snapshot is not None:
+            value = self._finite_float_or_none(snapshot.get("mid"))
+            if value is not None and value > 0:
+                return float(value), "orderbook_mid"
+        return None, book_reason
+
+    def _risk_flatten_request_payload(
+        self,
+        pair: str,
+        reason: str,
+        kill_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        signed_base = self._finite_float_or_none(kill_payload.get("signed_base_position"))
+        if signed_base is None:
+            signed_base = self._signed_base_position(pair)
+        if signed_base is None or abs(float(signed_base)) <= 1e-12:
+            return None
+
+        side = "sell" if float(signed_base) > 0 else "buy"
+        reference_price, reference_source = self._risk_flatten_reference_price(pair, kill_payload)
+        size_base = abs(float(signed_base))
+        notional = size_base * reference_price if reference_price is not None else None
+        risk_action_id = self._next_risk_action_id()
+        session_id = self._risk_session_id()
+        client_order_id = self._risk_flatten_client_order_id(session_id, risk_action_id, side, reason)
+        max_notional = float(self.max_notional_exposure_usdc)
+        return {
+            "risk_action_id": risk_action_id,
+            "session_id": session_id,
+            "pair": pair,
+            "symbol": self._symbol_from_pair(pair),
+            "reason": reason,
+            "signed_base_position": float(signed_base),
+            "flatten_side": side,
+            "size_base": float(size_base),
+            "reference_price": float(reference_price) if reference_price is not None else None,
+            "reference_price_source": reference_source,
+            "notional_usdc": float(notional) if notional is not None else None,
+            "max_notional_usdc": max_notional,
+            "exceeds_default_flatten_notional_cap": bool(notional is not None and max_notional > 0 and notional > max_notional),
+            "executor": "hyperliquid_risk_executor.py",
+            "executor_mode": "submit-flatten",
+            "order_type": "limit",
+            "time_in_force": "Ioc",
+            "reduce_only": True,
+            "client_order_id": client_order_id,
+            "cloid": self._risk_flatten_cloid(client_order_id),
+            "requires_env": "HYPERLIQUID_RISK_FLATTEN_ALLOW=1",
+            "requires_acknowledgement": "--acknowledge-risk-reducing-taker",
+            "dry_run": bool(getattr(self, "config", {}).get("dry_run", True))
+            if isinstance(getattr(self, "config", {}), dict)
+            else True,
+        }
 
     def _next_quote_id(self) -> str:
         sequence = int(getattr(self, "_quote_id_sequence", 0)) + 1
@@ -3820,7 +3928,11 @@ class Market_Making(IStrategy):
 
         self._log_spread("bid_adjust", mid_price, delta_total, delta_source)
 
-        ok, reason = self._maker_safe(pair, "bid", returned_rate)
+        distance_ok, distance_reason, distance_payload = self._custom_price_distance_valid(returned_rate, proposed_rate)
+        if not distance_ok:
+            ok, reason = False, distance_reason
+        else:
+            ok, reason = self._maker_safe(pair, "bid", returned_rate)
         self._log_quote_decision(
             pair=pair,
             symbol=symbol,
@@ -3840,6 +3952,7 @@ class Market_Making(IStrategy):
                 "current_order_rate": float(current_order_rate),
                 "cancel_open_order": not ok,
                 "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                **distance_payload,
             },
         )
 
@@ -3915,7 +4028,11 @@ class Market_Making(IStrategy):
 
         self._log_spread("ask_adjust", mid_price, delta_total, delta_source)
 
-        ok, reason = self._maker_safe(pair, "ask", returned_rate)
+        distance_ok, distance_reason, distance_payload = self._custom_price_distance_valid(returned_rate, proposed_rate)
+        if not distance_ok:
+            ok, reason = False, distance_reason
+        else:
+            ok, reason = self._maker_safe(pair, "ask", returned_rate)
         self._log_quote_decision(
             pair=pair,
             symbol=symbol,
@@ -3936,6 +4053,7 @@ class Market_Making(IStrategy):
                 "exit_tag": exit_tag,
                 "cancel_open_order": not ok,
                 "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                **distance_payload,
             },
         )
 
