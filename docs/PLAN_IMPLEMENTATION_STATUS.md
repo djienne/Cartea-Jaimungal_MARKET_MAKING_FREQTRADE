@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 214 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 215 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -159,8 +159,11 @@ Generated from the current local worktree after the latest safety-gate run.
   acknowledgement by default and only passes it through with the explicit
   `--manual-monitoring-ack` flag after actual monitored canary sessions. It
   also accepts `--audit-log-input` so retained canary logs can be evaluated by
-  the same full gate runner. The current report is expected to be `ok=false`
-  until Gates 4-5 pass and real canary sessions are supplied.
+  the same full gate runner. Accepted quote and fill evidence must now carry
+  `trading_enabled=true` and `dry_run=false`, so live health events cannot be
+  combined with unrelated research/dry-run quotes to satisfy canary session
+  eligibility. The current report is expected to be `ok=false` until Gates 4-5
+  pass and real canary sessions are supplied.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and

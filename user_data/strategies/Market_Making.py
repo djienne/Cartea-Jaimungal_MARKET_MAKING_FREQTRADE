@@ -2839,6 +2839,7 @@ class Market_Making(IStrategy):
         return True
 
     def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:
+        config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
         raw_liquidity = (
             getattr(order, "liquidity", None)
             or getattr(order, "ft_liquidity", None)
@@ -2864,6 +2865,8 @@ class Market_Making(IStrategy):
 
         payload = {
             "pair": pair,
+            "trading_enabled": bool(self.trading_enabled),
+            "dry_run": bool(config.get("dry_run", True)),
             "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
             "order_id": order_id,
             "raw_liquidity": raw_liquidity,

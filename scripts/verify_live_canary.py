@@ -139,6 +139,13 @@ def event_symbol(event: dict[str, Any]) -> str | None:
     return None
 
 
+def is_live_enabled_event(event: dict[str, Any]) -> bool:
+    return (
+        bool_value(event.get("trading_enabled")) is True
+        and bool_value(event.get("dry_run")) is False
+    )
+
+
 def group_sessions(events: Iterable[dict[str, Any]], *, session_gap_minutes: float) -> list[dict[str, Any]]:
     timed = [(event_time(event), event) for event in events]
     timed = [(dt, event) for dt, event in timed if dt is not None]
@@ -183,6 +190,13 @@ def summarize_session(key: str, items: list[tuple[datetime, dict[str, Any]]]) ->
     fills = [event for event in events if event.get("event") == "fill"]
     quote_decisions = [event for event in events if event.get("event") == "quote_decision"]
     accepted_quotes = [event for event in quote_decisions if event.get("decision") == "accept"]
+    live_accepted_quotes = [event for event in accepted_quotes if is_live_enabled_event(event)]
+    live_maker_fills = [
+        event
+        for event in fills
+        if canonical_liquidity(event.get("liquidity")) == "maker"
+        and is_live_enabled_event(event)
+    ]
     health = [event for event in events if event.get("event") == "health"]
     return {
         "session_id": key,
@@ -193,7 +207,9 @@ def summarize_session(key: str, items: list[tuple[datetime, dict[str, Any]]]) ->
         "health_events": len(health),
         "quote_decisions": len(quote_decisions),
         "accepted_quotes": len(accepted_quotes),
+        "live_accepted_quotes": len(live_accepted_quotes),
         "maker_fills": sum(1 for event in fills if canonical_liquidity(event.get("liquidity")) == "maker"),
+        "live_maker_fills": len(live_maker_fills),
         "taker_fills": sum(1 for event in fills if canonical_liquidity(event.get("liquidity")) == "taker"),
         "kill_switches": sum(1 for event in events if event.get("event") == "kill_switch"),
         "live_health_events": sum(
@@ -294,10 +310,13 @@ def accepted_quote_failures(events: list[dict[str, Any]]) -> dict[str, int]:
         "accepted_quote_not_post_only": 0,
         "accepted_quote_post_only_unverified": 0,
         "accepted_quote_missing_fee_agreement": 0,
+        "accepted_quote_not_live_enabled": 0,
     }
     for event in events:
         if event.get("event") != "quote_decision" or event.get("decision") != "accept":
             continue
+        if not is_live_enabled_event(event):
+            counters["accepted_quote_not_live_enabled"] += 1
         if bool_value(event.get("params_fresh")) is not True:
             counters["accepted_quote_stale_params"] += 1
         if bool_value(event.get("collector_fresh")) is not True:
@@ -440,7 +459,7 @@ def build_live_canary_report(
         for session in sessions
         if session["duration_minutes"] >= float(min_session_minutes)
         and session["live_health_events"] > 0
-        and (session["accepted_quotes"] > 0 or session["maker_fills"] > 0)
+        and (session["live_accepted_quotes"] > 0 or session["live_maker_fills"] > 0)
     ]
     if len(eligible_sessions) < int(min_sessions):
         reasons.append(f"insufficient_canary_sessions:{len(eligible_sessions)}<min_{int(min_sessions)}")
@@ -454,6 +473,9 @@ def build_live_canary_report(
         reasons.append(f"taker_fills_seen:{len(taker_fills)}")
     if unknown_fill_liquidity:
         reasons.append(f"unknown_fill_liquidity:{len(unknown_fill_liquidity)}")
+    non_live_fills = [event for event in fill_events if not is_live_enabled_event(event)]
+    if non_live_fills:
+        reasons.append(f"fill_not_live_enabled:{len(non_live_fills)}")
 
     kill_switches = [event for event in events if event.get("event") == "kill_switch"]
     if kill_switches:

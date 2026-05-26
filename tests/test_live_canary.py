@@ -41,6 +41,8 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
             "event": "quote_decision",
             "ts": iso(start + timedelta(seconds=10)),
             "decision": "accept",
+            "trading_enabled": True,
+            "dry_run": False,
             "params_fresh": True,
             "collector_fresh": True,
             "book_fresh": True,
@@ -52,6 +54,8 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
         {
             "event": "fill",
             "ts": iso(start + timedelta(seconds=20)),
+            "trading_enabled": True,
+            "dry_run": False,
             "liquidity": "maker",
             "actual_fee_rate": 0.00015,
             **common,
@@ -125,6 +129,8 @@ def test_live_canary_report_rejects_taker_and_stale_accepted_quote():
             "ts": iso(start + timedelta(seconds=30)),
             "session_id": "s1",
             "decision": "accept",
+            "trading_enabled": True,
+            "dry_run": False,
             "params_fresh": False,
             "collector_fresh": True,
             "book_fresh": True,
@@ -138,6 +144,8 @@ def test_live_canary_report_rejects_taker_and_stale_accepted_quote():
             "event": "fill",
             "ts": iso(start + timedelta(seconds=40)),
             "session_id": "s1",
+            "trading_enabled": True,
+            "dry_run": False,
             "liquidity": "taker",
         }
     )
@@ -195,6 +203,8 @@ def test_live_canary_report_rejects_second_symbol_in_quote_events():
             "session_id": "s1",
             "symbol": "BTC",
             "decision": "accept",
+            "trading_enabled": True,
+            "dry_run": False,
             "params_fresh": True,
             "collector_fresh": True,
             "book_fresh": True,
@@ -219,6 +229,32 @@ def test_live_canary_report_rejects_second_symbol_in_quote_events():
     assert report["ok"] is False
     assert "too_many_symbols" in report["reasons"]
     assert report["health_failures"]["too_many_symbols"] == ["BTC", "ETH"]
+
+
+def test_live_canary_report_rejects_non_live_quote_and_fill_evidence():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events[1]["dry_run"] = True
+    events[2].pop("trading_enabled")
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "accepted_quote_not_live_enabled:1" in report["reasons"]
+    assert "fill_not_live_enabled:1" in report["reasons"]
+    assert "insufficient_canary_sessions:0<min_1" in report["reasons"]
+    assert report["sessions"][0]["live_accepted_quotes"] == 0
+    assert report["sessions"][0]["live_maker_fills"] == 0
 
 
 def test_live_canary_report_rejects_param_or_hjb_errors():
