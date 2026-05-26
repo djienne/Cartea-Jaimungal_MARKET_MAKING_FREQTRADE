@@ -220,6 +220,81 @@ def add_series_evidence_reasons(
                 reasons.append(f"{series_key}_nonfinite:{idx}:{key}")
 
 
+def add_depth_ratio_reasons(metrics: dict[str, Any], reasons: list[str]) -> None:
+    quote_attempts = int(metrics.get("quote_attempts") or 0)
+    maker_fills = int(metrics.get("maker_fills") or 0)
+    attempts_by_depth = metrics.get("quote_attempts_by_depth") or {}
+    fills_by_depth = metrics.get("fills_by_depth") or {}
+    ratios_by_depth = metrics.get("fill_ratio_by_depth") or {}
+
+    if quote_attempts > 0 and not isinstance(attempts_by_depth, dict):
+        reasons.append("invalid_quote_attempts_by_depth")
+        attempts_by_depth = {}
+    if maker_fills > 0 and not isinstance(fills_by_depth, dict):
+        reasons.append("invalid_fills_by_depth")
+        fills_by_depth = {}
+    if quote_attempts > 0 and not isinstance(ratios_by_depth, dict):
+        reasons.append("invalid_fill_ratio_by_depth")
+        ratios_by_depth = {}
+
+    if quote_attempts > 0 and not attempts_by_depth:
+        reasons.append("missing_quote_attempts_by_depth")
+    if quote_attempts > 0 and not ratios_by_depth:
+        reasons.append("missing_fill_ratio_by_depth")
+    if maker_fills > 0 and not fills_by_depth:
+        reasons.append("missing_fills_by_depth")
+
+    parsed_attempts: dict[str, int] = {}
+    parsed_fills: dict[str, int] = {}
+    for key, value in attempts_by_depth.items():
+        try:
+            attempts = int(value)
+        except Exception:
+            reasons.append(f"noninteger_quote_attempts_by_depth:{key}")
+            continue
+        if attempts <= 0:
+            reasons.append(f"nonpositive_quote_attempts_by_depth:{key}")
+            continue
+        parsed_attempts[str(key)] = attempts
+
+    for key, value in fills_by_depth.items():
+        try:
+            fills = int(value)
+        except Exception:
+            reasons.append(f"noninteger_fills_by_depth:{key}")
+            continue
+        if fills < 0:
+            reasons.append(f"negative_fills_by_depth:{key}")
+            continue
+        parsed_fills[str(key)] = fills
+        if str(key) not in parsed_attempts:
+            reasons.append(f"fills_depth_without_quote_attempts:{key}")
+        elif fills > parsed_attempts[str(key)]:
+            reasons.append(f"fills_exceed_quote_attempts_by_depth:{key}")
+
+    if maker_fills > 0 and sum(parsed_fills.values()) != maker_fills:
+        reasons.append(f"fills_by_depth_total_mismatch:{sum(parsed_fills.values())}!={maker_fills}")
+
+    for key, value in ratios_by_depth.items():
+        ratio = float(value) if is_finite_number(value) else None
+        if ratio is None:
+            reasons.append(f"nonfinite_fill_ratio_by_depth:{key}")
+            continue
+        if ratio < 0.0 or ratio > 1.0:
+            reasons.append(f"fill_ratio_by_depth_out_of_range:{key}:{ratio:.6f}")
+            continue
+        attempts = parsed_attempts.get(str(key))
+        if attempts is None:
+            reasons.append(f"ratio_depth_without_quote_attempts:{key}")
+            continue
+        expected = parsed_fills.get(str(key), 0) / max(attempts, 1)
+        if abs(ratio - expected) > 1e-12:
+            reasons.append(f"fill_ratio_by_depth_mismatch:{key}:{ratio:.12f}!={expected:.12f}")
+
+    if maker_fills > 0 and not any(float(value) > 0.0 for value in ratios_by_depth.values() if is_finite_number(value)):
+        reasons.append("no_positive_fill_ratio_by_depth")
+
+
 def replay_data_fresh_guard(
     metrics: dict[str, Any],
     *,
@@ -320,6 +395,7 @@ def evaluate_metrics(
         series_key="toxicity_series",
         numeric_fields=TOXICITY_SERIES_FIELDS,
     )
+    add_depth_ratio_reasons(metrics, reasons)
 
     days = coverage_days(metrics)
     if days < float(min_days):

@@ -34,6 +34,9 @@ def minimal_metrics(**overrides):
         "fees_usdc": 0.1,
         "mark_to_market_pnl_usdc": 0.9,
         "inventory_histogram": {"0": 900, "1": 100},
+        "quote_attempts_by_depth": {"bid:5.00bps": 900, "ask:5.00bps": 100},
+        "fills_by_depth": {"bid:5.00bps": 9, "ask:5.00bps": 1},
+        "fill_ratio_by_depth": {"bid:5.00bps": 0.01, "ask:5.00bps": 0.01},
         "markout_samples": [
             {"horizon_ms": horizon_ms, "markout_usdc": 0.02}
             for horizon_ms in REQUIRED_MARKOUT_HORIZONS_MS
@@ -134,6 +137,27 @@ def test_evaluate_metrics_requires_all_plan_markout_horizons():
     assert "missing_markout_horizon:1000ms" in reasons
     assert "missing_markout_horizon:5000ms" in reasons
     assert "missing_markout_horizon:30000ms" in reasons
+
+
+def test_evaluate_metrics_rejects_inconsistent_fill_ratio_by_depth():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(
+            quote_attempts_by_depth={"bid:5.00bps": 10},
+            fills_by_depth={"bid:5.00bps": 2},
+            fill_ratio_by_depth={"bid:5.00bps": 0.1},
+        ),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+    )
+
+    assert not ok
+    assert "fills_by_depth_total_mismatch:2!=10" in reasons
+    assert "fill_ratio_by_depth_mismatch:bid:5.00bps:0.100000000000!=0.200000000000" in reasons
 
 
 def test_evaluate_metrics_rejects_corrupt_parameter_and_toxicity_series():

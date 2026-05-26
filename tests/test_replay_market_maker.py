@@ -23,6 +23,7 @@ from replay_market_maker import (  # noqa: E402
     normalize_price_bbo,
     normalize_timestamp_column,
     post_only_check,
+    quote_depth_key,
     run_replay,
     selected_parquet_files,
 )
@@ -328,6 +329,61 @@ def test_replay_counts_maintenance_margin_breaches(monkeypatch):
 
     assert metrics.liquidation_breach_events > 0
     assert metrics.min_liquidation_buffer_usdc < 0
+
+
+def test_replay_reports_fill_ratio_by_depth_as_ratio(monkeypatch):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame(
+        [
+            {"timestamp": ts0, "bid": 100.0, "ask": 101.0},
+            {"timestamp": ts0 + pd.Timedelta(seconds=1), "bid": 100.0, "ask": 101.0},
+        ]
+    )
+    trades = pd.DataFrame(
+        [
+            {"timestamp": ts0, "price": 100.0, "size": 0.01},
+        ]
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.0, None, {}),
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.01,
+            q_max=3,
+            decision_latency_ms=0,
+            order_ack_latency_ms=0,
+            cancel_latency_ms=1000,
+        ),
+        params,
+    )
+
+    depth_key = quote_depth_key("bid", 100.5, 100.0)
+    payload = metrics.to_dict()
+    assert metrics.quote_attempts_by_depth == {depth_key: 2}
+    assert metrics.fills_by_depth == {depth_key: 1}
+    assert payload["quote_attempts_by_depth"] == {depth_key: 2}
+    assert payload["fills_by_depth"] == {depth_key: 1}
+    assert payload["fill_ratio_by_depth"] == {depth_key: 0.5}
 
 
 def test_first_level_size_reads_nested_orderbook_levels():

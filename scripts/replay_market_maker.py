@@ -82,7 +82,8 @@ class ReplayMetrics:
     time_at_q_boundary: dict[str, int] = field(default_factory=lambda: {"q_min": 0, "q_max": 0})
     inventory_histogram: dict[int, int] = field(default_factory=dict)
     pnl_by_side: dict[str, float] = field(default_factory=lambda: {"bid": 0.0, "ask": 0.0})
-    fill_ratio_by_depth: dict[str, int] = field(default_factory=dict)
+    quote_attempts_by_depth: dict[str, int] = field(default_factory=dict)
+    fills_by_depth: dict[str, int] = field(default_factory=dict)
     markout_samples: list[dict[str, Any]] = field(default_factory=list)
     parameter_series: list[dict[str, Any]] = field(default_factory=list)
     toxicity_series: list[dict[str, Any]] = field(default_factory=list)
@@ -90,6 +91,10 @@ class ReplayMetrics:
     def to_dict(self) -> dict[str, Any]:
         attempts = max(self.quote_attempts, 1)
         fills = self.maker_fills + self.taker_fills
+        fill_ratio_by_depth = {
+            key: self.fills_by_depth.get(key, 0) / max(attempts_at_depth, 1)
+            for key, attempts_at_depth in sorted(self.quote_attempts_by_depth.items())
+        }
         return {
             "input_files": self.input_files,
             "input_rows": self.input_rows,
@@ -122,7 +127,9 @@ class ReplayMetrics:
             "time_at_q_boundary": self.time_at_q_boundary,
             "inventory_histogram": self.inventory_histogram,
             "pnl_by_side": self.pnl_by_side,
-            "fill_ratio_by_depth": self.fill_ratio_by_depth,
+            "quote_attempts_by_depth": self.quote_attempts_by_depth,
+            "fills_by_depth": self.fills_by_depth,
+            "fill_ratio_by_depth": fill_ratio_by_depth,
             "markout_samples": self.markout_samples,
             "parameter_series": self.parameter_series,
             "toxicity_series": self.toxicity_series,
@@ -370,6 +377,11 @@ def markout_value(side: str, fill_price: float, future_mid_price: float) -> floa
     return fill_price - future_mid_price
 
 
+def quote_depth_key(side: str, mid: float, price: float) -> str:
+    depth_bps = 0.0 if mid <= 0 else abs(float(mid) - float(price)) / float(mid) * 10_000.0
+    return f"{side}:{depth_bps:.2f}bps"
+
+
 def update_margin_metrics(metrics: ReplayMetrics, config: ReplayConfig, mid: float) -> None:
     notional = abs(float(metrics.inventory_base)) * float(mid)
     leverage = max(float(config.leverage), 1e-12)
@@ -573,6 +585,8 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             if side == "ask" and inventory_at_decision <= 0:
                 continue
             metrics.quote_attempts += 1
+            depth_key = quote_depth_key(side, mid, price)
+            metrics.quote_attempts_by_depth[depth_key] = metrics.quote_attempts_by_depth.get(depth_key, 0) + 1
             ok, _reason = post_only_check(side, price, best_bid, best_ask)
             if not ok:
                 metrics.post_only_rejects += 1
@@ -620,9 +634,7 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                 metrics.cash_usdc += notional - fee
                 metrics.pnl_by_side["ask"] -= fee
             metrics.realized_spread_usdc += abs(mid - price) * fill_size
-            depth_bps = 0.0 if mid <= 0 else abs(mid - price) / mid * 10_000.0
-            depth_key = f"{side}:{depth_bps:.2f}bps"
-            metrics.fill_ratio_by_depth[depth_key] = metrics.fill_ratio_by_depth.get(depth_key, 0) + 1
+            metrics.fills_by_depth[depth_key] = metrics.fills_by_depth.get(depth_key, 0) + 1
             fill_ts = fill_trade["timestamp"]
             for horizon_ms in MARKOUT_HORIZONS_MS:
                 future = future_mid(prices, fill_ts, horizon_ms, config.mid_fallback)

@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 215 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 217 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -100,11 +100,14 @@ Generated from the current local worktree after the latest safety-gate run.
   maker/taker fee schedule, so fee-sensitivity variants change quoted depth as
   well as fees paid. Replay now tracks starting equity, leverage, notional
   exposure, margin used, maintenance margin, equity, liquidation buffer, and
-  maintenance-margin breach counts. Replay parameter and toxicity time series
-  are timestamped with source/unit metadata, and the acceptance report rejects
-  missing, untimestamped, or non-finite parameter/toxicity evidence. Replays
-  with maker fills must include the PLAN-required markout horizons of 100 ms,
-  1 s, 5 s, and 30 s. The report also includes refusal checks proving bad
+  maintenance-margin breach counts. Replay also records quote attempts by
+  depth, fills by depth, and computed fill ratios by depth; the acceptance
+  checker rejects inconsistent depth-count/ratio evidence. Replay parameter
+  and toxicity time series are timestamped with source/unit metadata, and the
+  acceptance report rejects missing, untimestamped, or non-finite
+  parameter/toxicity evidence. Replays with maker fills must include the
+  PLAN-required markout horizons of 100 ms, 1 s, 5 s, and 30 s. The report also
+  includes refusal checks proving bad
   parameters and stale collector data reject quoting, and fails any replay
   variant that breaches maintenance margin. The safety-gate runner
   defaults to a short capped replay artifact, but exposes replay acceptance
