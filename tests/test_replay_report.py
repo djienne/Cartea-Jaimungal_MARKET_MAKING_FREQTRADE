@@ -10,6 +10,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from run_replay_report import (  # noqa: E402
+    REQUIRED_MARKOUT_HORIZONS_MS,
     build_refusal_checks,
     coverage_days,
     directional_drift_ratio,
@@ -33,7 +34,10 @@ def minimal_metrics(**overrides):
         "fees_usdc": 0.1,
         "mark_to_market_pnl_usdc": 0.9,
         "inventory_histogram": {"0": 900, "1": 100},
-        "markout_samples": [{"horizon_ms": 100, "markout_usdc": 0.02}],
+        "markout_samples": [
+            {"horizon_ms": horizon_ms, "markout_usdc": 0.02}
+            for horizon_ms in REQUIRED_MARKOUT_HORIZONS_MS
+        ],
         "parameter_series": [
             {
                 "schema_version": 1,
@@ -112,6 +116,24 @@ def test_evaluate_metrics_requires_parameter_and_toxicity_series():
     assert not ok
     assert "missing_parameter_series" in reasons
     assert "missing_toxicity_series" in reasons
+
+
+def test_evaluate_metrics_requires_all_plan_markout_horizons():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(markout_samples=[{"horizon_ms": 100, "markout_usdc": 0.02}]),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+    )
+
+    assert not ok
+    assert "missing_markout_horizon:1000ms" in reasons
+    assert "missing_markout_horizon:5000ms" in reasons
+    assert "missing_markout_horizon:30000ms" in reasons
 
 
 def test_evaluate_metrics_rejects_corrupt_parameter_and_toxicity_series():

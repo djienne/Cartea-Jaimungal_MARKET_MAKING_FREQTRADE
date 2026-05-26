@@ -46,6 +46,8 @@ DEFAULT_VARIANTS = (
     ReplayVariant("params_hard", params_multiplier=1.2, epsilon_add=0.02),
 )
 
+REQUIRED_MARKOUT_HORIZONS_MS = (100, 1_000, 5_000, 30_000)
+
 
 def parse_ts(value: str | None) -> pd.Timestamp | None:
     if not value:
@@ -365,6 +367,10 @@ def evaluate_metrics(
     summary = markout_summary(metrics.get("markout_samples") or [])
     if maker_fills > 0 and not summary:
         reasons.append("missing_markout_samples")
+    if maker_fills > 0:
+        for horizon_ms in REQUIRED_MARKOUT_HORIZONS_MS:
+            if str(horizon_ms) not in summary:
+                reasons.append(f"missing_markout_horizon:{horizon_ms}ms")
     for horizon, stats in summary.items():
         if float(stats["mean_usdc"]) < float(min_mean_markout_usdc):
             reasons.append(
