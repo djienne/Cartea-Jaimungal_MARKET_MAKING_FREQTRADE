@@ -23,6 +23,11 @@ from hjb import compute_h_asymmetric
 MAKER_FEE = 0.00015
 TAKER_FEE = 0.00045
 MARKOUT_HORIZONS_MS = (100, 1_000, 5_000, 30_000)
+PARAMETER_SERIES_UNIT = {
+    "kappa": "1/USDC",
+    "lambda": "events/second",
+    "epsilon": "USDC",
+}
 
 
 @dataclass
@@ -250,6 +255,77 @@ def compute_hjb_cache(params: dict[str, float], q_max: int) -> dict:
     )
 
 
+def finite_float_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(parsed):
+        return None
+    return parsed
+
+
+def timestamp_iso(value: Any) -> str | None:
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return None
+    if pd.isna(ts):
+        return None
+    return ts.isoformat()
+
+
+def replay_parameter_snapshot(
+    config: ReplayConfig,
+    params: dict[str, float],
+    ts: Any,
+    *,
+    data_start: str | None,
+    data_end: str | None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "ts": timestamp_iso(ts),
+        "source": "static_replay_params",
+        "symbol": config.symbol,
+        "unit": dict(PARAMETER_SERIES_UNIT),
+        "data_start": data_start,
+        "data_end": data_end,
+        "kappa_plus": finite_float_or_none(params.get("kappa+")),
+        "kappa_minus": finite_float_or_none(params.get("kappa-")),
+        "lambda_plus": finite_float_or_none(params.get("lambda+")),
+        "lambda_minus": finite_float_or_none(params.get("lambda-")),
+        "epsilon_plus": finite_float_or_none(params.get("epsilon+")),
+        "epsilon_minus": finite_float_or_none(params.get("epsilon-")),
+    }
+
+
+def replay_toxicity_snapshot(
+    config: ReplayConfig,
+    params: dict[str, float],
+    ts: Any,
+    *,
+    data_start: str | None,
+    data_end: str | None,
+) -> dict[str, Any]:
+    kappa_plus = finite_float_or_none(params.get("kappa+")) or 0.0
+    kappa_minus = finite_float_or_none(params.get("kappa-")) or 0.0
+    epsilon_plus = finite_float_or_none(params.get("epsilon+")) or 0.0
+    epsilon_minus = finite_float_or_none(params.get("epsilon-")) or 0.0
+    return {
+        "schema_version": 1,
+        "ts": timestamp_iso(ts),
+        "source": "static_replay_params",
+        "symbol": config.symbol,
+        "unit": "kappa_times_epsilon",
+        "formula": "kappa * epsilon",
+        "data_start": data_start,
+        "data_end": data_end,
+        "toxicity_plus": kappa_plus * epsilon_plus,
+        "toxicity_minus": kappa_minus * epsilon_minus,
+    }
+
+
 def compute_quotes(
     mid: float,
     q: int,
@@ -443,20 +519,25 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     }
     metrics.data_start = prices.iloc[0]["timestamp"].isoformat()
     metrics.data_end = prices.iloc[-1]["timestamp"].isoformat()
-    metrics.parameter_series.append({
-        "symbol": config.symbol,
-        "kappa_plus": params.get("kappa+"),
-        "kappa_minus": params.get("kappa-"),
-        "lambda_plus": params.get("lambda+"),
-        "lambda_minus": params.get("lambda-"),
-        "epsilon_plus": params.get("epsilon+"),
-        "epsilon_minus": params.get("epsilon-"),
-    })
-    metrics.toxicity_series.append({
-        "symbol": config.symbol,
-        "toxicity_plus": float(params.get("kappa+", 0.0)) * float(params.get("epsilon+", 0.0)),
-        "toxicity_minus": float(params.get("kappa-", 0.0)) * float(params.get("epsilon-", 0.0)),
-    })
+    snapshot_ts = prices.iloc[0]["timestamp"]
+    metrics.parameter_series.append(
+        replay_parameter_snapshot(
+            config,
+            params,
+            snapshot_ts,
+            data_start=metrics.data_start,
+            data_end=metrics.data_end,
+        )
+    )
+    metrics.toxicity_series.append(
+        replay_toxicity_snapshot(
+            config,
+            params,
+            snapshot_ts,
+            data_start=metrics.data_start,
+            data_end=metrics.data_end,
+        )
+    )
 
     total_quote_latency_ms = config.decision_latency_ms + config.order_ack_latency_ms
     hjb_cache = compute_hjb_cache(params, config.q_max)

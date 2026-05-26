@@ -160,6 +160,64 @@ def replay_param_guard(params: dict[str, Any], *, max_toxicity: float = 1.5) -> 
     return True, "ok"
 
 
+PARAMETER_SERIES_FIELDS = (
+    "kappa_plus",
+    "kappa_minus",
+    "lambda_plus",
+    "lambda_minus",
+    "epsilon_plus",
+    "epsilon_minus",
+)
+TOXICITY_SERIES_FIELDS = ("toxicity_plus", "toxicity_minus")
+
+
+def is_valid_timestamp(value: Any) -> bool:
+    if not value:
+        return False
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return False
+    return not bool(pd.isna(ts))
+
+
+def is_finite_number(value: Any) -> bool:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return False
+    return bool(np.isfinite(parsed))
+
+
+def add_series_evidence_reasons(
+    metrics: dict[str, Any],
+    reasons: list[str],
+    *,
+    series_key: str,
+    numeric_fields: tuple[str, ...],
+) -> None:
+    series = metrics.get(series_key) or []
+    if not isinstance(series, list) or not series:
+        reasons.append(f"missing_{series_key}")
+        return
+
+    for idx, row in enumerate(series):
+        if not isinstance(row, dict):
+            reasons.append(f"invalid_{series_key}_row:{idx}")
+            continue
+        if not is_valid_timestamp(row.get("ts")):
+            reasons.append(f"{series_key}_missing_or_invalid_ts:{idx}")
+        if not row.get("source"):
+            reasons.append(f"{series_key}_missing_source:{idx}")
+        if not row.get("schema_version"):
+            reasons.append(f"{series_key}_missing_schema_version:{idx}")
+        if not row.get("symbol"):
+            reasons.append(f"{series_key}_missing_symbol:{idx}")
+        for key in numeric_fields:
+            if not is_finite_number(row.get(key)):
+                reasons.append(f"{series_key}_nonfinite:{idx}:{key}")
+
+
 def replay_data_fresh_guard(
     metrics: dict[str, Any],
     *,
@@ -248,6 +306,19 @@ def evaluate_metrics(
     max_directional_drift_ratio: float,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
+    add_series_evidence_reasons(
+        metrics,
+        reasons,
+        series_key="parameter_series",
+        numeric_fields=PARAMETER_SERIES_FIELDS,
+    )
+    add_series_evidence_reasons(
+        metrics,
+        reasons,
+        series_key="toxicity_series",
+        numeric_fields=TOXICITY_SERIES_FIELDS,
+    )
+
     days = coverage_days(metrics)
     if days < float(min_days):
         reasons.append(f"insufficient_coverage_days:{days:.6f}<min_{float(min_days):.6f}")

@@ -108,6 +108,19 @@ def test_replay_applies_latency_and_records_markouts(monkeypatch):
     assert metrics.markout_samples
     assert metrics.mark_to_market_pnl_usdc != 0.0
     assert metrics.input_rows["prices"] == 3
+    parameter_snapshot = metrics.parameter_series[0]
+    toxicity_snapshot = metrics.toxicity_series[0]
+    assert parameter_snapshot["ts"] == ts0.isoformat()
+    assert parameter_snapshot["source"] == "static_replay_params"
+    assert parameter_snapshot["schema_version"] == 1
+    assert parameter_snapshot["unit"]["kappa"] == "1/USDC"
+    assert parameter_snapshot["data_start"] == ts0.isoformat()
+    assert parameter_snapshot["data_end"] == (ts0 + pd.Timedelta(seconds=2)).isoformat()
+    assert parameter_snapshot["kappa_plus"] == 100.0
+    assert toxicity_snapshot["ts"] == ts0.isoformat()
+    assert toxicity_snapshot["source"] == "static_replay_params"
+    assert toxicity_snapshot["unit"] == "kappa_times_epsilon"
+    assert toxicity_snapshot["toxicity_plus"] == 0.0
 
 
 def test_matching_trade_waits_for_queue_ahead_volume():

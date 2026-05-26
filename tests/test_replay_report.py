@@ -34,6 +34,30 @@ def minimal_metrics(**overrides):
         "mark_to_market_pnl_usdc": 0.9,
         "inventory_histogram": {"0": 900, "1": 100},
         "markout_samples": [{"horizon_ms": 100, "markout_usdc": 0.02}],
+        "parameter_series": [
+            {
+                "schema_version": 1,
+                "ts": "2026-05-25T00:00:00Z",
+                "source": "static_replay_params",
+                "symbol": "ETH",
+                "kappa_plus": 2.0,
+                "kappa_minus": 2.0,
+                "lambda_plus": 0.1,
+                "lambda_minus": 0.1,
+                "epsilon_plus": 0.0,
+                "epsilon_minus": 0.0,
+            }
+        ],
+        "toxicity_series": [
+            {
+                "schema_version": 1,
+                "ts": "2026-05-25T00:00:00Z",
+                "source": "static_replay_params",
+                "symbol": "ETH",
+                "toxicity_plus": 0.0,
+                "toxicity_minus": 0.0,
+            }
+        ],
     }
     payload.update(overrides)
     return payload
@@ -71,6 +95,67 @@ def test_evaluate_metrics_passes_when_acceptance_is_met():
 
     assert ok
     assert reasons == []
+
+
+def test_evaluate_metrics_requires_parameter_and_toxicity_series():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(parameter_series=[], toxicity_series=[]),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+    )
+
+    assert not ok
+    assert "missing_parameter_series" in reasons
+    assert "missing_toxicity_series" in reasons
+
+
+def test_evaluate_metrics_rejects_corrupt_parameter_and_toxicity_series():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(
+            parameter_series=[
+                {
+                    "schema_version": 1,
+                    "ts": "not-a-date",
+                    "source": "static_replay_params",
+                    "symbol": "ETH",
+                    "kappa_plus": "bad",
+                    "kappa_minus": 2.0,
+                    "lambda_plus": 0.1,
+                    "lambda_minus": 0.1,
+                    "epsilon_plus": 0.0,
+                    "epsilon_minus": 0.0,
+                }
+            ],
+            toxicity_series=[
+                {
+                    "schema_version": 1,
+                    "ts": "",
+                    "source": "static_replay_params",
+                    "symbol": "ETH",
+                    "toxicity_plus": float("nan"),
+                    "toxicity_minus": 0.0,
+                }
+            ],
+        ),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+    )
+
+    assert not ok
+    assert "parameter_series_missing_or_invalid_ts:0" in reasons
+    assert "parameter_series_nonfinite:0:kappa_plus" in reasons
+    assert "toxicity_series_missing_or_invalid_ts:0" in reasons
+    assert "toxicity_series_nonfinite:0:toxicity_plus" in reasons
 
 
 def test_evaluate_metrics_reports_insufficient_coverage_and_no_fills():

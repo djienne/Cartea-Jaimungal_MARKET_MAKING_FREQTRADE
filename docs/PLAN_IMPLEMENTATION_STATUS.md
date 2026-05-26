@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 195 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 197 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -99,9 +99,12 @@ Generated from the current local worktree after the latest safety-gate run.
   maker/taker fee schedule, so fee-sensitivity variants change quoted depth as
   well as fees paid. Replay now tracks starting equity, leverage, notional
   exposure, margin used, maintenance margin, equity, liquidation buffer, and
-  maintenance-margin breach counts. The report also includes refusal checks
-  proving bad parameters and stale collector data reject quoting, and fails any
-  replay variant that breaches maintenance margin. The safety-gate runner
+  maintenance-margin breach counts. Replay parameter and toxicity time series
+  are timestamped with source/unit metadata, and the acceptance report rejects
+  missing, untimestamped, or non-finite parameter/toxicity evidence. The report
+  also includes refusal checks proving bad parameters and stale collector data
+  reject quoting, and fails any replay variant that breaches maintenance
+  margin. The safety-gate runner
   defaults to a short capped replay artifact, but exposes replay acceptance
   symbol, mid, shard cap, event cap, and require-pass knobs so a promotion run
   can regenerate the same report from the full multi-day dataset. The current
