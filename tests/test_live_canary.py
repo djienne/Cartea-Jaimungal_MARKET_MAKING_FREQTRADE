@@ -377,6 +377,53 @@ def test_live_canary_report_rejects_fill_without_matching_order_attempt():
     assert report["fill_reconciliation"]["matched_live_maker_fills_to_order_attempt"] == 0
 
 
+def test_live_canary_report_rejects_non_post_only_order_attempt():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events[2]["post_only"] = False
+    events[2]["time_in_force"] = "GTC"
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "accepted_order_attempt_not_post_only:1" in report["reasons"]
+    assert "live_maker_fills_without_matching_order_attempt:1" in report["reasons"]
+    assert report["fill_reconciliation"]["matched_live_maker_fills_to_order_attempt"] == 0
+
+
+def test_live_canary_report_rejects_fill_without_quote_id():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events[3].pop("quote_id")
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "live_maker_fills_missing_quote_id:1" in report["reasons"]
+    assert report["fill_reconciliation"]["matched_live_maker_fills"] == 1
+    assert report["fill_reconciliation"]["matched_live_maker_fills_to_order_attempt"] == 1
+
+
 def test_live_canary_report_rejects_param_or_hjb_errors():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
     now = start + timedelta(hours=1)

@@ -363,6 +363,33 @@ def accepted_quote_failures(events: list[dict[str, Any]]) -> dict[str, int]:
     return {key: value for key, value in counters.items() if value}
 
 
+def accepted_order_attempt_failures(events: list[dict[str, Any]]) -> dict[str, int]:
+    counters = {
+        "accepted_order_attempt_not_live_enabled": 0,
+        "accepted_order_attempt_not_post_only": 0,
+        "accepted_order_attempt_post_only_unverified": 0,
+        "accepted_order_attempt_missing_quote_id": 0,
+        "accepted_order_attempt_missing_match_fields": 0,
+    }
+    for event in events:
+        if event.get("event") != "order_attempt_accepted":
+            continue
+        if not is_live_enabled_event(event):
+            counters["accepted_order_attempt_not_live_enabled"] += 1
+        if bool_value(event.get("post_only")) is not True:
+            counters["accepted_order_attempt_not_post_only"] += 1
+        if bool_value(event.get("post_only_verified")) is not True:
+            counters["accepted_order_attempt_post_only_unverified"] += 1
+        if text_or_none(event.get("quote_id")) is None:
+            counters["accepted_order_attempt_missing_quote_id"] += 1
+        ts = event_time(event)
+        side = quote_side(event.get("quote_side") or event.get("side"))
+        price = event_price(event, ("rate", "price", "rounded_price"))
+        if ts is None or side is None or price is None:
+            counters["accepted_order_attempt_missing_match_fields"] += 1
+    return {key: value for key, value in counters.items() if value}
+
+
 def live_maker_fill_reconciliation(
     events: list[dict[str, Any]],
     *,
@@ -374,6 +401,7 @@ def live_maker_fill_reconciliation(
         "live_maker_fills_missing_quote_side": 0,
         "live_maker_fills_missing_price": 0,
         "live_maker_fills_missing_amount": 0,
+        "live_maker_fills_missing_quote_id": 0,
         "live_maker_fills_without_matching_quote": 0,
         "live_maker_fills_without_matching_order_attempt": 0,
     }
@@ -405,6 +433,13 @@ def live_maker_fill_reconciliation(
             continue
         if not is_live_enabled_event(event):
             continue
+        if bool_value(event.get("post_only")) is not True:
+            continue
+        if bool_value(event.get("post_only_verified")) is not True:
+            continue
+        quote_id = text_or_none(event.get("quote_id"))
+        if quote_id is None:
+            continue
         ts = event_time(event)
         side = quote_side(event.get("quote_side") or event.get("side"))
         price = event_price(event, ("rate", "price", "rounded_price"))
@@ -417,7 +452,7 @@ def live_maker_fill_reconciliation(
                 "symbol": normalized_symbol(event_symbol(event)),
                 "side": side,
                 "price": price,
-                "quote_id": text_or_none(event.get("quote_id")),
+                "quote_id": quote_id,
             }
         )
 
@@ -473,6 +508,8 @@ def live_maker_fill_reconciliation(
         fill_quote_id = text_or_none(fill.get("quote_id"))
         if fill_quote_id is not None:
             fills_with_quote_id += 1
+        else:
+            counters["live_maker_fills_missing_quote_id"] += 1
         if fill_order_id in (None, ""):
             counters["live_maker_fills_missing_order_id"] += 1
         if fill_side is None:
@@ -708,6 +745,8 @@ def build_live_canary_report(
 
     quote_failures = accepted_quote_failures(events)
     reasons.extend(f"{key}:{value}" for key, value in sorted(quote_failures.items()))
+    order_attempt_failures = accepted_order_attempt_failures(events)
+    reasons.extend(f"{key}:{value}" for key, value in sorted(order_attempt_failures.items()))
 
     fill_reconciliation = live_maker_fill_reconciliation(
         events,
@@ -756,6 +795,7 @@ def build_live_canary_report(
             "unknown_liquidity": len(unknown_fill_liquidity),
         },
         "quote_failures": quote_failures,
+        "order_attempt_failures": order_attempt_failures,
         "fill_reconciliation": fill_reconciliation,
         "health_failures": health_issues,
         "error_events": error_counts,

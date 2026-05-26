@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 242 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 244 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -181,8 +181,9 @@ Generated from the current local worktree after the latest safety-gate run.
   and fill logs infer that quote ID from the accepted-order attempt cache when
   the exchange/Freqtrade order object does not preserve an explicit client or
   quote id. The accepted-order log also carries live/dry-run and TIF context,
-  and the canary verifier requires live maker fills to reconcile to both a prior
-  accepted quote decision and a prior accepted order attempt.
+  and the canary verifier requires live maker fills to include a quote ID and
+  reconcile to both a prior accepted quote decision and a prior live, post-only,
+  quote-linked accepted order attempt.
 - Live canary evidence report:
   `scripts/verify_live_canary.py` writes `docs/live_canary_report.json` from
   audit logs and the prior post-only, fee, and replay gate artifacts. It
@@ -205,12 +206,12 @@ Generated from the current local worktree after the latest safety-gate run.
   combined with unrelated research/dry-run quotes to satisfy canary session
   eligibility. Live maker fills must carry an order id plus side/price/amount
   fields and reconcile to both a prior live accepted quote and a prior live
-  `order_attempt_accepted` event in the same canary session by symbol, side,
-  and price, so unrelated exchange fills cannot satisfy the canary. When fills
-  carry a `quote_id`, the canary verifier treats that ID as authoritative and
-  will not accept a same-price fill linked to a different quote decision or
-  order attempt. The current report is expected to be `ok=false` until Gates 4-5
-  pass and real canary sessions are supplied.
+  post-only `order_attempt_accepted` event with a quote ID in the same canary
+  session by symbol, side, and price, so unrelated exchange fills cannot satisfy
+  the canary. Maker fills must carry a `quote_id`; the canary verifier treats
+  that ID as authoritative and will not accept a same-price fill linked to a
+  different quote decision or order attempt. The current report is expected to
+  be `ok=false` until Gates 4-5 pass and real canary sessions are supplied.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and
