@@ -34,7 +34,9 @@ python scripts/verify_post_only_mapping.py --mode plan --output docs/post_only_p
 ```
 
 Submit-mode probes require explicit acknowledgement and should be run only on
-testnet or tiny canary size:
+testnet or tiny canary size. They cap submit notional at 25 USDC by default
+through `--max-notional-usdc`; raise that only when the exchange minimum
+requires it and retain the reason with the evidence:
 
 ```bash
 $env:HYPERLIQUID_POST_ONLY_PROBE_ALLOW = "1"

@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 250 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 252 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -46,7 +46,8 @@ Generated from the current local worktree after the latest safety-gate run.
   submit artifacts so stale probes cannot unlock Gate 4. It also requires
   actual exchange/order TIF confirmation as `Alo`, separate from submitted
   params, and passive probes must prove a resting order or maker fill rather
-  than only a zero-fill cancel.
+  than only a zero-fill cancel. CCXT submit-mode probes also enforce a default
+  25 USDC notional cap unless the operator explicitly raises the limit.
 - Direct `Alo` fallback scaffold:
   `scripts/hyperliquid_alo_executor.py` builds Hyperliquid SDK orders with
   `order_type={"limit": {"tif": "Alo"}}`, applies local maker-safety from BBO,

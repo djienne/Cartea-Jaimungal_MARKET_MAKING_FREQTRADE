@@ -24,6 +24,8 @@ from verify_post_only_mapping import (  # noqa: E402
     evaluate_crossing_result,
     evaluate_evidence,
     evaluate_passive_result,
+    notional_limit_check,
+    notional_usdc,
     render_plan,
 )
 from validate_hl_data import latest_parquet_timestamp, validate_parquet_file, validate_symbol  # noqa: E402
@@ -108,10 +110,30 @@ def test_raw_lambda_writer_is_monitoring_only(tmp_path):
 
 def test_post_only_probe_defaults_to_alo_without_network():
     params = alo_order_params()
+    plan = render_plan("ETH/USDC:USDC")
 
     assert params["timeInForce"] == "Alo"
     assert params["postOnly"] is True
-    assert "safe_default" in render_plan("ETH/USDC:USDC")
+    assert "safe_default" in plan
+    assert "submit notional is within the configured cap" in plan
+
+
+def test_post_only_probe_notional_guard_rejects_oversized_submit():
+    ok, reason, payload = notional_limit_check(amount=0.02, price=2000.0, max_notional_usdc=25.0)
+
+    assert notional_usdc(0.02, 2000.0) == 40.0
+    assert ok is False
+    assert reason == "notional_limit_exceeded"
+    assert payload["notional_usdc"] == 40.0
+    assert payload["max_notional_usdc"] == 25.0
+
+
+def test_post_only_probe_notional_guard_accepts_tiny_submit():
+    ok, reason, payload = notional_limit_check(amount=0.01, price=2000.0, max_notional_usdc=25.0)
+
+    assert ok is True
+    assert reason == "ok"
+    assert payload["notional_usdc"] == 20.0
 
 
 def test_post_only_crossing_evidence_requires_cancel_or_reject():

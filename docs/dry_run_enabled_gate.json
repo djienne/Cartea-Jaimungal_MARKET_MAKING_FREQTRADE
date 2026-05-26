@@ -9,7 +9,7 @@
     "container_running": true,
     "inspect_output": "true",
     "inspect_returncode": 0,
-    "waited_seconds": 240.0
+    "waited_seconds": 240.016
   },
   "docker_start_returncode": 0,
   "docker_stop_returncode": 0,
@@ -18,23 +18,23 @@
   "health_events": 3,
   "latest_accepted_quote": {
     "action": "entry",
-    "best_ask": 2123.2,
-    "best_bid": 2123.1,
-    "book_age_ms": 646.796,
+    "best_ask": 2120.3,
+    "best_bid": 2120.2,
+    "book_age_ms": 578.601,
     "book_fresh": true,
     "book_fresh_reason": "ok",
-    "bps": 5.518735746510466,
-    "collector_age_seconds": 81.37704,
+    "bps": 5.5221807806644,
+    "collector_age_seconds": 113.67819,
     "collector_fresh": true,
     "collector_fresh_reason": "ok",
     "decision": "accept",
     "delta_model": 0.5347653800203696,
-    "delta_total": 1.1717103800203694,
+    "delta_total": 1.1708403800203695,
     "dry_run": true,
     "event": "quote_decision",
     "expected_tif": "GTC",
     "expected_tif_canonical": "gtc",
-    "fee_cushion": 0.6369449999999999,
+    "fee_cushion": 0.636075,
     "fee_snapshot": {
       "actual_fee_matches_strategy": null,
       "actual_fee_rate": null,
@@ -47,10 +47,10 @@
       "fee_agreement_ok": true,
       "strategy_maker_fee_rate": 0.00015
     },
-    "hjb_age_seconds": 166.973651,
+    "hjb_age_seconds": 187.82356,
     "hjb_generation": 1,
-    "hjb_last_refresh_ts": "2026-05-26T13:01:45.801Z",
-    "hjb_param_fingerprint": "0512d8d266508603",
+    "hjb_last_refresh_ts": "2026-05-26T13:15:49.461Z",
+    "hjb_param_fingerprint": "6779beee33f3cd38",
     "hjb_params": {
       "epsilon_minus": 0.0,
       "epsilon_plus": 0.0,
@@ -66,34 +66,34 @@
       "sources": {
         "epsilon": {
           "estimator": "gate_static",
-          "generated_at": "2026-05-26T13:01:19Z",
+          "generated_at": "2026-05-26T13:15:23Z",
           "n_buy_events": 10,
           "n_sell_events": 10,
           "schema_version": 2,
           "status": "ok",
-          "window_end": "2026-05-26T13:01:19Z",
+          "window_end": "2026-05-26T13:15:23Z",
           "window_ms": 200,
-          "window_start": "2026-05-26T13:01:19Z"
+          "window_start": "2026-05-26T13:15:23Z"
         },
         "kappa": {
-          "generated_at": "2026-05-26T13:01:19Z",
+          "generated_at": "2026-05-26T13:15:23Z",
           "n_points_minus": 5,
           "n_points_plus": 5,
           "r2_minus": 0.5,
           "r2_plus": 0.5,
           "schema_version": 2,
           "status": "ok",
-          "window_end": "2026-05-26T13:01:19Z",
-          "window_start": "2026-05-26T13:01:19Z"
+          "window_end": "2026-05-26T13:15:23Z",
+          "window_start": "2026-05-26T13:15:23Z"
         },
         "lambda": {
-          "generated_at": "2026-05-26T13:01:19Z",
+          "generated_at": "2026-05-26T13:15:23Z",
           "lambda_source": "lambda0_fit",
           "n_trades": 50,
           "schema_version": 2,
           "status": "ok",
-          "window_end": "2026-05-26T13:01:19Z",
-          "window_start": "2026-05-26T13:01:19Z"
+          "window_end": "2026-05-26T13:15:23Z",
+          "window_start": "2026-05-26T13:15:23Z"
         }
       },
       "symbol": "ETH",
@@ -101,9 +101,9 @@
     },
     "inventory_unit_base": 0.01,
     "max_abs_inventory_units": 3,
-    "mid": 2123.1499999999996,
+    "mid": 2120.25,
     "pair": "ETH/USDC:USDC",
-    "param_age_seconds": 193.774796,
+    "param_age_seconds": 214.284601,
     "params": {
       "epsilon_minus": 0.0,
       "epsilon_plus": 0.0,
@@ -119,34 +119,34 @@
       "sources": {
         "epsilon": {
           "estimator": "gate_static",
-          "generated_at": "2026-05-26T13:01:19Z",
+          "generated_at": "2026-05-26T13:15:23Z",
           "n_buy_events": 10,
           "n_sell_events": 10,
           "schema_version": 2,
           "status": "ok",
-          "window_end": "2026-05-26T13:01:19Z",
+          "window_end": "2026-05-26T13:15:23Z",
           "window_ms": 200,
-          "window_start": "2026-05-26T13:01:19Z"
+          "window_start": "2026-05-26T13:15:23Z"
         },
         "kappa": {
-          "generated_at": "2026-05-26T13:01:19Z",
+          "generated_at": "2026-05-26T13:15:23Z",
           "n_points_minus": 5,
           "n_points_plus": 5,
           "r2_minus": 0.5,
           "r2_plus": 0.5,
           "schema_version": 2,
           "status": "ok",
-          "window_end": "2026-05-26T13:01:19Z",
-          "window_start": "2026-05-26T13:01:19Z"
+          "window_end": "2026-05-26T13:15:23Z",
+          "window_start": "2026-05-26T13:15:23Z"
         },
         "lambda": {
-          "generated_at": "2026-05-26T13:01:19Z",
+          "generated_at": "2026-05-26T13:15:23Z",
           "lambda_source": "lambda0_fit",
           "n_trades": 50,
           "schema_version": 2,
           "status": "ok",
-          "window_end": "2026-05-26T13:01:19Z",
-          "window_start": "2026-05-26T13:01:19Z"
+          "window_end": "2026-05-26T13:15:23Z",
+          "window_start": "2026-05-26T13:15:23Z"
         }
       },
       "symbol": "ETH",
@@ -157,24 +157,24 @@
     "position": 0.0,
     "post_only": false,
     "post_only_verified": false,
-    "proposed_rate": 2123.1,
+    "proposed_rate": 2120.2,
     "q": 0,
     "quote_id": "quote-000000000005",
-    "raw_price": 2121.9782896199795,
+    "raw_price": 2119.0791596199797,
     "reason": "ok",
-    "rounded_price": 2121.9782896199795,
+    "rounded_price": 2119.0791596199797,
     "side": "bid",
     "signed_base_position": 0.0,
     "symbol": "ETH",
     "trading_enabled": true,
-    "ts": "2026-05-26T13:04:32.777Z"
+    "ts": "2026-05-26T13:18:57.289Z"
   },
   "latest_health": {
     "accepted_order_attempts": 3,
-    "book_age_ms": 284.383,
+    "book_age_ms": 468.1,
     "book_fresh": true,
     "book_fresh_reason": "ok",
-    "collector_age_seconds": 46.881627,
+    "collector_age_seconds": 69.358689,
     "collector_fresh": true,
     "collector_fresh_reason": "ok",
     "consecutive_losses": 0,
@@ -199,7 +199,7 @@
       "fee_agreement_ok": true,
       "strategy_maker_fee_rate": 0.00015
     },
-    "hjb_age_seconds": 132.478238,
+    "hjb_age_seconds": 143.504059,
     "hjb_fresh": true,
     "inventory_unit_base": 0.01,
     "kill_on_taker_fill": true,
@@ -216,7 +216,7 @@
     "open_orders": 3,
     "open_orders_source": "accepted_confirmation_estimate",
     "pair": "ETH/USDC:USDC",
-    "param_age_seconds": 159.279383,
+    "param_age_seconds": 169.9651,
     "params_fresh": true,
     "params_fresh_reason": "ok",
     "position": 0.0,
@@ -231,27 +231,28 @@
     "taker_fills": 0,
     "tradable_balance_ratio": 0.1,
     "trading_enabled": true,
-    "ts": "2026-05-26T13:03:59.304Z",
+    "ts": "2026-05-26T13:18:13.476Z",
     "unrealized_pnl": 0.0
   },
   "log_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\freqtrade_gate_enabled.log",
   "max_attempts": 2,
   "mm_debug_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\mm_debug.jsonl",
   "order_evidence": [
-    "2026-05-26 13:02:30,866 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.2367777961998 and price: 2123.67777961998 ...",
-    "2026-05-26 13:02:31,161 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779800550.878337 was created for ETH/USDC:USDC and status is open.",
-    "2026-05-26 13:02:59,198 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.2287801961998 and price: 2122.87801961998 ...",
-    "2026-05-26 13:02:59,463 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779800579.207564 was created for ETH/USDC:USDC and status is open.",
-    "2026-05-26 13:03:55,646 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.219782896199796 and price: 2121.9782896199795 ...",
-    "2026-05-26 13:03:55,909 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779800635.655524 was created for ETH/USDC:USDC and status is open.",
-    "2026-05-26 13:04:05,718 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779800645.459826 was created for ETH/USDC:USDC and status is open.",
-    "2026-05-26 13:04:32,799 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.219782896199796 and price: 2121.9782896199795 ...",
-    "2026-05-26 13:04:33,093 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779800672.813275 was created for ETH/USDC:USDC and status is open."
+    "2026-05-26 13:16:33,274 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.205787096199796 and price: 2120.5787096199797 ...",
+    "2026-05-26 13:16:33,547 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779801393.286141 was created for ETH/USDC:USDC and status is open.",
+    "2026-05-26 13:17:02,474 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.197789496199793 and price: 2119.7789496199794 ...",
+    "2026-05-26 13:17:02,987 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779801422.490103 was created for ETH/USDC:USDC and status is open.",
+    "2026-05-26 13:18:07,858 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.196789796199802 and price: 2119.67897961998 ...",
+    "2026-05-26 13:18:08,126 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779801487.872287 was created for ETH/USDC:USDC and status is open.",
+    "2026-05-26 13:18:27,227 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.200788596199796 and price: 2120.0788596199795 ...",
+    "2026-05-26 13:18:27,496 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779801507.236161 was created for ETH/USDC:USDC and status is open.",
+    "2026-05-26 13:18:57,318 - freqtrade.freqtradebot - INFO - Long signal found: about create a new trade for ETH/USDC:USDC with stake_amount: 21.190791596199798 and price: 2119.0791596199797 ...",
+    "2026-05-26 13:18:57,643 - freqtrade.freqtradebot - INFO - Order dry_run_buy_ETH/USDC:USDC_1779801537.331901 was created for ETH/USDC:USDC and status is open."
   ],
   "passed": true,
   "previous_attempts": [],
   "quote_decisions": 5,
   "reason": "ok",
   "retry_backoff_seconds": 90,
-  "started_at": "2026-05-26T13:01:19.921287Z"
+  "started_at": "2026-05-26T13:15:23.963849Z"
 }

@@ -6,6 +6,7 @@
   "required_evidence": [
     "submitted params contain timeInForce=Alo",
     "actual exchange/order time-in-force is confirmed as Alo",
+    "submit notional is within the configured cap, default 25.0 USDC",
     "crossing ALO order has zero filled amount",
     "crossing ALO order rejects/cancels/expires rather than rests",
     "passive ALO order rests or fills as maker only",

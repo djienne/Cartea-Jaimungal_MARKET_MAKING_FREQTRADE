@@ -75,6 +75,8 @@ These gates do not require a live exchange connection:
   `--post-only-crossing-result` and `--post-only-passive-result` artifact paths,
   and auto-detects `docs/post_only_crossing_result.json` plus
   `docs/post_only_passive_result.json` when those conventional files exist.
+  Submit-mode CCXT probes enforce a default 25 USDC notional cap unless the
+  operator explicitly raises `--max-notional-usdc`.
 - `direct_alo_adapter_plan`: writes `docs/direct_alo_adapter_plan.json`,
   documenting the no-network direct Hyperliquid SDK fallback path that submits
   `order_type={"limit": {"tif": "Alo"}}` only after local BBO maker-safety.

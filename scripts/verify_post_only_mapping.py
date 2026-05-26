@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_MAX_SUBMIT_NOTIONAL_USDC = 25.0
+
+
 def alo_order_params() -> dict[str, Any]:
     """Return the native Hyperliquid add-liquidity-only order parameters."""
     return {
@@ -59,6 +62,7 @@ def render_plan(symbol: str) -> str:
         "required_evidence": [
             "submitted params contain timeInForce=Alo",
             "actual exchange/order time-in-force is confirmed as Alo",
+            f"submit notional is within the configured cap, default {DEFAULT_MAX_SUBMIT_NOTIONAL_USDC} USDC",
             "crossing ALO order has zero filled amount",
             "crossing ALO order rejects/cancels/expires rather than rests",
             "passive ALO order rests or fills as maker only",
@@ -69,6 +73,35 @@ def render_plan(symbol: str) -> str:
         "safe_default": "no network call or order submission",
     }
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def notional_usdc(amount: float, price: float) -> float:
+    return abs(float(amount) * float(price))
+
+
+def notional_limit_check(
+    amount: float,
+    price: float,
+    max_notional_usdc: float | None,
+) -> tuple[bool, str, dict[str, Any]]:
+    notional = notional_usdc(amount, price)
+    payload = {
+        "notional_usdc": notional,
+        "max_notional_usdc": float(max_notional_usdc) if max_notional_usdc is not None else None,
+    }
+    if max_notional_usdc is not None and float(max_notional_usdc) > 0 and notional > float(max_notional_usdc):
+        return False, "notional_limit_exceeded", payload
+    return True, "ok", payload
+
+
+def enforce_notional_limit(amount: float, price: float, max_notional_usdc: float | None) -> dict[str, Any]:
+    ok, reason, payload = notional_limit_check(amount, price, max_notional_usdc)
+    if not ok:
+        raise SystemExit(
+            f"notional guard failed: {reason} "
+            f"({payload['notional_usdc']:.8f} > {payload['max_notional_usdc']:.8f} USDC)"
+        )
+    return {"ok": ok, "reason": reason, **payload}
 
 
 def find_nested_value(payload: Any, keys: set[str]) -> Any:
@@ -385,6 +418,7 @@ def submit_crossing_alo(args: argparse.Namespace) -> dict[str, Any]:
     if not orderbook.get("asks"):
         raise SystemExit("cannot submit crossing bid without a best ask")
     crossing_bid = float(orderbook["asks"][0][0])
+    notional_check = enforce_notional_limit(args.amount, crossing_bid, args.max_notional_usdc)
     params = alo_order_params()
     result = exchange.create_order(args.symbol, "limit", "buy", args.amount, crossing_bid, params)
     filled = float(result.get("filled") or 0.0)
@@ -402,6 +436,7 @@ def submit_crossing_alo(args: argparse.Namespace) -> dict[str, Any]:
         "submitted_side": "buy",
         "submitted_price": crossing_bid,
         "submitted_amount": args.amount,
+        "notional_check": notional_check,
         "submitted_params": params,
         "actual_time_in_force": actual_time_in_force({"raw_result": result}),
         "order_status": status,
@@ -428,6 +463,7 @@ def submit_passive_alo(args: argparse.Namespace) -> dict[str, Any]:
     if not orderbook.get("bids"):
         raise SystemExit("cannot submit passive bid without a best bid")
     passive_bid = float(orderbook["bids"][0][0])
+    notional_check = enforce_notional_limit(args.amount, passive_bid, args.max_notional_usdc)
     params = alo_order_params()
     result = exchange.create_order(args.symbol, "limit", "buy", args.amount, passive_bid, params)
     filled = float(result.get("filled") or 0.0)
@@ -447,6 +483,7 @@ def submit_passive_alo(args: argparse.Namespace) -> dict[str, Any]:
         "submitted_side": "buy",
         "submitted_price": passive_bid,
         "submitted_amount": args.amount,
+        "notional_check": notional_check,
         "submitted_params": params,
         "actual_time_in_force": actual_time_in_force({"raw_result": result}),
         "order_status": status,
@@ -479,6 +516,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--secret", default=None)
     parser.add_argument("--wallet", default=None)
     parser.add_argument("--amount", type=float, default=0.0)
+    parser.add_argument("--max-notional-usdc", type=float, default=DEFAULT_MAX_SUBMIT_NOTIONAL_USDC)
     parser.add_argument("--acknowledge-real-orders", action="store_true")
     parser.add_argument("--crossing-result", type=Path, default=None)
     parser.add_argument("--passive-result", type=Path, default=None)
