@@ -610,6 +610,30 @@ def test_custom_stake_amount_caps_to_one_inventory_unit():
     ) == 25.0
 
 
+def test_custom_stake_amount_rounds_base_amount_down_to_lot_step():
+    bot = make_bot()
+    bot.inventory_unit_base = 0.019
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    stake = bot.custom_stake_amount(
+        "ETH/USDC:USDC",
+        datetime.now(timezone.utc),
+        100.0,
+        proposed_stake=10.0,
+        min_stake=None,
+        max_stake=10.0,
+        entry_tag="mm_bid",
+        side="long",
+    )
+
+    assert stake == 1.0
+    assert events[0][0] == "stake_sized"
+    assert round(events[0][1]["raw_amount"], 6) == 0.019
+    assert events[0][1]["rounded_amount"] == 0.01
+    assert events[0][1]["amount_rounding_applied"] is True
+
+
 def test_confirm_entry_rejects_missing_hjb_cache():
     bot = make_bot()
     bot.trading_enabled = True

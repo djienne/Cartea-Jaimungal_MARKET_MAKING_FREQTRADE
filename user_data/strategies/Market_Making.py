@@ -2506,6 +2506,20 @@ class Market_Making(IStrategy):
             except Exception:
                 pass
         stake = min(stake, maximum)
+        raw_amount = stake / rate
+        rounded_amount = self._round_quote_amount(pair, raw_amount)
+        amount_rounding_applied = False
+        min_stake_value = None
+        if min_stake is not None:
+            try:
+                min_stake_value = float(min_stake)
+            except Exception:
+                min_stake_value = None
+        if rounded_amount > 0:
+            rounded_stake = min(float(rounded_amount) * rate, maximum, proposed)
+            if min_stake_value is None or rounded_stake >= min_stake_value:
+                amount_rounding_applied = rounded_stake < stake - max(1e-12, stake * 1e-9)
+                stake = rounded_stake
         self._debug_log_event(
             "stake_sized",
             {
@@ -2516,6 +2530,9 @@ class Market_Making(IStrategy):
                 "proposed_stake": proposed,
                 "returned_stake": stake,
                 "inventory_unit_base": float(self.inventory_unit_base),
+                "raw_amount": float(raw_amount),
+                "rounded_amount": float(rounded_amount),
+                "amount_rounding_applied": bool(amount_rounding_applied),
             },
         )
         return float(stake)

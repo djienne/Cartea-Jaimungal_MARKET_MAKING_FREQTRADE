@@ -12,9 +12,9 @@
   },
   "dependencies": {
     "fee": {
-      "age_seconds": 27.014159,
+      "age_seconds": 24.961242,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T06:54:47Z",
+      "generated_at": "2026-05-26T07:08:19Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -27,9 +27,9 @@
       "report_ok": false
     },
     "post_only": {
-      "age_seconds": 577.014159,
+      "age_seconds": 580.961242,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T06:45:37Z",
+      "generated_at": "2026-05-26T06:59:03Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -41,20 +41,24 @@
       "report_ok": false
     },
     "replay": {
-      "age_seconds": 1.014159,
+      "age_seconds": 0.961242,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T06:55:13Z",
+      "generated_at": "2026-05-26T07:08:43Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
-        "baseline:insufficient_coverage_days:0.005295<min_3.000000",
-        "fee_2x:insufficient_coverage_days:0.005295<min_3.000000",
+        "baseline:insufficient_coverage_days:0.003453<min_3.000000",
+        "baseline:no_maker_fills",
+        "fee_2x:insufficient_coverage_days:0.003453<min_3.000000",
         "fee_2x:no_maker_fills",
-        "latency_2x:insufficient_coverage_days:0.005295<min_3.000000",
-        "params_soft:insufficient_coverage_days:0.005295<min_3.000000",
-        "params_hard:insufficient_coverage_days:0.005295<min_3.000000"
+        "latency_2x:insufficient_coverage_days:0.003453<min_3.000000",
+        "latency_2x:no_maker_fills",
+        "params_soft:insufficient_coverage_days:0.003453<min_3.000000",
+        "params_soft:no_maker_fills",
+        "params_hard:insufficient_coverage_days:0.003453<min_3.000000",
+        "params_hard:no_maker_fills"
       ],
       "report_ok": false
     }
@@ -64,10 +68,10 @@
     "param_update_failed": 9,
     "param_update_rejected": 6
   },
-  "event_count": 2195,
+  "event_count": 2230,
   "event_freshness": {
-    "fresh": 2195,
-    "max_age_seconds": 61579.284159,
+    "fresh": 2230,
+    "max_age_seconds": 62389.231242,
     "max_allowed_age_seconds": 604800.0,
     "stale": 0,
     "timestamp_missing": 0
@@ -78,7 +82,7 @@
     "taker": 0,
     "unknown_liquidity": 11
   },
-  "generated_at": "2026-05-26T06:55:14Z",
+  "generated_at": "2026-05-26T07:08:43Z",
   "health_failures": {
     "no_live_health_events": true,
     "too_many_symbols": [
@@ -90,8 +94,8 @@
   "ok": false,
   "quote_failures": {
     "accepted_quote_missing_fee_agreement": 101,
-    "accepted_quote_not_post_only": 303,
-    "accepted_quote_post_only_unverified": 303,
+    "accepted_quote_not_post_only": 309,
+    "accepted_quote_post_only_unverified": 309,
     "accepted_quote_stale_collector": 10,
     "accepted_quote_stale_orderbook": 10,
     "accepted_quote_stale_params": 10
@@ -104,8 +108,8 @@
     "insufficient_canary_sessions:0<min_3",
     "unknown_fill_liquidity:11",
     "accepted_quote_missing_fee_agreement:101",
-    "accepted_quote_not_post_only:303",
-    "accepted_quote_post_only_unverified:303",
+    "accepted_quote_not_post_only:309",
+    "accepted_quote_post_only_unverified:309",
     "accepted_quote_stale_collector:10",
     "accepted_quote_stale_orderbook:10",
     "accepted_quote_stale_params:10",
@@ -116,15 +120,15 @@
   ],
   "sessions": [
     {
-      "accepted_quotes": 303,
-      "duration_minutes": 1025.3961833333333,
-      "end_ts": "2026-05-26T06:54:18.501000Z",
-      "events": 2195,
-      "health_events": 344,
+      "accepted_quotes": 309,
+      "duration_minutes": 1038.8545166666668,
+      "end_ts": "2026-05-26T07:07:46.001000Z",
+      "events": 2230,
+      "health_events": 349,
       "kill_switches": 0,
       "live_health_events": 0,
       "maker_fills": 0,
-      "quote_decisions": 303,
+      "quote_decisions": 309,
       "session_id": "implicit-1",
       "start_ts": "2026-05-25T13:48:54.730000Z",
       "taker_fills": 0
