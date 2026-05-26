@@ -1526,6 +1526,10 @@ class Market_Making(IStrategy):
     ) -> None:
         self._accepted_order_attempts = int(getattr(self, "_accepted_order_attempts", 0)) + 1
         quote_match = self._match_quote_link_cache("_accepted_quote_decisions", pair, quote_side, rate, current_time)
+        config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
+        expected_tif = self._expected_time_in_force(quote_side)
+        expected_tif_canonical = self._canonical_tif(expected_tif)
+        actual_tif_canonical = self._canonical_tif(time_in_force)
         self._remember_order_attempt(
             pair=pair,
             quote_side=quote_side,
@@ -1543,6 +1547,13 @@ class Market_Making(IStrategy):
                 "rate": float(rate),
                 "amount": float(amount),
                 "time_in_force": time_in_force,
+                "time_in_force_canonical": actual_tif_canonical,
+                "expected_tif": expected_tif,
+                "expected_tif_canonical": expected_tif_canonical,
+                "post_only": actual_tif_canonical == "post_only",
+                "post_only_verified": bool(self.post_only_verified),
+                "trading_enabled": bool(self.trading_enabled),
+                "dry_run": bool(config.get("dry_run", True)),
                 "quote_id": quote_match.get("quote_id") if quote_match else None,
                 "quote_id_source": "quote_decision_cache" if quote_match else "unmatched",
                 "accepted_order_attempts": int(getattr(self, "_accepted_order_attempts", 0)),

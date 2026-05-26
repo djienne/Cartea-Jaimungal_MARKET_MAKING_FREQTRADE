@@ -131,8 +131,9 @@ Optional Docker runtime gates:
   equity, liquidation buffer, and maintenance-margin breach counts; acceptance
   fails any variant with a maintenance-margin breach.
 - `replay_log_calibration_artifact`: parses the JSONL audit log from dry-run or
-  testnet, matches fills back to accepted quotes by pair/side/price/time window,
-  and writes `docs/replay_log_calibration.json` with observed fill
+  testnet, matches fills back to accepted quotes by quote id when available and
+  otherwise by pair/side/price/time window, and writes
+  `docs/replay_log_calibration.json` with observed fill
   probabilities by side and depth bucket, maker ratio, fee-rate summary, and
   markout summary. The artifact may be `usable_for_calibration=false` when the
   sample is too small; that is expected until enough dry-run/testnet fills
@@ -152,8 +153,9 @@ Optional Docker runtime gates:
   then writes `docs/live_canary_report.json`. It is expected to be `ok=false`
   until post-only, fee-tier, and multi-day replay gates are already `ok=true`
   and several tiny live sessions provide non-dry-run health, fresh accepted
-  quotes, maker-only fill evidence, no parameter/HJB/collector errors, no kill
-  switches, and an explicit manual-monitoring acknowledgement. Prior gate
+  quotes, final accepted order attempts, maker-only fill evidence, no
+  parameter/HJB/collector errors, no kill switches, and an explicit
+  manual-monitoring acknowledgement. Prior gate
   reports must carry fresh `generated_at` timestamps, and the canary session
   events themselves must be recent, so a newly generated report cannot reuse old
   live evidence. When `run_safety_gates.py --include-runtime` is used, this gate
@@ -264,8 +266,9 @@ python scripts/run_safety_gates.py --include-runtime --audit-log-input docs/live
 
   The report must be `ok=true` before any larger deployment. It checks the prior
   post-only, fee, and replay artifacts, then rejects taker fills, unknown fill
-  liquidity, kill switches, stale accepted quotes, parameter/HJB/collector error
-  events, excessive stake, excessive symbols, missing live health, and missing
+  liquidity, kill switches, stale accepted quotes, fills that do not reconcile
+  to a prior accepted order attempt, parameter/HJB/collector error events,
+  excessive stake, excessive symbols, missing live health, and missing
   manual-monitoring acknowledgement. The default dependency-report age is 86400
   seconds, and the default live canary event age is 604800 seconds; tighten
   those windows with `--max-dependency-report-age-seconds` and

@@ -843,6 +843,10 @@ def test_accepted_order_attempt_logs_matching_quote_id():
     assert events[1][0] == "order_attempt_accepted"
     assert accepted_payload["quote_id"] == quote_payload["quote_id"]
     assert accepted_payload["quote_id_source"] == "quote_decision_cache"
+    assert accepted_payload["trading_enabled"] is True
+    assert accepted_payload["dry_run"] is True
+    assert accepted_payload["post_only"] is False
+    assert accepted_payload["expected_tif"] == "GTC"
 
 
 def test_post_only_verified_rejects_gtc_exit_time_in_force():

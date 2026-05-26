@@ -56,6 +56,21 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
             **common,
         },
         {
+            "event": "order_attempt_accepted",
+            "quote_id": f"{session_id}-quote",
+            "ts": iso(start + timedelta(seconds=15)),
+            "pair": "ETH/USDC:USDC",
+            "side": "bid",
+            "rate": 100.0,
+            "amount": 0.01,
+            "time_in_force": "Alo",
+            "trading_enabled": True,
+            "dry_run": False,
+            "post_only": True,
+            "post_only_verified": True,
+            **common,
+        },
+        {
             "event": "fill",
             "quote_id": f"{session_id}-quote",
             "ts": iso(start + timedelta(seconds=20)),
@@ -109,7 +124,9 @@ def test_live_canary_report_passes_when_all_evidence_is_present():
     assert report["fills"]["maker"] == 3
     assert report["fills"]["taker"] == 0
     assert report["fill_reconciliation"]["matched_live_maker_fills"] == 3
+    assert report["fill_reconciliation"]["matched_live_maker_fills_to_order_attempt"] == 3
     assert report["fill_reconciliation"]["accepted_live_quotes_with_quote_id"] == 3
+    assert report["fill_reconciliation"]["accepted_live_order_attempts_with_quote_id"] == 3
     assert report["fill_reconciliation"]["live_maker_fills_with_quote_id"] == 3
 
 
@@ -249,7 +266,7 @@ def test_live_canary_report_rejects_non_live_quote_and_fill_evidence():
     now = start + timedelta(hours=1)
     events = canary_session("s1", start, minutes=2)
     events[1]["dry_run"] = True
-    events[2].pop("trading_enabled")
+    events[3].pop("trading_enabled")
 
     report = build_live_canary_report(
         events,
@@ -274,7 +291,7 @@ def test_live_canary_report_rejects_live_maker_fill_without_matching_quote():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
     now = start + timedelta(hours=1)
     events = canary_session("s1", start, minutes=2)
-    events[2]["price"] = 99.5
+    events[3]["price"] = 99.5
 
     report = build_live_canary_report(
         events,
@@ -296,7 +313,7 @@ def test_live_canary_report_rejects_live_maker_fill_without_order_id():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
     now = start + timedelta(hours=1)
     events = canary_session("s1", start, minutes=2)
-    events[2].pop("order_id")
+    events[3].pop("order_id")
 
     report = build_live_canary_report(
         events,
@@ -318,7 +335,7 @@ def test_live_canary_report_prefers_quote_id_over_price_match():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
     now = start + timedelta(hours=1)
     events = canary_session("s1", start, minutes=2)
-    events[2]["quote_id"] = "different-quote"
+    events[3]["quote_id"] = "different-quote"
 
     report = build_live_canary_report(
         events,
@@ -335,6 +352,29 @@ def test_live_canary_report_prefers_quote_id_over_price_match():
     assert "live_maker_fills_without_matching_quote:1" in report["reasons"]
     assert report["fill_reconciliation"]["matched_live_maker_fills"] == 0
     assert report["fill_reconciliation"]["unmatched"][0]["quote_id"] == "different-quote"
+
+
+def test_live_canary_report_rejects_fill_without_matching_order_attempt():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events = [event for event in events if event.get("event") != "order_attempt_accepted"]
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "live_maker_fills_without_matching_order_attempt:1" in report["reasons"]
+    assert report["fill_reconciliation"]["matched_live_maker_fills"] == 1
+    assert report["fill_reconciliation"]["matched_live_maker_fills_to_order_attempt"] == 0
 
 
 def test_live_canary_report_rejects_param_or_hjb_errors():
@@ -381,9 +421,9 @@ def test_live_canary_report_rejects_stale_dependency_reports_and_events():
     assert "post_only_report_stale" in report["reasons"]
     assert "fee_report_stale" in report["reasons"]
     assert "replay_report_stale" in report["reasons"]
-    assert "canary_event_stale:4" in report["reasons"]
+    assert "canary_event_stale:5" in report["reasons"]
     assert report["dependencies"]["post_only"]["freshness_reason"] == "stale"
-    assert report["event_freshness"]["stale"] == 4
+    assert report["event_freshness"]["stale"] == 5
 
 
 def test_live_canary_report_requires_dependency_generated_at():

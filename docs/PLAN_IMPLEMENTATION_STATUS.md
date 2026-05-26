@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 241 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 242 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -180,7 +180,9 @@ Generated from the current local worktree after the latest safety-gate run.
   quote ID when the submitted side/price corresponds to a recent accepted quote,
   and fill logs infer that quote ID from the accepted-order attempt cache when
   the exchange/Freqtrade order object does not preserve an explicit client or
-  quote id.
+  quote id. The accepted-order log also carries live/dry-run and TIF context,
+  and the canary verifier requires live maker fills to reconcile to both a prior
+  accepted quote decision and a prior accepted order attempt.
 - Live canary evidence report:
   `scripts/verify_live_canary.py` writes `docs/live_canary_report.json` from
   audit logs and the prior post-only, fee, and replay gate artifacts. It
@@ -202,12 +204,13 @@ Generated from the current local worktree after the latest safety-gate run.
   `trading_enabled=true` and `dry_run=false`, so live health events cannot be
   combined with unrelated research/dry-run quotes to satisfy canary session
   eligibility. Live maker fills must carry an order id plus side/price/amount
-  fields and reconcile to a prior live accepted quote in the same canary session
-  by symbol, side, and price, so unrelated exchange fills cannot satisfy the
-  canary. When fills carry a `quote_id`, the canary verifier treats that ID as
-  authoritative and will not accept a same-price fill linked to a different
-  quote decision. The current report is expected to be `ok=false` until Gates
-  4-5 pass and real canary sessions are supplied.
+  fields and reconcile to both a prior live accepted quote and a prior live
+  `order_attempt_accepted` event in the same canary session by symbol, side,
+  and price, so unrelated exchange fills cannot satisfy the canary. When fills
+  carry a `quote_id`, the canary verifier treats that ID as authoritative and
+  will not accept a same-price fill linked to a different quote decision or
+  order attempt. The current report is expected to be `ok=false` until Gates 4-5
+  pass and real canary sessions are supplied.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and
@@ -228,7 +231,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, fee evidence evaluator and capture normalizer, price and amount rounding guards, final confirm-time tick/lot safety guards, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` and account fee-tier evidence are not verified. |
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, atomic strategy-facing snapshot copies, schema v2 tests, status locking, process-level estimator locking, deterministic kappa -> epsilon -> raw-lambda updater order, snapshot validation for timestamped windows/fit diagnostics/toxicity diagnostics, `lambda0_fit` enforcement for HJB lambda, row-timestamp-based collector freshness validation, and no hardcoded symbol fallback when the strategy has no active pair. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, quote-quality ratio gates, price-density/max-gap coverage gates, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
-| Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, accepted-order quote linkage, freshness-age fields, stable quote IDs, HJB parameter fingerprints, fee agreement snapshots, canary-relevant health fields, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, realized-PnL risk updates, delayed fill markouts, post-only reject-rate enforcement, kill-switch cancellation fallback, and kill-switch tests/log artifacts exist. |
+| Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, accepted-order quote linkage, fill-to-order-attempt reconciliation, freshness-age fields, stable quote IDs, HJB parameter fingerprints, fee agreement snapshots, canary-relevant health fields, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, realized-PnL risk updates, delayed fill markouts, post-only reject-rate enforcement, kill-switch cancellation fallback, and kill-switch tests/log artifacts exist. |
 | Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gate 6 now has a log/artifact verifier with live fill-to-quote reconciliation, and live strategy enablement is gated on deployment-stage artifacts. Gates 4-6 still require external/manual evidence. |
 
 ## Remaining Required Gates

@@ -14,9 +14,9 @@
   },
   "dependencies": {
     "fee": {
-      "age_seconds": 20.662363,
+      "age_seconds": 22.162558,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T11:54:46Z",
+      "generated_at": "2026-05-26T12:10:00Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -29,9 +29,9 @@
       "report_ok": false
     },
     "post_only": {
-      "age_seconds": 567.662363,
+      "age_seconds": 570.162558,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T11:45:39Z",
+      "generated_at": "2026-05-26T12:00:52Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -43,28 +43,28 @@
       "report_ok": false
     },
     "replay": {
-      "age_seconds": 0.662363,
+      "age_seconds": 1.162558,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T11:55:06Z",
+      "generated_at": "2026-05-26T12:10:21Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
         "baseline:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "baseline:insufficient_coverage_days:0.005125<min_3.000000",
+        "baseline:insufficient_coverage_days:0.002367<min_3.000000",
         "baseline:no_maker_fills",
         "fee_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "fee_2x:insufficient_coverage_days:0.005125<min_3.000000",
+        "fee_2x:insufficient_coverage_days:0.002367<min_3.000000",
         "fee_2x:no_maker_fills",
         "latency_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "latency_2x:insufficient_coverage_days:0.005125<min_3.000000",
+        "latency_2x:insufficient_coverage_days:0.002367<min_3.000000",
         "latency_2x:no_maker_fills",
         "params_soft:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "params_soft:insufficient_coverage_days:0.005125<min_3.000000",
+        "params_soft:insufficient_coverage_days:0.002367<min_3.000000",
         "params_soft:no_maker_fills",
         "params_hard:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "params_hard:insufficient_coverage_days:0.005125<min_3.000000",
+        "params_hard:insufficient_coverage_days:0.002367<min_3.000000",
         "params_hard:no_maker_fills"
       ],
       "report_ok": false
@@ -75,32 +75,36 @@
     "param_update_failed": 9,
     "param_update_rejected": 6
   },
-  "event_count": 2910,
+  "event_count": 2942,
   "event_freshness": {
-    "fresh": 2910,
-    "max_age_seconds": 79571.932363,
+    "fresh": 2942,
+    "max_age_seconds": 80487.432558,
     "max_allowed_age_seconds": 604800.0,
     "stale": 0,
     "timestamp_missing": 0
   },
   "fill_reconciliation": {
+    "accepted_live_order_attempts_with_match_fields": 0,
+    "accepted_live_order_attempts_with_quote_id": 0,
     "accepted_live_quotes_with_match_fields": 0,
     "accepted_live_quotes_with_quote_id": 0,
     "failures": {},
     "live_maker_fills": 0,
     "live_maker_fills_with_quote_id": 0,
     "matched_live_maker_fills": 0,
+    "matched_live_maker_fills_to_order_attempt": 0,
     "max_quote_to_fill_seconds": 900.0,
     "price_tolerance": 1e-08,
-    "unmatched": []
+    "unmatched": [],
+    "unmatched_order_attempts": []
   },
   "fills": {
-    "count": 14,
+    "count": 15,
     "maker": 0,
     "taker": 0,
-    "unknown_liquidity": 14
+    "unknown_liquidity": 15
   },
-  "generated_at": "2026-05-26T11:55:06Z",
+  "generated_at": "2026-05-26T12:10:22Z",
   "health_failures": {
     "no_live_health_events": true
   },
@@ -108,9 +112,9 @@
   "ok": false,
   "quote_failures": {
     "accepted_quote_missing_fee_agreement": 101,
-    "accepted_quote_not_live_enabled": 402,
-    "accepted_quote_not_post_only": 402,
-    "accepted_quote_post_only_unverified": 402,
+    "accepted_quote_not_live_enabled": 403,
+    "accepted_quote_not_post_only": 403,
+    "accepted_quote_post_only_unverified": 403,
     "accepted_quote_stale_collector": 10,
     "accepted_quote_stale_orderbook": 10,
     "accepted_quote_stale_params": 10
@@ -121,12 +125,12 @@
     "replay_gate_not_passed",
     "manual_monitoring_not_acknowledged",
     "insufficient_canary_sessions:0<min_3",
-    "unknown_fill_liquidity:14",
-    "fill_not_live_enabled:14",
+    "unknown_fill_liquidity:15",
+    "fill_not_live_enabled:15",
     "accepted_quote_missing_fee_agreement:101",
-    "accepted_quote_not_live_enabled:402",
-    "accepted_quote_not_post_only:402",
-    "accepted_quote_post_only_unverified:402",
+    "accepted_quote_not_live_enabled:403",
+    "accepted_quote_not_post_only:403",
+    "accepted_quote_post_only_unverified:403",
     "accepted_quote_stale_collector:10",
     "accepted_quote_stale_orderbook:10",
     "accepted_quote_stale_params:10",
@@ -136,17 +140,17 @@
   ],
   "sessions": [
     {
-      "accepted_quotes": 402,
-      "duration_minutes": 1325.3546,
-      "end_ts": "2026-05-26T11:54:16.006000Z",
-      "events": 2910,
-      "health_events": 449,
+      "accepted_quotes": 403,
+      "duration_minutes": 1340.6046833333335,
+      "end_ts": "2026-05-26T12:09:31.011000Z",
+      "events": 2942,
+      "health_events": 454,
       "kill_switches": 0,
       "live_accepted_quotes": 0,
       "live_health_events": 0,
       "live_maker_fills": 0,
       "maker_fills": 0,
-      "quote_decisions": 402,
+      "quote_decisions": 403,
       "session_id": "implicit-1",
       "start_ts": "2026-05-25T13:48:54.730000Z",
       "taker_fills": 0

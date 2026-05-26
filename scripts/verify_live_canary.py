@@ -375,6 +375,7 @@ def live_maker_fill_reconciliation(
         "live_maker_fills_missing_price": 0,
         "live_maker_fills_missing_amount": 0,
         "live_maker_fills_without_matching_quote": 0,
+        "live_maker_fills_without_matching_order_attempt": 0,
     }
     accepted_quotes: list[dict[str, Any]] = []
     for event in events:
@@ -398,6 +399,28 @@ def live_maker_fill_reconciliation(
             }
         )
 
+    accepted_order_attempts: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("event") != "order_attempt_accepted":
+            continue
+        if not is_live_enabled_event(event):
+            continue
+        ts = event_time(event)
+        side = quote_side(event.get("quote_side") or event.get("side"))
+        price = event_price(event, ("rate", "price", "rounded_price"))
+        if ts is None or side is None or price is None:
+            continue
+        accepted_order_attempts.append(
+            {
+                "ts": ts,
+                "session": event_session_key(event),
+                "symbol": normalized_symbol(event_symbol(event)),
+                "side": side,
+                "price": price,
+                "quote_id": text_or_none(event.get("quote_id")),
+            }
+        )
+
     fills = [
         event
         for event in events
@@ -406,8 +429,41 @@ def live_maker_fill_reconciliation(
         and is_live_enabled_event(event)
     ]
     unmatched: list[dict[str, Any]] = []
+    unmatched_order_attempts: list[dict[str, Any]] = []
     matched = 0
+    matched_order_attempts = 0
     fills_with_quote_id = 0
+
+    def match_prior(
+        candidates: list[dict[str, Any]],
+        *,
+        fill_ts: datetime,
+        fill_session: str | None,
+        fill_symbol: str | None,
+        fill_side: str,
+        fill_price: float,
+        fill_quote_id: str | None,
+    ) -> dict[str, Any] | None:
+        filtered = (
+            [item for item in candidates if item.get("quote_id") == fill_quote_id]
+            if fill_quote_id is not None
+            else candidates
+        )
+        for candidate in filtered:
+            if fill_session is not None and candidate["session"] is not None and fill_session != candidate["session"]:
+                continue
+            if fill_symbol is not None and candidate["symbol"] is not None and fill_symbol != candidate["symbol"]:
+                continue
+            if candidate["side"] != fill_side:
+                continue
+            age_seconds = (fill_ts - candidate["ts"]).total_seconds()
+            if age_seconds < 0 or age_seconds > float(max_quote_to_fill_seconds):
+                continue
+            if abs(float(fill_price) - float(candidate["price"])) > float(price_tolerance):
+                continue
+            return candidate
+        return None
+
     for fill in fills:
         fill_ts = event_time(fill)
         fill_side = quote_side(fill.get("quote_side") or fill.get("side"))
@@ -427,31 +483,31 @@ def live_maker_fill_reconciliation(
             counters["live_maker_fills_missing_amount"] += 1
         if fill_ts is None or fill_side is None or fill_price is None:
             counters["live_maker_fills_without_matching_quote"] += 1
+            counters["live_maker_fills_without_matching_order_attempt"] += 1
             unmatched.append({"order_id": fill_order_id, "reason": "missing_required_fill_fields"})
+            unmatched_order_attempts.append({"order_id": fill_order_id, "reason": "missing_required_fill_fields"})
             continue
 
         fill_session = event_session_key(fill)
         fill_symbol = normalized_symbol(event_symbol(fill))
-        matched_quote = None
-        candidate_quotes = (
-            [quote for quote in accepted_quotes if quote.get("quote_id") == fill_quote_id]
-            if fill_quote_id is not None
-            else accepted_quotes
+        matched_quote = match_prior(
+            accepted_quotes,
+            fill_ts=fill_ts,
+            fill_session=fill_session,
+            fill_symbol=fill_symbol,
+            fill_side=fill_side,
+            fill_price=fill_price,
+            fill_quote_id=fill_quote_id,
         )
-        for quote in candidate_quotes:
-            if fill_session is not None and quote["session"] is not None and fill_session != quote["session"]:
-                continue
-            if fill_symbol is not None and quote["symbol"] is not None and fill_symbol != quote["symbol"]:
-                continue
-            if quote["side"] != fill_side:
-                continue
-            age_seconds = (fill_ts - quote["ts"]).total_seconds()
-            if age_seconds < 0 or age_seconds > float(max_quote_to_fill_seconds):
-                continue
-            if abs(float(fill_price) - float(quote["price"])) > float(price_tolerance):
-                continue
-            matched_quote = quote
-            break
+        matched_attempt = match_prior(
+            accepted_order_attempts,
+            fill_ts=fill_ts,
+            fill_session=fill_session,
+            fill_symbol=fill_symbol,
+            fill_side=fill_side,
+            fill_price=fill_price,
+            fill_quote_id=fill_quote_id,
+        )
         if matched_quote is None:
             counters["live_maker_fills_without_matching_quote"] += 1
             unmatched.append(
@@ -466,15 +522,35 @@ def live_maker_fill_reconciliation(
             )
         else:
             matched += 1
+        if matched_attempt is None:
+            counters["live_maker_fills_without_matching_order_attempt"] += 1
+            unmatched_order_attempts.append(
+                {
+                    "order_id": fill_order_id,
+                    "session_id": fill_session,
+                    "symbol": fill_symbol,
+                    "quote_side": fill_side,
+                    "price": fill_price,
+                    "quote_id": fill_quote_id,
+                }
+            )
+        else:
+            matched_order_attempts += 1
 
     return {
         "live_maker_fills": len(fills),
         "accepted_live_quotes_with_match_fields": len(accepted_quotes),
         "accepted_live_quotes_with_quote_id": sum(1 for quote in accepted_quotes if quote.get("quote_id")),
+        "accepted_live_order_attempts_with_match_fields": len(accepted_order_attempts),
+        "accepted_live_order_attempts_with_quote_id": sum(
+            1 for attempt in accepted_order_attempts if attempt.get("quote_id")
+        ),
         "live_maker_fills_with_quote_id": int(fills_with_quote_id),
         "matched_live_maker_fills": matched,
+        "matched_live_maker_fills_to_order_attempt": matched_order_attempts,
         "failures": {key: value for key, value in counters.items() if value},
         "unmatched": unmatched[:50],
+        "unmatched_order_attempts": unmatched_order_attempts[:50],
         "max_quote_to_fill_seconds": float(max_quote_to_fill_seconds),
         "price_tolerance": float(price_tolerance),
     }
