@@ -182,6 +182,7 @@ class Market_Making(IStrategy):
     fill_markout_horizons_ms = (100, 1_000, 5_000, 30_000)
     fee_snapshot_cache_seconds = 300
     require_exchange_fee_match_live = True
+    max_deployment_report_age_seconds = 86_400
     min_kappa_fit_points = 2
     min_kappa_r2 = 0.0
     min_epsilon_events = 1
@@ -298,12 +299,31 @@ class Market_Making(IStrategy):
             return {"ok": False, "reason": "invalid_report", "path": str(path), "error": str(exc)}
         if not isinstance(payload, dict):
             return {"ok": False, "reason": "invalid_report", "path": str(path)}
+        generated_at = payload.get("generated_at")
+        generated_at_dt = self._parse_utc_timestamp(generated_at)
+        age_seconds = (
+            max(0.0, (self._now_utc() - generated_at_dt).total_seconds())
+            if generated_at_dt is not None
+            else None
+        )
+        max_age = float(self.max_deployment_report_age_seconds)
+        report_ok = payload.get("ok") is True
+        reason = "ok" if report_ok else "report_not_ok"
+        ok = bool(report_ok)
+        if report_ok and generated_at_dt is None:
+            ok = False
+            reason = "missing_generated_at"
+        elif report_ok and max_age > 0 and age_seconds is not None and age_seconds > max_age:
+            ok = False
+            reason = "stale_report"
         return {
-            "ok": bool(payload.get("ok")),
-            "reason": "ok" if payload.get("ok") is True else "report_not_ok",
+            "ok": ok,
+            "reason": reason,
             "path": str(path),
             "reasons": payload.get("reasons", []),
-            "generated_at": payload.get("generated_at"),
+            "generated_at": generated_at,
+            "age_seconds": age_seconds,
+            "max_age_seconds": max_age,
         }
 
     def _live_deployment_gate_state(self) -> tuple[bool, str, dict[str, Any]]:
@@ -352,6 +372,7 @@ class Market_Making(IStrategy):
             "max_book_age_seconds",
             "max_toxicity",
             "collector_timestamp_newest_files_per_stream",
+            "max_deployment_report_age_seconds",
         ):
             if numeric_key in mm_config:
                 try:
@@ -2248,6 +2269,7 @@ class Market_Making(IStrategy):
                 "deployment_stage": str(mm_config.get("deployment_stage") or "research"),
                 "deployment_gate_reports_required": True,
                 "manual_monitoring_ack": bool(mm_config.get("manual_monitoring_ack", False)),
+                "max_deployment_report_age_seconds": float(self.max_deployment_report_age_seconds),
                 "expected_entry_time_in_force": entry_tif,
                 "expected_exit_time_in_force": exit_tif,
                 "expected_entry_time_in_force_canonical": self._canonical_tif(entry_tif),

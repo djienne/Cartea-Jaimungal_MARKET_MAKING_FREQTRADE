@@ -12,10 +12,10 @@
   "health_events": 2,
   "latest_health": {
     "accepted_order_attempts": 0,
-    "book_age_ms": 264.514,
+    "book_age_ms": 526.709,
     "book_fresh": true,
     "book_fresh_reason": "ok",
-    "collector_age_seconds": 100.341013,
+    "collector_age_seconds": 106.67919,
     "collector_fresh": true,
     "collector_fresh_reason": "ok",
     "consecutive_losses": 0,
@@ -40,7 +40,7 @@
       "fee_agreement_ok": true,
       "strategy_maker_fee_rate": 0.00015
     },
-    "hjb_age_seconds": 61.180975,
+    "hjb_age_seconds": 71.63575,
     "hjb_fresh": true,
     "inventory_unit_base": 0.01,
     "kill_on_taker_fill": true,
@@ -51,12 +51,13 @@
     "max_abs_inventory_units": 3,
     "max_consecutive_losses": 10,
     "max_daily_loss_usdc": 20.0,
+    "max_deployment_report_age_seconds": 86400.0,
     "max_post_only_reject_rate": 0.8,
     "open_order_cancels_requested": 0,
     "open_orders": 0,
     "open_orders_source": "accepted_confirmation_estimate",
     "pair": "ETH/USDC:USDC",
-    "param_age_seconds": 87.005514,
+    "param_age_seconds": 99.469709,
     "params_fresh": true,
     "params_fresh_reason": "ok",
     "position": 0.0,
@@ -71,7 +72,7 @@
     "taker_fills": 0,
     "tradable_balance_ratio": 0.1,
     "trading_enabled": false,
-    "ts": "2026-05-26T00:23:16.505Z",
+    "ts": "2026-05-26T00:37:30.053Z",
     "unrealized_pnl": 0.0
   },
   "log_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\freqtrade_gate_disabled.log",
@@ -79,5 +80,5 @@
   "mm_debug_path": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\user_data\\logs\\mm_debug.jsonl",
   "passed": true,
   "reason": "ok",
-  "started_at": "2026-05-26T00:21:49.716840Z"
+  "started_at": "2026-05-26T00:35:50.040203Z"
 }

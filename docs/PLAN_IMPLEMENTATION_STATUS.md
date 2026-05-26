@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 155 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 157 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -103,8 +103,9 @@ Generated from the current local worktree after the latest safety-gate run.
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and
   replay reports to be `ok=true` plus `manual_monitoring_ack=true`; `production`
   mode additionally requires `docs/live_canary_report.json` to be `ok=true`.
-  Quote validation rechecks the same gate state so runtime toggles cannot bypass
-  the startup guard.
+  Those reports must carry fresh `generated_at` timestamps within
+  `max_deployment_report_age_seconds`, and quote validation rechecks the same
+  gate state so runtime toggles cannot bypass the startup guard.
 
 ## Phase Status
 

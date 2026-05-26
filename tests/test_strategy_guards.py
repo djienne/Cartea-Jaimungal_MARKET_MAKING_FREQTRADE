@@ -195,9 +195,20 @@ def make_bot() -> Market_Making:
     return bot
 
 
-def write_gate_report(tmp_path: Path, name: str, *, ok: bool = True) -> str:
+def write_gate_report(
+    tmp_path: Path,
+    name: str,
+    *,
+    ok: bool = True,
+    generated_at: str | None = "now",
+) -> str:
     path = tmp_path / f"{name}.json"
-    path.write_text(json.dumps({"ok": ok, "reasons": [] if ok else [f"{name}_failed"]}), encoding="utf-8")
+    payload = {"ok": ok, "reasons": [] if ok else [f"{name}_failed"]}
+    if generated_at == "now":
+        generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if generated_at is not None:
+        payload["generated_at"] = generated_at
+    path.write_text(json.dumps(payload), encoding="utf-8")
     return str(path)
 
 
@@ -425,8 +436,61 @@ def test_live_canary_config_requires_gate_reports(tmp_path):
     assert bot.fail_closed_reason == "fee_gate_not_passed"
 
 
+def test_live_canary_config_rejects_missing_gate_report_timestamp(tmp_path):
+    bot = make_bot()
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **live_gate_config(tmp_path),
+            "replay_acceptance_report_path": write_gate_report(tmp_path, "replay", generated_at=None),
+        },
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "replay_gate_not_passed"
+
+
+def test_live_canary_config_rejects_stale_gate_report(tmp_path):
+    bot = make_bot()
+    bot._now_utc = lambda: datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **live_gate_config(tmp_path),
+            "replay_acceptance_report_path": write_gate_report(
+                tmp_path,
+                "replay",
+                generated_at="2026-05-24T11:59:00Z",
+            ),
+            "max_deployment_report_age_seconds": 86_400,
+        },
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "replay_gate_not_passed"
+    replay_status = events[0][1]["gate_reports"]["replay"]
+    assert replay_status["reason"] == "stale_report"
+    assert replay_status["age_seconds"] == 86_460.0
+    assert replay_status["max_age_seconds"] == 86_400.0
+
+
 def test_live_config_can_enable_after_post_only_tif_verification_and_gate_reports(tmp_path):
     bot = make_bot()
+    bot._now_utc = lambda: datetime(2026, 5, 25, 12, 5, tzinfo=timezone.utc)
     bot.config = {
         "dry_run": False,
         "fee": 0.00015,
@@ -497,6 +561,7 @@ def test_production_config_requires_manual_monitoring_ack(tmp_path):
 
 def test_production_config_can_enable_after_live_canary_report(tmp_path):
     bot = make_bot()
+    bot._now_utc = lambda: datetime(2026, 5, 25, 12, 5, tzinfo=timezone.utc)
     bot.config = {
         "dry_run": False,
         "fee": 0.00015,
@@ -1478,6 +1543,7 @@ def test_health_log_counts_open_orders_and_logs_position():
     assert payload["deployment_stage"] == "research"
     assert payload["deployment_gate_reports_required"] is True
     assert payload["manual_monitoring_ack"] is False
+    assert payload["max_deployment_report_age_seconds"] == bot.max_deployment_report_age_seconds
     assert payload["expected_entry_time_in_force"] == "GTC"
     assert payload["expected_entry_time_in_force_canonical"] == "gtc"
     assert payload["unrealized_pnl"] == 0.0

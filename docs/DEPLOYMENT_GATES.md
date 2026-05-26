@@ -23,6 +23,8 @@ Non-dry-run strategy enablement is also guarded at runtime. Setting
 - `production`: requires all canary prerequisites and
   `live_canary_report` to be `ok=true`.
 
+Every required report must include a fresh `generated_at` timestamp within
+`market_making.max_deployment_report_age_seconds` seconds, defaulting to 86400.
 The same deployment-gate state is rechecked during quote validation so a runtime
 toggle cannot bypass startup gating.
 
@@ -223,4 +225,5 @@ python scripts/verify_live_canary.py --input user_data/logs/mm_debug.jsonl --man
 - In live mode, the strategy also refuses enablement unless the declared
   deployment stage has passing gate artifact reports. Canary mode requires
   post-only, fee, replay, and manual-monitoring evidence; production additionally
-  requires passing live canary evidence.
+  requires passing live canary evidence. Passing reports must be fresh; stale or
+  timestamp-less reports do not unlock live trading.
