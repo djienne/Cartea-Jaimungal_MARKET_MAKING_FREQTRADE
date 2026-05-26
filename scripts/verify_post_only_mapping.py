@@ -60,7 +60,7 @@ def render_plan(symbol: str) -> str:
             "submitted params contain timeInForce=Alo",
             "crossing ALO order has zero filled amount",
             "crossing ALO order rejects/cancels/expires rather than rests",
-            "passive ALO order rests, cancels, or fills as maker only",
+            "passive ALO order rests or fills as maker only",
             "exchange fill/liquidity flag is maker for any fill",
             "actual order status, filled amount, and raw exchange result are retained",
             "crossing/passive submit artifacts include fresh generated_at timestamps",
@@ -203,6 +203,8 @@ def evaluate_passive_result(payload: dict[str, Any]) -> tuple[bool, list[str]]:
         reasons.append("passive_liquidity_taker")
     if filled > 0 and liquidity not in {"maker", "add", "a", "true"}:
         reasons.append("passive_fill_without_maker_liquidity_flag")
+    if filled <= 0 and status not in {"open", "new"}:
+        reasons.append(f"passive_not_resting_or_maker_fill:{status}")
     return not reasons, reasons
 
 

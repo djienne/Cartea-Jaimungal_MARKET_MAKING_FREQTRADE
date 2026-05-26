@@ -1,36 +1,36 @@
 {
   "accepted_quotes_by_depth": {
-    "bid:5.00-6.00bps": 314
+    "bid:5.00-6.00bps": 316
   },
   "accepted_quotes_by_side": {
-    "bid": 314
+    "bid": 316
   },
   "actual_fee_rate": {
     "count": 0,
     "max": null,
     "mean": null,
     "min": null,
-    "outlier_count": 11,
+    "outlier_count": 12,
     "outlier_threshold": 0.01
   },
   "fill_probability_by_depth": {
     "bid:5.00-6.00bps": 0.0
   },
   "fill_probability_by_side": {
-    "bid": 0.03503184713375796
+    "bid": 0.0379746835443038
   },
   "fills_by_side": {
-    "bid": 11
+    "bid": 12
   },
-  "generated_at": "2026-05-26T07:23:12Z",
+  "generated_at": "2026-05-26T07:36:57Z",
   "input_paths": [
     "user_data\\logs\\mm_debug.jsonl"
   ],
   "inputs": {
-    "accepted_quotes": 314,
+    "accepted_quotes": 316,
     "bucket_bps": 1.0,
-    "events": 2264,
-    "fills": 11,
+    "events": 2298,
+    "fills": 12,
     "match_window_seconds": 300.0,
     "max_fee_rate": 0.01,
     "min_fills": 10,
@@ -41,38 +41,38 @@
   "maker_ratio": 0.0,
   "markout_summary": {
     "100": {
-      "count": 10.0,
+      "count": 11.0,
       "max_usdc": 0.00400000000000091,
-      "mean_usdc": -0.004250000000001364,
+      "mean_usdc": -0.004000000000000909,
       "min_usdc": -0.012500000000004547
     },
     "1000": {
-      "count": 10.0,
+      "count": 11.0,
       "max_usdc": 0.00400000000000091,
-      "mean_usdc": -0.004850000000000819,
+      "mean_usdc": -0.00454545454545496,
       "min_usdc": -0.0175
     },
     "30000": {
-      "count": 10.0,
+      "count": 11.0,
       "max_usdc": 0.01850000000000364,
-      "mean_usdc": -0.0014999999999999996,
+      "mean_usdc": -0.0011363636363636359,
       "min_usdc": -0.03349999999999909
     },
     "5000": {
-      "count": 10.0,
+      "count": 11.0,
       "max_usdc": 0.0125,
-      "mean_usdc": -0.0026999999999998184,
+      "mean_usdc": -0.0027727272727266117,
       "min_usdc": -0.0175
     }
   },
   "matched_fills_by_depth": {},
   "reasons": [
     "insufficient_maker_fills:0<min_10",
-    "unknown_liquidity_fills:11",
+    "unknown_liquidity_fills:12",
     "no_fills_matched_to_quotes"
   ],
   "taker_fills": 0,
-  "unknown_liquidity_fills": 11,
-  "unmatched_fills": 11,
+  "unknown_liquidity_fills": 12,
+  "unmatched_fills": 12,
   "usable_for_calibration": false
 }

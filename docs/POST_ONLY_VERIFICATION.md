@@ -47,7 +47,8 @@ The evidence report passes only when:
 
 - submitted params contain `timeInForce=Alo` and `postOnly=true`
 - the intentionally crossing ALO order has zero fill and rejects/cancels/expires
-- the passive ALO order rests, cancels, or fills maker-only
+- the passive ALO order rests or fills maker-only; a zero-filled cancel without
+  resting proof is not enough
 - no result contains taker liquidity
 - both submit artifacts include fresh `generated_at` timestamps; stale or
   timestamp-less submit artifacts are rejected even if the report itself is

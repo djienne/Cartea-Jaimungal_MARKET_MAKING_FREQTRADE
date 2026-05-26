@@ -4,28 +4,28 @@ Automated gates: PASS
 Deployment ready: NO
 Manual gates remaining: 4
 
-- PASS `compileall` (1.043s)
-- PASS `pytest_core` (23.709s)
-- PASS `config_safety_report` (0.06s)
-- PASS `strategy_safety_report` (0.075s)
-- PASS `compute_spreads_boundary_smoke` (1.321s)
-- PASS `replay_smoke` (2.046s)
-- PASS `post_only_probe_plan` (0.095s)
-- PASS `post_only_evidence_report` (0.096s)
-- PASS `direct_alo_adapter_plan` (0.117s)
-- PASS `docker_compose_config` (0.235s)
-- PASS `freqtrade_runtime_load` (7.19s)
-- PASS `dry_run_disabled_smoke` (224.477s)
-- PASS `dry_run_enabled_smoke` (313.597s)
-- PASS `replay_log_calibration_artifact` (0.82s)
+- PASS `compileall` (1.201s)
+- PASS `pytest_core` (22.088s)
+- PASS `config_safety_report` (0.122s)
+- PASS `strategy_safety_report` (0.14s)
+- PASS `compute_spreads_boundary_smoke` (1.513s)
+- PASS `replay_smoke` (1.88s)
+- PASS `post_only_probe_plan` (0.061s)
+- PASS `post_only_evidence_report` (0.062s)
+- PASS `direct_alo_adapter_plan` (0.072s)
+- PASS `docker_compose_config` (0.173s)
+- PASS `freqtrade_runtime_load` (7.169s)
+- PASS `dry_run_disabled_smoke` (224.658s)
+- PASS `dry_run_enabled_smoke` (313.862s)
+- PASS `replay_log_calibration_artifact` (0.96s)
 - PASS `fee_evidence_report` (0.118s)
-- PASS `hl_data_validation_report` (1.481s)
-- PASS `replay_latest_data_smoke` (3.165s)
-- PASS `replay_acceptance_report_artifact` (18.164s)
-- PASS `live_canary_evidence_report` (0.163s)
+- PASS `hl_data_validation_report` (1.319s)
+- PASS `replay_latest_data_smoke` (3.577s)
+- PASS `replay_acceptance_report_artifact` (16.69s)
+- PASS `live_canary_evidence_report` (0.113s)
 
 Post-run audits:
-- PASS `plan_status_audit` (0.104s)
+- PASS `plan_status_audit` (0.062s)
 
 Manual/external gate evidence:
 - WAIT `hyperliquid_post_only_mapping`: Requires testnet/tiny integration evidence that Freqtrade/CCXT PO maps to Hyperliquid Alo.

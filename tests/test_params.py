@@ -181,7 +181,7 @@ def test_post_only_evidence_report_passes_complete_safe_results():
         {
             "generated_at": generated_at,
             "submitted_params": alo_order_params(),
-            "order_status": "canceled",
+            "order_status": "open",
             "filled": 0.0,
         },
     )
@@ -190,6 +190,19 @@ def test_post_only_evidence_report_passes_complete_safe_results():
     assert report["reasons"] == []
     assert report["crossing"]["age_ok"] is True
     assert report["passive"]["age_ok"] is True
+
+
+def test_post_only_passive_evidence_rejects_zero_fill_cancel_without_resting_proof():
+    ok, reasons = evaluate_passive_result(
+        {
+            "submitted_params": alo_order_params(),
+            "order_status": "canceled",
+            "filled": 0.0,
+        }
+    )
+
+    assert not ok
+    assert "passive_not_resting_or_maker_fill:canceled" in reasons
 
 
 def test_post_only_evidence_report_rejects_missing_artifact_timestamps():
