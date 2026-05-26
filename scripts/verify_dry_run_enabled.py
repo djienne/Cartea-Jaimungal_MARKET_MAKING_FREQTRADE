@@ -41,6 +41,11 @@ ORDER_PATTERNS = (
     "long signal found: about create a new trade",
     "about create a new trade",
 )
+RATE_LIMIT_PATTERNS = (
+    "429 too many requests",
+    "ratelimitexceeded",
+    "rate limit exceeded",
+)
 
 
 def utc_now_iso() -> str:
@@ -147,6 +152,11 @@ def read_jsonl_events(path: Path, since: datetime, event_name: str | None = None
     return events
 
 
+def is_exchange_rate_limited(text: str) -> bool:
+    lower = text.lower()
+    return any(pattern in lower for pattern in RATE_LIMIT_PATTERNS)
+
+
 def evaluate_enabled_gate(log_text: str, debug_events: list[dict[str, Any]]) -> tuple[bool, str, list[str]]:
     fatal_lines = [
         line
@@ -154,6 +164,13 @@ def evaluate_enabled_gate(log_text: str, debug_events: list[dict[str, Any]]) -> 
         if any(pattern in line.lower() for pattern in FATAL_PATTERNS)
     ]
     if fatal_lines:
+        if is_exchange_rate_limited(log_text):
+            rate_limit_lines = [
+                line
+                for line in log_text.splitlines()
+                if is_exchange_rate_limited(line)
+            ]
+            return False, "exchange_rate_limited", (fatal_lines + rate_limit_lines)[:20]
         return False, "runtime_error_detected", fatal_lines[:20]
 
     health_events = [event for event in debug_events if event.get("event") == "health"]
@@ -181,7 +198,35 @@ def remove_gate_database_files(log_dir: Path) -> None:
             pass
 
 
-def run_gate(
+def wait_for_container_window(container_name: str, seconds: int, poll_interval_seconds: int = 5) -> dict[str, Any]:
+    deadline = time.monotonic() + max(1, int(seconds))
+    started = time.monotonic()
+    while time.monotonic() < deadline:
+        inspect = run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+            timeout=30,
+        )
+        running = inspect.returncode == 0 and inspect.stdout.strip().lower() == "true"
+        if not running:
+            return {
+                "container_running": False,
+                "waited_seconds": round(time.monotonic() - started, 3),
+                "inspect_returncode": inspect.returncode,
+                "inspect_output": inspect.stdout.strip(),
+            }
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(max(1, int(poll_interval_seconds)), remaining))
+    return {
+        "container_running": True,
+        "waited_seconds": round(time.monotonic() - started, 3),
+        "inspect_returncode": 0,
+        "inspect_output": "true",
+    }
+
+
+def _run_gate_once(
     *,
     seconds: int,
     collector_warmup_seconds: int,
@@ -231,7 +276,16 @@ def run_gate(
         ],
         timeout=180,
     )
-    time.sleep(max(1, int(seconds)))
+    wait_state = (
+        wait_for_container_window(container_name, max(1, int(seconds)))
+        if start.returncode == 0
+        else {
+            "container_running": False,
+            "waited_seconds": 0.0,
+            "inspect_returncode": None,
+            "inspect_output": "start_failed",
+        }
+    )
     logs = run(["docker", "logs", container_name], timeout=60)
     stop = run(["docker", "rm", "-f", container_name], timeout=60)
     collector_stop = run(["docker", "compose", "stop", "hl-collector2"], timeout=60)
@@ -268,6 +322,7 @@ def run_gate(
         "collector_stop_returncode": collector_stop.returncode,
         "docker_start_returncode": start.returncode,
         "docker_stop_returncode": stop.returncode,
+        "container_wait": wait_state,
         "log_path": str(log_path),
         "mm_debug_path": str(mm_debug_path),
         "health_events": len([event for event in debug_events if event.get("event") == "health"]),
@@ -282,6 +337,56 @@ def run_gate(
     }
 
 
+def summarize_attempt(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "attempt": payload.get("attempt"),
+        "passed": payload.get("passed"),
+        "reason": payload.get("reason"),
+        "docker_start_returncode": payload.get("docker_start_returncode"),
+        "docker_stop_returncode": payload.get("docker_stop_returncode"),
+        "health_events": payload.get("health_events"),
+        "quote_decisions": payload.get("quote_decisions"),
+        "accepted_quote_decisions": payload.get("accepted_quote_decisions"),
+        "container_wait": payload.get("container_wait"),
+        "evidence": payload.get("evidence", [])[:5],
+    }
+
+
+def run_gate(
+    *,
+    seconds: int,
+    collector_warmup_seconds: int,
+    log_dir: Path,
+    container_name: str,
+    max_attempts: int = 2,
+    retry_backoff_seconds: int = 90,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    for idx in range(max(1, int(max_attempts))):
+        payload = _run_gate_once(
+            seconds=seconds,
+            collector_warmup_seconds=collector_warmup_seconds,
+            log_dir=log_dir,
+            container_name=container_name,
+        )
+        payload["attempt"] = idx + 1
+        attempts.append(payload)
+        if payload["passed"]:
+            break
+        if payload.get("reason") != "exchange_rate_limited":
+            break
+        if idx >= max(1, int(max_attempts)) - 1:
+            break
+        time.sleep(max(0, int(retry_backoff_seconds)))
+
+    final = dict(attempts[-1])
+    final["attempts"] = len(attempts)
+    final["max_attempts"] = max(1, int(max_attempts))
+    final["retry_backoff_seconds"] = max(0, int(retry_backoff_seconds))
+    final["previous_attempts"] = [summarize_attempt(payload) for payload in attempts[:-1]]
+    return final
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Verify dry-run enabled quote path with temporary safe params.")
     parser.add_argument("--seconds", type=int, default=90)
@@ -289,6 +394,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
     parser.add_argument("--container-name", default=DEFAULT_CONTAINER_NAME)
     parser.add_argument("--json-output", type=Path, default=None)
+    parser.add_argument("--max-attempts", type=int, default=2)
+    parser.add_argument("--retry-backoff-seconds", type=int, default=90)
     return parser.parse_args()
 
 
@@ -299,6 +406,8 @@ def main() -> int:
         collector_warmup_seconds=max(0, int(args.collector_warmup_seconds)),
         log_dir=args.log_dir,
         container_name=str(args.container_name),
+        max_attempts=max(1, int(args.max_attempts)),
+        retry_backoff_seconds=max(0, int(args.retry_backoff_seconds)),
     )
     text = json.dumps(payload, indent=2, sort_keys=True, default=str)
     if args.json_output:

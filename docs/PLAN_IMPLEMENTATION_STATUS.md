@@ -4,13 +4,15 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 181 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 183 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
   `all_automated_passed` from `deployment_ready`, with
   `deployment_ready=false` and named `deployment_blockers` until the external
   Hyperliquid, multi-day replay, fee, and live-canary gates have fresh evidence.
+  The audit requires the runtime load gate `freqtrade_runtime_load` plus locked
+  and enabled dry-run smoke gates, so Gates 2-3 cannot disappear silently.
 - PLAN status audit:
   `scripts/verify_plan_status.py` writes `docs/plan_status_audit.json` and
   fails if this status document's test count, required local gate list, or
@@ -70,8 +72,11 @@ Generated from the current local worktree after the latest safety-gate run.
   asserted, the strategy triggers a kill switch.
   Verified post-only mode also requires fills to report maker/taker liquidity;
   unknown liquidity triggers `unknown_fill_liquidity` so live/testnet evidence
-  cannot silently omit the field. Repeated non-post-only TIF confirmation
-  rejects also count toward the post-only reject-rate kill switch.
+  cannot silently omit the field. The enabled dry-run gate now classifies
+  Hyperliquid HTTP 429 startup failures as `exchange_rate_limited`, exits early
+  when the container dies during startup, and retries before declaring the
+  smoke failed. Repeated non-post-only TIF confirmation rejects also count
+  toward the post-only reject-rate kill switch.
 - Latest-data replay smoke:
   `docs/replay_latest_smoke.json` replays the newest local shards and records
   input coverage, post-only rejects, stale cancels, maker/taker counts,

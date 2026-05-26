@@ -1,23 +1,23 @@
 {
-  "event_count": 1616,
+  "event_count": 1691,
   "expected_maker_fee_rate": 0.00015,
   "expected_taker_fee_rate": 0.00045,
   "fee_snapshots": {
-    "config_matches": 270,
-    "count": 270,
+    "config_matches": 290,
+    "count": 290,
     "exchange_matches": 0,
     "exchange_sources": {
-      "unavailable": 270
+      "unavailable": 290
     },
-    "exchange_unavailable": 270,
-    "fresh": 270,
-    "max_age_seconds": 24836.818989,
+    "exchange_unavailable": 290,
+    "fresh": 290,
+    "max_age_seconds": 27128.091528,
     "stale": 0,
-    "strategy_matches": 270,
+    "strategy_matches": 290,
     "timestamp_missing": 0
   },
   "fills": {
-    "count": 10,
+    "count": 11,
     "maker": 0,
     "maker_actual_fee_fresh": 0,
     "maker_actual_fee_matches": 0,
@@ -29,7 +29,7 @@
     "min_maker_fills": 1,
     "taker": 0
   },
-  "generated_at": "2026-05-26T02:50:58Z",
+  "generated_at": "2026-05-26T03:29:09Z",
   "max_evidence_age_seconds": 86400.0,
   "mismatches": [],
   "ok": false,

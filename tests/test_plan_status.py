@@ -23,6 +23,11 @@ def gate_payload(pytest_count: int = 173) -> dict:
         "post_only_probe_plan",
         "post_only_evidence_report",
         "direct_alo_adapter_plan",
+        "docker_compose_config",
+        "freqtrade_runtime_load",
+        "dry_run_disabled_smoke",
+        "dry_run_enabled_smoke",
+        "replay_log_calibration_artifact",
         "fee_evidence_report",
         "hl_data_validation_report",
         "replay_latest_data_smoke",
@@ -62,6 +67,14 @@ def status_text(test_count: int = 173) -> str:
   `scripts/verify_config_safety.py` writes a report.
 - Checked-in strategy safety:
   `scripts/verify_strategy_safety.py` writes a report.
+- Runtime load gate:
+  `freqtrade_runtime_load` proves the strategy loads in the Freqtrade runtime.
+- Locked dry-run evidence:
+  the disabled dry-run smoke proves zero orders while locked.
+- Enabled dry-run evidence:
+  the enabled dry-run smoke proves model-valid dry-run order creation.
+- Replay log calibration:
+  runtime logs produce calibration artifacts for replay fill assumptions.
 ## Remaining Required Gates
 - Hyperliquid post-only/Alo integration:
 - Hyperliquid account fee tier:
@@ -96,13 +109,13 @@ def test_plan_status_audit_rejects_stale_test_count():
 def test_plan_status_audit_rejects_missing_required_gate():
     payload = gate_payload()
     payload["local_gates"] = [
-        gate for gate in payload["local_gates"] if gate["name"] != "strategy_safety_report"
+        gate for gate in payload["local_gates"] if gate["name"] != "dry_run_enabled_smoke"
     ]
 
     report = audit_for(status_text(), payload)
 
     assert report["ok"] is False
-    assert "missing_local_gate:strategy_safety_report" in report["reasons"]
+    assert "missing_local_gate:dry_run_enabled_smoke" in report["reasons"]
 
 
 def test_plan_status_audit_rejects_missing_remaining_gate_text():

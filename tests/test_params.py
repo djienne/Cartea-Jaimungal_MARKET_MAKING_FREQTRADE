@@ -27,7 +27,13 @@ from verify_post_only_mapping import (  # noqa: E402
     render_plan,
 )
 from validate_hl_data import latest_parquet_timestamp, validate_parquet_file, validate_symbol  # noqa: E402
-from verify_dry_run_enabled import evaluate_enabled_gate, write_gate_config, write_gate_params  # noqa: E402
+import verify_dry_run_enabled as dry_run_enabled_gate  # noqa: E402
+from verify_dry_run_enabled import (  # noqa: E402
+    evaluate_enabled_gate,
+    is_exchange_rate_limited,
+    write_gate_config,
+    write_gate_params,
+)
 
 
 def test_atomic_write_json_round_trip(tmp_path):
@@ -418,6 +424,51 @@ def test_dry_run_enabled_gate_rejects_missing_accept():
     assert not ok
     assert reason == "no_accepted_quote_decision"
     assert evidence == []
+
+
+def test_dry_run_enabled_gate_classifies_hyperliquid_429_as_retryable():
+    ok, reason, evidence = evaluate_enabled_gate(
+        "Traceback (most recent call last):\n"
+        "ccxt.base.errors.RateLimitExceeded: hyperliquid POST "
+        "https://api.hyperliquid.xyz/info 429 Too Many Requests null\n",
+        [],
+    )
+
+    assert not ok
+    assert reason == "exchange_rate_limited"
+    assert evidence
+    assert is_exchange_rate_limited("\n".join(evidence))
+
+
+def test_dry_run_enabled_gate_retries_exchange_rate_limit(monkeypatch, tmp_path):
+    attempts = []
+    sleeps = []
+    payloads = [
+        {"passed": False, "reason": "exchange_rate_limited", "evidence": ["429 Too Many Requests"]},
+        {"passed": True, "reason": "ok", "evidence": []},
+    ]
+
+    def fake_run_once(**kwargs):
+        attempts.append(kwargs)
+        return dict(payloads[len(attempts) - 1])
+
+    monkeypatch.setattr(dry_run_enabled_gate, "_run_gate_once", fake_run_once)
+    monkeypatch.setattr(dry_run_enabled_gate.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = dry_run_enabled_gate.run_gate(
+        seconds=1,
+        collector_warmup_seconds=0,
+        log_dir=tmp_path,
+        container_name="MM_GATE_TEST",
+        max_attempts=2,
+        retry_backoff_seconds=7,
+    )
+
+    assert result["passed"] is True
+    assert result["attempts"] == 2
+    assert len(result["previous_attempts"]) == 1
+    assert result["previous_attempts"][0]["reason"] == "exchange_rate_limited"
+    assert sleeps == [7]
 
 
 def test_hl_data_validator_reports_bad_parquet(tmp_path):
