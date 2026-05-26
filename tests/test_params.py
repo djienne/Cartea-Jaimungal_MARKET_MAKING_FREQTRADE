@@ -151,6 +151,7 @@ def test_post_only_passive_evidence_rejects_taker_liquidity():
 def test_post_only_evidence_report_requires_both_results():
     report = evaluate_evidence(
         {
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "submitted_params": alo_order_params(),
             "order_status": "rejected",
             "filled": 0.0,
@@ -163,6 +164,29 @@ def test_post_only_evidence_report_requires_both_results():
 
 
 def test_post_only_evidence_report_passes_complete_safe_results():
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    report = evaluate_evidence(
+        {
+            "generated_at": generated_at,
+            "submitted_params": alo_order_params(),
+            "order_status": "rejected",
+            "filled": 0.0,
+        },
+        {
+            "generated_at": generated_at,
+            "submitted_params": alo_order_params(),
+            "order_status": "canceled",
+            "filled": 0.0,
+        },
+    )
+
+    assert report["ok"]
+    assert report["reasons"] == []
+    assert report["crossing"]["age_ok"] is True
+    assert report["passive"]["age_ok"] is True
+
+
+def test_post_only_evidence_report_rejects_missing_artifact_timestamps():
     report = evaluate_evidence(
         {
             "submitted_params": alo_order_params(),
@@ -176,8 +200,33 @@ def test_post_only_evidence_report_passes_complete_safe_results():
         },
     )
 
-    assert report["ok"]
-    assert report["reasons"] == []
+    assert not report["ok"]
+    assert "crossing_missing_generated_at" in report["reasons"]
+    assert "passive_missing_generated_at" in report["reasons"]
+
+
+def test_post_only_evidence_report_rejects_stale_artifacts():
+    report = evaluate_evidence(
+        {
+            "generated_at": "2026-05-24T11:59:00Z",
+            "submitted_params": alo_order_params(),
+            "order_status": "rejected",
+            "filled": 0.0,
+        },
+        {
+            "generated_at": "2026-05-25T11:59:59Z",
+            "submitted_params": alo_order_params(),
+            "order_status": "canceled",
+            "filled": 0.0,
+        },
+        now=datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc),
+        max_evidence_age_seconds=86_400,
+    )
+
+    assert not report["ok"]
+    assert "crossing_evidence_stale:86460.0s>max_86400.0s" in report["reasons"]
+    assert report["crossing"]["age_ok"] is False
+    assert report["passive"]["age_ok"] is True
 
 
 def test_post_only_evaluator_accepts_direct_sdk_alo_rejection():

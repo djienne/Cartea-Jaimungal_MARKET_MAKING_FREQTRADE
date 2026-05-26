@@ -33,15 +33,15 @@
       "missing": false,
       "ok": false,
       "reasons": [
-        "baseline:insufficient_coverage_days:0.004724<min_3.000000",
+        "baseline:insufficient_coverage_days:0.002663<min_3.000000",
         "baseline:no_maker_fills",
-        "fee_2x:insufficient_coverage_days:0.004724<min_3.000000",
+        "fee_2x:insufficient_coverage_days:0.002663<min_3.000000",
         "fee_2x:no_maker_fills",
-        "latency_2x:insufficient_coverage_days:0.004724<min_3.000000",
+        "latency_2x:insufficient_coverage_days:0.002663<min_3.000000",
         "latency_2x:no_maker_fills",
-        "params_soft:insufficient_coverage_days:0.004724<min_3.000000",
+        "params_soft:insufficient_coverage_days:0.002663<min_3.000000",
         "params_soft:no_maker_fills",
-        "params_hard:insufficient_coverage_days:0.004724<min_3.000000",
+        "params_hard:insufficient_coverage_days:0.002663<min_3.000000",
         "params_hard:no_maker_fills"
       ]
     }
@@ -51,14 +51,14 @@
     "param_update_failed": 9,
     "param_update_rejected": 6
   },
-  "event_count": 1278,
+  "event_count": 1309,
   "fills": {
     "count": 8,
     "maker": 0,
     "taker": 0,
     "unknown_liquidity": 8
   },
-  "generated_at": "2026-05-26T00:34:30Z",
+  "generated_at": "2026-05-26T00:48:36Z",
   "health_failures": {
     "no_live_health_events": true
   },
@@ -66,8 +66,8 @@
   "ok": false,
   "quote_failures": {
     "accepted_quote_missing_fee_agreement": 101,
-    "accepted_quote_not_post_only": 173,
-    "accepted_quote_post_only_unverified": 173,
+    "accepted_quote_not_post_only": 177,
+    "accepted_quote_post_only_unverified": 177,
     "accepted_quote_stale_collector": 10,
     "accepted_quote_stale_orderbook": 10,
     "accepted_quote_stale_params": 10
@@ -80,8 +80,8 @@
     "insufficient_canary_sessions:0<min_3",
     "unknown_fill_liquidity:8",
     "accepted_quote_missing_fee_agreement:101",
-    "accepted_quote_not_post_only:173",
-    "accepted_quote_post_only_unverified:173",
+    "accepted_quote_not_post_only:177",
+    "accepted_quote_post_only_unverified:177",
     "accepted_quote_stale_collector:10",
     "accepted_quote_stale_orderbook:10",
     "accepted_quote_stale_params:10",
@@ -91,15 +91,15 @@
   ],
   "sessions": [
     {
-      "accepted_quotes": 173,
-      "duration_minutes": 640.08555,
-      "end_ts": "2026-05-26T00:28:59.863000Z",
-      "events": 1278,
-      "health_events": 207,
+      "accepted_quotes": 177,
+      "duration_minutes": 654.1474166666667,
+      "end_ts": "2026-05-26T00:43:03.575000Z",
+      "events": 1309,
+      "health_events": 212,
       "kill_switches": 0,
       "live_health_events": 0,
       "maker_fills": 0,
-      "quote_decisions": 173,
+      "quote_decisions": 177,
       "session_id": "implicit-1",
       "start_ts": "2026-05-25T13:48:54.730000Z",
       "taker_fills": 0

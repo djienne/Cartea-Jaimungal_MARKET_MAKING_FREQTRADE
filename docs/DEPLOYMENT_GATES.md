@@ -45,7 +45,9 @@ These gates do not require a live exchange connection:
   `docs/post_only_evidence_report.json`. Without submit artifacts this command
   is expected to return nonzero and the gate runner treats that as an artifact
   check, not as exchange proof. The report must become `ok=true` before live
-  trading can be considered.
+  trading can be considered. The crossing/passive submit artifacts must also
+  carry fresh `generated_at` timestamps, so regenerating a fresh report from
+  stale exchange probes does not satisfy Gate 4.
 - `direct_alo_adapter_plan`: writes `docs/direct_alo_adapter_plan.json`,
   documenting the no-network direct Hyperliquid SDK fallback path that submits
   `order_type={"limit": {"tif": "Alo"}}` only after local BBO maker-safety.
@@ -171,6 +173,9 @@ python scripts/verify_post_only_mapping.py --mode plan
 ```bash
 python scripts/verify_post_only_mapping.py --mode evaluate-evidence --crossing-result docs/post_only_crossing_result.json --passive-result docs/post_only_passive_result.json --output docs/post_only_evidence_report.json
 ```
+
+  The default maximum age for those submit artifacts is 86400 seconds. Use
+  `--max-evidence-age-seconds` to make the evidence window stricter.
 
   If Freqtrade remains unable to submit native `Alo`, the direct SDK fallback
   scaffold is:

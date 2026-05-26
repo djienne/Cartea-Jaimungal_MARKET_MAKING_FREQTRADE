@@ -29,6 +29,26 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def parse_utc_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def render_plan(symbol: str) -> str:
     payload = {
         "gate": "hyperliquid_post_only_mapping",
@@ -43,6 +63,7 @@ def render_plan(symbol: str) -> str:
             "passive ALO order rests, cancels, or fills as maker only",
             "exchange fill/liquidity flag is maker for any fill",
             "actual order status, filled amount, and raw exchange result are retained",
+            "crossing/passive submit artifacts include fresh generated_at timestamps",
         ],
         "safe_default": "no network call or order submission",
     }
@@ -185,25 +206,76 @@ def evaluate_passive_result(payload: dict[str, Any]) -> tuple[bool, list[str]]:
     return not reasons, reasons
 
 
-def evaluate_evidence(crossing_payload: dict[str, Any] | None, passive_payload: dict[str, Any] | None) -> dict[str, Any]:
+def evidence_age_status(
+    label: str,
+    payload: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+    max_evidence_age_seconds: float = 86_400.0,
+) -> tuple[bool, list[str], dict[str, Any]]:
+    if payload is None:
+        return False, [], {"age_seconds": None, "generated_at": None, "max_age_seconds": float(max_evidence_age_seconds)}
+    generated_at = payload.get("generated_at")
+    generated_at_dt = parse_utc_timestamp(generated_at)
+    meta = {
+        "generated_at": generated_at,
+        "age_seconds": None,
+        "max_age_seconds": float(max_evidence_age_seconds),
+    }
+    if generated_at_dt is None:
+        return False, [f"{label}_missing_generated_at"], meta
+    reference = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    age_seconds = max(0.0, (reference - generated_at_dt).total_seconds())
+    meta["age_seconds"] = age_seconds
+    if max_evidence_age_seconds > 0 and age_seconds > float(max_evidence_age_seconds):
+        return False, [f"{label}_evidence_stale:{age_seconds:.1f}s>max_{float(max_evidence_age_seconds):.1f}s"], meta
+    return True, [], meta
+
+
+def evaluate_evidence(
+    crossing_payload: dict[str, Any] | None,
+    passive_payload: dict[str, Any] | None,
+    *,
+    max_evidence_age_seconds: float = 86_400.0,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     reasons: list[str] = []
     crossing_ok = False
     passive_ok = False
+    crossing_age_ok = False
+    passive_age_ok = False
+    crossing_age_meta: dict[str, Any] = {"age_seconds": None, "generated_at": None, "max_age_seconds": float(max_evidence_age_seconds)}
+    passive_age_meta: dict[str, Any] = {"age_seconds": None, "generated_at": None, "max_age_seconds": float(max_evidence_age_seconds)}
     if crossing_payload is None:
         reasons.append("missing_crossing_result")
     else:
         crossing_ok, crossing_reasons = evaluate_crossing_result(crossing_payload)
         reasons.extend(crossing_reasons)
+        crossing_age_ok, crossing_age_reasons, crossing_age_meta = evidence_age_status(
+            "crossing",
+            crossing_payload,
+            now=now,
+            max_evidence_age_seconds=max_evidence_age_seconds,
+        )
+        reasons.extend(crossing_age_reasons)
     if passive_payload is None:
         reasons.append("missing_passive_result")
     else:
         passive_ok, passive_reasons = evaluate_passive_result(passive_payload)
         reasons.extend(passive_reasons)
+        passive_age_ok, passive_age_reasons, passive_age_meta = evidence_age_status(
+            "passive",
+            passive_payload,
+            now=now,
+            max_evidence_age_seconds=max_evidence_age_seconds,
+        )
+        reasons.extend(passive_age_reasons)
     return {
         "generated_at": utc_now_iso(),
         "gate": "hyperliquid_post_only_mapping",
-        "ok": crossing_ok and passive_ok and not reasons,
+        "ok": crossing_ok and passive_ok and crossing_age_ok and passive_age_ok and not reasons,
         "reasons": reasons,
+        "max_evidence_age_seconds": float(max_evidence_age_seconds),
         "crossing": {
             "present": crossing_payload is not None,
             "ok": crossing_ok,
@@ -211,6 +283,8 @@ def evaluate_evidence(crossing_payload: dict[str, Any] | None, passive_payload: 
             "status": order_status(crossing_payload) if crossing_payload else None,
             "liquidity": liquidity_flag(crossing_payload) if crossing_payload else None,
             "has_alo_params": has_alo_params(crossing_payload) if crossing_payload else False,
+            "age_ok": crossing_age_ok,
+            **crossing_age_meta,
         },
         "passive": {
             "present": passive_payload is not None,
@@ -219,6 +293,8 @@ def evaluate_evidence(crossing_payload: dict[str, Any] | None, passive_payload: 
             "status": order_status(passive_payload) if passive_payload else None,
             "liquidity": liquidity_flag(passive_payload) if passive_payload else None,
             "has_alo_params": has_alo_params(passive_payload) if passive_payload else False,
+            "age_ok": passive_age_ok,
+            **passive_age_meta,
         },
     }
 
@@ -370,6 +446,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--acknowledge-real-orders", action="store_true")
     parser.add_argument("--crossing-result", type=Path, default=None)
     parser.add_argument("--passive-result", type=Path, default=None)
+    parser.add_argument("--max-evidence-age-seconds", type=float, default=86_400.0)
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
@@ -383,7 +460,11 @@ def main() -> int:
     elif args.mode == "submit-passive-alo":
         text = json.dumps(submit_passive_alo(args), indent=2, sort_keys=True, default=str)
     elif args.mode == "evaluate-evidence":
-        report = evaluate_evidence(load_optional_json(args.crossing_result), load_optional_json(args.passive_result))
+        report = evaluate_evidence(
+            load_optional_json(args.crossing_result),
+            load_optional_json(args.passive_result),
+            max_evidence_age_seconds=float(args.max_evidence_age_seconds),
+        )
         text = json.dumps(report, indent=2, sort_keys=True, default=str)
     else:
         text = json.dumps(submit_crossing_alo(args), indent=2, sort_keys=True, default=str)

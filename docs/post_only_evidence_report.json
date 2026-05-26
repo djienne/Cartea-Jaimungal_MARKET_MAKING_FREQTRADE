@@ -1,19 +1,28 @@
 {
   "crossing": {
+    "age_ok": false,
+    "age_seconds": null,
     "filled": null,
+    "generated_at": null,
     "has_alo_params": false,
     "liquidity": null,
+    "max_age_seconds": 86400.0,
     "ok": false,
     "present": false,
     "status": null
   },
   "gate": "hyperliquid_post_only_mapping",
-  "generated_at": "2026-05-26T00:34:30Z",
+  "generated_at": "2026-05-26T00:48:36Z",
+  "max_evidence_age_seconds": 86400.0,
   "ok": false,
   "passive": {
+    "age_ok": false,
+    "age_seconds": null,
     "filled": null,
+    "generated_at": null,
     "has_alo_params": false,
     "liquidity": null,
+    "max_age_seconds": 86400.0,
     "ok": false,
     "present": false,
     "status": null

@@ -9,7 +9,8 @@
     "crossing ALO order rejects/cancels/expires rather than rests",
     "passive ALO order rests, cancels, or fills as maker only",
     "exchange fill/liquidity flag is maker for any fill",
-    "actual order status, filled amount, and raw exchange result are retained"
+    "actual order status, filled amount, and raw exchange result are retained",
+    "crossing/passive submit artifacts include fresh generated_at timestamps"
   ],
   "safe_default": "no network call or order submission",
   "symbol": "ETH/USDC:USDC"
