@@ -120,8 +120,9 @@ Generated from the current local worktree after the latest safety-gate run.
   parameters and stale collector data reject quoting, and fails any replay
   variant that breaches maintenance margin. The safety-gate runner
   defaults to a short capped replay artifact, but exposes replay acceptance
-  symbol, mid, shard cap, event cap, and require-pass knobs so a promotion run
-  can regenerate the same report from the full multi-day dataset. The current
+  symbol, mid, shard cap, event cap, price-density threshold, max-gap threshold,
+  and require-pass knobs so a promotion run can regenerate the same report from
+  the full multi-day dataset. The current
   report correctly fails because the local data window is much shorter than the
   required multi-day coverage and has no maker fills.
 - Replay log calibration:

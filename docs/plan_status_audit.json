@@ -11,7 +11,7 @@
     "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-05-26T10:03:32Z",
+  "generated_at": "2026-05-26T10:15:43Z",
   "local_gates": {
     "failed": [],
     "missing": [],

@@ -20,6 +20,8 @@ from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AUDIT_LOG_INPUT = Path("user_data/logs/mm_debug.jsonl")
+DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY = 1_000.0
+DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS = 300.0
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 
@@ -194,6 +196,8 @@ def replay_acceptance_report_command(
     mid: float = 2116.95,
     newest_per_stream: int | None = 25,
     max_price_events: int | None = 2000,
+    min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
+    max_price_gap_seconds: float = DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS,
     allow_incomplete: bool = True,
 ) -> list[str]:
     command = [
@@ -215,6 +219,10 @@ def replay_acceptance_report_command(
         "docs/replay_acceptance_report.json",
         "--markdown-output",
         "docs/replay_acceptance_report.md",
+        "--min-price-events-per-day",
+        str(float(min_price_events_per_day)),
+        "--max-price-gap-seconds",
+        str(float(max_price_gap_seconds)),
     ]
     newest = optional_positive_int(newest_per_stream)
     max_events = optional_positive_int(max_price_events)
@@ -239,6 +247,8 @@ def local_gates(
     replay_acceptance_mid: float = 2116.95,
     replay_acceptance_newest_per_stream: int | None = 25,
     replay_acceptance_max_price_events: int | None = 2000,
+    replay_acceptance_min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
+    replay_acceptance_max_price_gap_seconds: float = DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS,
     replay_acceptance_allow_incomplete: bool = True,
 ) -> list[tuple[str, list[str], list[int]]]:
     py = sys.executable
@@ -485,6 +495,8 @@ def local_gates(
                         mid=replay_acceptance_mid,
                         newest_per_stream=replay_acceptance_newest_per_stream,
                         max_price_events=replay_acceptance_max_price_events,
+                        min_price_events_per_day=replay_acceptance_min_price_events_per_day,
+                        max_price_gap_seconds=replay_acceptance_max_price_gap_seconds,
                         allow_incomplete=replay_acceptance_allow_incomplete,
                     ),
                     [0],
@@ -724,6 +736,18 @@ def parse_args() -> argparse.Namespace:
         help="Maximum price events for the replay acceptance report. Use 0 for no event cap.",
     )
     parser.add_argument(
+        "--replay-acceptance-min-price-events-per-day",
+        type=float,
+        default=DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
+        help="Minimum replay price events per day required by the acceptance report.",
+    )
+    parser.add_argument(
+        "--replay-acceptance-max-price-gap-seconds",
+        type=float,
+        default=DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS,
+        help="Maximum allowed gap between replay price events in the acceptance report.",
+    )
+    parser.add_argument(
         "--replay-acceptance-require-pass",
         action="store_true",
         help="Omit --allow-incomplete so the replay acceptance command fails when report.ok is false.",
@@ -751,6 +775,8 @@ def main() -> int:
             replay_acceptance_mid=args.replay_acceptance_mid,
             replay_acceptance_newest_per_stream=args.replay_acceptance_newest_per_stream,
             replay_acceptance_max_price_events=args.replay_acceptance_max_price_events,
+            replay_acceptance_min_price_events_per_day=args.replay_acceptance_min_price_events_per_day,
+            replay_acceptance_max_price_gap_seconds=args.replay_acceptance_max_price_gap_seconds,
             replay_acceptance_allow_incomplete=not args.replay_acceptance_require_pass,
         )
     ]
@@ -780,6 +806,8 @@ def main() -> int:
             "mid": float(args.replay_acceptance_mid),
             "newest_per_stream": optional_positive_int(args.replay_acceptance_newest_per_stream),
             "max_price_events": optional_positive_int(args.replay_acceptance_max_price_events),
+            "min_price_events_per_day": float(args.replay_acceptance_min_price_events_per_day),
+            "max_price_gap_seconds": float(args.replay_acceptance_max_price_gap_seconds),
             "allow_incomplete": not bool(args.replay_acceptance_require_pass),
         },
     }

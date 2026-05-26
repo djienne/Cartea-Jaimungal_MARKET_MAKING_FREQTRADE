@@ -34,6 +34,8 @@ def gate_command(
     use_default_post_only_artifacts: bool = False,
     replay_acceptance_newest_per_stream: int | None = 25,
     replay_acceptance_max_price_events: int | None = 2000,
+    replay_acceptance_min_price_events_per_day: float = 1000.0,
+    replay_acceptance_max_price_gap_seconds: float = 300.0,
     replay_acceptance_allow_incomplete: bool = True,
 ) -> list[str]:
     for gate_name, command, _ in local_gates(
@@ -45,6 +47,8 @@ def gate_command(
         use_default_post_only_artifacts=use_default_post_only_artifacts,
         replay_acceptance_newest_per_stream=replay_acceptance_newest_per_stream,
         replay_acceptance_max_price_events=replay_acceptance_max_price_events,
+        replay_acceptance_min_price_events_per_day=replay_acceptance_min_price_events_per_day,
+        replay_acceptance_max_price_gap_seconds=replay_acceptance_max_price_gap_seconds,
         replay_acceptance_allow_incomplete=replay_acceptance_allow_incomplete,
     ):
         if gate_name == name:
@@ -102,20 +106,28 @@ def test_replay_acceptance_gate_defaults_to_short_artifact_mode():
     assert command[command.index("--newest-per-stream") + 1] == "25"
     assert "--max-price-events" in command
     assert command[command.index("--max-price-events") + 1] == "2000"
+    assert "--min-price-events-per-day" in command
+    assert command[command.index("--min-price-events-per-day") + 1] == "1000.0"
+    assert "--max-price-gap-seconds" in command
+    assert command[command.index("--max-price-gap-seconds") + 1] == "300.0"
     assert "--allow-incomplete" in command
 
 
-def test_replay_acceptance_gate_can_run_uncapped_promotion_mode():
+def test_replay_acceptance_gate_can_run_uncapped_promotion_mode_with_custom_coverage_thresholds():
     command = gate_command(
         "replay_acceptance_report_artifact",
         include_runtime=True,
         replay_acceptance_newest_per_stream=None,
         replay_acceptance_max_price_events=None,
+        replay_acceptance_min_price_events_per_day=2000.0,
+        replay_acceptance_max_price_gap_seconds=120.0,
         replay_acceptance_allow_incomplete=False,
     )
 
     assert "--newest-per-stream" not in command
     assert "--max-price-events" not in command
+    assert command[command.index("--min-price-events-per-day") + 1] == "2000.0"
+    assert command[command.index("--max-price-gap-seconds") + 1] == "120.0"
     assert "--allow-incomplete" not in command
 
 
