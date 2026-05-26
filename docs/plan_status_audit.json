@@ -7,11 +7,11 @@
       "multi_day_event_replay"
     ],
     "manual_gates_remaining": 4,
-    "missing_blockers": [],
-    "ready": false
+    "ready": false,
+    "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-05-26T03:29:29Z",
+  "generated_at": "2026-05-26T03:43:29Z",
   "local_gates": {
     "failed": [],
     "missing": [],
@@ -59,6 +59,12 @@
     ]
   },
   "manual_gates": {
+    "failed": [
+      "hyperliquid_fee_tier",
+      "hyperliquid_post_only_mapping",
+      "live_canary",
+      "multi_day_event_replay"
+    ],
     "missing": [],
     "present": [
       "hyperliquid_fee_tier",
@@ -75,8 +81,8 @@
   },
   "ok": true,
   "pytest_count": {
-    "latest_gates": 183,
-    "status": 183
+    "latest_gates": 185,
+    "status": 185
   },
   "reasons": [],
   "status_path": "docs\\PLAN_IMPLEMENTATION_STATUS.md",

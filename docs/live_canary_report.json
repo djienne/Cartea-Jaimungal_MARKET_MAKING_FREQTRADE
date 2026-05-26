@@ -12,9 +12,9 @@
   },
   "dependencies": {
     "fee": {
-      "age_seconds": 20.82833,
+      "age_seconds": 22.084335,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T03:29:09Z",
+      "generated_at": "2026-05-26T03:43:07Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -27,9 +27,9 @@
       "report_ok": false
     },
     "post_only": {
-      "age_seconds": 567.82833,
+      "age_seconds": 570.084335,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T03:20:02Z",
+      "generated_at": "2026-05-26T03:33:59Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -41,23 +41,23 @@
       "report_ok": false
     },
     "replay": {
-      "age_seconds": 0.82833,
+      "age_seconds": 1.084335,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T03:29:29Z",
+      "generated_at": "2026-05-26T03:43:28Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
-        "baseline:insufficient_coverage_days:0.004235<min_3.000000",
+        "baseline:insufficient_coverage_days:0.004644<min_3.000000",
         "baseline:no_maker_fills",
-        "fee_2x:insufficient_coverage_days:0.004235<min_3.000000",
+        "fee_2x:insufficient_coverage_days:0.004644<min_3.000000",
         "fee_2x:no_maker_fills",
-        "latency_2x:insufficient_coverage_days:0.004235<min_3.000000",
+        "latency_2x:insufficient_coverage_days:0.004644<min_3.000000",
         "latency_2x:no_maker_fills",
-        "params_soft:insufficient_coverage_days:0.004235<min_3.000000",
+        "params_soft:insufficient_coverage_days:0.004644<min_3.000000",
         "params_soft:no_maker_fills",
-        "params_hard:insufficient_coverage_days:0.004235<min_3.000000",
+        "params_hard:insufficient_coverage_days:0.004644<min_3.000000",
         "params_hard:no_maker_fills"
       ],
       "report_ok": false
@@ -68,10 +68,10 @@
     "param_update_failed": 9,
     "param_update_rejected": 6
   },
-  "event_count": 1691,
+  "event_count": 1725,
   "event_freshness": {
-    "fresh": 1691,
-    "max_age_seconds": 49235.09833,
+    "fresh": 1725,
+    "max_age_seconds": 50074.354335,
     "max_allowed_age_seconds": 604800.0,
     "stale": 0,
     "timestamp_missing": 0
@@ -82,7 +82,7 @@
     "taker": 0,
     "unknown_liquidity": 11
   },
-  "generated_at": "2026-05-26T03:29:29Z",
+  "generated_at": "2026-05-26T03:43:29Z",
   "health_failures": {
     "no_live_health_events": true
   },
@@ -90,8 +90,8 @@
   "ok": false,
   "quote_failures": {
     "accepted_quote_missing_fee_agreement": 101,
-    "accepted_quote_not_post_only": 225,
-    "accepted_quote_post_only_unverified": 225,
+    "accepted_quote_not_post_only": 230,
+    "accepted_quote_post_only_unverified": 230,
     "accepted_quote_stale_collector": 10,
     "accepted_quote_stale_orderbook": 10,
     "accepted_quote_stale_params": 10
@@ -104,8 +104,8 @@
     "insufficient_canary_sessions:0<min_3",
     "unknown_fill_liquidity:11",
     "accepted_quote_missing_fee_agreement:101",
-    "accepted_quote_not_post_only:225",
-    "accepted_quote_post_only_unverified:225",
+    "accepted_quote_not_post_only:230",
+    "accepted_quote_post_only_unverified:230",
     "accepted_quote_stale_collector:10",
     "accepted_quote_stale_orderbook:10",
     "accepted_quote_stale_params:10",
@@ -115,15 +115,15 @@
   ],
   "sessions": [
     {
-      "accepted_quotes": 225,
-      "duration_minutes": 819.6088333333333,
-      "end_ts": "2026-05-26T03:28:31.260000Z",
-      "events": 1691,
-      "health_events": 269,
+      "accepted_quotes": 230,
+      "duration_minutes": 833.8545833333334,
+      "end_ts": "2026-05-26T03:42:46.005000Z",
+      "events": 1725,
+      "health_events": 274,
       "kill_switches": 0,
       "live_health_events": 0,
       "maker_fills": 0,
-      "quote_decisions": 225,
+      "quote_decisions": 230,
       "session_id": "implicit-1",
       "start_ts": "2026-05-25T13:48:54.730000Z",
       "taker_fills": 0

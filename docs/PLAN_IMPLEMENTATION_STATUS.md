@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 183 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 185 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -13,6 +13,9 @@ Generated from the current local worktree after the latest safety-gate run.
   Hyperliquid, multi-day replay, fee, and live-canary gates have fresh evidence.
   The audit requires the runtime load gate `freqtrade_runtime_load` plus locked
   and enabled dry-run smoke gates, so Gates 2-3 cannot disappear silently.
+  The remaining manual gates are now evidence-aware: each external gate stays
+  in `deployment_blockers` only while its corresponding report artifact is not
+  `ok=true`.
 - PLAN status audit:
   `scripts/verify_plan_status.py` writes `docs/plan_status_audit.json` and
   fails if this status document's test count, required local gate list, or

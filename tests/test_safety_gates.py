@@ -65,12 +65,15 @@ def test_render_markdown_includes_post_run_audits():
                     "stderr_tail": "",
                 }
             ],
-            "manual_gates": [{"name": "live_canary", "reason": "external evidence required"}],
+            "deployment_blockers": ["live_canary"],
+            "manual_gates": [{"name": "live_canary", "reason": "external evidence required", "passed": False}],
         }
     )
 
     assert "Automated gates: PASS" in markdown
     assert "Deployment ready: NO" in markdown
     assert "Manual gates remaining: 1" in markdown
+    assert "Manual/external gate evidence:" in markdown
+    assert "WAIT `live_canary`" in markdown
     assert "Post-run audits:" in markdown
     assert "PASS `plan_status_audit`" in markdown

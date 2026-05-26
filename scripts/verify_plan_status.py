@@ -133,21 +133,34 @@ def build_plan_status_audit(
         if isinstance(gate, dict)
     }
     manual_gates_remaining = gates_payload.get("manual_gates_remaining")
-    if manual_gates_remaining != len(manual_gate_names):
-        reasons.append(f"manual_gates_remaining_mismatch:{manual_gates_remaining}!={len(manual_gate_names)}")
     deployment_blockers = {
         str(name)
         for name in gates_payload.get("deployment_blockers", [])
         if name not in (None, "")
     }
+    failed_manual_gates = {
+        str(gate.get("name"))
+        for gate in gates_payload.get("manual_gates", [])
+        if isinstance(gate, dict) and gate.get("passed") is not True
+    }
+    if manual_gates_remaining != len(deployment_blockers):
+        reasons.append(f"manual_gates_remaining_mismatch:{manual_gates_remaining}!={len(deployment_blockers)}")
+    if deployment_blockers != failed_manual_gates:
+        reasons.append("deployment_blockers_do_not_match_failed_manual_gates")
     if gates_payload.get("deployment_ready") is True and deployment_blockers:
         reasons.append("deployment_ready_true_before_manual_gates")
+    if (
+        gates_payload.get("deployment_ready") is not True
+        and gates_payload.get("all_automated_passed") is True
+        and not deployment_blockers
+    ):
+        reasons.append("deployment_ready_false_without_blockers")
     missing_manual_gates = sorted(REQUIRED_MANUAL_GATES - manual_gate_names)
     for name in missing_manual_gates:
         reasons.append(f"missing_manual_gate:{name}")
-    missing_deployment_blockers = sorted(REQUIRED_MANUAL_GATES - deployment_blockers)
-    for name in missing_deployment_blockers:
-        reasons.append(f"missing_deployment_blocker:{name}")
+    unexpected_deployment_blockers = sorted(deployment_blockers - REQUIRED_MANUAL_GATES)
+    for name in unexpected_deployment_blockers:
+        reasons.append(f"unexpected_deployment_blocker:{name}")
 
     pytest_count = extract_pytest_count(gates_payload)
     status_count = extract_status_test_count(status_text)
@@ -196,11 +209,12 @@ def build_plan_status_audit(
             "required": sorted(REQUIRED_MANUAL_GATES),
             "present": sorted(manual_gate_names),
             "missing": missing_manual_gates,
+            "failed": sorted(failed_manual_gates),
         },
         "deployment": {
             "ready": bool(gates_payload.get("deployment_ready")),
             "blockers": sorted(deployment_blockers),
-            "missing_blockers": missing_deployment_blockers,
+            "unexpected_blockers": unexpected_deployment_blockers,
             "manual_gates_remaining": manual_gates_remaining,
         },
         "status_phrases": {

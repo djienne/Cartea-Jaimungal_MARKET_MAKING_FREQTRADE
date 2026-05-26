@@ -35,10 +35,10 @@ def gate_payload(pytest_count: int = 173) -> dict:
         "live_canary_evidence_report",
     ]
     manual_gates = [
-        {"name": "hyperliquid_post_only_mapping"},
-        {"name": "multi_day_event_replay"},
-        {"name": "hyperliquid_fee_tier"},
-        {"name": "live_canary"},
+        {"name": "hyperliquid_post_only_mapping", "passed": False},
+        {"name": "multi_day_event_replay", "passed": False},
+        {"name": "hyperliquid_fee_tier", "passed": False},
+        {"name": "live_canary", "passed": False},
     ]
     deployment_blockers = [gate["name"] for gate in manual_gates]
     return {
@@ -143,3 +143,28 @@ def test_plan_status_audit_rejects_manual_gate_count_drift():
 
     assert report["ok"] is False
     assert "manual_gates_remaining_mismatch:0!=4" in report["reasons"]
+
+
+def test_plan_status_audit_accepts_deployment_ready_when_manual_gates_pass():
+    payload = gate_payload()
+    for gate in payload["manual_gates"]:
+        gate["passed"] = True
+    payload["deployment_blockers"] = []
+    payload["manual_gates_remaining"] = 0
+    payload["deployment_ready"] = True
+
+    report = audit_for(status_text(), payload)
+
+    assert report["ok"] is True
+    assert report["deployment"]["ready"] is True
+    assert report["deployment"]["blockers"] == []
+
+
+def test_plan_status_audit_rejects_blocker_status_drift():
+    payload = gate_payload()
+    payload["manual_gates"][0]["passed"] = True
+
+    report = audit_for(status_text(), payload)
+
+    assert report["ok"] is False
+    assert "deployment_blockers_do_not_match_failed_manual_gates" in report["reasons"]

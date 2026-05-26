@@ -33,6 +33,14 @@ class GateResult:
     stderr_tail: str
 
 
+@dataclass(frozen=True)
+class ManualGateSpec:
+    name: str
+    reason: str
+    report_path: str | None
+    ok_field: str = "ok"
+
+
 def tail(text: str | None, max_chars: int = 4_000) -> str:
     if text is None:
         return ""
@@ -65,6 +73,18 @@ def run_command(name: str, command: Sequence[str], expected_returncodes: Sequenc
         stdout_tail=tail(proc.stdout),
         stderr_tail=tail(proc.stderr),
     )
+
+
+def load_json_report(path: Path) -> tuple[dict | None, str | None]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "missing_report"
+    except Exception as exc:
+        return None, f"invalid_report:{exc}"
+    if not isinstance(payload, dict):
+        return None, "report_not_object"
+    return payload, None
 
 
 def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], list[int]]]:
@@ -369,41 +389,83 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
     return gates
 
 
-def manual_gates(*, include_runtime: bool = False) -> list[dict[str, str]]:
+def manual_gate_specs(*, include_runtime: bool = False) -> list[ManualGateSpec]:
     gates = [
-        {
-            "name": "hyperliquid_post_only_mapping",
-            "reason": "Requires testnet/tiny integration evidence that Freqtrade/CCXT PO maps to Hyperliquid Alo.",
-        },
-        {
-            "name": "multi_day_event_replay",
-            "reason": "Requires several days of fresh HL_data and review of markout/latency/fee sensitivity.",
-        },
-        {
-            "name": "hyperliquid_fee_tier",
-            "reason": "Requires exchange/account maker-fee evidence and actual maker fill fee rates.",
-        },
-        {
-            "name": "live_canary",
-            "reason": "Requires docs/live_canary_report.json to pass after several tiny live sessions with post-only, fee, replay, zero-taker, freshness, and kill-switch evidence.",
-        },
+        ManualGateSpec(
+            name="hyperliquid_post_only_mapping",
+            reason="Requires testnet/tiny integration evidence that Freqtrade/CCXT PO maps to Hyperliquid Alo.",
+            report_path="docs/post_only_evidence_report.json",
+        ),
+        ManualGateSpec(
+            name="multi_day_event_replay",
+            reason="Requires several days of fresh HL_data and review of markout/latency/fee sensitivity.",
+            report_path="docs/replay_acceptance_report.json",
+        ),
+        ManualGateSpec(
+            name="hyperliquid_fee_tier",
+            reason="Requires exchange/account maker-fee evidence and actual maker fill fee rates.",
+            report_path="docs/fee_evidence_report.json",
+        ),
+        ManualGateSpec(
+            name="live_canary",
+            reason="Requires docs/live_canary_report.json to pass after several tiny live sessions with post-only, fee, replay, zero-taker, freshness, and kill-switch evidence.",
+            report_path="docs/live_canary_report.json",
+        ),
     ]
     if not include_runtime:
         gates.insert(
             0,
-            {
-                "name": "deterministic_dry_run_trading_disabled",
-                "reason": "Requires running the bot loop and confirming zero orders plus health logs in Freqtrade logs.",
-            },
+            ManualGateSpec(
+                name="deterministic_dry_run_trading_disabled",
+                reason="Requires running the bot loop and confirming zero orders plus health logs in Freqtrade logs.",
+                report_path="docs/dry_run_disabled_gate.json",
+                ok_field="passed",
+            ),
         )
         gates.insert(
             1,
-            {
-                "name": "freqtrade_runtime_load",
-                "reason": "Requires a Freqtrade environment with exchange/config plugins installed.",
-            },
+            ManualGateSpec(
+                name="freqtrade_runtime_load",
+                reason="Requires a Freqtrade environment with exchange/config plugins installed.",
+                report_path=None,
+            ),
         )
     return gates
+
+
+def manual_gate_statuses(*, include_runtime: bool = False) -> list[dict[str, object]]:
+    statuses: list[dict[str, object]] = []
+    for spec in manual_gate_specs(include_runtime=include_runtime):
+        passed = False
+        status_reason = "no_machine_check"
+        report_reasons: list[str] = []
+        report_path = spec.report_path
+        if report_path:
+            payload, load_error = load_json_report(ROOT / report_path)
+            if load_error:
+                status_reason = load_error
+            else:
+                passed = payload.get(spec.ok_field) is True
+                status_reason = "ok" if passed else f"{spec.ok_field}_not_true"
+                raw_reasons = payload.get("reasons", [])
+                if isinstance(raw_reasons, list):
+                    report_reasons = [str(reason) for reason in raw_reasons]
+        statuses.append(
+            {
+                "name": spec.name,
+                "reason": spec.reason,
+                "report_path": report_path,
+                "ok_field": spec.ok_field if report_path else None,
+                "passed": passed,
+                "status_reason": status_reason,
+                "report_reasons": report_reasons,
+            }
+        )
+    return statuses
+
+
+def manual_gates(*, include_runtime: bool = False) -> list[dict[str, object]]:
+    return manual_gate_statuses(include_runtime=include_runtime)
 
 
 def plan_status_audit_command(gates_path: Path, output_path: Path) -> list[str]:
@@ -457,10 +519,22 @@ def render_markdown(payload: dict) -> str:
                     lines.append("```text")
                     lines.append(result["stderr_tail"])
                     lines.append("```")
-    lines.append("")
-    lines.append("Manual gates still required:")
-    for gate in payload["manual_gates"]:
-        lines.append(f"- `{gate['name']}`: {gate['reason']}")
+    manual_gates = payload.get("manual_gates", [])
+    if manual_gates:
+        lines.append("")
+        lines.append("Manual/external gate evidence:")
+        for gate in manual_gates:
+            status = "PASS" if gate.get("passed") else "WAIT"
+            lines.append(f"- {status} `{gate['name']}`: {gate['reason']}")
+            if not gate.get("passed") and gate.get("status_reason"):
+                lines.append(f"  - reason: `{gate['status_reason']}`")
+    blockers = set(str(name) for name in payload.get("deployment_blockers", []))
+    if blockers:
+        lines.append("")
+        lines.append("Manual gates still required:")
+        for gate in manual_gates:
+            if str(gate.get("name")) in blockers:
+                lines.append(f"- `{gate['name']}`: {gate['reason']}")
     return "\n".join(lines)
 
 
@@ -485,7 +559,7 @@ def main() -> int:
         for name, command, expected_returncodes in local_gates(include_runtime=args.include_runtime)
     ]
     manual_gate_list = manual_gates(include_runtime=args.include_runtime)
-    deployment_blockers = [gate["name"] for gate in manual_gate_list]
+    deployment_blockers = [str(gate["name"]) for gate in manual_gate_list if gate.get("passed") is not True]
     all_local_passed = all(result.passed for result in results)
     payload = {
         "local_gates": [asdict(result) for result in results],
