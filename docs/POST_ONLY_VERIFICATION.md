@@ -58,6 +58,14 @@ The automated safety gate writes an incomplete
 file should remain `ok=false` until real testnet/tiny exchange evidence is
 provided.
 
+After the crossing/passive artifacts exist at the conventional paths above,
+the full safety runner will pass them through automatically. Custom artifact
+paths can be supplied explicitly:
+
+```bash
+python scripts/run_safety_gates.py --include-runtime --post-only-crossing-result docs/post_only_crossing_result.json --post-only-passive-result docs/post_only_passive_result.json --markdown-output docs/LAST_SAFETY_GATES.md
+```
+
 ## Direct SDK Fallback
 
 Because Freqtrade 2025.4 rejects Hyperliquid `PO`, the repo also includes a

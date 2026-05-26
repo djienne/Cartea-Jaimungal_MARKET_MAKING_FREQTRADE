@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 188 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 190 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -52,7 +52,10 @@ Generated from the current local worktree after the latest safety-gate run.
   `submit-crossing-alo` mode for ALO rejection evidence and a guarded
   `submit-passive-alo` evidence mode that cancels any resting order ids after
   classification. Regular `submit-alo` remains locally maker-safe for the future
-  direct execution layer.
+  direct execution layer. The safety-gate runner can consume post-only
+  crossing/passive evidence through explicit artifact path flags, and it also
+  auto-detects the conventional `docs/post_only_crossing_result.json` and
+  `docs/post_only_passive_result.json` paths when they exist.
 - Fresh collector data validation:
   `docs/hl_data_validation.json` validates required streams/columns and bases
   freshness on the Parquet row `timestamp` values, not file modification time,

@@ -28,10 +28,16 @@ def gate_command(
     *,
     include_runtime: bool,
     manual_monitoring_ack: bool = False,
+    post_only_crossing_result: Path | None = None,
+    post_only_passive_result: Path | None = None,
+    use_default_post_only_artifacts: bool = False,
 ) -> list[str]:
     for gate_name, command, _ in local_gates(
         include_runtime=include_runtime,
         manual_monitoring_ack=manual_monitoring_ack,
+        post_only_crossing_result=post_only_crossing_result,
+        post_only_passive_result=post_only_passive_result,
+        use_default_post_only_artifacts=use_default_post_only_artifacts,
     ):
         if gate_name == name:
             return command
@@ -56,6 +62,28 @@ def test_external_evidence_report_gates_accept_incomplete_and_complete_returncod
     assert gate_expected_returncodes("post_only_evidence_report", include_runtime=True) == [0, 1]
     assert gate_expected_returncodes("fee_evidence_report", include_runtime=True) == [0, 1]
     assert gate_expected_returncodes("live_canary_evidence_report", include_runtime=True) == [0, 1]
+
+
+def test_post_only_gate_can_pass_external_evidence_artifacts():
+    command = gate_command(
+        "post_only_evidence_report",
+        include_runtime=True,
+        post_only_crossing_result=Path("docs/post_only_crossing_result.json"),
+        post_only_passive_result=Path("docs/post_only_passive_result.json"),
+    )
+    normalized = [item.replace("\\", "/") for item in command]
+
+    assert "--crossing-result" in command
+    assert "docs/post_only_crossing_result.json" in normalized
+    assert "--passive-result" in command
+    assert "docs/post_only_passive_result.json" in normalized
+
+
+def test_post_only_gate_keeps_incomplete_artifact_check_when_no_evidence_is_supplied():
+    command = gate_command("post_only_evidence_report", include_runtime=True)
+
+    assert "--crossing-result" not in command
+    assert "--passive-result" not in command
 
 
 def test_live_canary_gate_does_not_ack_manual_monitoring_by_default():

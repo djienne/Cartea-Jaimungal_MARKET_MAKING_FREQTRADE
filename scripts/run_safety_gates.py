@@ -19,6 +19,8 @@ from typing import Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
+DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 
 
 @dataclass
@@ -87,6 +89,37 @@ def load_json_report(path: Path) -> tuple[dict | None, str | None]:
     return payload, None
 
 
+def default_evidence_artifact(path: Path) -> Path | None:
+    return path if (ROOT / path).exists() else None
+
+
+def post_only_evidence_command(
+    py: str,
+    *,
+    crossing_result: Path | None = None,
+    passive_result: Path | None = None,
+    use_default_artifacts: bool = True,
+) -> list[str]:
+    command = [
+        py,
+        "scripts/verify_post_only_mapping.py",
+        "--mode",
+        "evaluate-evidence",
+        "--output",
+        "docs/post_only_evidence_report.json",
+    ]
+    crossing = crossing_result
+    passive = passive_result
+    if use_default_artifacts:
+        crossing = crossing or default_evidence_artifact(DEFAULT_POST_ONLY_CROSSING_RESULT)
+        passive = passive or default_evidence_artifact(DEFAULT_POST_ONLY_PASSIVE_RESULT)
+    if crossing is not None:
+        command.extend(["--crossing-result", str(crossing)])
+    if passive is not None:
+        command.extend(["--passive-result", str(passive)])
+    return command
+
+
 def live_canary_evidence_command(py: str, *, manual_monitoring_ack: bool = False) -> list[str]:
     command = [
         py,
@@ -105,6 +138,9 @@ def local_gates(
     *,
     include_runtime: bool = False,
     manual_monitoring_ack: bool = False,
+    post_only_crossing_result: Path | None = None,
+    post_only_passive_result: Path | None = None,
+    use_default_post_only_artifacts: bool = True,
 ) -> list[tuple[str, list[str], list[int]]]:
     py = sys.executable
     gates = [
@@ -207,14 +243,12 @@ def local_gates(
         ),
         (
             "post_only_evidence_report",
-            [
+            post_only_evidence_command(
                 py,
-                "scripts/verify_post_only_mapping.py",
-                "--mode",
-                "evaluate-evidence",
-                "--output",
-                "docs/post_only_evidence_report.json",
-            ],
+                crossing_result=post_only_crossing_result,
+                passive_result=post_only_passive_result,
+                use_default_artifacts=use_default_post_only_artifacts,
+            ),
             [0, 1],
         ),
         (
@@ -559,6 +593,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--post-only-crossing-result",
+        type=Path,
+        default=None,
+        help=(
+            "Crossing Alo evidence artifact for scripts/verify_post_only_mapping.py. "
+            "Defaults to docs/post_only_crossing_result.json when that file exists."
+        ),
+    )
+    parser.add_argument(
+        "--post-only-passive-result",
+        type=Path,
+        default=None,
+        help=(
+            "Passive Alo evidence artifact for scripts/verify_post_only_mapping.py. "
+            "Defaults to docs/post_only_passive_result.json when that file exists."
+        ),
+    )
+    parser.add_argument(
         "--plan-status-audit-output",
         type=Path,
         default=Path("docs/plan_status_audit.json"),
@@ -574,6 +626,8 @@ def main() -> int:
         for name, command, expected_returncodes in local_gates(
             include_runtime=args.include_runtime,
             manual_monitoring_ack=args.manual_monitoring_ack,
+            post_only_crossing_result=args.post_only_crossing_result,
+            post_only_passive_result=args.post_only_passive_result,
         )
     ]
     manual_gate_list = manual_gates(include_runtime=args.include_runtime)
@@ -590,6 +644,12 @@ def main() -> int:
         "deployment_blockers": deployment_blockers,
         "runtime_gates_included": bool(args.include_runtime),
         "manual_monitoring_ack": bool(args.manual_monitoring_ack),
+        "post_only_crossing_result": str(args.post_only_crossing_result)
+        if args.post_only_crossing_result
+        else None,
+        "post_only_passive_result": str(args.post_only_passive_result)
+        if args.post_only_passive_result
+        else None,
     }
 
     if args.include_runtime:

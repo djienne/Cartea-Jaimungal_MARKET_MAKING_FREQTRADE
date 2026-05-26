@@ -56,7 +56,10 @@ These gates do not require a live exchange connection:
   check, not as exchange proof. The report must become `ok=true` before live
   trading can be considered. The crossing/passive submit artifacts must also
   carry fresh `generated_at` timestamps, so regenerating a fresh report from
-  stale exchange probes does not satisfy Gate 4.
+  stale exchange probes does not satisfy Gate 4. The safety runner accepts
+  explicit `--post-only-crossing-result` and `--post-only-passive-result`
+  artifact paths, and auto-detects `docs/post_only_crossing_result.json` plus
+  `docs/post_only_passive_result.json` when those conventional files exist.
 - `direct_alo_adapter_plan`: writes `docs/direct_alo_adapter_plan.json`,
   documenting the no-network direct Hyperliquid SDK fallback path that submits
   `order_type={"limit": {"tif": "Alo"}}` only after local BBO maker-safety.
