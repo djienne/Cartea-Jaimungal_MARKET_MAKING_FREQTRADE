@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 import time
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Sequence
@@ -405,6 +406,25 @@ def manual_gates(*, include_runtime: bool = False) -> list[dict[str, str]]:
     return gates
 
 
+def plan_status_audit_command(gates_path: Path, output_path: Path) -> list[str]:
+    return [
+        sys.executable,
+        "scripts/verify_plan_status.py",
+        "--status",
+        "docs/PLAN_IMPLEMENTATION_STATUS.md",
+        "--gates",
+        str(gates_path),
+        "--output",
+        str(output_path),
+    ]
+
+
+def run_plan_status_audit(payload: dict, gates_path: Path, output_path: Path) -> GateResult:
+    gates_path.parent.mkdir(parents=True, exist_ok=True)
+    gates_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return run_command("plan_status_audit", plan_status_audit_command(gates_path, output_path), [0])
+
+
 def render_markdown(payload: dict) -> str:
     lines = ["# Safety Gate Results", ""]
     for result in payload["local_gates"]:
@@ -417,6 +437,20 @@ def render_markdown(payload: dict) -> str:
                 lines.append("```text")
                 lines.append(result["stderr_tail"])
                 lines.append("```")
+    post_run_audits = payload.get("post_run_audits", [])
+    if post_run_audits:
+        lines.append("")
+        lines.append("Post-run audits:")
+        for result in post_run_audits:
+            status = "PASS" if result["passed"] else "FAIL"
+            lines.append(f"- {status} `{result['name']}` ({result['elapsed_seconds']}s)")
+            if not result["passed"]:
+                lines.append(f"  - returncode: `{result['returncode']}`")
+                if result["stderr_tail"]:
+                    lines.append("  - stderr tail:")
+                    lines.append("```text")
+                    lines.append(result["stderr_tail"])
+                    lines.append("```")
     lines.append("")
     lines.append("Manual gates still required:")
     for gate in payload["manual_gates"]:
@@ -429,6 +463,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-output", type=Path, default=None, help="Optional path for full JSON results.")
     parser.add_argument("--markdown-output", type=Path, default=None, help="Optional path for markdown summary.")
     parser.add_argument("--include-runtime", action="store_true", help="Also run non-trading Docker/Freqtrade load gates.")
+    parser.add_argument(
+        "--plan-status-audit-output",
+        type=Path,
+        default=Path("docs/plan_status_audit.json"),
+        help="Path for the post-run PLAN status audit artifact.",
+    )
     return parser.parse_args()
 
 
@@ -442,8 +482,22 @@ def main() -> int:
         "local_gates": [asdict(result) for result in results],
         "manual_gates": manual_gates(include_runtime=args.include_runtime),
         "all_local_passed": all(result.passed for result in results),
+        "post_run_audits": [],
+        "all_passed": all(result.passed for result in results),
         "runtime_gates_included": bool(args.include_runtime),
     }
+
+    if args.include_runtime:
+        if args.json_output:
+            audit_gate_path = args.json_output
+            audit_result = run_plan_status_audit(payload, audit_gate_path, args.plan_status_audit_output)
+        else:
+            with tempfile.TemporaryDirectory(prefix="mm-safety-gates-") as tmp_dir:
+                audit_gate_path = Path(tmp_dir) / "last_safety_gates.json"
+                audit_result = run_plan_status_audit(payload, audit_gate_path, args.plan_status_audit_output)
+
+        payload["post_run_audits"] = [asdict(audit_result)]
+        payload["all_passed"] = bool(payload["all_local_passed"] and audit_result.passed)
 
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
@@ -455,7 +509,7 @@ def main() -> int:
         args.markdown_output.write_text(markdown, encoding="utf-8")
     print(markdown)
 
-    return 0 if payload["all_local_passed"] else 1
+    return 0 if payload["all_passed"] else 1
 
 
 if __name__ == "__main__":

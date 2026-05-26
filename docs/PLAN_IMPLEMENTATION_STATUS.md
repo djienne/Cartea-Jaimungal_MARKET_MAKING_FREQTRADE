@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 177 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 179 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -12,6 +12,8 @@ Generated from the current local worktree after the latest safety-gate run.
   `scripts/verify_plan_status.py` writes `docs/plan_status_audit.json` and
   fails if this status document's test count, required local gate list, or
   remaining external-gate text drifts away from the latest safety-gate evidence.
+  Full `run_safety_gates.py --include-runtime` runs execute this audit as a
+  post-run check.
 - Checked-in config safety:
   `scripts/verify_config_safety.py` writes `docs/config_safety_report.json` and
   fails if the repository config reintroduces live mode, force-entry, unlimited

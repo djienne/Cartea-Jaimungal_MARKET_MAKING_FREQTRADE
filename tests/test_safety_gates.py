@@ -9,7 +9,7 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from run_safety_gates import local_gates  # noqa: E402
+from run_safety_gates import local_gates, plan_status_audit_command, render_markdown  # noqa: E402
 
 
 def gate_names(*, include_runtime: bool) -> list[str]:
@@ -28,3 +28,43 @@ def test_live_canary_gate_is_still_available_without_runtime_gates():
     names = gate_names(include_runtime=False)
 
     assert "live_canary_evidence_report" in names
+
+
+def test_plan_status_audit_command_uses_latest_gate_json_and_output():
+    command = plan_status_audit_command(Path("docs/last_safety_gates.json"), Path("docs/plan_status_audit.json"))
+    normalized = [item.replace("\\", "/") for item in command]
+
+    assert "scripts/verify_plan_status.py" in command
+    assert "--gates" in command
+    assert "docs/last_safety_gates.json" in normalized
+    assert "--output" in command
+    assert "docs/plan_status_audit.json" in normalized
+
+
+def test_render_markdown_includes_post_run_audits():
+    markdown = render_markdown(
+        {
+            "local_gates": [
+                {
+                    "name": "compileall",
+                    "passed": True,
+                    "returncode": 0,
+                    "elapsed_seconds": 0.1,
+                    "stderr_tail": "",
+                }
+            ],
+            "post_run_audits": [
+                {
+                    "name": "plan_status_audit",
+                    "passed": True,
+                    "returncode": 0,
+                    "elapsed_seconds": 0.2,
+                    "stderr_tail": "",
+                }
+            ],
+            "manual_gates": [{"name": "live_canary", "reason": "external evidence required"}],
+        }
+    )
+
+    assert "Post-run audits:" in markdown
+    assert "PASS `plan_status_audit`" in markdown

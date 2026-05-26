@@ -239,8 +239,9 @@ python scripts/verify_live_canary.py --input user_data/logs/mm_debug.jsonl --man
   those windows with `--max-dependency-report-age-seconds` and
   `--max-canary-event-age-seconds` when promoting a canary run.
 
-After a full gate run, verify the human-readable PLAN status against the latest
-machine-readable gate evidence:
+Full `run_safety_gates.py --include-runtime` runs automatically verify the
+human-readable PLAN status against the latest machine-readable gate evidence and
+write `docs/plan_status_audit.json`. To run that audit directly:
 
 ```bash
 python scripts/verify_plan_status.py --status docs/PLAN_IMPLEMENTATION_STATUS.md --gates docs/last_safety_gates.json --output docs/plan_status_audit.json
