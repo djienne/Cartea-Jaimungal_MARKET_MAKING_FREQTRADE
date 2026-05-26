@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ STRATEGIES = ROOT / "user_data" / "strategies"
 if str(STRATEGIES) not in sys.path:
     sys.path.insert(0, str(STRATEGIES))
 
+import periodic_test_runner  # noqa: E402
 from periodic_test_runner import _validate_symbol_snapshot  # noqa: E402
 
 
@@ -27,12 +29,18 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
                     "schema_version": 2,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
+                    "window_start": "2026-05-25T09:30:00Z",
+                    "window_end": "2026-05-25T10:00:00Z",
                     "kappa+": 2.0,
                     "kappa-": 2.5,
                     "lambda+": 0.1,
                     "lambda-": 0.2,
+                    "n_quotes": 100,
+                    "n_trades": 50,
                     "n_points_plus": 3,
                     "n_points_minus": 3,
+                    "r2_plus": 0.5,
+                    "r2_minus": 0.6,
                 }
             },
         ),
@@ -43,9 +51,12 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
                     "schema_version": 2,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
+                    "window_start": "2026-05-25T09:30:00Z",
+                    "window_end": "2026-05-25T10:00:00Z",
                     "lambda+": 0.1,
                     "lambda-": 0.2,
                     "lambda_source": "lambda0_fit",
+                    "n_trades": 50,
                 }
             },
         ),
@@ -56,10 +67,17 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
                     "schema_version": 2,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
+                    "window_start": "2026-05-25T09:30:00Z",
+                    "window_end": "2026-05-25T10:00:00Z",
                     "epsilon+": 0.01,
                     "epsilon-": 0.02,
+                    "window_ms": 200,
+                    "estimator": "trimmed_mean",
+                    "unit": "USDC",
                     "n_buy_events": 3,
                     "n_sell_events": 3,
+                    "toxicity_plus": 0.02,
+                    "toxicity_minus": 0.05,
                 }
             },
         ),
@@ -80,3 +98,48 @@ def test_runner_rejects_non_ok_snapshot_status(tmp_path):
 
     assert not ok
     assert reason.startswith("status_not_ok_epsilon.json")
+
+
+def test_runner_rejects_missing_kappa_fit_diagnostics(tmp_path):
+    snapshots = valid_snapshots(tmp_path)
+    payload = json.loads(snapshots["kappa.json"].read_text(encoding="utf-8"))
+    del payload["ETH"]["r2_plus"]
+    snapshots["kappa.json"].write_text(json.dumps(payload), encoding="utf-8")
+
+    ok, reason = _validate_symbol_snapshot(snapshots, "ETH")
+
+    assert not ok
+    assert reason == "missing_r2_plus_in_kappa.json"
+
+
+def test_runner_rejects_raw_lambda_as_hjb_input(tmp_path):
+    snapshots = valid_snapshots(tmp_path)
+    payload = json.loads(snapshots["lambda.json"].read_text(encoding="utf-8"))
+    payload["ETH"]["lambda_source"] = "lambda_raw"
+    snapshots["lambda.json"].write_text(json.dumps(payload), encoding="utf-8")
+
+    ok, reason = _validate_symbol_snapshot(snapshots, "ETH")
+
+    assert not ok
+    assert reason == "lambda_json_must_be_lambda0_fit"
+
+
+def test_runner_executes_estimators_in_dependency_order(monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_stream_process(name, cmd, cwd):
+        calls.append((name, cmd[-2:], cwd))
+        return 0
+
+    found = {}
+    for name in periodic_test_runner.TEST_FILES:
+        path = tmp_path / name
+        path.write_text("pass", encoding="utf-8")
+        found[name] = path
+
+    monkeypatch.setattr(periodic_test_runner, "_stream_process", fake_stream_process)
+
+    asyncio.run(periodic_test_runner._run_once(found, "ETH"))
+
+    assert [name for name, _cmd_tail, _cwd in calls] == ["get_kappa.py", "get_epsilon.py", "get_lambda.py"]
+    assert all(cmd_tail == ["--crypto", "ETH"] for _name, cmd_tail, _cwd in calls)

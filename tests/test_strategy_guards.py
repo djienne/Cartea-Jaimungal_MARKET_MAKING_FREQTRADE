@@ -187,6 +187,7 @@ def make_bot() -> Market_Making:
             "status": "ok",
             "lambda+": 0.1,
             "lambda-": 0.1,
+            "lambda_source": "lambda0_fit",
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     }
@@ -784,6 +785,13 @@ def test_param_snapshot_status_must_be_ok():
     bot.kappas["ETH"]["status"] = "seeded_unverified"
 
     assert bot._params_are_valid("ETH/USDC:USDC") == (False, "param_status_not_ok")
+
+
+def test_lambda_snapshot_must_be_hjb_lambda0_fit():
+    bot = make_bot()
+    bot.lambdas["ETH"]["lambda_source"] = "lambda_raw"
+
+    assert bot._params_are_valid("ETH/USDC:USDC") == (False, "invalid_lambda_source")
 
 
 def test_stale_params_reject_entry():

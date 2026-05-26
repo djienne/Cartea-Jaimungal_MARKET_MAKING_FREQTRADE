@@ -1,5 +1,5 @@
 """
-Periodic asynchronous runner for get_kappa.py, get_epsilon.py, and get_lambda.py.
+Periodic deterministic runner for get_kappa.py, get_epsilon.py, and get_lambda.py.
 
 Key features:
 - Locates test files by walking up from this script's directory.
@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
-TEST_FILES = ("get_lambda.py", "get_kappa.py", "get_epsilon.py")
+TEST_FILES = ("get_kappa.py", "get_epsilon.py", "get_lambda.py")
 # lambda.json holds baseline λ₀ from get_kappa.py; lambda_trades.json is optional monitoring output.
 CONFIG_FILES = ("epsilon.json", "kappa.json", "lambda.json", "lambda_trades.json")
 RUNNER_STATUS_FILE = "param_update_status.json"
@@ -156,28 +156,25 @@ async def _stream_process(name: str, cmd: list[str], cwd: Path) -> int:
 
 
 async def _run_once(found: Dict[str, Optional[Path]], crypto: str) -> None:
-    tasks = []
+    ran_any = False
     for name in TEST_FILES:
         path = found.get(name)
         if not path:
             print(f"{_ts()} [finder] WARNING: Could not find {name}; skipping this cycle.")
             continue
         cmd = [sys.executable, str(path), "--crypto", crypto]
-        tasks.append(asyncio.create_task(_stream_process(name, cmd, cwd=path.parent)))
+        ran_any = True
+        try:
+            res = await _stream_process(name, cmd, cwd=path.parent)
+        except Exception as exc:
+            print(f"{_ts()} [{name}] ERROR: {exc}")
+            raise
+        print(f"{_ts()} [{name}] Exit code: {res}")
+        if int(res) != 0:
+            raise RuntimeError(f"{name} failed with exit code {res}")
 
-    if not tasks:
-        # Nothing to run this cycle
+    if not ran_any:
         return
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for name, res in zip([t for t in TEST_FILES if found.get(t)], results):
-        if isinstance(res, Exception):
-            print(f"{_ts()} [{name}] ERROR: {res}")
-            raise res
-        else:
-            print(f"{_ts()} [{name}] Exit code: {res}")
-            if int(res) != 0:
-                raise RuntimeError(f"{name} failed with exit code {res}")
 
 
 def _copy_if_needed(src: Path, dst: Path) -> bool:
@@ -223,13 +220,50 @@ def _load_json(path: Path) -> dict:
     return data
 
 
+def _valid_timestamp(value: object) -> bool:
+    if not value:
+        return False
+    try:
+        datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return False
+    return True
+
+
 def _validate_symbol_snapshot(config_paths: Dict[str, Optional[Path]], crypto: str) -> tuple[bool, str]:
     required_files = ("kappa.json", "lambda.json", "epsilon.json")
     required_keys = {
-        "kappa.json": ("kappa+", "kappa-", "lambda+", "lambda-", "n_points_plus", "n_points_minus"),
-        "lambda.json": ("lambda+", "lambda-", "lambda_source"),
-        "epsilon.json": ("epsilon+", "epsilon-", "n_buy_events", "n_sell_events"),
+        "kappa.json": (
+            "kappa+",
+            "kappa-",
+            "lambda+",
+            "lambda-",
+            "window_start",
+            "window_end",
+            "n_quotes",
+            "n_trades",
+            "n_points_plus",
+            "n_points_minus",
+            "r2_plus",
+            "r2_minus",
+        ),
+        "lambda.json": ("lambda+", "lambda-", "lambda_source", "window_start", "window_end", "n_trades"),
+        "epsilon.json": (
+            "epsilon+",
+            "epsilon-",
+            "window_start",
+            "window_end",
+            "window_ms",
+            "estimator",
+            "unit",
+            "n_buy_events",
+            "n_sell_events",
+            "toxicity_plus",
+            "toxicity_minus",
+        ),
     }
+    timestamp_keys = {"generated_at", "window_start", "window_end"}
+    string_keys = {"lambda_source", "estimator", "unit"}
     for name in required_files:
         path = config_paths.get(name)
         if path is None:
@@ -247,12 +281,22 @@ def _validate_symbol_snapshot(config_paths: Dict[str, Optional[Path]], crypto: s
             return False, f"status_not_ok_{name}:{entry.get('status')}"
         if not entry.get("generated_at"):
             return False, f"missing_generated_at_{name}"
+        if not _valid_timestamp(entry.get("generated_at")):
+            return False, f"invalid_generated_at_{name}"
         for key in required_keys[name]:
             if key not in entry:
                 return False, f"missing_{key}_in_{name}"
             if key == "lambda_source":
                 if name == "lambda.json" and entry[key] != "lambda0_fit":
                     return False, "lambda_json_must_be_lambda0_fit"
+                continue
+            if key in timestamp_keys:
+                if not _valid_timestamp(entry.get(key)):
+                    return False, f"invalid_{key}_in_{name}"
+                continue
+            if key in string_keys:
+                if not str(entry.get(key) or "").strip():
+                    return False, f"missing_{key}_in_{name}"
                 continue
             try:
                 value = float(entry[key])

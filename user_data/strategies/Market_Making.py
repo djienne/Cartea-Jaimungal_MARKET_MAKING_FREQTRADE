@@ -1040,6 +1040,9 @@ class Market_Making(IStrategy):
             return False, "param_schema_unsupported"
         if len(source_entries) < 3:
             return False, "param_schema_unsupported"
+        lambda_entry = self.lambdas.get(symbol) if isinstance(self.lambdas, dict) else None
+        if not isinstance(lambda_entry, dict) or lambda_entry.get("lambda_source") != "lambda0_fit":
+            return False, "invalid_lambda_source"
 
         for entry in source_entries:
             if str(entry.get("status", "")).lower() != "ok":
