@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-26T10:33:49Z",
+  "generated_at": "2026-05-26T10:47:05Z",
   "observed": {
     "defaults": {
       "can_short": false,
@@ -27,6 +27,10 @@
       "post_only_verified": false,
       "trading_enabled": false,
       "use_exit_signal": true
+    },
+    "guards": {
+      "entry_price_tick_guard": true,
+      "exit_price_tick_guard": true
     },
     "signatures": {
       "_price_tick_safe": [

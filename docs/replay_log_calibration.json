@@ -1,9 +1,9 @@
 {
   "accepted_quotes_by_depth": {
-    "bid:5.00-6.00bps": 376
+    "bid:5.00-6.00bps": 381
   },
   "accepted_quotes_by_side": {
-    "bid": 376
+    "bid": 381
   },
   "actual_fee_rate": {
     "count": 0,
@@ -17,19 +17,19 @@
     "bid:5.00-6.00bps": 0.0
   },
   "fill_probability_by_side": {
-    "bid": 0.03723404255319149
+    "bid": 0.03674540682414698
   },
   "fills_by_side": {
     "bid": 14
   },
-  "generated_at": "2026-05-26T10:43:00Z",
+  "generated_at": "2026-05-26T10:56:18Z",
   "input_paths": [
     "user_data\\logs\\mm_debug.jsonl"
   ],
   "inputs": {
-    "accepted_quotes": 376,
+    "accepted_quotes": 381,
     "bucket_bps": 1.0,
-    "events": 2733,
+    "events": 2765,
     "fills": 14,
     "match_window_seconds": 300.0,
     "max_fee_rate": 0.01,

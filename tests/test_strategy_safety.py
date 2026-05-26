@@ -113,3 +113,15 @@ def test_strategy_safety_rejects_missing_final_price_tick_guard():
 
     assert report["ok"] is False
     assert "entry_price_tick_guard_missing" in report["reasons"]
+
+
+def test_strategy_safety_rejects_commented_price_tick_guard():
+    source = SAFE_SOURCE.replace(
+        'self._price_tick_safe(pair, "bid", rate)',
+        '# self._price_tick_safe(pair, "bid", rate)\n        pass',
+    )
+
+    report = report_for(source)
+
+    assert report["ok"] is False
+    assert "entry_price_tick_guard_missing" in report["reasons"]

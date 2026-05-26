@@ -4,42 +4,42 @@
   "checked_files": 75,
   "data_dir": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\scripts\\HL_data",
   "fresh": true,
-  "freshness_age_seconds": 13.999313,
-  "generated_at": "2026-05-26T10:43:01Z",
-  "latest_data_age_seconds": 12.999313,
-  "latest_data_timestamp": "2026-05-26T10:42:49Z",
-  "latest_file_age_seconds": 11.810738563537598,
-  "latest_file_mtime": "2026-05-26T10:42:50Z",
+  "freshness_age_seconds": 16.730451,
+  "generated_at": "2026-05-26T10:56:19Z",
+  "latest_data_age_seconds": 13.730451,
+  "latest_data_timestamp": "2026-05-26T10:56:06Z",
+  "latest_file_age_seconds": 12.513594627380371,
+  "latest_file_mtime": "2026-05-26T10:56:07Z",
   "max_age_seconds": 180,
   "max_files": null,
   "missing_streams": [],
   "newest_per_stream": 25,
   "ok": true,
-  "oldest_required_data_age_seconds": 13.999313,
-  "oldest_required_data_timestamp": "2026-05-26T10:42:48Z",
+  "oldest_required_data_age_seconds": 16.730451,
+  "oldest_required_data_timestamp": "2026-05-26T10:56:03Z",
   "streams": {
     "orderbooks": {
       "bad_files": 0,
       "files": 25,
-      "latest_timestamp": "2026-05-26T10:42:49Z",
+      "latest_timestamp": "2026-05-26T10:56:06Z",
       "ok_files": 25,
-      "rows": 2780
+      "rows": 2779
     },
     "prices": {
       "bad_files": 0,
       "files": 25,
-      "latest_timestamp": "2026-05-26T10:42:49Z",
+      "latest_timestamp": "2026-05-26T10:56:06Z",
       "ok_files": 25,
-      "rows": 25760
+      "rows": 28320
     },
     "trades": {
       "bad_files": 0,
       "files": 25,
-      "latest_timestamp": "2026-05-26T10:42:48Z",
+      "latest_timestamp": "2026-05-26T10:56:03Z",
       "ok_files": 25,
-      "rows": 4638
+      "rows": 5215
     }
   },
   "symbol": "ETH",
-  "total_rows": 33178
+  "total_rows": 36314
 }

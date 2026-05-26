@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 234 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 235 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -33,7 +33,8 @@ Generated from the current local worktree after the latest safety-gate run.
   and fails if strategy defaults reintroduce live enablement, `minimal_roi=-1`,
   disabled inventory-risk penalties, shorting, non-limit passive order types,
   missing kill switches, missing final tick-price guards, or callback surface
-  regressions.
+  regressions. Final tick-price guard detection is AST-based, so comments or
+  unrelated source text cannot satisfy the check.
 - Post-only evidence harness:
   `scripts/verify_post_only_mapping.py` now writes a plan artifact and evaluates
   crossing/passive `Alo` submit artifacts. The current

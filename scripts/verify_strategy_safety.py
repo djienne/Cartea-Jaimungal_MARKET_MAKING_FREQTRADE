@@ -57,11 +57,35 @@ def finite_float(value: Any) -> float | None:
     return number
 
 
-def parse_strategy_source(source: str) -> tuple[dict[str, Any], dict[str, list[str]], str | None]:
+def call_arg_constant(call: ast.Call, index: int) -> Any:
+    if len(call.args) <= index:
+        return None
+    arg = call.args[index]
+    if isinstance(arg, ast.Constant):
+        return arg.value
+    return None
+
+
+def function_calls_price_tick_guard(fn: ast.FunctionDef, quote_side: str) -> bool:
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "_price_tick_safe":
+            continue
+        value = func.value
+        if not isinstance(value, ast.Name) or value.id != "self":
+            continue
+        if call_arg_constant(node, 1) == quote_side:
+            return True
+    return False
+
+
+def parse_strategy_source(source: str) -> tuple[dict[str, Any], dict[str, list[str]], dict[str, bool], str | None]:
     try:
         module = ast.parse(source)
     except SyntaxError as exc:
-        return {}, {}, f"strategy_syntax_error:{exc}"
+        return {}, {}, {}, f"strategy_syntax_error:{exc}"
 
     strategy_class: ast.ClassDef | None = None
     for node in module.body:
@@ -69,10 +93,14 @@ def parse_strategy_source(source: str) -> tuple[dict[str, Any], dict[str, list[s
             strategy_class = node
             break
     if strategy_class is None:
-        return {}, {}, "market_making_class_missing"
+        return {}, {}, {}, "market_making_class_missing"
 
     defaults: dict[str, Any] = {}
     signatures: dict[str, list[str]] = {}
+    guards: dict[str, bool] = {
+        "entry_price_tick_guard": False,
+        "exit_price_tick_guard": False,
+    }
     for node in strategy_class.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -88,7 +116,11 @@ def parse_strategy_source(source: str) -> tuple[dict[str, Any], dict[str, list[s
                 pass
         elif isinstance(node, ast.FunctionDef):
             signatures[node.name] = [arg.arg for arg in node.args.args]
-    return defaults, signatures, None
+            if node.name == "confirm_trade_entry":
+                guards["entry_price_tick_guard"] = function_calls_price_tick_guard(node, "bid")
+            elif node.name == "confirm_trade_exit":
+                guards["exit_price_tick_guard"] = function_calls_price_tick_guard(node, "ask")
+    return defaults, signatures, guards, None
 
 
 def build_strategy_safety_report(
@@ -100,12 +132,12 @@ def build_strategy_safety_report(
     reasons: list[str] = []
     defaults: dict[str, Any] = {}
     signatures: dict[str, list[str]] = {}
-    source_text = source or ""
+    guards: dict[str, bool] = {}
     parse_error = None
     if load_error is not None:
         reasons.append(load_error)
     else:
-        defaults, signatures, parse_error = parse_strategy_source(source_text)
+        defaults, signatures, guards, parse_error = parse_strategy_source(source or "")
         if parse_error is not None:
             reasons.append(parse_error)
 
@@ -161,9 +193,9 @@ def build_strategy_safety_report(
             reasons.append(f"{callback}_missing")
     if "_price_tick_safe" not in signatures:
         reasons.append("price_tick_safe_guard_missing")
-    if 'self._price_tick_safe(pair, "bid", rate)' not in source_text:
+    if guards.get("entry_price_tick_guard") is not True:
         reasons.append("entry_price_tick_guard_missing")
-    if 'self._price_tick_safe(pair, "ask", rate)' not in source_text:
+    if guards.get("exit_price_tick_guard") is not True:
         reasons.append("exit_price_tick_guard_missing")
 
     return {
@@ -206,6 +238,7 @@ def build_strategy_safety_report(
                     "_price_tick_safe",
                 )
             },
+            "guards": guards,
         },
     }
 
