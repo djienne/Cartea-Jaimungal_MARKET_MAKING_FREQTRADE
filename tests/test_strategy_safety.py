@@ -27,6 +27,9 @@ class Market_Making:
     hjb_q_max = 3
     inventory_unit_base = 0.01
     max_abs_inventory_units = 3
+    max_notional_exposure_usdc = 150.0
+    max_margin_used_usdc = 150.0
+    min_liquidation_buffer_usdc = 100.0
     max_daily_loss_usdc = 20
     kill_on_taker_fill = True
     kill_on_time_in_force_mismatch = True
@@ -122,6 +125,9 @@ def test_strategy_safety_rejects_disabled_risk_and_kill_switches():
     source = (
         SAFE_SOURCE.replace("hjb_alpha = 0.001", "hjb_alpha = 0.0")
         .replace("hjb_phi = 0.0001", "hjb_phi = 0.0")
+        .replace("max_notional_exposure_usdc = 150.0", "max_notional_exposure_usdc = 1000000.0")
+        .replace("max_margin_used_usdc = 150.0", "max_margin_used_usdc = 1000000.0")
+        .replace("min_liquidation_buffer_usdc = 100.0", "min_liquidation_buffer_usdc = 0.0")
         .replace("kill_on_taker_fill = True", "kill_on_taker_fill = False")
     )
 
@@ -130,6 +136,9 @@ def test_strategy_safety_rejects_disabled_risk_and_kill_switches():
     assert report["ok"] is False
     assert "hjb_alpha_not_positive" in report["reasons"]
     assert "hjb_phi_not_positive" in report["reasons"]
+    assert "max_notional_exposure_above_plan_limit" in report["reasons"]
+    assert "max_margin_used_above_plan_limit" in report["reasons"]
+    assert "min_liquidation_buffer_not_positive" in report["reasons"]
     assert "kill_on_taker_fill_not_true" in report["reasons"]
 
 

@@ -180,6 +180,15 @@ def build_strategy_safety_report(
         reasons.append("hjb_q_max_not_three")
     if finite_float(defaults.get("max_abs_inventory_units")) != 3:
         reasons.append("max_abs_inventory_units_not_three")
+    max_notional = finite_float(defaults.get("max_notional_exposure_usdc"))
+    if max_notional is None or max_notional <= 0 or max_notional > 150:
+        reasons.append("max_notional_exposure_above_plan_limit")
+    max_margin = finite_float(defaults.get("max_margin_used_usdc"))
+    if max_margin is None or max_margin <= 0 or max_margin > 150:
+        reasons.append("max_margin_used_above_plan_limit")
+    min_liquidation_buffer = finite_float(defaults.get("min_liquidation_buffer_usdc"))
+    if min_liquidation_buffer is None or min_liquidation_buffer <= 0:
+        reasons.append("min_liquidation_buffer_not_positive")
     if finite_float(defaults.get("max_daily_loss_usdc")) is None or float(defaults.get("max_daily_loss_usdc")) > 20:
         reasons.append("max_daily_loss_above_plan_limit")
 
@@ -235,6 +244,9 @@ def build_strategy_safety_report(
                     "hjb_q_max",
                     "inventory_unit_base",
                     "max_abs_inventory_units",
+                    "max_notional_exposure_usdc",
+                    "max_margin_used_usdc",
+                    "min_liquidation_buffer_usdc",
                     "max_daily_loss_usdc",
                     "kill_on_taker_fill",
                     "kill_on_time_in_force_mismatch",

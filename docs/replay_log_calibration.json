@@ -1,9 +1,9 @@
 {
   "accepted_quotes_by_depth": {
-    "bid:5.00-6.00bps": 6
+    "bid:5.00-6.00bps": 10
   },
   "accepted_quotes_by_side": {
-    "bid": 6
+    "bid": 10
   },
   "actual_fee_rate": {
     "count": 0,
@@ -20,15 +20,15 @@
     "bid": 0.0
   },
   "fills_by_side": {},
-  "generated_at": "2026-05-26T21:09:15Z",
+  "generated_at": "2026-05-26T21:26:38Z",
   "input_paths": [
     "user_data\\logs\\mm_debug.jsonl"
   ],
   "inputs": {
-    "accepted_quotes": 6,
-    "accepted_quotes_with_quote_id": 6,
+    "accepted_quotes": 10,
+    "accepted_quotes_with_quote_id": 10,
     "bucket_bps": 1.0,
-    "events": 48,
+    "events": 81,
     "fills": 0,
     "fills_with_quote_id": 0,
     "match_window_seconds": 300.0,
@@ -43,7 +43,7 @@
   "matched_fills_by_depth": {},
   "matched_fills_by_quote_id": {},
   "reasons": [
-    "insufficient_accepted_quotes:6<min_100",
+    "insufficient_accepted_quotes:10<min_100",
     "insufficient_maker_fills:0<min_10"
   ],
   "taker_fills": 0,

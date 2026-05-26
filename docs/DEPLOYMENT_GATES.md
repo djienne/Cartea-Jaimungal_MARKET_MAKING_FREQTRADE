@@ -121,6 +121,12 @@ Optional Docker runtime gates:
   reasonable trade amount, and avoid losing too much too quickly?" Passing this
   gate is still promotion evidence, not proof that live fills will remain maker
   or match dry-run behavior.
+- Strategy risk guard defaults now include `max_notional_exposure_usdc`,
+  `max_margin_used_usdc`, and `min_liquidation_buffer_usdc`. Quote validation
+  and final order confirmation reject risk-increasing orders that would exceed
+  those caps; live quoting fails closed if liquidation-buffer evidence is
+  missing or too low. Risk-reducing asks are allowed so an over-limit long can
+  still be unwound.
 - `replay_latest_data_smoke`: after runtime collector gates have produced fresh
   shards, replays the newest local data window and writes
   `docs/replay_latest_smoke.json` with input coverage, maker/taker counts,

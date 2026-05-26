@@ -175,6 +175,10 @@ class Market_Making(IStrategy):
     collector_required_streams = ("orderbooks", "prices", "trades")
     book_snapshot_cache_ms = 500
     max_toxicity = 1.5
+    max_notional_exposure_usdc = 150.0
+    max_margin_used_usdc = 150.0
+    min_liquidation_buffer_usdc = 100.0
+    maintenance_margin_rate = 0.05
     max_daily_loss_usdc = 20
     max_consecutive_losses = 10
     max_post_only_reject_rate = 0.80
@@ -255,6 +259,11 @@ class Market_Making(IStrategy):
 
     def _symbol_from_pair(self, pair: str) -> str:
         return pair.split("/", 1)[0].split(":", 1)[0]
+
+    def _quote_currency_from_pair(self, pair: str) -> str:
+        if "/" not in pair:
+            return str(getattr(self, "config", {}).get("stake_currency") or "USDC")
+        return pair.split("/", 1)[1].split(":", 1)[0]
 
     def _mm_config(self) -> dict[str, Any]:
         config = getattr(self, "config", {}) or {}
@@ -957,6 +966,151 @@ class Market_Making(IStrategy):
             "max_abs_inventory_units": int(self.max_abs_inventory_units),
         }
 
+    def _account_equity_usdc(self, pair: str) -> float | None:
+        config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
+        for key in ("available_capital", "dry_run_wallet"):
+            try:
+                value = config.get(key)
+                if value is not None and np.isfinite(float(value)) and float(value) > 0:
+                    return float(value)
+            except Exception:
+                pass
+
+        wallets = getattr(self, "wallets", None)
+        if wallets is None:
+            return None
+        stake_currency = str(config.get("stake_currency") or self._quote_currency_from_pair(pair))
+        for method_name in ("get_total", "get_free"):
+            method = getattr(wallets, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                value = method(stake_currency)
+                if value is not None and np.isfinite(float(value)) and float(value) > 0:
+                    return float(value)
+            except Exception:
+                continue
+        return None
+
+    def _position_risk_snapshot(
+        self,
+        pair: str,
+        rate: float | None = None,
+        side: str | None = None,
+        amount: float | None = None,
+    ) -> dict[str, Any]:
+        signed_base = float(self._signed_base_position(pair))
+        quote_side = "bid" if side in {"long", "bid", "entry"} else "ask" if side in {"ask", "exit", "short"} else None
+        order_amount = None
+        try:
+            if amount is not None and np.isfinite(float(amount)) and float(amount) > 0:
+                order_amount = float(amount)
+        except Exception:
+            order_amount = None
+        if order_amount is None and quote_side is not None:
+            if quote_side == "ask" and signed_base > 0:
+                order_amount = min(abs(signed_base), float(self.inventory_unit_base))
+            else:
+                order_amount = float(self.inventory_unit_base)
+
+        projected_base = signed_base
+        if quote_side == "bid" and order_amount is not None:
+            projected_base += order_amount
+        elif quote_side == "ask" and order_amount is not None:
+            projected_base -= order_amount
+            if not self.can_short:
+                projected_base = max(0.0, projected_base)
+
+        reference_rate = self._finite_float_or_none(rate)
+        if reference_rate is None:
+            snapshot, _ = self._book_snapshot(pair)
+            if snapshot is not None:
+                reference_rate = self._finite_float_or_none(snapshot.get("mid"))
+
+        current_notional = None
+        projected_notional = None
+        if reference_rate is not None and reference_rate > 0:
+            current_notional = abs(signed_base) * reference_rate
+            projected_notional = abs(projected_base) * reference_rate
+
+        leverage = 1.0
+        projected_margin = None
+        if projected_notional is not None:
+            projected_margin = projected_notional / leverage
+
+        equity = self._account_equity_usdc(pair)
+        maintenance_margin = None
+        liquidation_buffer = None
+        try:
+            if projected_notional is not None:
+                maintenance_margin = projected_notional * float(self.maintenance_margin_rate)
+            if equity is not None and maintenance_margin is not None:
+                liquidation_buffer = equity - maintenance_margin
+        except Exception:
+            maintenance_margin = None
+            liquidation_buffer = None
+
+        risk_reducing = abs(projected_base) < abs(signed_base)
+        return {
+            "signed_base_position": signed_base,
+            "projected_base_position": float(projected_base),
+            "position_delta_base": float(projected_base - signed_base),
+            "risk_reducing": bool(risk_reducing),
+            "reference_rate": float(reference_rate) if reference_rate is not None else None,
+            "notional_exposure_usdc": float(projected_notional) if projected_notional is not None else None,
+            "current_notional_exposure_usdc": float(current_notional) if current_notional is not None else None,
+            "max_notional_exposure_usdc": float(self.max_notional_exposure_usdc),
+            "margin_used_usdc": float(projected_margin) if projected_margin is not None else None,
+            "max_margin_used_usdc": float(self.max_margin_used_usdc),
+            "account_equity_usdc": float(equity) if equity is not None else None,
+            "maintenance_margin_rate": float(self.maintenance_margin_rate),
+            "maintenance_margin_usdc": float(maintenance_margin) if maintenance_margin is not None else None,
+            "liquidation_buffer_usdc": float(liquidation_buffer) if liquidation_buffer is not None else None,
+            "min_liquidation_buffer_usdc": float(self.min_liquidation_buffer_usdc),
+        }
+
+    def _position_risk_valid(
+        self,
+        pair: str,
+        side: str,
+        rate: float,
+        amount: float | None = None,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        snapshot = self._position_risk_snapshot(pair, rate=rate, side=side, amount=amount)
+        if snapshot.get("reference_rate") is None:
+            return False, "risk_rate_unavailable", snapshot
+
+        if snapshot.get("risk_reducing") is True:
+            return True, "ok", snapshot
+
+        notional = snapshot.get("notional_exposure_usdc")
+        if (
+            notional is not None
+            and float(self.max_notional_exposure_usdc) > 0
+            and float(notional) > float(self.max_notional_exposure_usdc)
+        ):
+            return False, "notional_exposure_limit_reached", snapshot
+
+        margin_used = snapshot.get("margin_used_usdc")
+        if (
+            margin_used is not None
+            and float(self.max_margin_used_usdc) > 0
+            and float(margin_used) > float(self.max_margin_used_usdc)
+        ):
+            return False, "margin_limit_reached", snapshot
+
+        config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
+        is_dry_run = bool(config.get("dry_run", True))
+        min_buffer = float(self.min_liquidation_buffer_usdc)
+        if not is_dry_run and min_buffer > 0:
+            buffer_value = snapshot.get("liquidation_buffer_usdc")
+            if buffer_value is None:
+                return False, "liquidation_buffer_unknown", snapshot
+            if float(buffer_value) < min_buffer:
+                return False, "liquidation_buffer_too_low", snapshot
+
+        return True, "ok", snapshot
+
     def _select_delta(self, side: str, q: int) -> float | None:
         """
         Select delta+/- from precomputed HJB grid for given inventory level.
@@ -1270,6 +1424,10 @@ class Market_Making(IStrategy):
             ok, reason, _ = self._live_deployment_gate_state()
             if not ok:
                 return False, reason
+
+        ok, reason, _ = self._position_risk_valid(pair, side, rate)
+        if not ok:
+            return False, reason
 
         return True, "ok"
 
@@ -2618,6 +2776,7 @@ class Market_Making(IStrategy):
             "hjb_params": self._hjb_params_snapshot,
             "fee_snapshot": self._fee_snapshot(pair),
             **self._inventory_snapshot(pair),
+            "position_risk": self._position_risk_snapshot(pair, rate=rounded_price or proposed_rate, side=side),
             **(extra or {}),
         }
         if action in {"entry", "exit", "adjust_entry", "adjust_exit"}:
@@ -2689,6 +2848,22 @@ class Market_Making(IStrategy):
                 "consecutive_losses": int(getattr(self, "_consecutive_losses", 0)),
                 "max_consecutive_losses": int(self.max_consecutive_losses),
                 "max_abs_inventory_units": int(self.max_abs_inventory_units),
+                **{
+                    key: value
+                    for key, value in self._position_risk_snapshot(pair).items()
+                    if key
+                    in {
+                        "notional_exposure_usdc",
+                        "current_notional_exposure_usdc",
+                        "max_notional_exposure_usdc",
+                        "margin_used_usdc",
+                        "max_margin_used_usdc",
+                        "account_equity_usdc",
+                        "maintenance_margin_usdc",
+                        "liquidation_buffer_usdc",
+                        "min_liquidation_buffer_usdc",
+                    }
+                },
                 **self._inventory_snapshot(pair),
             },
         )
@@ -3239,6 +3414,23 @@ class Market_Making(IStrategy):
             )
             return False
 
+        risk_ok, risk_reason, risk_snapshot = self._position_risk_valid(pair, "bid", rate, rounded_amount)
+        if not risk_ok:
+            self._debug_log_event(
+                "entry_rejected",
+                {
+                    "pair": pair,
+                    "reason": risk_reason,
+                    "rate": float(rate),
+                    "amount": float(amount),
+                    "rounded_amount": float(rounded_amount),
+                    "side": side,
+                    "position_risk": risk_snapshot,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
         ok, reason = self._maker_safe(pair, "bid", rate)
         if not ok:
             self._record_quote_decision(pair, "reject", reason)
@@ -3375,6 +3567,24 @@ class Market_Making(IStrategy):
                     "rounded_amount": float(rounded_amount),
                     "exit_reason": exit_reason,
                     "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
+        risk_ok, risk_reason, risk_snapshot = self._position_risk_valid(pair, "ask", rate, rounded_amount)
+        if not risk_ok:
+            self._debug_log_event(
+                "exit_rejected",
+                {
+                    "pair": pair,
+                    "reason": risk_reason,
+                    "rate": float(rate),
+                    "amount": float(amount),
+                    "rounded_amount": float(rounded_amount),
+                    "exit_reason": exit_reason,
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    "position_risk": risk_snapshot,
                     **self._inventory_snapshot(pair),
                 },
             )

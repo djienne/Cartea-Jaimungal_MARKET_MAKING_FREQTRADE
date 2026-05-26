@@ -1982,6 +1982,78 @@ def test_quote_state_maps_missing_collector_stream_to_stale_collector_data():
     assert reason == "stale_collector_data"
 
 
+def test_quote_state_rejects_projected_notional_exposure_above_cap():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.max_notional_exposure_usdc = 0.5
+    now = datetime.now(timezone.utc)
+
+    ok, reason = bot._quote_state_valid("ETH/USDC:USDC", "bid", 99.5, now)
+
+    assert not ok
+    assert reason == "notional_exposure_limit_reached"
+
+
+def test_position_risk_allows_risk_reducing_ask_when_current_position_is_over_cap():
+    bot = make_bot()
+    bot.max_notional_exposure_usdc = 0.5
+    bot._signed_base_position = lambda pair: 0.02
+
+    ok, reason, snapshot = bot._position_risk_valid("ETH/USDC:USDC", "ask", 100.0, amount=0.01)
+
+    assert ok is True
+    assert reason == "ok"
+    assert snapshot["risk_reducing"] is True
+    assert snapshot["notional_exposure_usdc"] == 1.0
+
+
+def test_live_position_risk_requires_liquidation_buffer_evidence():
+    bot = make_bot()
+    bot.config = {"dry_run": False, "fee": 0.00015}
+
+    ok, reason, snapshot = bot._position_risk_valid("ETH/USDC:USDC", "bid", 100.0, amount=0.01)
+
+    assert ok is False
+    assert reason == "liquidation_buffer_unknown"
+    assert snapshot["liquidation_buffer_usdc"] is None
+
+
+def test_live_position_risk_rejects_low_liquidation_buffer():
+    bot = make_bot()
+    bot.config = {"dry_run": False, "fee": 0.00015, "available_capital": 100.0}
+
+    ok, reason, snapshot = bot._position_risk_valid("ETH/USDC:USDC", "bid", 100.0, amount=0.01)
+
+    assert ok is False
+    assert reason == "liquidation_buffer_too_low"
+    assert snapshot["liquidation_buffer_usdc"] == 99.95
+
+
+def test_confirm_trade_entry_rechecks_exact_order_notional_exposure():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.max_notional_exposure_usdc = 10.0
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    now = datetime.now(timezone.utc)
+
+    ok = bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        order_type="limit",
+        amount=1.0,
+        rate=99.5,
+        time_in_force="GTC",
+        current_time=now,
+        entry_tag="mm_bid",
+        side="long",
+    )
+
+    assert ok is False
+    assert events[-1][0] == "entry_rejected"
+    assert events[-1][1]["reason"] == "notional_exposure_limit_reached"
+    assert events[-1][1]["position_risk"]["notional_exposure_usdc"] == 99.5
+
+
 def test_quote_decision_logs_freshness_age_fields():
     bot = make_bot()
     bot.post_only_verified = True
@@ -2118,6 +2190,11 @@ def test_health_log_counts_open_orders_and_logs_position():
     assert payload["max_consecutive_losses"] == bot.max_consecutive_losses
     assert payload["max_post_only_reject_rate"] == bot.max_post_only_reject_rate
     assert payload["max_abs_inventory_units"] == bot.max_abs_inventory_units
+    assert payload["notional_exposure_usdc"] == 0.0
+    assert payload["max_notional_exposure_usdc"] == bot.max_notional_exposure_usdc
+    assert payload["margin_used_usdc"] == 0.0
+    assert payload["max_margin_used_usdc"] == bot.max_margin_used_usdc
+    assert payload["min_liquidation_buffer_usdc"] == bot.min_liquidation_buffer_usdc
     assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
     assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
 

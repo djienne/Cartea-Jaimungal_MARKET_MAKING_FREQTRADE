@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-26T21:00:03Z",
+  "generated_at": "2026-05-26T21:17:27Z",
   "observed": {
     "defaults": {
       "can_short": false,
@@ -13,6 +13,9 @@
       "kill_on_unknown_liquidity_fill": true,
       "max_abs_inventory_units": 3,
       "max_daily_loss_usdc": 20,
+      "max_margin_used_usdc": 150.0,
+      "max_notional_exposure_usdc": 150.0,
+      "min_liquidation_buffer_usdc": 100.0,
       "minimal_roi": {
         "0": 10
       },

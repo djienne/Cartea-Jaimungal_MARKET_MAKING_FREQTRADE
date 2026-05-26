@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 277 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 282 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -164,6 +164,14 @@ Generated from the current local worktree after the latest safety-gate run.
   and logs `stake_rejected` instead of silently increasing inventory risk.
   Parameter snapshots and deployment gate reports with future timestamps beyond
   the configured clock-skew window are rejected.
+- Live exposure and liquidation-buffer guards from `MEGA_PLAN.md`:
+  quote validation and final order confirmation now project the resulting base
+  exposure and reject risk-increasing bids that would exceed
+  `max_notional_exposure_usdc` or `max_margin_used_usdc`. Non-dry-run quoting
+  also requires liquidation-buffer evidence and rejects missing or too-low
+  buffers before order submission. Risk-reducing asks remain allowed so an
+  over-limit position can still be unwound. Health logs include notional,
+  margin, maintenance-margin, equity, and liquidation-buffer fields.
 - Fee evidence report:
   `scripts/verify_fee_evidence.py` writes `docs/fee_evidence_report.json` from
   JSONL audit logs. It requires strategy/config fee agreement, exchange/account
