@@ -33,6 +33,7 @@ TEST_FILES = ("get_kappa.py", "get_epsilon.py", "get_lambda.py")
 # lambda.json holds baseline λ₀ from get_kappa.py; lambda_trades.json is optional monitoring output.
 CONFIG_FILES = ("epsilon.json", "kappa.json", "lambda.json", "lambda_trades.json")
 RUNNER_STATUS_FILE = "param_update_status.json"
+RUNNER_LOCK_FILE = "param_update.lock"
 _RUNNER_LOCK = threading.Lock()
 
 
@@ -54,6 +55,44 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
 def _write_status(status: str, payload: dict | None = None) -> None:
     body = {"status": status, "generated_at": _utc_now_iso(), **(payload or {})}
     _atomic_write_json(Path(__file__).resolve().parent / RUNNER_STATUS_FILE, body)
+
+
+def _runner_lock_path() -> Path:
+    return Path(__file__).resolve().parent / RUNNER_LOCK_FILE
+
+
+def _acquire_process_lock(path: Path, crypto: str) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(str(path), flags)
+    except FileExistsError:
+        return False
+    payload = {
+        "pid": os.getpid(),
+        "crypto": crypto,
+        "started_at": _utc_now_iso(),
+    }
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=4, sort_keys=True)
+            handle.write("\n")
+    except OSError:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def _release_process_lock(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        print(f"{_ts()} [runner] WARNING: Could not remove process lock {path}: {exc}")
 
 
 def _env_override(name: str) -> Optional[Path]:
@@ -341,7 +380,7 @@ def schedule_tests(
     run_once: bool = True,
     crypto: str = "ETH",
 ) -> None:
-    """Run get_kappa.py and get_epsilon.py.
+    """Run get_kappa.py, get_epsilon.py, and get_lambda.py.
 
     - run_once: run a single cycle and exit (default). When False, loops.
     - interval_seconds: seconds to wait after each cycle completes (looping only).
@@ -355,12 +394,19 @@ def schedule_tests(
     if start_dir is not None:
         start_dir = Path(start_dir).resolve()
 
-    if not _RUNNER_LOCK.acquire(blocking=False):
-        _write_status("skipped", {"reason": "already_running", "crypto": crypto})
+    acquired_thread_lock = _RUNNER_LOCK.acquire(blocking=False)
+    if not acquired_thread_lock:
         print(f"{_ts()} [runner] Skipping; parameter update already running.")
         return
 
-    _write_status("running", {"crypto": crypto})
+    lock_path = _runner_lock_path()
+    acquired_process_lock = _acquire_process_lock(lock_path, crypto)
+    if not acquired_process_lock:
+        _RUNNER_LOCK.release()
+        print(f"{_ts()} [runner] Skipping; parameter update process lock exists at {lock_path}.")
+        return
+
+    _write_status("running", {"crypto": crypto, "lock_path": str(lock_path)})
     try:
         asyncio.run(_periodic_worker(interval_seconds, start_dir, max_up, copy_configs, run_once, crypto))
         _write_status("success", {"crypto": crypto})
@@ -371,6 +417,7 @@ def schedule_tests(
         _write_status("failed", {"crypto": crypto, "error": str(exc)})
         raise
     finally:
+        _release_process_lock(lock_path)
         _RUNNER_LOCK.release()
 
 

@@ -794,6 +794,15 @@ def test_lambda_snapshot_must_be_hjb_lambda0_fit():
     assert bot._params_are_valid("ETH/USDC:USDC") == (False, "invalid_lambda_source")
 
 
+def test_param_update_lock_file_rejects_params(tmp_path):
+    bot = make_bot()
+    status_path = tmp_path / "param_update_status.json"
+    bot.param_update_status_path = str(status_path)
+    status_path.with_name("param_update.lock").write_text("{}", encoding="utf-8")
+
+    assert bot._params_are_valid("ETH/USDC:USDC") == (False, "estimator_running")
+
+
 def test_stale_params_reject_entry():
     bot = make_bot()
     bot.trading_enabled = True

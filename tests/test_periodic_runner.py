@@ -156,3 +156,18 @@ def test_runner_copies_strategy_snapshots_atomically(tmp_path):
 
     assert json.loads(dst.read_text(encoding="utf-8")) == {"ETH": {"schema_version": 2}}
     assert not dst.with_suffix(".json.tmp").exists()
+
+
+def test_process_lock_is_exclusive_and_released(tmp_path):
+    lock_path = tmp_path / "param_update.lock"
+
+    assert periodic_test_runner._acquire_process_lock(lock_path, "ETH")
+    assert not periodic_test_runner._acquire_process_lock(lock_path, "ETH")
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert payload["crypto"] == "ETH"
+    assert payload["pid"] > 0
+    assert payload["started_at"]
+
+    periodic_test_runner._release_process_lock(lock_path)
+
+    assert not lock_path.exists()

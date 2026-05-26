@@ -1007,6 +1007,9 @@ class Market_Making(IStrategy):
             return True, "ok"
         else:
             status_path = Path(configured_path)
+        lock_path = status_path.with_name("param_update.lock")
+        if lock_path.exists():
+            return False, "estimator_running"
         if not status_path.exists():
             return True, "ok"
         try:
