@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 
@@ -9,7 +10,8 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from run_safety_gates import local_gates, plan_status_audit_command, render_markdown  # noqa: E402
+import run_safety_gates  # noqa: E402
+from run_safety_gates import local_gates, manual_gate_statuses, plan_status_audit_command, render_markdown  # noqa: E402
 
 
 def gate_names(*, include_runtime: bool) -> list[str]:
@@ -179,6 +181,27 @@ def test_live_canary_gate_can_pass_manual_monitoring_acknowledgement():
     )
 
     assert "--manual-monitoring-ack" in command
+
+
+def test_manual_gate_status_rejects_stale_ok_reports(tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    stale_report = {"ok": True, "generated_at": "2000-01-01T00:00:00Z", "reasons": []}
+    for name in (
+        "post_only_evidence_report.json",
+        "replay_acceptance_report.json",
+        "fee_evidence_report.json",
+        "live_canary_report.json",
+    ):
+        (docs / name).write_text(json.dumps(stale_report), encoding="utf-8")
+    monkeypatch.setattr(run_safety_gates, "ROOT", tmp_path)
+
+    statuses = manual_gate_statuses(include_runtime=True)
+
+    assert statuses
+    assert all(status["passed"] is False for status in statuses)
+    assert all(str(status["freshness_reason"]).startswith("report_stale:") for status in statuses)
+    assert all(str(status["freshness_reason"]).endswith(">max_86400.0s") for status in statuses)
 
 
 def test_plan_status_audit_command_uses_latest_gate_json_and_output():

@@ -14,6 +14,7 @@ import sys
 import time
 import tempfile
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AUDIT_LOG_INPUT = Path("user_data/logs/mm_debug.jsonl")
 DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY = 1_000.0
 DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS = 300.0
+DEFAULT_REPORT_MAX_AGE_SECONDS = 86_400.0
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 
@@ -44,6 +46,7 @@ class ManualGateSpec:
     reason: str
     report_path: str | None
     ok_field: str = "ok"
+    max_age_seconds: float | None = DEFAULT_REPORT_MAX_AGE_SECONDS
 
 
 def tail(text: str | None, max_chars: int = 4_000) -> str:
@@ -90,6 +93,39 @@ def load_json_report(path: Path) -> tuple[dict | None, str | None]:
     if not isinstance(payload, dict):
         return None, "report_not_object"
     return payload, None
+
+
+def parse_report_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def report_freshness_status(
+    payload: dict,
+    *,
+    max_age_seconds: float | None,
+    now: datetime | None = None,
+) -> tuple[bool, str, float | None]:
+    if max_age_seconds is None:
+        return True, "not_required", None
+    generated_at = parse_report_timestamp(payload.get("generated_at"))
+    if generated_at is None:
+        return False, "missing_generated_at", None
+    reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    age_seconds = max(0.0, (reference - generated_at).total_seconds())
+    if age_seconds > float(max_age_seconds):
+        return False, f"report_stale:{age_seconds:.1f}s>max_{float(max_age_seconds):.1f}s", age_seconds
+    return True, "fresh", age_seconds
 
 
 def default_evidence_artifact(path: Path) -> Path | None:
@@ -558,6 +594,7 @@ def manual_gate_specs(*, include_runtime: bool = False) -> list[ManualGateSpec]:
                 reason="Requires running the bot loop and confirming zero orders plus health logs in Freqtrade logs.",
                 report_path="docs/dry_run_disabled_gate.json",
                 ok_field="passed",
+                max_age_seconds=None,
             ),
         )
         gates.insert(
@@ -577,14 +614,26 @@ def manual_gate_statuses(*, include_runtime: bool = False) -> list[dict[str, obj
         passed = False
         status_reason = "no_machine_check"
         report_reasons: list[str] = []
+        freshness_reason: str | None = None
+        report_age_seconds: float | None = None
         report_path = spec.report_path
         if report_path:
             payload, load_error = load_json_report(ROOT / report_path)
             if load_error:
                 status_reason = load_error
             else:
-                passed = payload.get(spec.ok_field) is True
-                status_reason = "ok" if passed else f"{spec.ok_field}_not_true"
+                field_passed = payload.get(spec.ok_field) is True
+                fresh, freshness_reason, report_age_seconds = report_freshness_status(
+                    payload,
+                    max_age_seconds=spec.max_age_seconds,
+                )
+                passed = bool(field_passed and fresh)
+                if not field_passed:
+                    status_reason = f"{spec.ok_field}_not_true"
+                elif not fresh:
+                    status_reason = freshness_reason
+                else:
+                    status_reason = "ok"
                 raw_reasons = payload.get("reasons", [])
                 if isinstance(raw_reasons, list):
                     report_reasons = [str(reason) for reason in raw_reasons]
@@ -597,6 +646,9 @@ def manual_gate_statuses(*, include_runtime: bool = False) -> list[dict[str, obj
                 "passed": passed,
                 "status_reason": status_reason,
                 "report_reasons": report_reasons,
+                "freshness_reason": freshness_reason,
+                "report_age_seconds": report_age_seconds,
+                "max_report_age_seconds": spec.max_age_seconds,
             }
         )
     return statuses
