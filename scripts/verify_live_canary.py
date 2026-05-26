@@ -196,12 +196,85 @@ def summarize_session(key: str, items: list[tuple[datetime, dict[str, Any]]]) ->
     }
 
 
-def dependency_status(report: dict[str, Any]) -> dict[str, Any]:
+def evidence_age_meta(
+    timestamp: Any,
+    *,
+    now: datetime,
+    max_age_seconds: float,
+) -> dict[str, Any]:
+    parsed = parse_time(timestamp)
+    age_seconds = (
+        max(0.0, (now - parsed).total_seconds())
+        if parsed is not None
+        else None
+    )
+    ok = parsed is not None
+    reason = "ok" if ok else "missing_timestamp"
+    if ok and max_age_seconds > 0 and age_seconds is not None and age_seconds > float(max_age_seconds):
+        ok = False
+        reason = "stale"
     return {
-        "ok": bool(report.get("ok")),
+        "ok": ok,
+        "reason": reason,
+        "timestamp": timestamp,
+        "age_seconds": age_seconds,
+        "max_age_seconds": float(max_age_seconds),
+    }
+
+
+def dependency_status(
+    report: dict[str, Any],
+    *,
+    now: datetime,
+    max_report_age_seconds: float,
+) -> dict[str, Any]:
+    report_ok = bool(report.get("ok"))
+    freshness = evidence_age_meta(
+        report.get("generated_at"),
+        now=now,
+        max_age_seconds=max_report_age_seconds,
+    )
+    ok = bool(report_ok and freshness["ok"])
+    return {
+        "ok": ok,
+        "report_ok": report_ok,
         "missing": bool(report.get("missing")),
         "invalid": bool(report.get("invalid")),
         "reasons": report.get("reasons", []),
+        "generated_at": report.get("generated_at"),
+        "age_seconds": freshness["age_seconds"],
+        "max_age_seconds": freshness["max_age_seconds"],
+        "freshness_reason": freshness["reason"],
+    }
+
+
+def canary_event_freshness(
+    events: list[dict[str, Any]],
+    *,
+    now: datetime,
+    max_event_age_seconds: float,
+) -> dict[str, Any]:
+    timestamp_missing = 0
+    stale = 0
+    fresh = 0
+    ages: list[float] = []
+    for event in events:
+        dt = event_time(event)
+        if dt is None:
+            timestamp_missing += 1
+            continue
+        age_seconds = max(0.0, (now - dt).total_seconds())
+        ages.append(age_seconds)
+        if max_event_age_seconds > 0 and age_seconds > float(max_event_age_seconds):
+            stale += 1
+        else:
+            fresh += 1
+    return {
+        "fresh": fresh,
+        "stale": stale,
+        "timestamp_missing": timestamp_missing,
+        "max_age_seconds": max(ages) if ages else None,
+        "max_allowed_age_seconds": float(max_event_age_seconds),
     }
 
 
@@ -306,12 +379,28 @@ def build_live_canary_report(
     max_symbols: int = 1,
     max_daily_loss_usdc: float = 20.0,
     manual_monitoring_ack: bool = False,
+    max_dependency_report_age_seconds: float = 86_400.0,
+    max_canary_event_age_seconds: float = 604_800.0,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
+    reference_time = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
     dependencies = {
-        "post_only": dependency_status(post_only_report),
-        "fee": dependency_status(fee_report),
-        "replay": dependency_status(replay_report),
+        "post_only": dependency_status(
+            post_only_report,
+            now=reference_time,
+            max_report_age_seconds=float(max_dependency_report_age_seconds),
+        ),
+        "fee": dependency_status(
+            fee_report,
+            now=reference_time,
+            max_report_age_seconds=float(max_dependency_report_age_seconds),
+        ),
+        "replay": dependency_status(
+            replay_report,
+            now=reference_time,
+            max_report_age_seconds=float(max_dependency_report_age_seconds),
+        ),
     }
     if not dependencies["post_only"]["ok"]:
         reasons.append("post_only_gate_not_passed")
@@ -319,11 +408,25 @@ def build_live_canary_report(
         reasons.append("fee_gate_not_passed")
     if not dependencies["replay"]["ok"]:
         reasons.append("replay_gate_not_passed")
+    for name, status in dependencies.items():
+        if bool(status.get("report_ok")) and status.get("freshness_reason") == "missing_timestamp":
+            reasons.append(f"{name}_report_missing_generated_at")
+        elif bool(status.get("report_ok")) and status.get("freshness_reason") == "stale":
+            reasons.append(f"{name}_report_stale")
     if not bool(manual_monitoring_ack):
         reasons.append("manual_monitoring_not_acknowledged")
 
     if not events:
         reasons.append("no_canary_events")
+    event_freshness = canary_event_freshness(
+        events,
+        now=reference_time,
+        max_event_age_seconds=float(max_canary_event_age_seconds),
+    )
+    if event_freshness["timestamp_missing"]:
+        reasons.append(f"canary_event_timestamp_missing:{event_freshness['timestamp_missing']}")
+    if event_freshness["stale"]:
+        reasons.append(f"canary_event_stale:{event_freshness['stale']}")
 
     sessions = group_sessions(events, session_gap_minutes=session_gap_minutes)
     eligible_sessions = [
@@ -376,9 +479,12 @@ def build_live_canary_report(
             "max_symbols": int(max_symbols),
             "max_daily_loss_usdc": float(max_daily_loss_usdc),
             "manual_monitoring_ack": bool(manual_monitoring_ack),
+            "max_dependency_report_age_seconds": float(max_dependency_report_age_seconds),
+            "max_canary_event_age_seconds": float(max_canary_event_age_seconds),
         },
         "dependencies": dependencies,
         "event_count": len(events),
+        "event_freshness": event_freshness,
         "sessions": sessions,
         "eligible_sessions": len(eligible_sessions),
         "fills": {
@@ -413,6 +519,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-stake-amount", type=float, default=25.0)
     parser.add_argument("--max-symbols", type=int, default=1)
     parser.add_argument("--max-daily-loss-usdc", type=float, default=20.0)
+    parser.add_argument("--max-dependency-report-age-seconds", type=float, default=86_400.0)
+    parser.add_argument("--max-canary-event-age-seconds", type=float, default=604_800.0)
     parser.add_argument(
         "--manual-monitoring-ack",
         action="store_true",
@@ -435,6 +543,8 @@ def main() -> int:
         max_symbols=int(args.max_symbols),
         max_daily_loss_usdc=float(args.max_daily_loss_usdc),
         manual_monitoring_ack=bool(args.manual_monitoring_ack),
+        max_dependency_report_age_seconds=float(args.max_dependency_report_age_seconds),
+        max_canary_event_age_seconds=float(args.max_canary_event_age_seconds),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

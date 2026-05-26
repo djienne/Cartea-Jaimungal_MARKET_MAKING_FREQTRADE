@@ -1,7 +1,9 @@
 {
   "criteria": {
     "manual_monitoring_ack": false,
+    "max_canary_event_age_seconds": 604800.0,
     "max_daily_loss_usdc": 20.0,
+    "max_dependency_report_age_seconds": 86400.0,
     "max_stake_amount": 25.0,
     "max_symbols": 1,
     "min_session_minutes": 30.0,
@@ -10,40 +12,55 @@
   },
   "dependencies": {
     "fee": {
+      "age_seconds": 283.022859,
+      "freshness_reason": "ok",
+      "generated_at": "2026-05-26T01:13:13Z",
       "invalid": false,
+      "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
         "exchange_fee_not_proven",
         "insufficient_maker_fills:0<min_1",
         "insufficient_actual_maker_fee_matches:0<min_1"
-      ]
+      ],
+      "report_ok": false
     },
     "post_only": {
+      "age_seconds": 1.022859,
+      "freshness_reason": "ok",
+      "generated_at": "2026-05-26T01:17:55Z",
       "invalid": false,
+      "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
         "missing_crossing_result",
         "missing_passive_result"
-      ]
+      ],
+      "report_ok": false
     },
     "replay": {
+      "age_seconds": 262.022859,
+      "freshness_reason": "ok",
+      "generated_at": "2026-05-26T01:13:34Z",
       "invalid": false,
+      "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
-        "baseline:insufficient_coverage_days:0.002531<min_3.000000",
+        "baseline:insufficient_coverage_days:0.002822<min_3.000000",
         "baseline:no_maker_fills",
-        "fee_2x:insufficient_coverage_days:0.002531<min_3.000000",
+        "fee_2x:insufficient_coverage_days:0.002822<min_3.000000",
         "fee_2x:no_maker_fills",
-        "latency_2x:insufficient_coverage_days:0.002531<min_3.000000",
+        "latency_2x:insufficient_coverage_days:0.002822<min_3.000000",
         "latency_2x:no_maker_fills",
-        "params_soft:insufficient_coverage_days:0.002531<min_3.000000",
+        "params_soft:insufficient_coverage_days:0.002822<min_3.000000",
         "params_soft:no_maker_fills",
-        "params_hard:insufficient_coverage_days:0.002531<min_3.000000",
+        "params_hard:insufficient_coverage_days:0.002822<min_3.000000",
         "params_hard:no_maker_fills"
-      ]
+      ],
+      "report_ok": false
     }
   },
   "eligible_sessions": 0,
@@ -51,14 +68,21 @@
     "param_update_failed": 9,
     "param_update_rejected": 6
   },
-  "event_count": 1346,
+  "event_count": 1380,
+  "event_freshness": {
+    "fresh": 1380,
+    "max_age_seconds": 41341.292859,
+    "max_allowed_age_seconds": 604800.0,
+    "stale": 0,
+    "timestamp_missing": 0
+  },
   "fills": {
     "count": 8,
     "maker": 0,
     "taker": 0,
     "unknown_liquidity": 8
   },
-  "generated_at": "2026-05-26T01:04:06Z",
+  "generated_at": "2026-05-26T01:17:56Z",
   "health_failures": {
     "no_live_health_events": true
   },
@@ -66,8 +90,8 @@
   "ok": false,
   "quote_failures": {
     "accepted_quote_missing_fee_agreement": 101,
-    "accepted_quote_not_post_only": 183,
-    "accepted_quote_post_only_unverified": 183,
+    "accepted_quote_not_post_only": 188,
+    "accepted_quote_post_only_unverified": 188,
     "accepted_quote_stale_collector": 10,
     "accepted_quote_stale_orderbook": 10,
     "accepted_quote_stale_params": 10
@@ -80,8 +104,8 @@
     "insufficient_canary_sessions:0<min_3",
     "unknown_fill_liquidity:8",
     "accepted_quote_missing_fee_agreement:101",
-    "accepted_quote_not_post_only:183",
-    "accepted_quote_post_only_unverified:183",
+    "accepted_quote_not_post_only:188",
+    "accepted_quote_post_only_unverified:188",
     "accepted_quote_stale_collector:10",
     "accepted_quote_stale_orderbook:10",
     "accepted_quote_stale_params:10",
@@ -91,15 +115,15 @@
   ],
   "sessions": [
     {
-      "accepted_quotes": 183,
-      "duration_minutes": 668.35455,
-      "end_ts": "2026-05-26T00:57:16.003000Z",
-      "events": 1346,
-      "health_events": 217,
+      "accepted_quotes": 188,
+      "duration_minutes": 683.8546333333333,
+      "end_ts": "2026-05-26T01:12:46.008000Z",
+      "events": 1380,
+      "health_events": 222,
       "kill_switches": 0,
       "live_health_events": 0,
       "maker_fills": 0,
-      "quote_decisions": 183,
+      "quote_decisions": 188,
       "session_id": "implicit-1",
       "start_ts": "2026-05-25T13:48:54.730000Z",
       "taker_fills": 0

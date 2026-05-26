@@ -14,11 +14,12 @@ if str(SCRIPTS) not in sys.path:
 from verify_live_canary import build_live_canary_report, read_jsonl_events  # noqa: E402
 
 
-OK_REPORT = {"ok": True, "reasons": []}
-
-
 def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def ok_report(now: datetime) -> dict:
+    return {"ok": True, "reasons": [], "generated_at": iso(now)}
 
 
 def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> list[dict]:
@@ -72,18 +73,20 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
 
 def test_live_canary_report_passes_when_all_evidence_is_present():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=3)
     events = []
     for idx in range(3):
         events.extend(canary_session(f"s{idx}", start + timedelta(hours=idx), minutes=2))
 
     report = build_live_canary_report(
         events,
-        post_only_report=OK_REPORT,
-        fee_report=OK_REPORT,
-        replay_report=OK_REPORT,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
         min_sessions=3,
         min_session_minutes=1,
         manual_monitoring_ack=True,
+        now=now,
     )
 
     assert report["ok"] is True
@@ -114,6 +117,7 @@ def test_live_canary_report_requires_prior_gates_and_sessions():
 
 def test_live_canary_report_rejects_taker_and_stale_accepted_quote():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
     events = canary_session("s1", start, minutes=2)
     events.append(
         {
@@ -140,12 +144,13 @@ def test_live_canary_report_rejects_taker_and_stale_accepted_quote():
 
     report = build_live_canary_report(
         events,
-        post_only_report=OK_REPORT,
-        fee_report=OK_REPORT,
-        replay_report=OK_REPORT,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
         min_sessions=1,
         min_session_minutes=1,
         manual_monitoring_ack=True,
+        now=now,
     )
 
     assert report["ok"] is False
@@ -155,6 +160,7 @@ def test_live_canary_report_rejects_taker_and_stale_accepted_quote():
 
 def test_live_canary_report_rejects_unsafe_live_health():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
     events = canary_session("s1", start, minutes=2)
     events[0]["stake_amount"] = 100
     events[0]["kill_on_taker_fill"] = False
@@ -162,13 +168,14 @@ def test_live_canary_report_rejects_unsafe_live_health():
 
     report = build_live_canary_report(
         events,
-        post_only_report=OK_REPORT,
-        fee_report=OK_REPORT,
-        replay_report=OK_REPORT,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
         min_sessions=1,
         min_session_minutes=1,
         max_stake_amount=25,
         manual_monitoring_ack=True,
+        now=now,
     )
 
     assert report["ok"] is False
@@ -179,22 +186,71 @@ def test_live_canary_report_rejects_unsafe_live_health():
 
 def test_live_canary_report_rejects_param_or_hjb_errors():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
     events = canary_session("s1", start, minutes=2)
     events.append({"event": "param_update_failed", "ts": iso(start + timedelta(seconds=30)), "session_id": "s1"})
 
     report = build_live_canary_report(
         events,
-        post_only_report=OK_REPORT,
-        fee_report=OK_REPORT,
-        replay_report=OK_REPORT,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
         min_sessions=1,
         min_session_minutes=1,
         manual_monitoring_ack=True,
+        now=now,
     )
 
     assert report["ok"] is False
     assert "param_update_failed:1" in report["reasons"]
     assert report["error_events"] == {"param_update_failed": 1}
+
+
+def test_live_canary_report_rejects_stale_dependency_reports_and_events():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(days=8)
+    old_report = ok_report(start)
+
+    report = build_live_canary_report(
+        canary_session("s1", start, minutes=2),
+        post_only_report=old_report,
+        fee_report=old_report,
+        replay_report=old_report,
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        max_dependency_report_age_seconds=86_400,
+        max_canary_event_age_seconds=604_800,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "post_only_report_stale" in report["reasons"]
+    assert "fee_report_stale" in report["reasons"]
+    assert "replay_report_stale" in report["reasons"]
+    assert "canary_event_stale:4" in report["reasons"]
+    assert report["dependencies"]["post_only"]["freshness_reason"] == "stale"
+    assert report["event_freshness"]["stale"] == 4
+
+
+def test_live_canary_report_requires_dependency_generated_at():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+
+    report = build_live_canary_report(
+        canary_session("s1", start, minutes=2),
+        post_only_report={"ok": True, "reasons": []},
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "post_only_report_missing_generated_at" in report["reasons"]
+    assert report["dependencies"]["post_only"]["freshness_reason"] == "missing_timestamp"
 
 
 def test_read_jsonl_events_skips_bad_lines(tmp_path):

@@ -122,7 +122,10 @@ Optional Docker runtime gates:
   until post-only, fee-tier, and multi-day replay gates are already `ok=true`
   and several tiny live sessions provide non-dry-run health, fresh accepted
   quotes, maker-only fill evidence, no parameter/HJB/collector errors, no kill
-  switches, and an explicit manual-monitoring acknowledgement.
+  switches, and an explicit manual-monitoring acknowledgement. Prior gate
+  reports must carry fresh `generated_at` timestamps, and the canary session
+  events themselves must be recent, so a newly generated report cannot reuse old
+  live evidence.
 - `hl_data_validation_report`: reads the newest collector Parquet shards and
   validates required streams/columns plus the actual `timestamp` values inside
   the files. Freshness is based on row timestamps, not file modification time,
@@ -220,7 +223,10 @@ python scripts/verify_live_canary.py --input user_data/logs/mm_debug.jsonl --man
   post-only, fee, and replay artifacts, then rejects taker fills, unknown fill
   liquidity, kill switches, stale accepted quotes, parameter/HJB/collector error
   events, excessive stake, excessive symbols, missing live health, and missing
-  manual-monitoring acknowledgement.
+  manual-monitoring acknowledgement. The default dependency-report age is 86400
+  seconds, and the default live canary event age is 604800 seconds; tighten
+  those windows with `--max-dependency-report-age-seconds` and
+  `--max-canary-event-age-seconds` when promoting a canary run.
 
 ## Current Safety Posture
 

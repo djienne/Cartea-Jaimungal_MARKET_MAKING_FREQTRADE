@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 161 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 163 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -100,9 +100,11 @@ Generated from the current local worktree after the latest safety-gate run.
   requires several live, non-dry-run sessions, tiny stake, one symbol, manual
   monitoring acknowledgement, post-only verification, fee agreement, fresh
   accepted quotes, zero taker fills, no unknown fill liquidity, no kill
-  switches, and no parameter/HJB/collector error events. The current report is
-  expected to be `ok=false` until Gates 4-5 pass and real canary sessions are
-  supplied.
+  switches, and no parameter/HJB/collector error events. It also requires fresh
+  `generated_at` timestamps on dependency gate reports and recent timestamps on
+  canary session events, so stale canary evidence cannot pass by regenerating a
+  new report. The current report is expected to be `ok=false` until Gates 4-5
+  pass and real canary sessions are supplied.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and
