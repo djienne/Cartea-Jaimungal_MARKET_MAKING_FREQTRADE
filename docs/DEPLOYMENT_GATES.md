@@ -40,6 +40,11 @@ These gates do not require a live exchange connection:
   the checked-in config drifts away from Phase 0 safety defaults: dry-run on,
   force-entry disabled, tiny fixed stake, capped tradable balance, aligned
   maker fee, limit orders, and no checked-in market-making live enablement.
+- `strategy_safety_report`: writes `docs/strategy_safety_report.json` and fails
+  if checked-in strategy defaults drift away from fail-closed behavior:
+  `trading_enabled=false`, no `minimal_roi=-1` force exit, long-only research
+  mode, positive inventory-risk parameters, limit passive orders, kill switches
+  enabled, and current callback surface present.
 - `compute_spreads_boundary_smoke`: verifies disabled HJB boundary sides render
   as disabled instead of finite quotes.
 - `replay_smoke`: verifies the replay CLI runs without candle-fill assumptions.

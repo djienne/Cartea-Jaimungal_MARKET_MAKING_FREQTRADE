@@ -13,6 +13,11 @@ Generated from the current local worktree after the latest safety-gate run.
   fails if the repository config reintroduces live mode, force-entry, unlimited
   stake, oversized test exposure, fee mismatch, non-limit passive order types,
   or checked-in market-making live enablement.
+- Checked-in strategy safety:
+  `scripts/verify_strategy_safety.py` writes `docs/strategy_safety_report.json`
+  and fails if strategy defaults reintroduce live enablement, `minimal_roi=-1`,
+  disabled inventory-risk penalties, shorting, non-limit passive order types,
+  missing kill switches, or callback surface regressions.
 - Post-only evidence harness:
   `scripts/verify_post_only_mapping.py` now writes a plan artifact and evaluates
   crossing/passive `Alo` submit artifacts. The current

@@ -1,0 +1,99 @@
+{
+  "generated_at": "2026-05-26T01:57:41Z",
+  "observed": {
+    "defaults": {
+      "can_short": false,
+      "fail_closed_reason": "initial_safety_lock",
+      "hjb_alpha": 0.001,
+      "hjb_phi": 0.0001,
+      "hjb_q_max": 3,
+      "inventory_unit_base": 0.01,
+      "kill_on_taker_fill": true,
+      "kill_on_time_in_force_mismatch": true,
+      "kill_on_unknown_liquidity_fill": true,
+      "max_abs_inventory_units": 3,
+      "max_daily_loss_usdc": 20,
+      "minimal_roi": {
+        "0": 10
+      },
+      "order_types": {
+        "emergency_exit": "limit",
+        "entry": "limit",
+        "exit": "limit",
+        "stoploss": "limit",
+        "stoploss_on_exchange": false
+      },
+      "position_adjustment_enable": false,
+      "post_only_verified": false,
+      "trading_enabled": false,
+      "use_exit_signal": true
+    },
+    "signatures": {
+      "adjust_entry_price": [
+        "self",
+        "trade",
+        "order",
+        "pair",
+        "current_time",
+        "proposed_rate",
+        "current_order_rate",
+        "entry_tag",
+        "side"
+      ],
+      "adjust_exit_price": [
+        "self",
+        "trade",
+        "order",
+        "pair",
+        "current_time",
+        "proposed_rate",
+        "current_order_rate",
+        "exit_tag",
+        "side"
+      ],
+      "confirm_trade_entry": [
+        "self",
+        "pair",
+        "order_type",
+        "amount",
+        "rate",
+        "time_in_force",
+        "current_time",
+        "entry_tag",
+        "side"
+      ],
+      "confirm_trade_exit": [
+        "self",
+        "pair",
+        "trade",
+        "order_type",
+        "amount",
+        "rate",
+        "time_in_force",
+        "exit_reason",
+        "current_time"
+      ],
+      "custom_entry_price": [
+        "self",
+        "pair",
+        "trade",
+        "current_time",
+        "proposed_rate",
+        "entry_tag",
+        "side"
+      ],
+      "custom_exit_price": [
+        "self",
+        "pair",
+        "trade",
+        "current_time",
+        "proposed_rate",
+        "current_profit",
+        "exit_tag"
+      ]
+    }
+  },
+  "ok": true,
+  "reasons": [],
+  "strategy_path": "user_data\\strategies\\Market_Making.py"
+}
