@@ -151,6 +151,17 @@ def fee_evidence_command(
     ]
 
 
+def fee_evidence_capture_plan_command(py: str) -> list[str]:
+    return [
+        py,
+        "scripts/capture_hyperliquid_fee_evidence.py",
+        "--mode",
+        "plan",
+        "--output",
+        "docs/hyperliquid_fee_capture_plan.json",
+    ]
+
+
 def live_canary_evidence_command(
     py: str,
     *,
@@ -241,6 +252,7 @@ def local_gates(
                 "pytest",
                 "tests/test_hjb.py",
                 "tests/test_hyperliquid_alo_executor.py",
+                "tests/test_hyperliquid_fee_capture.py",
                 "tests/test_config_safety.py",
                 "tests/test_fee_evidence.py",
                 "tests/test_live_canary.py",
@@ -349,6 +361,11 @@ def local_gates(
                 "--output",
                 "docs/direct_alo_adapter_plan.json",
             ],
+            [0],
+        ),
+        (
+            "hyperliquid_fee_capture_plan",
+            fee_evidence_capture_plan_command(py),
             [0],
         ),
     ]

@@ -57,6 +57,7 @@ def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
 
     assert names.index("post_only_evidence_report") < names.index("live_canary_evidence_report")
     assert names.index("fee_evidence_report") < names.index("live_canary_evidence_report")
+    assert names.index("hyperliquid_fee_capture_plan") < names.index("fee_evidence_report")
     assert names.index("replay_acceptance_report_artifact") < names.index("live_canary_evidence_report")
 
 
@@ -127,6 +128,17 @@ def test_runtime_log_artifact_gates_can_use_external_audit_log_input():
 
         assert "--input" in command
         assert "docs/testnet_mm_debug.jsonl" in normalized
+
+
+def test_fee_capture_plan_gate_is_read_only_plan_mode():
+    command = gate_command("hyperliquid_fee_capture_plan", include_runtime=True)
+    normalized = [item.replace("\\", "/") for item in command]
+
+    assert "scripts/capture_hyperliquid_fee_evidence.py" in command
+    assert "--mode" in command
+    assert command[command.index("--mode") + 1] == "plan"
+    assert "--output" in command
+    assert "docs/hyperliquid_fee_capture_plan.json" in normalized
 
 
 def test_non_runtime_live_canary_gate_can_use_external_audit_log_input():

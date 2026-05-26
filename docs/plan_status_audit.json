@@ -11,7 +11,7 @@
     "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-05-26T09:04:05Z",
+  "generated_at": "2026-05-26T09:32:57Z",
   "local_gates": {
     "failed": [],
     "missing": [],
@@ -26,6 +26,7 @@
       "fee_evidence_report",
       "freqtrade_runtime_load",
       "hl_data_validation_report",
+      "hyperliquid_fee_capture_plan",
       "live_canary_evidence_report",
       "post_only_evidence_report",
       "post_only_probe_plan",
@@ -47,6 +48,7 @@
       "fee_evidence_report",
       "freqtrade_runtime_load",
       "hl_data_validation_report",
+      "hyperliquid_fee_capture_plan",
       "live_canary_evidence_report",
       "post_only_evidence_report",
       "post_only_probe_plan",
@@ -81,8 +83,8 @@
   },
   "ok": true,
   "pytest_count": {
-    "latest_gates": 222,
-    "status": 222
+    "latest_gates": 227,
+    "status": 227
   },
   "reasons": [],
   "status_path": "docs\\PLAN_IMPLEMENTATION_STATUS.md",

@@ -23,6 +23,7 @@ def gate_payload(pytest_count: int = 173) -> dict:
         "post_only_probe_plan",
         "post_only_evidence_report",
         "direct_alo_adapter_plan",
+        "hyperliquid_fee_capture_plan",
         "docker_compose_config",
         "freqtrade_runtime_load",
         "dry_run_disabled_smoke",
@@ -75,6 +76,8 @@ def status_text(test_count: int = 173) -> str:
   the enabled dry-run smoke proves model-valid dry-run order creation.
 - Replay log calibration:
   runtime logs produce calibration artifacts for replay fill assumptions.
+- Hyperliquid fee evidence capture:
+  read-only capture normalizes userFees/userFills evidence.
 ## Remaining Required Gates
 - Hyperliquid post-only/Alo integration:
 - Hyperliquid account fee tier:

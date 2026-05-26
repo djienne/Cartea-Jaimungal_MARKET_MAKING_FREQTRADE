@@ -1,0 +1,20 @@
+{
+  "component": "hyperliquid_fee_evidence_capture",
+  "downstream_checker": "scripts/verify_fee_evidence.py",
+  "generated_at": "2026-05-26T09:23:29Z",
+  "normalized_outputs": [
+    "fee_snapshot audit event with exchange maker/taker fee rates",
+    "fill audit events with maker/taker liquidity, actual fee paid, actual fee rate, price, amount, and order TIF when oid evidence exists"
+  ],
+  "raw_inputs": [
+    "Hyperliquid Info.user_fees(account)",
+    "Hyperliquid Info.user_fills_by_time(account, start_ms, end_ms)",
+    "order evidence containing order id, limit order type, and actual Alo/post-only TIF"
+  ],
+  "read_only_fetch_guards": [
+    "HYPERLIQUID_FEE_EVIDENCE_ALLOW=1",
+    "--acknowledge-account-read",
+    "--account-address or HYPERLIQUID_ACCOUNT_ADDRESS"
+  ],
+  "safe_default": "no network calls; no orders; no private key required"
+}
