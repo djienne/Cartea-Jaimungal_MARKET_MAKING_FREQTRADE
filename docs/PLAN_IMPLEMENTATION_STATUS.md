@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 192 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 194 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -112,16 +112,20 @@ Generated from the current local worktree after the latest safety-gate run.
   logs and writes `docs/replay_log_calibration.json` with accepted quote counts,
   fill probabilities by side/depth bucket, maker ratio, fee-rate summary, and
   markout summary. The runtime safety gate generates this artifact after the
-  enabled dry-run smoke. It can be `usable_for_calibration=false` until enough
-  real dry-run/testnet fills exist.
+  enabled dry-run smoke. The safety-gate runner accepts `--audit-log-input` so
+  dry-run, testnet, or live-canary audit logs can be evaluated without copying
+  them over the default debug log. It can be `usable_for_calibration=false`
+  until enough real dry-run/testnet fills exist.
 - Fee evidence report:
   `scripts/verify_fee_evidence.py` writes `docs/fee_evidence_report.json` from
   JSONL audit logs. It requires strategy/config fee agreement, exchange/account
   maker-fee evidence, and at least one maker fill with an actual fee rate that
   matches the configured maker fee. The underlying fee snapshot and actual
   maker-fill fee records must also have fresh event timestamps, so stale logs
-  cannot satisfy the gate by regenerating a new report. The current report can
-  be `ok=false` until testnet/tiny integration supplies real account fee and
+  cannot satisfy the gate by regenerating a new report. The same
+  `--audit-log-input` runner option feeds this report, so promotion evidence can
+  come from retained testnet/tiny integration logs. The current report can be
+  `ok=false` until testnet/tiny integration supplies real account fee and
   fill-fee evidence.
 - Risk audit trail:
   realized-PnL fills now emit `risk_update` events with daily realized PnL,
@@ -141,9 +145,10 @@ Generated from the current local worktree after the latest safety-gate run.
   regenerating fee and replay reports in runtime mode, so it summarizes the
   current dependency artifacts. The runner withholds the manual monitoring
   acknowledgement by default and only passes it through with the explicit
-  `--manual-monitoring-ack` flag after actual monitored canary sessions. The
-  current report is expected to be `ok=false` until Gates 4-5 pass and real
-  canary sessions are supplied.
+  `--manual-monitoring-ack` flag after actual monitored canary sessions. It
+  also accepts `--audit-log-input` so retained canary logs can be evaluated by
+  the same full gate runner. The current report is expected to be `ok=false`
+  until Gates 4-5 pass and real canary sessions are supplied.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and

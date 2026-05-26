@@ -13,6 +13,13 @@ When Docker is available, include non-trading runtime load checks:
 python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md
 ```
 
+For promotion evidence from retained dry-run, testnet, or canary audit logs,
+pass the log explicitly:
+
+```bash
+python scripts/run_safety_gates.py --include-runtime --audit-log-input docs/testnet_mm_debug.jsonl --markdown-output docs/LAST_SAFETY_GATES.md
+```
+
 Non-dry-run strategy enablement is also guarded at runtime. Setting
 `market_making.trading_enabled=true` in live mode is rejected unless
 `market_making.deployment_stage` is explicitly set:
@@ -125,7 +132,9 @@ Optional Docker runtime gates:
   probabilities by side and depth bucket, maker ratio, fee-rate summary, and
   markout summary. The artifact may be `usable_for_calibration=false` when the
   sample is too small; that is expected until enough dry-run/testnet fills
-  exist.
+  exist. Use the safety runner's `--audit-log-input` option to evaluate a
+  retained testnet or canary log instead of the default
+  `user_data/logs/mm_debug.jsonl`.
 - `fee_evidence_report`: parses the same audit log and writes
   `docs/fee_evidence_report.json`. The report requires strategy/config fee
   agreement, an exchange/account maker-fee snapshot, and at least one maker fill
@@ -133,7 +142,8 @@ Optional Docker runtime gates:
   actual maker-fill fee records must carry fresh event timestamps; regenerating
   a report from stale fee-tier or fill logs does not satisfy the gate. It is
   expected to be `ok=false` until testnet/tiny integration produces real
-  fee-tier and fill-fee evidence.
+  fee-tier and fill-fee evidence. Use `--audit-log-input` when those records are
+  in a retained integration log rather than the default debug log.
 - `live_canary_evidence_report`: parses the audit log and prior gate artifacts,
   then writes `docs/live_canary_report.json`. It is expected to be `ok=false`
   until post-only, fee-tier, and multi-day replay gates are already `ok=true`
@@ -144,7 +154,8 @@ Optional Docker runtime gates:
   events themselves must be recent, so a newly generated report cannot reuse old
   live evidence. When `run_safety_gates.py --include-runtime` is used, this gate
   runs after fee and replay artifacts are regenerated so it evaluates the
-  current dependency reports.
+  current dependency reports. Use `--audit-log-input` together with
+  `--manual-monitoring-ack` after actual monitored live-canary sessions.
 - `hl_data_validation_report`: reads the newest collector Parquet shards and
   validates required streams/columns plus the actual `timestamp` values inside
   the files. Freshness is based on row timestamps, not file modification time,
@@ -229,13 +240,20 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   not enough without exchange/account fee and actual maker fill-fee evidence.
   The default maximum event age for fee snapshots and actual maker-fill fee
   records is 86400 seconds; use `--max-evidence-age-seconds` to make the
-  evidence window stricter.
+  evidence window stricter. The full safety runner can evaluate a retained
+  integration log with `--audit-log-input`.
 - `live_canary`: only after all previous gates pass, with tiny fixed stake,
   one symbol, hard loss limits, post-only required, kill-on-taker-fill enabled,
   and manual monitoring. After the sessions, run:
 
 ```bash
 python scripts/verify_live_canary.py --input user_data/logs/mm_debug.jsonl --manual-monitoring-ack --output docs/live_canary_report.json
+```
+
+  Or run the full gate bundle against a retained canary log:
+
+```bash
+python scripts/run_safety_gates.py --include-runtime --audit-log-input docs/live_canary_mm_debug.jsonl --manual-monitoring-ack --markdown-output docs/LAST_SAFETY_GATES.md
 ```
 
   The report must be `ok=true` before any larger deployment. It checks the prior

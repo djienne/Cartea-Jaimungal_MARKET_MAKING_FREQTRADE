@@ -19,6 +19,7 @@ from typing import Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_AUDIT_LOG_INPUT = Path("user_data/logs/mm_debug.jsonl")
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 
@@ -120,12 +121,47 @@ def post_only_evidence_command(
     return command
 
 
-def live_canary_evidence_command(py: str, *, manual_monitoring_ack: bool = False) -> list[str]:
+def replay_log_calibration_command(
+    py: str,
+    *,
+    audit_log_input: Path = DEFAULT_AUDIT_LOG_INPUT,
+) -> list[str]:
+    return [
+        py,
+        "scripts/calibrate_replay_from_logs.py",
+        "--input",
+        str(audit_log_input),
+        "--output",
+        "docs/replay_log_calibration.json",
+    ]
+
+
+def fee_evidence_command(
+    py: str,
+    *,
+    audit_log_input: Path = DEFAULT_AUDIT_LOG_INPUT,
+) -> list[str]:
+    return [
+        py,
+        "scripts/verify_fee_evidence.py",
+        "--input",
+        str(audit_log_input),
+        "--output",
+        "docs/fee_evidence_report.json",
+    ]
+
+
+def live_canary_evidence_command(
+    py: str,
+    *,
+    audit_log_input: Path = DEFAULT_AUDIT_LOG_INPUT,
+    manual_monitoring_ack: bool = False,
+) -> list[str]:
     command = [
         py,
         "scripts/verify_live_canary.py",
         "--input",
-        "user_data/logs/mm_debug.jsonl",
+        str(audit_log_input),
         "--output",
         "docs/live_canary_report.json",
     ]
@@ -183,6 +219,7 @@ def replay_acceptance_report_command(
 def local_gates(
     *,
     include_runtime: bool = False,
+    audit_log_input: Path = DEFAULT_AUDIT_LOG_INPUT,
     manual_monitoring_ack: bool = False,
     post_only_crossing_result: Path | None = None,
     post_only_passive_result: Path | None = None,
@@ -366,26 +403,18 @@ def local_gates(
                 ),
                 (
                     "replay_log_calibration_artifact",
-                    [
+                    replay_log_calibration_command(
                         sys.executable,
-                        "scripts/calibrate_replay_from_logs.py",
-                        "--input",
-                        "user_data/logs/mm_debug.jsonl",
-                        "--output",
-                        "docs/replay_log_calibration.json",
-                    ],
+                        audit_log_input=audit_log_input,
+                    ),
                     [0],
                 ),
                 (
                     "fee_evidence_report",
-                    [
+                    fee_evidence_command(
                         sys.executable,
-                        "scripts/verify_fee_evidence.py",
-                        "--input",
-                        "user_data/logs/mm_debug.jsonl",
-                        "--output",
-                        "docs/fee_evidence_report.json",
-                    ],
+                        audit_log_input=audit_log_input,
+                    ),
                     [0, 1],
                 ),
                 (
@@ -447,6 +476,7 @@ def local_gates(
                     "live_canary_evidence_report",
                     live_canary_evidence_command(
                         sys.executable,
+                        audit_log_input=audit_log_input,
                         manual_monitoring_ack=manual_monitoring_ack,
                     ),
                     [0, 1],
@@ -457,7 +487,11 @@ def local_gates(
         gates.append(
             (
                 "live_canary_evidence_report",
-                live_canary_evidence_command(py, manual_monitoring_ack=manual_monitoring_ack),
+                live_canary_evidence_command(
+                    py,
+                    audit_log_input=audit_log_input,
+                    manual_monitoring_ack=manual_monitoring_ack,
+                ),
                 [0, 1],
             )
         )
@@ -619,6 +653,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--markdown-output", type=Path, default=None, help="Optional path for markdown summary.")
     parser.add_argument("--include-runtime", action="store_true", help="Also run non-trading Docker/Freqtrade load gates.")
     parser.add_argument(
+        "--audit-log-input",
+        type=Path,
+        default=DEFAULT_AUDIT_LOG_INPUT,
+        help=(
+            "JSONL audit log for replay calibration, fee evidence, and live canary evidence. "
+            "Defaults to user_data/logs/mm_debug.jsonl."
+        ),
+    )
+    parser.add_argument(
         "--manual-monitoring-ack",
         action="store_true",
         help=(
@@ -683,6 +726,7 @@ def main() -> int:
         run_command(name, command, expected_returncodes)
         for name, command, expected_returncodes in local_gates(
             include_runtime=args.include_runtime,
+            audit_log_input=args.audit_log_input,
             manual_monitoring_ack=args.manual_monitoring_ack,
             post_only_crossing_result=args.post_only_crossing_result,
             post_only_passive_result=args.post_only_passive_result,
@@ -706,6 +750,7 @@ def main() -> int:
         "deployment_ready": bool(all_local_passed and not deployment_blockers),
         "deployment_blockers": deployment_blockers,
         "runtime_gates_included": bool(args.include_runtime),
+        "audit_log_input": str(args.audit_log_input),
         "manual_monitoring_ack": bool(args.manual_monitoring_ack),
         "post_only_crossing_result": str(args.post_only_crossing_result)
         if args.post_only_crossing_result

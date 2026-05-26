@@ -27,6 +27,7 @@ def gate_command(
     name: str,
     *,
     include_runtime: bool,
+    audit_log_input: Path = Path("user_data/logs/mm_debug.jsonl"),
     manual_monitoring_ack: bool = False,
     post_only_crossing_result: Path | None = None,
     post_only_passive_result: Path | None = None,
@@ -37,6 +38,7 @@ def gate_command(
 ) -> list[str]:
     for gate_name, command, _ in local_gates(
         include_runtime=include_runtime,
+        audit_log_input=audit_log_input,
         manual_monitoring_ack=manual_monitoring_ack,
         post_only_crossing_result=post_only_crossing_result,
         post_only_passive_result=post_only_passive_result,
@@ -114,6 +116,29 @@ def test_replay_acceptance_gate_can_run_uncapped_promotion_mode():
     assert "--newest-per-stream" not in command
     assert "--max-price-events" not in command
     assert "--allow-incomplete" not in command
+
+
+def test_runtime_log_artifact_gates_can_use_external_audit_log_input():
+    audit_log = Path("docs/testnet_mm_debug.jsonl")
+
+    for gate_name in ("replay_log_calibration_artifact", "fee_evidence_report", "live_canary_evidence_report"):
+        command = gate_command(gate_name, include_runtime=True, audit_log_input=audit_log)
+        normalized = [item.replace("\\", "/") for item in command]
+
+        assert "--input" in command
+        assert "docs/testnet_mm_debug.jsonl" in normalized
+
+
+def test_non_runtime_live_canary_gate_can_use_external_audit_log_input():
+    command = gate_command(
+        "live_canary_evidence_report",
+        include_runtime=False,
+        audit_log_input=Path("docs/live_canary_mm_debug.jsonl"),
+    )
+    normalized = [item.replace("\\", "/") for item in command]
+
+    assert "--input" in command
+    assert "docs/live_canary_mm_debug.jsonl" in normalized
 
 
 def test_live_canary_gate_does_not_ack_manual_monitoring_by_default():
