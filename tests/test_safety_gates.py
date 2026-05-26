@@ -70,6 +70,7 @@ def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     assert names.index("post_only_evidence_report") < names.index("live_canary_evidence_report")
     assert names.index("fee_evidence_report") < names.index("live_canary_evidence_report")
     assert names.index("hyperliquid_fee_capture_plan") < names.index("fee_evidence_report")
+    assert names.index("direct_risk_flatten_plan") < names.index("live_canary_evidence_report")
     assert names.index("replay_acceptance_report_artifact") < names.index("live_canary_evidence_report")
 
 

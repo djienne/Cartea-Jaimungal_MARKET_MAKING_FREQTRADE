@@ -1,0 +1,41 @@
+{
+  "client_order_id_fields": [
+    "session_id",
+    "risk_action_id",
+    "side",
+    "reason"
+  ],
+  "cloid_format": "0x + 16-byte hex",
+  "component": "direct_hyperliquid_risk_executor",
+  "generated_at": "2026-05-26T22:29:34Z",
+  "not_maker_strategy": true,
+  "order_type": {
+    "limit": {
+      "tif": "Ioc"
+    }
+  },
+  "purpose": "emergency inventory reduction after maker quoting is disabled and open maker orders are cancelled",
+  "reduce_only": true,
+  "response_acceptance": [
+    "IOC filled status is acceptable",
+    "IOC canceled status is acceptable when no liquidity is available",
+    "resting order status is a failure",
+    "exchange error status is a failure"
+  ],
+  "safe_default": "no network call or order submission",
+  "sdk_method": "Exchange.order(name, is_buy, sz, limit_px, order_type, reduce_only, cloid)",
+  "side_mapping": {
+    "negative_signed_position": "buy reduce-only IOC",
+    "positive_signed_position": "sell reduce-only IOC"
+  },
+  "submit_guards": [
+    "HYPERLIQUID_RISK_FLATTEN_ALLOW=1",
+    "--acknowledge-risk-reducing-taker",
+    "--reason is required",
+    "--signed-position-base must be non-zero",
+    "--reference-price must be positive",
+    "--max-notional-usdc defaults to 150.0",
+    "--testnet, or --allow-mainnet-flatten for tiny live emergency/canary use"
+  ],
+  "symbol": "ETH/USDC:USDC"
+}

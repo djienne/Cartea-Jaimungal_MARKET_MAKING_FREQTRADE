@@ -11,7 +11,7 @@
     "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-05-26T22:11:04Z",
+  "generated_at": "2026-05-26T22:39:03Z",
   "local_gates": {
     "failed": [],
     "missing": [],
@@ -20,6 +20,7 @@
       "compute_spreads_boundary_smoke",
       "config_safety_report",
       "direct_alo_adapter_plan",
+      "direct_risk_flatten_plan",
       "docker_compose_config",
       "dry_run_disabled_smoke",
       "dry_run_enabled_smoke",
@@ -43,6 +44,7 @@
       "compute_spreads_boundary_smoke",
       "config_safety_report",
       "direct_alo_adapter_plan",
+      "direct_risk_flatten_plan",
       "docker_compose_config",
       "dry_run_disabled_smoke",
       "dry_run_enabled_smoke",
@@ -85,8 +87,8 @@
   },
   "ok": true,
   "pytest_count": {
-    "latest_gates": 291,
-    "status": 291
+    "latest_gates": 301,
+    "status": 301
   },
   "reasons": [],
   "status_path": "docs\\PLAN_IMPLEMENTATION_STATUS.md",

@@ -207,6 +207,17 @@ def fee_evidence_capture_plan_command(py: str) -> list[str]:
     ]
 
 
+def risk_flatten_plan_command(py: str) -> list[str]:
+    return [
+        py,
+        "scripts/hyperliquid_risk_executor.py",
+        "--mode",
+        "plan",
+        "--output",
+        "docs/hyperliquid_risk_flatten_plan.json",
+    ]
+
+
 def live_canary_evidence_command(
     py: str,
     *,
@@ -313,6 +324,7 @@ def local_gates(
                 "pytest",
                 "tests/test_hjb.py",
                 "tests/test_hyperliquid_alo_executor.py",
+                "tests/test_hyperliquid_risk_executor.py",
                 "tests/test_hyperliquid_fee_capture.py",
                 "tests/test_config_safety.py",
                 "tests/test_dry_run_quality.py",
@@ -425,6 +437,11 @@ def local_gates(
                 "--output",
                 "docs/direct_alo_adapter_plan.json",
             ],
+            [0],
+        ),
+        (
+            "direct_risk_flatten_plan",
+            risk_flatten_plan_command(py),
             [0],
         ),
         (

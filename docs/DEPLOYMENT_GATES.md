@@ -289,6 +289,21 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   leave a passive order working. For evidence tied to strategy decisions, pass
   `--quote-id`, `--session-id`, and `--hjb-generation`; the artifact stores the
   readable client order id and the submitted Hyperliquid `cloid`.
+- `hyperliquid_risk_flatten`: maker quoting and risk reduction are separated.
+  The no-network plan is:
+
+```bash
+python scripts/hyperliquid_risk_executor.py --mode plan
+```
+
+  The executor builds only reduce-only IOC flatten orders. Positive signed base
+  exposure maps to a sell reduce-only IOC; negative signed base exposure maps to
+  a buy reduce-only IOC. Submit mode requires
+  `HYPERLIQUID_RISK_FLATTEN_ALLOW=1`, `--acknowledge-risk-reducing-taker`, a
+  non-empty `--reason`, a non-zero `--signed-position-base`, a positive
+  `--reference-price`, and testnet unless `--allow-mainnet-flatten` is supplied.
+  This path is for emergency inventory reduction after quoting is disabled and
+  open maker orders have been cancelled; it is not maker-PnL evidence.
 - `multi_day_event_replay`: the automated latest-data smoke proves the replay
   parser and conservative fill loop work on real shards, and the acceptance
   report records exactly which criteria are still failing. The remaining manual
