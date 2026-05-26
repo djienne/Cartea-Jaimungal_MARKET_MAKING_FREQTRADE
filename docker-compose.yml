@@ -64,3 +64,29 @@ services:
         max-size: "10m"
         max-file: "3"
     command: ["python", "run_collector.py"]
+  param-estimator:
+    image: freqtradeorg/freqtrade:2025.4
+    build:
+      context: .
+      dockerfile: "./Dockerfile.technical"
+    container_name: mm-param-estimator
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: '1024M'
+    environment:
+      CRYPTO_NAME: ${PARAM_ESTIMATOR_SYMBOL:-ETH}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - "./user_data:/freqtrade/user_data"
+      - "./scripts:/freqtrade/scripts"
+    depends_on:
+      - hl-collector2
+    restart: unless-stopped
+    command: >
+      python /freqtrade/user_data/strategies/periodic_test_runner.py
+      --loop
+      --interval ${PARAM_ESTIMATOR_INTERVAL:-60}
+      --crypto ${PARAM_ESTIMATOR_SYMBOL:-ETH}
+      --lock-stale-seconds ${PARAM_UPDATE_LOCK_STALE_SECONDS:-3600}

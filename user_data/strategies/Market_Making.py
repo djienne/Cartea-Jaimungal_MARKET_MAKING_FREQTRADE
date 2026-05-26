@@ -9,7 +9,6 @@ import numpy as np  # noqa
 import pandas as pd  # noqa
 import sys
 import threading
-from periodic_test_runner import schedule_tests
 from pandas import DataFrame
 from functools import reduce
 import json
@@ -197,6 +196,8 @@ class Market_Making(IStrategy):
     min_kappa_r2 = 0.0
     min_epsilon_events = 1
     param_update_status_path: str | None = None
+    param_snapshot_reload_interval_seconds = 60
+    param_update_lock_stale_seconds = 300
     _param_update_lock = threading.Lock()
     _param_update_running: bool = False
     _last_param_update: datetime | None = None
@@ -389,6 +390,8 @@ class Market_Making(IStrategy):
             "max_toxicity",
             "collector_timestamp_newest_files_per_stream",
             "max_deployment_report_age_seconds",
+            "param_snapshot_reload_interval_seconds",
+            "param_update_lock_stale_seconds",
         ):
             if numeric_key in mm_config:
                 try:
@@ -489,14 +492,18 @@ class Market_Making(IStrategy):
             self._debug_log_event("param_update_skipped", {"reason": "no_pair"})
             return
 
-        if bool(self._mm_config().get("disable_param_refresh", False)):
-            self._debug_log_event("param_update_skipped", {"reason": "disabled_by_config"})
-            return
+        if bool(self._mm_config().get("run_estimators_in_strategy", False)):
+            self._debug_log_event(
+                "param_update_skipped",
+                {"reason": "internal_estimator_disabled_use_sidecar"},
+            )
 
         if self._param_update_running:
             self._debug_log_event("param_update_skipped", {"reason": "estimator_running"})
             return
-        if self._last_param_update and (now - self._last_param_update) < timedelta(seconds=60):
+        if self._last_param_update and (
+            now - self._last_param_update
+        ) < timedelta(seconds=float(self.param_snapshot_reload_interval_seconds)):
             return
 
         acquired = self._param_update_lock.acquire(blocking=False)
@@ -506,8 +513,12 @@ class Market_Making(IStrategy):
 
         self._param_update_running = True
         try:
-            logger.info('Refreshing market making parameters')
-            schedule_tests(run_once=True, crypto=self._symbol_from_pair(pair))
+            ok, reason = self._param_update_status()
+            if not ok:
+                self._debug_log_event("param_update_skipped", {"pair": pair, "reason": reason})
+                return
+
+            logger.info('Reloading market making parameter snapshots')
             new_kappas, new_epsilons, new_lambdas = load_configs(start_dir=self._param_config_dir())
             self._last_param_update = now
             old_params = (self.kappas, self.epsilons, self.lambdas)
@@ -519,9 +530,9 @@ class Market_Making(IStrategy):
                     self._debug_log_event("param_update_rejected", {"pair": pair, "reason": reason})
                     logger.warning(f"Parameter refresh rejected ({reason}); keeping last known values.")
                     return
-            logger.info(f'Updated kappa values: {self.kappas}')
-            logger.info(f'Updated epsilon values: {self.epsilons}')
-            logger.info(f'Updated lambda values: {self.lambdas}')
+            logger.info(f'Reloaded kappa values: {self.kappas}')
+            logger.info(f'Reloaded epsilon values: {self.epsilons}')
+            logger.info(f'Reloaded lambda values: {self.lambdas}')
             if not self.use_asymmetric_kappa:
                 logger.warning("Forcing use_asymmetric_kappa=True (always use kappa+/kappa-).")
                 self.use_asymmetric_kappa = True
@@ -1179,6 +1190,18 @@ class Market_Making(IStrategy):
             status_path = Path(configured_path)
         lock_path = status_path.with_name("param_update.lock")
         if lock_path.exists():
+            try:
+                lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            except Exception:
+                return False, "estimator_lock_unreadable"
+            started_at = self._parse_utc_timestamp(lock_payload.get("started_at"))
+            if started_at is None:
+                return False, "estimator_lock_timestamp_missing"
+            age_seconds = (self._now_utc() - started_at).total_seconds()
+            if age_seconds < -float(self.max_future_timestamp_skew_seconds):
+                return False, "estimator_lock_timestamp_future"
+            if age_seconds > float(self.param_update_lock_stale_seconds):
+                return False, "estimator_lock_stale"
             return False, "estimator_running"
         if not status_path.exists():
             return True, "ok"

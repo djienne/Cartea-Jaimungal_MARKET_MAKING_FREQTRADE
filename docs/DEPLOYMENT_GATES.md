@@ -58,7 +58,8 @@ These gates do not require a live exchange connection:
   if checked-in strategy defaults drift away from fail-closed behavior:
   `trading_enabled=false`, no `minimal_roi=-1` force exit, long-only research
   mode, positive inventory-risk parameters, limit passive orders, kill switches
-  enabled, and current callback surface present.
+  enabled, no internal estimator calls from strategy callbacks, and current
+  callback surface present.
 - `compute_spreads_boundary_smoke`: verifies disabled HJB boundary sides render
   as disabled instead of finite quotes.
 - `replay_smoke`: verifies the replay CLI runs without candle-fill assumptions.
@@ -201,6 +202,18 @@ Optional Docker runtime gates:
   validates required streams/columns plus the actual `timestamp` values inside
   the files. Freshness is based on row timestamps, not file modification time,
   so copied stale files cannot satisfy the collector-fresh gate.
+
+Parameter sidecar:
+
+- `param-estimator` is a separate Docker Compose service that runs
+  `periodic_test_runner.py --loop` against the mounted collector data and
+  atomically updates the strategy snapshots. The strategy itself only consumes
+  snapshots; checked-in config keeps `run_estimators_in_strategy=false`, and the
+  strategy safety report rejects any reintroduced `schedule_tests()` call.
+- `param_update.lock` remains a fail-closed guard. The sidecar may replace a
+  stale lock after `PARAM_UPDATE_LOCK_STALE_SECONDS`; the strategy does not
+  remove locks and rejects active, stale, unreadable, or future-dated locks
+  until a valid status/snapshot set is present.
 
 Data freshness/replay-readiness report:
 

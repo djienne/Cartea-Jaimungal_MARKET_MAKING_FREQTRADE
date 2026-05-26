@@ -61,13 +61,59 @@ def _runner_lock_path() -> Path:
     return Path(__file__).resolve().parent / RUNNER_LOCK_FILE
 
 
-def _acquire_process_lock(path: Path, crypto: str) -> bool:
+def _parse_utc_timestamp(value: object) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _lock_age_seconds(path: Path) -> float | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    started_at = _parse_utc_timestamp(payload.get("started_at"))
+    if started_at is None:
+        return None
+    return (datetime.now(timezone.utc) - started_at).total_seconds()
+
+
+def _stale_lock_can_be_replaced(path: Path, stale_after_seconds: float) -> bool:
+    if stale_after_seconds <= 0:
+        return False
+    age = _lock_age_seconds(path)
+    if age is None:
+        try:
+            age = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
+        except Exception:
+            return False
+    return age > float(stale_after_seconds)
+
+
+def _acquire_process_lock(path: Path, crypto: str, stale_after_seconds: float = 3600.0) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     try:
         fd = os.open(str(path), flags)
     except FileExistsError:
-        return False
+        if not _stale_lock_can_be_replaced(path, stale_after_seconds):
+            return False
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        try:
+            fd = os.open(str(path), flags)
+        except FileExistsError:
+            return False
     payload = {
         "pid": os.getpid(),
         "crypto": crypto,
@@ -379,6 +425,7 @@ def schedule_tests(
     copy_configs: bool = True,
     run_once: bool = True,
     crypto: str = "ETH",
+    lock_stale_seconds: float = 3600.0,
 ) -> None:
     """Run get_kappa.py, get_epsilon.py, and get_lambda.py.
 
@@ -400,7 +447,7 @@ def schedule_tests(
         return
 
     lock_path = _runner_lock_path()
-    acquired_process_lock = _acquire_process_lock(lock_path, crypto)
+    acquired_process_lock = _acquire_process_lock(lock_path, crypto, lock_stale_seconds)
     if not acquired_process_lock:
         _RUNNER_LOCK.release()
         print(f"{_ts()} [runner] Skipping; parameter update process lock exists at {lock_path}.")
@@ -464,6 +511,12 @@ def _parse_args(argv: list[str]):
         default=os.getenv("CRYPTO_NAME", "ETH"),
         help="Symbol to pass to estimator scripts (default: ETH)",
     )
+    p.add_argument(
+        "--lock-stale-seconds",
+        type=float,
+        default=float(os.getenv("PARAM_UPDATE_LOCK_STALE_SECONDS", "3600")),
+        help="Replace param_update.lock after this age in seconds (default: 3600)",
+    )
     return p.parse_args(argv)
 
 
@@ -481,4 +534,5 @@ if __name__ == "__main__":
         copy_configs=not args.no_copy_configs,
         run_once=run_once,
         crypto=args.crypto,
+        lock_stale_seconds=float(args.lock_stale_seconds),
     )

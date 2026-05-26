@@ -32,6 +32,7 @@ def safe_config() -> dict:
             "trading_enabled": False,
             "post_only_verified": False,
             "deployment_stage": "research",
+            "run_estimators_in_strategy": False,
         },
     }
 
@@ -68,6 +69,7 @@ def test_config_safety_rejects_checked_in_live_enablement():
     config["market_making"]["trading_enabled"] = True
     config["market_making"]["post_only_verified"] = True
     config["market_making"]["deployment_stage"] = "canary"
+    config["market_making"]["run_estimators_in_strategy"] = True
 
     report = report_for(config)
 
@@ -75,6 +77,7 @@ def test_config_safety_rejects_checked_in_live_enablement():
     assert "checked_in_trading_enabled_true" in report["reasons"]
     assert "checked_in_post_only_verified_true" in report["reasons"]
     assert "checked_in_deployment_stage_not_research" in report["reasons"]
+    assert "checked_in_internal_param_estimator_true" in report["reasons"]
 
 
 def test_config_safety_rejects_oversized_testing_exposure():

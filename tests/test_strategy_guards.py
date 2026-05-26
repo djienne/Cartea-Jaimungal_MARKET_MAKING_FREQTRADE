@@ -977,11 +977,45 @@ def test_lambda_snapshot_must_be_hjb_lambda0_fit():
 
 def test_param_update_lock_file_rejects_params(tmp_path):
     bot = make_bot()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    bot._now_utc = lambda: now
     status_path = tmp_path / "param_update_status.json"
     bot.param_update_status_path = str(status_path)
-    status_path.with_name("param_update.lock").write_text("{}", encoding="utf-8")
+    status_path.with_name("param_update.lock").write_text(
+        json.dumps({"started_at": now.isoformat().replace("+00:00", "Z")}),
+        encoding="utf-8",
+    )
 
     assert bot._params_are_valid("ETH/USDC:USDC") == (False, "estimator_running")
+
+
+def test_stale_param_update_lock_fails_closed_with_stale_reason(tmp_path):
+    bot = make_bot()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    bot._now_utc = lambda: now
+    bot.param_update_lock_stale_seconds = 60
+    status_path = tmp_path / "param_update_status.json"
+    bot.param_update_status_path = str(status_path)
+    status_path.with_name("param_update.lock").write_text(
+        json.dumps({"started_at": (now - timedelta(seconds=61)).isoformat().replace("+00:00", "Z")}),
+        encoding="utf-8",
+    )
+
+    assert bot._params_are_valid("ETH/USDC:USDC") == (False, "estimator_lock_stale")
+
+
+def test_future_param_update_lock_fails_closed(tmp_path):
+    bot = make_bot()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    bot._now_utc = lambda: now
+    status_path = tmp_path / "param_update_status.json"
+    bot.param_update_status_path = str(status_path)
+    status_path.with_name("param_update.lock").write_text(
+        json.dumps({"started_at": (now + timedelta(seconds=30)).isoformat().replace("+00:00", "Z")}),
+        encoding="utf-8",
+    )
+
+    assert bot._params_are_valid("ETH/USDC:USDC") == (False, "estimator_lock_timestamp_future")
 
 
 def test_future_param_timestamp_rejected():
@@ -1649,9 +1683,6 @@ def test_confirm_exit_rejects_price_not_on_exchange_tick():
 
 
 def test_param_refresh_skips_without_hardcoded_symbol_fallback(monkeypatch):
-    module = sys.modules["Market_Making"]
-    calls = []
-    monkeypatch.setattr(module, "schedule_tests", lambda **kwargs: calls.append(kwargs))
     bot = make_bot()
     bot.dp = EmptyWhitelistDP()
     events = []
@@ -1659,8 +1690,42 @@ def test_param_refresh_skips_without_hardcoded_symbol_fallback(monkeypatch):
 
     bot.bot_loop_start(datetime.now(timezone.utc))
 
-    assert calls == []
+    assert not hasattr(sys.modules["Market_Making"], "schedule_tests")
     assert events == [("param_update_skipped", {"reason": "no_pair"})]
+
+
+def test_bot_loop_reloads_parameter_snapshots_without_running_estimators(monkeypatch):
+    module = sys.modules["Market_Making"]
+    bot = make_bot()
+    now = datetime.now(timezone.utc)
+    new_kappas = json.loads(json.dumps(bot.kappas))
+    new_epsilons = json.loads(json.dumps(bot.epsilons))
+    new_lambdas = json.loads(json.dumps(bot.lambdas))
+    new_kappas["ETH"]["kappa+"] = 3.0
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot._refresh_hjb = lambda pair: events.append(("hjb_refreshed", {"pair": pair}))
+    monkeypatch.setattr(module, "load_configs", lambda start_dir=None: (new_kappas, new_epsilons, new_lambdas))
+
+    bot.bot_loop_start(now)
+
+    assert not hasattr(module, "schedule_tests")
+    assert bot.kappas["ETH"]["kappa+"] == 3.0
+    assert ("hjb_refreshed", {"pair": "ETH/USDC:USDC"}) in events
+
+
+def test_bot_loop_rejects_internal_estimator_config_and_consumes_snapshots(monkeypatch):
+    module = sys.modules["Market_Making"]
+    bot = make_bot()
+    bot.config = {"dry_run": True, "fee": 0.00015, "market_making": {"run_estimators_in_strategy": True}}
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot._refresh_hjb = lambda pair: None
+    monkeypatch.setattr(module, "load_configs", lambda start_dir=None: (bot.kappas, bot.epsilons, bot.lambdas))
+
+    bot.bot_loop_start(datetime.now(timezone.utc))
+
+    assert ("param_update_skipped", {"reason": "internal_estimator_disabled_use_sidecar"}) in events
 
 
 def test_exchange_position_takes_priority_over_open_trade_count():

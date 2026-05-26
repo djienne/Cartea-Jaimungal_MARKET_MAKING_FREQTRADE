@@ -133,6 +133,8 @@ def build_config_safety_report(
         reasons.append("checked_in_post_only_verified_true")
     if str(market_making.get("deployment_stage") or "research").strip().lower() != "research":
         reasons.append("checked_in_deployment_stage_not_research")
+    if market_making.get("run_estimators_in_strategy") is True:
+        reasons.append("checked_in_internal_param_estimator_true")
 
     return {
         "generated_at": utc_now_iso(),
@@ -162,6 +164,9 @@ def build_config_safety_report(
                 "trading_enabled": market_making.get("trading_enabled"),
                 "post_only_verified": market_making.get("post_only_verified"),
                 "deployment_stage": market_making.get("deployment_stage", "research"),
+                "run_estimators_in_strategy": market_making.get("run_estimators_in_strategy"),
+                "param_snapshot_reload_interval_seconds": market_making.get("param_snapshot_reload_interval_seconds"),
+                "param_update_lock_stale_seconds": market_making.get("param_update_lock_stale_seconds"),
             },
         },
     }

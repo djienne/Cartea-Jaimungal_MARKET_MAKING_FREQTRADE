@@ -161,3 +161,15 @@ def test_strategy_safety_rejects_commented_price_tick_guard():
 
     assert report["ok"] is False
     assert "entry_price_tick_guard_missing" in report["reasons"]
+
+
+def test_strategy_safety_rejects_internal_estimator_calls():
+    source = SAFE_SOURCE.replace(
+        "def adjust_exit_price(self):\n        pass",
+        "def adjust_exit_price(self):\n        schedule_tests(run_once=True)",
+    )
+
+    report = report_for(source)
+
+    assert report["ok"] is False
+    assert "internal_estimator_call_present" in report["reasons"]

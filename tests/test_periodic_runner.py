@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -171,3 +172,31 @@ def test_process_lock_is_exclusive_and_released(tmp_path):
     periodic_test_runner._release_process_lock(lock_path)
 
     assert not lock_path.exists()
+
+
+def test_stale_process_lock_is_replaced(tmp_path):
+    lock_path = tmp_path / "param_update.lock"
+    stale_started_at = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat().replace("+00:00", "Z")
+    lock_path.write_text(
+        json.dumps({"pid": 123, "crypto": "ETH", "started_at": stale_started_at}),
+        encoding="utf-8",
+    )
+
+    assert periodic_test_runner._acquire_process_lock(lock_path, "ETH", stale_after_seconds=60)
+
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert payload["pid"] != 123
+    assert payload["crypto"] == "ETH"
+
+    periodic_test_runner._release_process_lock(lock_path)
+
+
+def test_fresh_process_lock_is_not_replaced(tmp_path):
+    lock_path = tmp_path / "param_update.lock"
+    lock_path.write_text(
+        json.dumps({"pid": 123, "crypto": "ETH", "started_at": datetime.now(timezone.utc).isoformat()}),
+        encoding="utf-8",
+    )
+
+    assert not periodic_test_runner._acquire_process_lock(lock_path, "ETH", stale_after_seconds=60)
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == 123

@@ -6,7 +6,7 @@
     "max_tradable_balance_ratio": 0.1
   },
   "config_path": "user_data\\config.json",
-  "generated_at": "2026-05-26T21:17:27Z",
+  "generated_at": "2026-05-26T21:33:15Z",
   "observed": {
     "api_force_entry_enable": false,
     "api_forcebuy_enable": false,
@@ -16,8 +16,11 @@
     "force_entry_enable": false,
     "market_making": {
       "deployment_stage": "research",
-      "post_only_verified": null,
-      "trading_enabled": null
+      "param_snapshot_reload_interval_seconds": 60,
+      "param_update_lock_stale_seconds": 300,
+      "post_only_verified": false,
+      "run_estimators_in_strategy": false,
+      "trading_enabled": false
     },
     "max_open_trades": 1,
     "order_time_in_force": {

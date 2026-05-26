@@ -41,6 +41,14 @@
         "entry": "GTC",
         "exit": "GTC"
     },
+    "market_making": {
+        "trading_enabled": false,
+        "post_only_verified": false,
+        "deployment_stage": "research",
+        "run_estimators_in_strategy": false,
+        "param_snapshot_reload_interval_seconds": 60,
+        "param_update_lock_stale_seconds": 300
+    },
     "exchange": {
         "name": "hyperliquid",
         "key": "",

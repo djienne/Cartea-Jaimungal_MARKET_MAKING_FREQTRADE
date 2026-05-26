@@ -15,24 +15,24 @@
     "min_runtime_seconds": 180.0
   },
   "error_events": {},
-  "event_count": 25,
-  "event_span_seconds": 185.015,
+  "event_count": 18,
+  "event_span_seconds": 177.948,
   "gate_report": {
     "passed": true,
     "path": "docs\\dry_run_enabled_gate.json",
     "reason": "ok",
     "runtime_seconds": 240.0,
-    "started_at": "2026-05-26T21:22:35.307269Z"
+    "started_at": "2026-05-26T21:38:24.022110Z"
   },
-  "generated_at": "2026-05-26T21:26:38Z",
+  "generated_at": "2026-05-26T21:42:27Z",
   "health_events": 3,
   "ok": true,
   "order_sizing": {
-    "avg_notional_usdc": 20.7284303461998,
+    "avg_notional_usdc": 20.750423746199797,
     "failures": {},
     "ignored": {},
     "max_amount": 0.01,
-    "max_notional_usdc": 20.7319292961998
+    "max_notional_usdc": 20.753922696199798
   },
   "pnl": {
     "final_realized_pnl_usdc": 0.0,
@@ -46,11 +46,11 @@
   },
   "quote_decisions": 4,
   "quote_quality": {
-    "avg_depth_bps": 5.5784251943273295,
-    "avg_distance_ratio": 0.0005217009759685863,
+    "avg_depth_bps": 5.575693037251051,
+    "avg_distance_ratio": 0.000533499692995152,
     "failures": {},
-    "max_depth_bps": 5.578611664394095,
-    "max_distance_ratio": 0.0005337642877906528
+    "max_depth_bps": 5.576003179365445,
+    "max_distance_ratio": 0.0005335278096347182
   },
   "reasons": [],
   "total_order_attempts": 4

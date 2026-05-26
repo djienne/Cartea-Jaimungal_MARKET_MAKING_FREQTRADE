@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 282 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 289 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -172,6 +172,15 @@ Generated from the current local worktree after the latest safety-gate run.
   buffers before order submission. Risk-reducing asks remain allowed so an
   over-limit position can still be unwound. Health logs include notional,
   margin, maintenance-margin, equity, and liquidation-buffer fields.
+- Parameter sidecar posture from `MEGA_PLAN.md`:
+  the strategy no longer imports or calls `schedule_tests()` from
+  `bot_loop_start()`. It only reloads already-written atomic parameter
+  snapshots on a configurable interval, validates them, and refreshes HJB from
+  accepted snapshots. Estimator execution is moved to the separate
+  `param-estimator` Docker Compose service, which runs
+  `periodic_test_runner.py --loop`. `param_update.lock` now has a TTL for the
+  sidecar, while the strategy treats active, stale, unreadable, or future-dated
+  locks as fail-closed parameter states.
 - Fee evidence report:
   `scripts/verify_fee_evidence.py` writes `docs/fee_evidence_report.json` from
   JSONL audit logs. It requires strategy/config fee agreement, exchange/account

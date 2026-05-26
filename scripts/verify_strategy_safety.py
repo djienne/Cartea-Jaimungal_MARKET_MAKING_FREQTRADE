@@ -100,6 +100,7 @@ def parse_strategy_source(source: str) -> tuple[dict[str, Any], dict[str, list[s
     guards: dict[str, bool] = {
         "entry_price_tick_guard": False,
         "exit_price_tick_guard": False,
+        "internal_estimator_call": False,
     }
     for node in strategy_class.body:
         if isinstance(node, ast.Assign):
@@ -116,6 +117,9 @@ def parse_strategy_source(source: str) -> tuple[dict[str, Any], dict[str, list[s
                 pass
         elif isinstance(node, ast.FunctionDef):
             signatures[node.name] = [arg.arg for arg in node.args.args]
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == "schedule_tests":
+                    guards["internal_estimator_call"] = True
             if node.name == "confirm_trade_entry":
                 guards["entry_price_tick_guard"] = function_calls_price_tick_guard(node, "bid")
             elif node.name == "confirm_trade_exit":
@@ -221,6 +225,8 @@ def build_strategy_safety_report(
         reasons.append("entry_price_tick_guard_missing")
     if guards.get("exit_price_tick_guard") is not True:
         reasons.append("exit_price_tick_guard_missing")
+    if guards.get("internal_estimator_call") is True:
+        reasons.append("internal_estimator_call_present")
 
     return {
         "generated_at": utc_now_iso(),
