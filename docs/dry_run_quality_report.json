@@ -1,0 +1,57 @@
+{
+  "accepted_order_attempts": 4,
+  "accepted_quotes": 4,
+  "criteria": {
+    "event_span_tolerance_seconds": 1.0,
+    "max_loss_usdc": 1.0,
+    "max_order_amount_units": 0.01,
+    "max_order_notional_usdc": 25.0,
+    "max_quote_depth_bps": 50.0,
+    "max_quote_distance_ratio": 0.01,
+    "min_accepted_quotes": 1,
+    "min_event_span_seconds": 60.0,
+    "min_final_total_pnl_usdc": -1.0,
+    "min_order_attempts": 1,
+    "min_runtime_seconds": 180.0
+  },
+  "error_events": {},
+  "event_count": 25,
+  "event_span_seconds": 193.853,
+  "gate_report": {
+    "passed": true,
+    "path": "docs\\dry_run_enabled_gate.json",
+    "reason": "ok",
+    "runtime_seconds": 240.016,
+    "started_at": "2026-05-26T21:05:12.003491Z"
+  },
+  "generated_at": "2026-05-26T21:09:14Z",
+  "health_events": 3,
+  "ok": true,
+  "order_sizing": {
+    "avg_notional_usdc": 20.726930796199795,
+    "failures": {},
+    "ignored": {},
+    "max_amount": 0.01,
+    "max_notional_usdc": 20.734928396199795
+  },
+  "pnl": {
+    "final_realized_pnl_usdc": 0.0,
+    "final_total_pnl_usdc": 0.0,
+    "final_unrealized_pnl_usdc": 0.0,
+    "max_total_pnl_usdc": 0.0,
+    "min_realized_pnl_usdc": 0.0,
+    "min_total_pnl_usdc": 0.0,
+    "min_unrealized_pnl_usdc": 0.0,
+    "samples": 3
+  },
+  "quote_decisions": 4,
+  "quote_quality": {
+    "avg_depth_bps": 5.578611793266575,
+    "avg_distance_ratio": 0.0005217132456268529,
+    "failures": {},
+    "max_depth_bps": 5.5789847364200025,
+    "max_distance_ratio": 0.000533798109486499
+  },
+  "reasons": [],
+  "total_order_attempts": 4
+}

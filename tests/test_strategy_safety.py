@@ -21,7 +21,7 @@ class Market_Making:
     use_exit_signal = True
     position_adjustment_enable = False
     minimal_roi = {"0": 10}
-    order_types = {"entry": "limit", "exit": "limit"}
+    order_types = {"entry": "limit", "exit": "limit", "emergency_exit": "market"}
     hjb_alpha = 0.001
     hjb_phi = 0.0001
     hjb_q_max = 3
@@ -39,6 +39,12 @@ class Market_Making:
         pass
 
     def custom_exit_price(self, pair, trade, current_time, proposed_rate, current_profit, exit_tag, **kwargs):
+        pass
+
+    def custom_stake_amount(self, pair, current_time, current_rate, proposed_stake, min_stake, max_stake, leverage, entry_tag, side, **kwargs):
+        pass
+
+    def leverage(self, pair, current_time, current_rate, proposed_leverage, max_leverage, entry_tag, side, **kwargs):
         pass
 
     def confirm_trade_entry(self):
@@ -89,6 +95,27 @@ def test_strategy_safety_rejects_missing_trade_callback_argument():
 
     assert report["ok"] is False
     assert "custom_entry_price_signature_mismatch" in report["reasons"]
+
+
+def test_strategy_safety_rejects_stake_signature_without_leverage():
+    source = SAFE_SOURCE.replace(
+        "def custom_stake_amount(self, pair, current_time, current_rate, proposed_stake, min_stake, max_stake, leverage, entry_tag, side, **kwargs):",
+        "def custom_stake_amount(self, pair, current_time, current_rate, proposed_stake, min_stake, max_stake, entry_tag, side, **kwargs):",
+    )
+
+    report = report_for(source)
+
+    assert report["ok"] is False
+    assert "custom_stake_amount_signature_mismatch" in report["reasons"]
+
+
+def test_strategy_safety_rejects_limit_emergency_exit_default():
+    source = SAFE_SOURCE.replace('"emergency_exit": "market"', '"emergency_exit": "limit"')
+
+    report = report_for(source)
+
+    assert report["ok"] is False
+    assert "emergency_exit_order_type_not_market" in report["reasons"]
 
 
 def test_strategy_safety_rejects_disabled_risk_and_kill_switches():

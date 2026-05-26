@@ -168,6 +168,8 @@ def build_strategy_safety_report(
             reasons.append("entry_order_type_not_limit")
         if str(order_types.get("exit") or "").lower() != "limit":
             reasons.append("exit_order_type_not_limit")
+        if str(order_types.get("emergency_exit") or "").lower() != "market":
+            reasons.append("emergency_exit_order_type_not_market")
 
     for key in ("hjb_alpha", "hjb_phi", "inventory_unit_base"):
         value = finite_float(defaults.get(key))
@@ -188,7 +190,20 @@ def build_strategy_safety_report(
     expected_entry_signature = ["self", "pair", "trade", "current_time", "proposed_rate"]
     if signatures.get("custom_entry_price", [])[:5] != expected_entry_signature:
         reasons.append("custom_entry_price_signature_mismatch")
-    for callback in ("confirm_trade_entry", "confirm_trade_exit", "custom_exit_price", "adjust_entry_price", "adjust_exit_price"):
+    expected_stake_signature = [
+        "self",
+        "pair",
+        "current_time",
+        "current_rate",
+        "proposed_stake",
+        "min_stake",
+        "max_stake",
+        "leverage",
+        "entry_tag",
+    ]
+    if signatures.get("custom_stake_amount", [])[:9] != expected_stake_signature:
+        reasons.append("custom_stake_amount_signature_mismatch")
+    for callback in ("confirm_trade_entry", "confirm_trade_exit", "custom_exit_price", "custom_stake_amount", "leverage", "adjust_entry_price", "adjust_exit_price"):
         if callback not in signatures:
             reasons.append(f"{callback}_missing")
     if "_price_tick_safe" not in signatures:
@@ -231,6 +246,8 @@ def build_strategy_safety_report(
                 for key in (
                     "custom_entry_price",
                     "custom_exit_price",
+                    "custom_stake_amount",
+                    "leverage",
                     "confirm_trade_entry",
                     "confirm_trade_exit",
                     "adjust_entry_price",

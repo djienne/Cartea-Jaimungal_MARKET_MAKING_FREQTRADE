@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-26T14:12:46Z",
+  "generated_at": "2026-05-26T21:00:03Z",
   "observed": {
     "defaults": {
       "can_short": false,
@@ -17,7 +17,7 @@
         "0": 10
       },
       "order_types": {
-        "emergency_exit": "limit",
+        "emergency_exit": "market",
         "entry": "limit",
         "exit": "limit",
         "stoploss": "limit",
@@ -100,6 +100,28 @@
         "proposed_rate",
         "current_profit",
         "exit_tag"
+      ],
+      "custom_stake_amount": [
+        "self",
+        "pair",
+        "current_time",
+        "current_rate",
+        "proposed_stake",
+        "min_stake",
+        "max_stake",
+        "leverage",
+        "entry_tag",
+        "side"
+      ],
+      "leverage": [
+        "self",
+        "pair",
+        "current_time",
+        "current_rate",
+        "proposed_leverage",
+        "max_leverage",
+        "entry_tag",
+        "side"
       ]
     }
   },

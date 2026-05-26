@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 260 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 277 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -32,9 +32,12 @@ Generated from the current local worktree after the latest safety-gate run.
   `scripts/verify_strategy_safety.py` writes `docs/strategy_safety_report.json`
   and fails if strategy defaults reintroduce live enablement, `minimal_roi=-1`,
   disabled inventory-risk penalties, shorting, non-limit passive order types,
-  missing kill switches, missing final tick-price guards, or callback surface
-  regressions. Final tick-price guard detection is AST-based, so comments or
-  unrelated source text cannot satisfy the check.
+  limit-only emergency exits, missing kill switches, missing final tick-price
+  guards, or callback surface regressions. The callback surface now includes
+  the Freqtrade-stable `custom_stake_amount(..., leverage, entry_tag, side, ...)`
+  signature plus an explicit 1x `leverage()` callback. Final tick-price guard
+  detection is AST-based, so comments or unrelated source text cannot satisfy
+  the check.
 - Post-only evidence harness:
   `scripts/verify_post_only_mapping.py` now writes a plan artifact and evaluates
   crossing/passive `Alo` submit artifacts. The current
@@ -92,6 +95,14 @@ Generated from the current local worktree after the latest safety-gate run.
   when the container dies during startup, and retries before declaring the
   smoke failed. Repeated non-post-only TIF confirmation rejects also count
   toward the post-only reject-rate kill switch.
+- Dry-run quality report:
+  `scripts/verify_dry_run_quality.py` writes `docs/dry_run_quality_report.json`
+  from the enabled dry-run gate and JSONL audit log. It requires a sufficiently
+  long dry-run window, accepted model-valid quotes, quote distance and depth
+  caps, quote-linked order attempts, order amount and notional caps, fresh
+  health fields, no kill/error events, and bounded drawdown/final PnL. This is
+  a stricter dry-run promotion gate for checking whether quotes, trade amount,
+  and losses look reasonable; it is not live post-only/fill proof by itself.
 - Latest-data replay smoke:
   `docs/replay_latest_smoke.json` replays the newest local shards and records
   input coverage, post-only rejects, stale cancels, maker/taker counts,
@@ -142,6 +153,17 @@ Generated from the current local worktree after the latest safety-gate run.
   include them before falling back to time/side/price matching for older logs.
   It can be `usable_for_calibration=false` until enough real dry-run/testnet
   fills exist.
+- Quote admission and sizing hardening from `MEGA_PLAN.md`:
+  `custom_entry_price()` and `custom_exit_price()` now log `quote_decision`
+  `accept` only after `_quote_state_valid()`, custom-price distance, and local
+  maker-safety checks pass. Rejections that return `proposed_rate` are cached so
+  `confirm_trade_entry()` / `confirm_trade_exit()` still abort the order rather
+  than allowing a silent proposed-rate fallback. `custom_stake_amount()` refuses
+  to raise exposure to satisfy an exchange minimum when that minimum exceeds one
+  inventory unit, refuses amounts that round below lot/min-stake constraints,
+  and logs `stake_rejected` instead of silently increasing inventory risk.
+  Parameter snapshots and deployment gate reports with future timestamps beyond
+  the configured clock-skew window are rejected.
 - Fee evidence report:
   `scripts/verify_fee_evidence.py` writes `docs/fee_evidence_report.json` from
   JSONL audit logs. It requires strategy/config fee agreement, exchange/account

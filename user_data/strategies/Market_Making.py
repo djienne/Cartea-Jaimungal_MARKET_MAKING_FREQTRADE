@@ -181,6 +181,7 @@ class Market_Making(IStrategy):
     min_post_only_reject_samples = 10
     quote_link_max_age_seconds = 900
     quote_link_cache_limit = 500
+    max_future_timestamp_skew_seconds = 10
     kill_on_taker_fill = True
     kill_on_time_in_force_mismatch = True
     kill_on_unknown_liquidity_fill = True
@@ -212,7 +213,7 @@ class Market_Making(IStrategy):
         'entry': 'limit',
         'exit': 'limit',
         'stoploss': 'limit',
-        "emergency_exit": "limit",
+        "emergency_exit": "market",
         'stoploss_on_exchange': False
     }
 
@@ -307,18 +308,18 @@ class Market_Making(IStrategy):
             return {"ok": False, "reason": "invalid_report", "path": str(path)}
         generated_at = payload.get("generated_at")
         generated_at_dt = self._parse_utc_timestamp(generated_at)
-        age_seconds = (
-            max(0.0, (self._now_utc() - generated_at_dt).total_seconds())
-            if generated_at_dt is not None
-            else None
-        )
+        age_seconds = (self._now_utc() - generated_at_dt).total_seconds() if generated_at_dt is not None else None
         max_age = float(self.max_deployment_report_age_seconds)
+        max_future_skew = float(self.max_future_timestamp_skew_seconds)
         report_ok = payload.get("ok") is True
         reason = "ok" if report_ok else "report_not_ok"
         ok = bool(report_ok)
         if report_ok and generated_at_dt is None:
             ok = False
             reason = "missing_generated_at"
+        elif report_ok and age_seconds is not None and age_seconds < -max_future_skew:
+            ok = False
+            reason = "future_generated_at"
         elif report_ok and max_age > 0 and age_seconds is not None and age_seconds > max_age:
             ok = False
             reason = "stale_report"
@@ -1072,6 +1073,8 @@ class Market_Making(IStrategy):
             if parsed is None:
                 return False, "invalid_param_timestamp"
             age = (self._now_utc() - parsed).total_seconds()
+            if age < -float(self.max_future_timestamp_skew_seconds):
+                return False, "param_timestamp_future"
             if age > float(self.max_param_age_seconds):
                 return False, "stale_params"
 
@@ -1513,6 +1516,81 @@ class Market_Making(IStrategy):
                 "post_only_reject_rate_exceeded",
                 {"pair": pair, "quote_decisions": attempts, "post_only_rejects": rejects},
             )
+
+    def _remember_custom_price_rejection(
+        self,
+        *,
+        pair: str,
+        quote_side: str,
+        reason: str,
+        current_time: datetime,
+        rate: float | None = None,
+    ) -> None:
+        cache = getattr(self, "_custom_price_rejections", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._custom_price_rejections = cache
+        cache[(pair, quote_side)] = {
+            "reason": reason,
+            "ts": self._as_utc(current_time) or self._now_utc(),
+            "rate": self._finite_float_or_none(rate),
+        }
+
+    def _clear_custom_price_rejection(self, pair: str, quote_side: str) -> None:
+        cache = getattr(self, "_custom_price_rejections", None)
+        if isinstance(cache, dict):
+            cache.pop((pair, quote_side), None)
+
+    def _pending_custom_price_rejection_reason(
+        self,
+        pair: str,
+        quote_side: str,
+        current_time: datetime,
+    ) -> str | None:
+        cache = getattr(self, "_custom_price_rejections", None)
+        if not isinstance(cache, dict):
+            return None
+        item = cache.get((pair, quote_side))
+        if not isinstance(item, dict):
+            return None
+        item_ts = self._as_utc(item.get("ts"))
+        now = self._as_utc(current_time) or self._now_utc()
+        if item_ts is None:
+            cache.pop((pair, quote_side), None)
+            return None
+        age = (now - item_ts).total_seconds()
+        if age < -1.0 or age > float(self.quote_link_max_age_seconds):
+            cache.pop((pair, quote_side), None)
+            return None
+        return str(item.get("reason") or "custom_price_rejected")
+
+    def _custom_price_distance_valid(
+        self,
+        rate: float,
+        proposed_rate: float,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        try:
+            rate_f = float(rate)
+            proposed_f = float(proposed_rate)
+        except Exception:
+            return False, "invalid_rate", {}
+        if not np.isfinite(rate_f) or rate_f <= 0 or not np.isfinite(proposed_f) or proposed_f <= 0:
+            return False, "invalid_rate", {}
+        config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
+        try:
+            max_ratio = float(config.get("custom_price_max_distance_ratio", 0.0) or 0.0)
+        except Exception:
+            max_ratio = 0.0
+        if max_ratio <= 0:
+            return True, "ok", {"custom_price_distance_ratio": None, "custom_price_max_distance_ratio": None}
+        distance_ratio = abs(rate_f - proposed_f) / proposed_f
+        payload = {
+            "custom_price_distance_ratio": float(distance_ratio),
+            "custom_price_max_distance_ratio": float(max_ratio),
+        }
+        if distance_ratio > max_ratio:
+            return False, "custom_price_too_far", payload
+        return True, "ok", payload
 
     def _record_order_attempt_accepted(
         self,
@@ -2665,7 +2743,74 @@ class Market_Making(IStrategy):
         self._log_spread("bid", mid_price, delta_total, delta_source)
         logger.info(f"Calculated bid: {returned_rate:.5f}")
 
+        ok, reason = self._quote_state_valid(pair, "bid", returned_rate, current_time)
+        if not ok:
+            self._remember_custom_price_rejection(
+                pair=pair,
+                quote_side="bid",
+                reason=reason,
+                current_time=current_time,
+                rate=returned_rate,
+            )
+            self._log_quote_decision(
+                pair=pair,
+                symbol=symbol,
+                side="bid",
+                action="entry",
+                decision="reject",
+                reason=reason,
+                mid_price=mid_price,
+                proposed_rate=proposed_rate,
+                raw_price=raw_rate,
+                rounded_price=returned_rate,
+                delta_model=delta_model,
+                fee_cushion=fee_cushion,
+                delta_total=delta_total,
+                extra={"bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None},
+            )
+            return proposed_rate
+
+        distance_ok, distance_reason, distance_payload = self._custom_price_distance_valid(returned_rate, proposed_rate)
+        if not distance_ok:
+            self._remember_custom_price_rejection(
+                pair=pair,
+                quote_side="bid",
+                reason=distance_reason,
+                current_time=current_time,
+                rate=returned_rate,
+            )
+            self._log_quote_decision(
+                pair=pair,
+                symbol=symbol,
+                side="bid",
+                action="entry",
+                decision="reject",
+                reason=distance_reason,
+                mid_price=mid_price,
+                proposed_rate=proposed_rate,
+                raw_price=raw_rate,
+                rounded_price=returned_rate,
+                delta_model=delta_model,
+                fee_cushion=fee_cushion,
+                delta_total=delta_total,
+                extra={
+                    "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                    **distance_payload,
+                },
+            )
+            return proposed_rate
+
         ok, reason = self._maker_safe(pair, "bid", returned_rate)
+        if not ok:
+            self._remember_custom_price_rejection(
+                pair=pair,
+                quote_side="bid",
+                reason=reason,
+                current_time=current_time,
+                rate=returned_rate,
+            )
+        else:
+            self._clear_custom_price_rejection(pair, "bid")
         self._log_quote_decision(
             pair=pair,
             symbol=symbol,
@@ -2680,9 +2825,12 @@ class Market_Making(IStrategy):
             delta_model=delta_model,
             fee_cushion=fee_cushion,
             delta_total=delta_total,
-            extra={"bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None},
+            extra={
+                "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                **distance_payload,
+            },
         )
-        return returned_rate
+        return returned_rate if ok else proposed_rate
 
     def custom_stake_amount(
         self,
@@ -2692,8 +2840,9 @@ class Market_Making(IStrategy):
         proposed_stake: float,
         min_stake: float | None,
         max_stake: float,
-        entry_tag: str | None,
-        side: str,
+        leverage: float = 1.0,
+        entry_tag: str | None = None,
+        side: str = "long",
         **kwargs,
     ) -> float:
         if side == "short":
@@ -2708,27 +2857,80 @@ class Market_Making(IStrategy):
             return proposed_stake
 
         one_unit_stake = float(self.inventory_unit_base) * rate
-        stake = min(proposed, maximum, one_unit_stake)
-        if min_stake is not None:
-            try:
-                stake = max(float(min_stake), stake)
-            except Exception:
-                pass
-        stake = min(stake, maximum)
-        raw_amount = stake / rate
-        rounded_amount = self._round_quote_amount(pair, raw_amount)
-        amount_rounding_applied = False
+        risk_cap = min(proposed, maximum, one_unit_stake)
         min_stake_value = None
         if min_stake is not None:
             try:
                 min_stake_value = float(min_stake)
             except Exception:
                 min_stake_value = None
-        if rounded_amount > 0:
-            rounded_stake = min(float(rounded_amount) * rate, maximum, proposed)
-            if min_stake_value is None or rounded_stake >= min_stake_value:
-                amount_rounding_applied = rounded_stake < stake - max(1e-12, stake * 1e-9)
-                stake = rounded_stake
+        if min_stake_value is not None and min_stake_value > risk_cap:
+            self._debug_log_event(
+                "stake_rejected",
+                {
+                    "pair": pair,
+                    "side": side,
+                    "entry_tag": entry_tag,
+                    "reason": "min_stake_exceeds_inventory_unit",
+                    "current_rate": rate,
+                    "proposed_stake": proposed,
+                    "min_stake": min_stake_value,
+                    "max_stake": maximum,
+                    "risk_cap": float(risk_cap),
+                    "inventory_unit_base": float(self.inventory_unit_base),
+                    "leverage": float(leverage),
+                },
+            )
+            return 0.0
+
+        stake = float(risk_cap)
+        raw_amount = stake / rate
+        rounded_amount = self._round_quote_amount(pair, raw_amount)
+        amount_rounding_applied = False
+        if rounded_amount <= 0:
+            self._debug_log_event(
+                "stake_rejected",
+                {
+                    "pair": pair,
+                    "side": side,
+                    "entry_tag": entry_tag,
+                    "reason": "amount_rounds_to_zero",
+                    "current_rate": rate,
+                    "proposed_stake": proposed,
+                    "returned_stake": 0.0,
+                    "inventory_unit_base": float(self.inventory_unit_base),
+                    "raw_amount": float(raw_amount),
+                    "rounded_amount": float(rounded_amount),
+                    "leverage": float(leverage),
+                },
+            )
+            return 0.0
+
+        rounded_stake = min(float(rounded_amount) * rate, maximum, proposed)
+        if min_stake_value is not None and rounded_stake < min_stake_value:
+            self._debug_log_event(
+                "stake_rejected",
+                {
+                    "pair": pair,
+                    "side": side,
+                    "entry_tag": entry_tag,
+                    "reason": "rounded_stake_below_min_stake",
+                    "current_rate": rate,
+                    "proposed_stake": proposed,
+                    "min_stake": min_stake_value,
+                    "returned_stake": 0.0,
+                    "risk_cap": float(risk_cap),
+                    "inventory_unit_base": float(self.inventory_unit_base),
+                    "raw_amount": float(raw_amount),
+                    "rounded_amount": float(rounded_amount),
+                    "rounded_stake": float(rounded_stake),
+                    "leverage": float(leverage),
+                },
+            )
+            return 0.0
+
+        amount_rounding_applied = rounded_stake < stake - max(1e-12, stake * 1e-9)
+        stake = rounded_stake
         self._debug_log_event(
             "stake_sized",
             {
@@ -2742,9 +2944,23 @@ class Market_Making(IStrategy):
                 "raw_amount": float(raw_amount),
                 "rounded_amount": float(rounded_amount),
                 "amount_rounding_applied": bool(amount_rounding_applied),
+                "leverage": float(leverage),
             },
         )
         return float(stake)
+
+    def leverage(
+        self,
+        pair: str,
+        current_time: datetime,
+        current_rate: float,
+        proposed_leverage: float,
+        max_leverage: float,
+        entry_tag: str | None,
+        side: str,
+        **kwargs,
+    ) -> float:
+        return 1.0
 
     def custom_exit_price(self, pair: str, trade: Trade,
                         current_time: datetime, proposed_rate: float,
@@ -2798,7 +3014,84 @@ class Market_Making(IStrategy):
         self._log_spread("ask", mid_price, delta_total, delta_source)
         logger.info(f"Calculated ask: {returned_rate:.5f}")
 
+        ok, reason = self._quote_state_valid(pair, "ask", returned_rate, current_time)
+        if not ok:
+            self._remember_custom_price_rejection(
+                pair=pair,
+                quote_side="ask",
+                reason=reason,
+                current_time=current_time,
+                rate=returned_rate,
+            )
+            self._log_quote_decision(
+                pair=pair,
+                symbol=symbol,
+                side="ask",
+                action="exit",
+                decision="reject",
+                reason=reason,
+                mid_price=mid_price,
+                proposed_rate=proposed_rate,
+                raw_price=raw_rate,
+                rounded_price=returned_rate,
+                delta_model=delta_model,
+                fee_cushion=fee_cushion,
+                delta_total=delta_total,
+                extra={
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    "open_rate": float(trade.open_rate) if getattr(trade, "open_rate", None) is not None else None,
+                    "current_profit": float(current_profit) if current_profit is not None else None,
+                    "exit_tag": exit_tag,
+                    "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                },
+            )
+            return proposed_rate
+
+        distance_ok, distance_reason, distance_payload = self._custom_price_distance_valid(returned_rate, proposed_rate)
+        if not distance_ok:
+            self._remember_custom_price_rejection(
+                pair=pair,
+                quote_side="ask",
+                reason=distance_reason,
+                current_time=current_time,
+                rate=returned_rate,
+            )
+            self._log_quote_decision(
+                pair=pair,
+                symbol=symbol,
+                side="ask",
+                action="exit",
+                decision="reject",
+                reason=distance_reason,
+                mid_price=mid_price,
+                proposed_rate=proposed_rate,
+                raw_price=raw_rate,
+                rounded_price=returned_rate,
+                delta_model=delta_model,
+                fee_cushion=fee_cushion,
+                delta_total=delta_total,
+                extra={
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    "open_rate": float(trade.open_rate) if getattr(trade, "open_rate", None) is not None else None,
+                    "current_profit": float(current_profit) if current_profit is not None else None,
+                    "exit_tag": exit_tag,
+                    "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                    **distance_payload,
+                },
+            )
+            return proposed_rate
+
         ok, reason = self._maker_safe(pair, "ask", returned_rate)
+        if not ok:
+            self._remember_custom_price_rejection(
+                pair=pair,
+                quote_side="ask",
+                reason=reason,
+                current_time=current_time,
+                rate=returned_rate,
+            )
+        else:
+            self._clear_custom_price_rejection(pair, "ask")
         self._log_quote_decision(
             pair=pair,
             symbol=symbol,
@@ -2819,10 +3112,11 @@ class Market_Making(IStrategy):
                 "current_profit": float(current_profit) if current_profit is not None else None,
                 "exit_tag": exit_tag,
                 "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                **distance_payload,
             },
         )
 
-        return returned_rate
+        return returned_rate if ok else proposed_rate
 
     def confirm_trade_entry(
         self,
@@ -2878,6 +3172,21 @@ class Market_Making(IStrategy):
                     "order_type": order_type,
                     "time_in_force": time_in_force,
                     "expected_tif": self._expected_time_in_force("bid"),
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
+        pending_reason = self._pending_custom_price_rejection_reason(pair, "bid", current_time)
+        if pending_reason is not None:
+            self._debug_log_event(
+                "entry_rejected",
+                {
+                    "pair": pair,
+                    "reason": pending_reason,
+                    "rate": float(rate),
+                    "side": side,
+                    "order_type": order_type,
                     **self._inventory_snapshot(pair),
                 },
             )
@@ -2939,6 +3248,7 @@ class Market_Making(IStrategy):
             )
             return False
 
+        self._clear_custom_price_rejection(pair, "bid")
         self._record_order_attempt_accepted(
             pair=pair,
             quote_side="bid",
@@ -3000,6 +3310,21 @@ class Market_Making(IStrategy):
                     "order_type": order_type,
                     "time_in_force": time_in_force,
                     "expected_tif": self._expected_time_in_force("ask"),
+                    "exit_reason": exit_reason,
+                    "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
+                    **self._inventory_snapshot(pair),
+                },
+            )
+            return False
+
+        pending_reason = self._pending_custom_price_rejection_reason(pair, "ask", current_time)
+        if pending_reason is not None:
+            self._debug_log_event(
+                "exit_rejected",
+                {
+                    "pair": pair,
+                    "reason": pending_reason,
+                    "rate": float(rate),
                     "exit_reason": exit_reason,
                     "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                     **self._inventory_snapshot(pair),
@@ -3071,6 +3396,7 @@ class Market_Making(IStrategy):
             )
             return False
 
+        self._clear_custom_price_rejection(pair, "ask")
         self._record_order_attempt_accepted(
             pair=pair,
             quote_side="ask",

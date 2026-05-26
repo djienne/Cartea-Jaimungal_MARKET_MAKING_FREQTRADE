@@ -11,7 +11,7 @@
     "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-05-26T14:22:20Z",
+  "generated_at": "2026-05-26T21:09:39Z",
   "local_gates": {
     "failed": [],
     "missing": [],
@@ -23,6 +23,7 @@
       "docker_compose_config",
       "dry_run_disabled_smoke",
       "dry_run_enabled_smoke",
+      "dry_run_quality_report",
       "fee_evidence_report",
       "freqtrade_runtime_load",
       "hl_data_validation_report",
@@ -45,6 +46,7 @@
       "docker_compose_config",
       "dry_run_disabled_smoke",
       "dry_run_enabled_smoke",
+      "dry_run_quality_report",
       "fee_evidence_report",
       "freqtrade_runtime_load",
       "hl_data_validation_report",
@@ -83,8 +85,8 @@
   },
   "ok": true,
   "pytest_count": {
-    "latest_gates": 260,
-    "status": 260
+    "latest_gates": 277,
+    "status": 277
   },
   "reasons": [],
   "status_path": "docs\\PLAN_IMPLEMENTATION_STATUS.md",

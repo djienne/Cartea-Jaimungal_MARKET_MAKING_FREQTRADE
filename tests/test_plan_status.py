@@ -28,6 +28,7 @@ def gate_payload(pytest_count: int = 173) -> dict:
         "freqtrade_runtime_load",
         "dry_run_disabled_smoke",
         "dry_run_enabled_smoke",
+        "dry_run_quality_report",
         "replay_log_calibration_artifact",
         "fee_evidence_report",
         "hl_data_validation_report",
@@ -74,6 +75,8 @@ def status_text(test_count: int = 173) -> str:
   the disabled dry-run smoke proves zero orders while locked.
 - Enabled dry-run evidence:
   the enabled dry-run smoke proves model-valid dry-run order creation.
+- Dry-run quality report:
+  `scripts/verify_dry_run_quality.py` checks quote distance, order size, runtime, and PnL bounds.
 - Replay log calibration:
   runtime logs produce calibration artifacts for replay fill assumptions.
 - Hyperliquid fee evidence capture:

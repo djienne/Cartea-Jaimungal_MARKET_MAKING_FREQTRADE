@@ -249,6 +249,26 @@ def test_custom_entry_price_signature_includes_trade_argument():
     assert params[:7] == ["self", "pair", "trade", "current_time", "proposed_rate", "entry_tag", "side"]
 
 
+def test_custom_stake_amount_signature_matches_freqtrade_stable():
+    params = list(inspect.signature(Market_Making.custom_stake_amount).parameters)
+
+    assert params[:9] == [
+        "self",
+        "pair",
+        "current_time",
+        "current_rate",
+        "proposed_stake",
+        "min_stake",
+        "max_stake",
+        "leverage",
+        "entry_tag",
+    ]
+
+
+def test_strategy_default_emergency_exit_is_market():
+    assert Market_Making.order_types["emergency_exit"] == "market"
+
+
 def test_strategy_time_in_force_uses_runtime_supported_research_mode():
     assert Market_Making.order_time_in_force == {"entry": "GTC", "exit": "GTC"}
     assert Market_Making.post_only_verified is False
@@ -467,7 +487,8 @@ def test_live_canary_config_rejects_missing_gate_report_timestamp(tmp_path):
 
 def test_live_canary_config_rejects_stale_gate_report(tmp_path):
     bot = make_bot()
-    bot._now_utc = lambda: datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    bot._now_utc = lambda: now
     events = []
     bot._debug_log_event = lambda event, payload: events.append((event, payload))
     bot.config = {
@@ -481,7 +502,7 @@ def test_live_canary_config_rejects_stale_gate_report(tmp_path):
             "replay_acceptance_report_path": write_gate_report(
                 tmp_path,
                 "replay",
-                generated_at="2026-05-24T11:59:00Z",
+                generated_at=(now - timedelta(seconds=86_460)).isoformat().replace("+00:00", "Z"),
             ),
             "max_deployment_report_age_seconds": 86_400,
         },
@@ -497,9 +518,40 @@ def test_live_canary_config_rejects_stale_gate_report(tmp_path):
     assert replay_status["max_age_seconds"] == 86_400.0
 
 
+def test_live_canary_config_rejects_future_gate_report(tmp_path):
+    bot = make_bot()
+    now = datetime.now(timezone.utc)
+    bot._now_utc = lambda: now
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **live_gate_config(tmp_path),
+            "fee_evidence_report_path": write_gate_report(
+                tmp_path,
+                "fee",
+                generated_at=(now + timedelta(seconds=60)).isoformat().replace("+00:00", "Z"),
+            ),
+            "max_deployment_report_age_seconds": 86_400,
+        },
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "fee_gate_not_passed"
+    fee_status = events[0][1]["gate_reports"]["fee"]
+    assert fee_status["reason"] == "future_generated_at"
+    assert fee_status["age_seconds"] == -60.0
+
+
 def test_live_config_can_enable_after_post_only_tif_verification_and_gate_reports(tmp_path):
     bot = make_bot()
-    bot._now_utc = lambda: datetime(2026, 5, 25, 12, 5, tzinfo=timezone.utc)
     bot.config = {
         "dry_run": False,
         "fee": 0.00015,
@@ -570,7 +622,6 @@ def test_production_config_requires_manual_monitoring_ack(tmp_path):
 
 def test_production_config_can_enable_after_live_canary_report(tmp_path):
     bot = make_bot()
-    bot._now_utc = lambda: datetime(2026, 5, 25, 12, 5, tzinfo=timezone.utc)
     bot.config = {
         "dry_run": False,
         "fee": 0.00015,
@@ -610,7 +661,44 @@ def test_custom_stake_amount_caps_to_one_inventory_unit():
         max_stake=1000.0,
         entry_tag="mm_bid",
         side="long",
-    ) == 25.0
+    ) == 0.0
+
+
+def test_custom_stake_amount_returns_zero_when_min_stake_exceeds_inventory_unit():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    stake = bot.custom_stake_amount(
+        "ETH/USDC:USDC",
+        datetime.now(timezone.utc),
+        current_rate=100.0,
+        proposed_stake=25.0,
+        min_stake=5.0,
+        max_stake=25.0,
+        leverage=1.0,
+        entry_tag="mm_bid",
+        side="long",
+    )
+
+    assert stake == 0.0
+    assert events[0][0] == "stake_rejected"
+    assert events[0][1]["reason"] == "min_stake_exceeds_inventory_unit"
+    assert events[0][1]["risk_cap"] == 1.0
+
+
+def test_strategy_leverage_stays_one_until_margin_model_is_live_ready():
+    bot = make_bot()
+
+    assert bot.leverage(
+        "ETH/USDC:USDC",
+        datetime.now(timezone.utc),
+        current_rate=100.0,
+        proposed_leverage=5.0,
+        max_leverage=20.0,
+        entry_tag="mm_bid",
+        side="long",
+    ) == 1.0
 
 
 def test_custom_stake_amount_rounds_base_amount_down_to_lot_step():
@@ -896,6 +984,15 @@ def test_param_update_lock_file_rejects_params(tmp_path):
     assert bot._params_are_valid("ETH/USDC:USDC") == (False, "estimator_running")
 
 
+def test_future_param_timestamp_rejected():
+    bot = make_bot()
+    bot._now_utc = lambda: datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
+    future = "2026-05-25T12:01:00Z"
+    bot.kappas["ETH"]["generated_at"] = future
+
+    assert bot._params_are_valid("ETH/USDC:USDC") == (False, "param_timestamp_future")
+
+
 def test_stale_params_reject_entry():
     bot = make_bot()
     bot.trading_enabled = True
@@ -912,6 +1009,29 @@ def test_stale_params_reject_entry():
         "mm_bid",
         "long",
     )
+
+
+def test_custom_entry_does_not_log_accept_when_params_stale():
+    bot = make_bot()
+    bot.trading_enabled = True
+    stale = "2026-01-01T00:00:00Z"
+    bot.kappas["ETH"]["generated_at"] = stale
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    returned = bot.custom_entry_price(
+        "ETH/USDC:USDC",
+        None,
+        datetime.now(timezone.utc),
+        proposed_rate=99.5,
+        entry_tag="mm_bid",
+        side="long",
+    )
+
+    assert returned == 99.5
+    assert events[0][0] == "quote_decision"
+    assert events[0][1]["decision"] == "reject"
+    assert events[0][1]["reason"] == "stale_params"
 
 
 def test_confirm_entry_rejects_config_fee_mismatch():
@@ -1050,6 +1170,43 @@ def test_custom_entry_price_fallback_still_rejects_boundary_order():
     assert events[0][1]["reason"] == "boundary_side_disabled"
     assert events[1][0] == "entry_rejected"
     assert events[1][1]["reason"] == "boundary_side_disabled"
+
+
+def test_custom_entry_price_distance_rejection_blocks_confirm_fallback():
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot.config["custom_price_max_distance_ratio"] = 0.001
+    bot.hjb_cache["delta_minus"][1] = 5.0
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    now = datetime.now(timezone.utc)
+
+    returned = bot.custom_entry_price(
+        "ETH/USDC:USDC",
+        None,
+        now,
+        proposed_rate=100.0,
+        entry_tag="mm_bid",
+        side="long",
+    )
+    allowed = bot.confirm_trade_entry(
+        "ETH/USDC:USDC",
+        "limit",
+        0.01,
+        returned,
+        "GTC",
+        now + timedelta(seconds=1),
+        "mm_bid",
+        "long",
+    )
+
+    assert returned == 100.0
+    assert not allowed
+    assert events[0][0] == "quote_decision"
+    assert events[0][1]["decision"] == "reject"
+    assert events[0][1]["reason"] == "custom_price_too_far"
+    assert events[1][0] == "entry_rejected"
+    assert events[1][1]["reason"] == "custom_price_too_far"
 
 
 def test_confirm_exit_rejects_boundary_inf_delta():

@@ -65,6 +65,8 @@ def gate_command(
 def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     names = gate_names(include_runtime=True)
 
+    assert names.index("dry_run_enabled_smoke") < names.index("dry_run_quality_report")
+    assert names.index("dry_run_quality_report") < names.index("replay_log_calibration_artifact")
     assert names.index("post_only_evidence_report") < names.index("live_canary_evidence_report")
     assert names.index("fee_evidence_report") < names.index("live_canary_evidence_report")
     assert names.index("hyperliquid_fee_capture_plan") < names.index("fee_evidence_report")
@@ -151,12 +153,32 @@ def test_replay_acceptance_gate_can_run_uncapped_promotion_mode_with_custom_cove
 def test_runtime_log_artifact_gates_can_use_external_audit_log_input():
     audit_log = Path("docs/testnet_mm_debug.jsonl")
 
-    for gate_name in ("replay_log_calibration_artifact", "fee_evidence_report", "live_canary_evidence_report"):
+    for gate_name in (
+        "dry_run_quality_report",
+        "replay_log_calibration_artifact",
+        "fee_evidence_report",
+        "live_canary_evidence_report",
+    ):
         command = gate_command(gate_name, include_runtime=True, audit_log_input=audit_log)
         normalized = [item.replace("\\", "/") for item in command]
 
         assert "--input" in command
         assert "docs/testnet_mm_debug.jsonl" in normalized
+
+
+def test_dry_run_quality_gate_checks_quotes_amounts_and_pnl():
+    command = gate_command("dry_run_quality_report", include_runtime=True)
+    normalized = [item.replace("\\", "/") for item in command]
+
+    assert "scripts/verify_dry_run_quality.py" in normalized
+    assert "--gate-report" in command
+    assert "docs/dry_run_enabled_gate.json" in normalized
+    assert "--max-order-notional-usdc" in command
+    assert command[command.index("--max-order-notional-usdc") + 1] == "25"
+    assert "--max-order-amount-units" in command
+    assert command[command.index("--max-order-amount-units") + 1] == "0.01"
+    assert "--max-loss-usdc" in command
+    assert command[command.index("--max-loss-usdc") + 1] == "1"
 
 
 def test_runtime_evidence_age_windows_are_passed_to_fee_and_canary_checks():

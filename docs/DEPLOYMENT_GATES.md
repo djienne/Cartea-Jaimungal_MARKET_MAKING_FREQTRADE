@@ -112,6 +112,15 @@ Optional Docker runtime gates:
   Realized-PnL fills emit `risk_update` audit events with daily drawdown and
   consecutive-loss counters before any drawdown or consecutive-loss kill switch
   fires.
+- `dry_run_quality_report`: parses the enabled dry-run audit log and writes
+  `docs/dry_run_quality_report.json`. It is stricter than the smoke gate: it
+  requires enough runtime and event span, accepted model-valid quotes, quote
+  distance/depth caps, quote-linked order attempts, order amount and notional
+  caps, fresh health fields, no kill/error events, and bounded loss/final PnL.
+  This is the automated answer to "did the dry run make reasonable quotes,
+  reasonable trade amount, and avoid losing too much too quickly?" Passing this
+  gate is still promotion evidence, not proof that live fills will remain maker
+  or match dry-run behavior.
 - `replay_latest_data_smoke`: after runtime collector gates have produced fresh
   shards, replays the newest local data window and writes
   `docs/replay_latest_smoke.json` with input coverage, maker/taker counts,
