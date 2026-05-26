@@ -16,6 +16,13 @@ def gate_names(*, include_runtime: bool) -> list[str]:
     return [name for name, _, _ in local_gates(include_runtime=include_runtime)]
 
 
+def gate_expected_returncodes(name: str, *, include_runtime: bool) -> list[int]:
+    for gate_name, _, expected_returncodes in local_gates(include_runtime=include_runtime):
+        if gate_name == name:
+            return expected_returncodes
+    raise AssertionError(f"missing gate {name}")
+
+
 def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     names = gate_names(include_runtime=True)
 
@@ -28,6 +35,12 @@ def test_live_canary_gate_is_still_available_without_runtime_gates():
     names = gate_names(include_runtime=False)
 
     assert "live_canary_evidence_report" in names
+
+
+def test_external_evidence_report_gates_accept_incomplete_and_complete_returncodes():
+    assert gate_expected_returncodes("post_only_evidence_report", include_runtime=True) == [0, 1]
+    assert gate_expected_returncodes("fee_evidence_report", include_runtime=True) == [0, 1]
+    assert gate_expected_returncodes("live_canary_evidence_report", include_runtime=True) == [0, 1]
 
 
 def test_plan_status_audit_command_uses_latest_gate_json_and_output():

@@ -197,7 +197,7 @@ def local_gates(*, include_runtime: bool = False) -> list[tuple[str, list[str], 
                 "--output",
                 "docs/post_only_evidence_report.json",
             ],
-            [1],
+            [0, 1],
         ),
         (
             "direct_alo_adapter_plan",

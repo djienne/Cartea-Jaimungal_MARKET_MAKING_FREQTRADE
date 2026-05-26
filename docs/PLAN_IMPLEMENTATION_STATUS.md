@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 185 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 186 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -37,9 +37,10 @@ Generated from the current local worktree after the latest safety-gate run.
   crossing/passive `Alo` submit artifacts. The current
   `docs/post_only_evidence_report.json` is expected to be `ok=false` until
   real exchange/testnet artifacts are supplied; the local safety gate treats
-  that incomplete report as an artifact check, not as post-only proof. The
-  checker now also requires fresh `generated_at` timestamps on the underlying
-  crossing/passive submit artifacts so stale probes cannot unlock Gate 4.
+  both incomplete and passing reports as artifact checks, while deployment
+  readiness still depends on the report's `ok` field. The checker now also
+  requires fresh `generated_at` timestamps on the underlying crossing/passive
+  submit artifacts so stale probes cannot unlock Gate 4.
 - Direct `Alo` fallback scaffold:
   `scripts/hyperliquid_alo_executor.py` builds Hyperliquid SDK orders with
   `order_type={"limit": {"tif": "Alo"}}`, applies local maker-safety from BBO,
