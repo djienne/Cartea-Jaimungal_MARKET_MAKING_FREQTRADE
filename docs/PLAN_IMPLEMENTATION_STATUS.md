@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 227 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 229 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -181,8 +181,11 @@ Generated from the current local worktree after the latest safety-gate run.
   the same full gate runner. Accepted quote and fill evidence must now carry
   `trading_enabled=true` and `dry_run=false`, so live health events cannot be
   combined with unrelated research/dry-run quotes to satisfy canary session
-  eligibility. The current report is expected to be `ok=false` until Gates 4-5
-  pass and real canary sessions are supplied.
+  eligibility. Live maker fills must carry an order id plus side/price/amount
+  fields and reconcile to a prior live accepted quote in the same canary session
+  by symbol, side, and price, so unrelated exchange fills cannot satisfy the
+  canary. The current report is expected to be `ok=false` until Gates 4-5 pass
+  and real canary sessions are supplied.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and
@@ -204,7 +207,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, atomic strategy-facing snapshot copies, schema v2 tests, status locking, process-level estimator locking, deterministic kappa -> epsilon -> raw-lambda updater order, snapshot validation for timestamped windows/fit diagnostics/toxicity diagnostics, `lambda0_fit` enforcement for HJB lambda, row-timestamp-based collector freshness validation, and no hardcoded symbol fallback when the strategy has no active pair. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, quote-quality ratio gates, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
 | Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, freshness-age fields, fee agreement snapshots, canary-relevant health fields, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, realized-PnL risk updates, delayed fill markouts, post-only reject-rate enforcement, kill-switch cancellation fallback, and kill-switch tests/log artifacts exist. |
-| Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gate 6 now has a log/artifact verifier, and live strategy enablement is gated on deployment-stage artifacts. Gates 4-6 still require external/manual evidence. |
+| Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gate 6 now has a log/artifact verifier with live fill-to-quote reconciliation, and live strategy enablement is gated on deployment-stage artifacts. Gates 4-6 still require external/manual evidence. |
 
 ## Remaining Required Gates
 

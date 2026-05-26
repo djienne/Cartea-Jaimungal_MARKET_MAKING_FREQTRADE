@@ -139,6 +139,29 @@ def event_symbol(event: dict[str, Any]) -> str | None:
     return None
 
 
+def normalized_symbol(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value).split("/", 1)[0].split(":", 1)[0].strip().upper() or None
+
+
+def quote_side(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if text in {"bid", "buy", "long", "entry", "open_long", "close_short"}:
+        return "bid"
+    if text in {"ask", "sell", "short", "exit", "open_short", "close_long"}:
+        return "ask"
+    return None
+
+
+def event_price(event: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = finite_float(event.get(key))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
 def is_live_enabled_event(event: dict[str, Any]) -> bool:
     return (
         bool_value(event.get("trading_enabled")) is True
@@ -333,6 +356,110 @@ def accepted_quote_failures(events: list[dict[str, Any]]) -> dict[str, int]:
     return {key: value for key, value in counters.items() if value}
 
 
+def live_maker_fill_reconciliation(
+    events: list[dict[str, Any]],
+    *,
+    max_quote_to_fill_seconds: float,
+    price_tolerance: float,
+) -> dict[str, Any]:
+    counters = {
+        "live_maker_fills_missing_order_id": 0,
+        "live_maker_fills_missing_quote_side": 0,
+        "live_maker_fills_missing_price": 0,
+        "live_maker_fills_missing_amount": 0,
+        "live_maker_fills_without_matching_quote": 0,
+    }
+    accepted_quotes: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("event") != "quote_decision" or event.get("decision") != "accept":
+            continue
+        if not is_live_enabled_event(event):
+            continue
+        ts = event_time(event)
+        side = quote_side(event.get("quote_side") or event.get("side"))
+        price = event_price(event, ("rounded_price", "rate", "proposed_rate", "raw_price"))
+        if ts is None or side is None or price is None:
+            continue
+        accepted_quotes.append(
+            {
+                "ts": ts,
+                "session": event_session_key(event),
+                "symbol": normalized_symbol(event_symbol(event)),
+                "side": side,
+                "price": price,
+            }
+        )
+
+    fills = [
+        event
+        for event in events
+        if event.get("event") == "fill"
+        and canonical_liquidity(event.get("liquidity")) == "maker"
+        and is_live_enabled_event(event)
+    ]
+    unmatched: list[dict[str, Any]] = []
+    matched = 0
+    for fill in fills:
+        fill_ts = event_time(fill)
+        fill_side = quote_side(fill.get("quote_side") or fill.get("side"))
+        fill_price = event_price(fill, ("price", "fill_price", "rate"))
+        fill_amount = event_price(fill, ("amount", "filled", "fill_size", "size"))
+        fill_order_id = fill.get("order_id")
+        if fill_order_id in (None, ""):
+            counters["live_maker_fills_missing_order_id"] += 1
+        if fill_side is None:
+            counters["live_maker_fills_missing_quote_side"] += 1
+        if fill_price is None:
+            counters["live_maker_fills_missing_price"] += 1
+        if fill_amount is None:
+            counters["live_maker_fills_missing_amount"] += 1
+        if fill_ts is None or fill_side is None or fill_price is None:
+            counters["live_maker_fills_without_matching_quote"] += 1
+            unmatched.append({"order_id": fill_order_id, "reason": "missing_required_fill_fields"})
+            continue
+
+        fill_session = event_session_key(fill)
+        fill_symbol = normalized_symbol(event_symbol(fill))
+        matched_quote = None
+        for quote in accepted_quotes:
+            if fill_session is not None and quote["session"] is not None and fill_session != quote["session"]:
+                continue
+            if fill_symbol is not None and quote["symbol"] is not None and fill_symbol != quote["symbol"]:
+                continue
+            if quote["side"] != fill_side:
+                continue
+            age_seconds = (fill_ts - quote["ts"]).total_seconds()
+            if age_seconds < 0 or age_seconds > float(max_quote_to_fill_seconds):
+                continue
+            if abs(float(fill_price) - float(quote["price"])) > float(price_tolerance):
+                continue
+            matched_quote = quote
+            break
+        if matched_quote is None:
+            counters["live_maker_fills_without_matching_quote"] += 1
+            unmatched.append(
+                {
+                    "order_id": fill_order_id,
+                    "session_id": fill_session,
+                    "symbol": fill_symbol,
+                    "quote_side": fill_side,
+                    "price": fill_price,
+                }
+            )
+        else:
+            matched += 1
+
+    return {
+        "live_maker_fills": len(fills),
+        "accepted_live_quotes_with_match_fields": len(accepted_quotes),
+        "matched_live_maker_fills": matched,
+        "failures": {key: value for key, value in counters.items() if value},
+        "unmatched": unmatched[:50],
+        "max_quote_to_fill_seconds": float(max_quote_to_fill_seconds),
+        "price_tolerance": float(price_tolerance),
+    }
+
+
 def error_event_counts(events: list[dict[str, Any]]) -> dict[str, int]:
     error_names = {
         "param_update_failed",
@@ -363,7 +490,7 @@ def health_failures(
         for event in health
         if bool_value(event.get("trading_enabled")) is True and bool_value(event.get("dry_run")) is False
     ]
-    symbols = {symbol for symbol in (event_symbol(event) for event in events) if symbol}
+    symbols = {symbol for symbol in (normalized_symbol(event_symbol(event)) for event in events) if symbol}
     stakes = [finite_float(event.get("stake_amount")) for event in live_health]
     stakes = [stake for stake in stakes if stake is not None]
     daily_loss_limits = [finite_float(event.get("max_daily_loss_usdc")) for event in live_health]
@@ -406,6 +533,8 @@ def build_live_canary_report(
     manual_monitoring_ack: bool = False,
     max_dependency_report_age_seconds: float = 86_400.0,
     max_canary_event_age_seconds: float = 604_800.0,
+    max_quote_to_fill_seconds: float = 900.0,
+    fill_match_price_tolerance: float = 1e-8,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
@@ -484,6 +613,13 @@ def build_live_canary_report(
     quote_failures = accepted_quote_failures(events)
     reasons.extend(f"{key}:{value}" for key, value in sorted(quote_failures.items()))
 
+    fill_reconciliation = live_maker_fill_reconciliation(
+        events,
+        max_quote_to_fill_seconds=float(max_quote_to_fill_seconds),
+        price_tolerance=float(fill_match_price_tolerance),
+    )
+    reasons.extend(f"{key}:{value}" for key, value in sorted(fill_reconciliation["failures"].items()))
+
     error_counts = error_event_counts(events)
     reasons.extend(f"{key}:{value}" for key, value in sorted(error_counts.items()))
 
@@ -509,6 +645,8 @@ def build_live_canary_report(
             "manual_monitoring_ack": bool(manual_monitoring_ack),
             "max_dependency_report_age_seconds": float(max_dependency_report_age_seconds),
             "max_canary_event_age_seconds": float(max_canary_event_age_seconds),
+            "max_quote_to_fill_seconds": float(max_quote_to_fill_seconds),
+            "fill_match_price_tolerance": float(fill_match_price_tolerance),
         },
         "dependencies": dependencies,
         "event_count": len(events),
@@ -522,6 +660,7 @@ def build_live_canary_report(
             "unknown_liquidity": len(unknown_fill_liquidity),
         },
         "quote_failures": quote_failures,
+        "fill_reconciliation": fill_reconciliation,
         "health_failures": health_issues,
         "error_events": error_counts,
         "kill_switches": [
@@ -549,6 +688,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-daily-loss-usdc", type=float, default=20.0)
     parser.add_argument("--max-dependency-report-age-seconds", type=float, default=86_400.0)
     parser.add_argument("--max-canary-event-age-seconds", type=float, default=604_800.0)
+    parser.add_argument("--max-quote-to-fill-seconds", type=float, default=900.0)
+    parser.add_argument("--fill-match-price-tolerance", type=float, default=1e-8)
     parser.add_argument(
         "--manual-monitoring-ack",
         action="store_true",
@@ -573,6 +714,8 @@ def main() -> int:
         manual_monitoring_ack=bool(args.manual_monitoring_ack),
         max_dependency_report_age_seconds=float(args.max_dependency_report_age_seconds),
         max_canary_event_age_seconds=float(args.max_canary_event_age_seconds),
+        max_quote_to_fill_seconds=float(args.max_quote_to_fill_seconds),
+        fill_match_price_tolerance=float(args.fill_match_price_tolerance),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

@@ -41,6 +41,9 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
             "event": "quote_decision",
             "ts": iso(start + timedelta(seconds=10)),
             "decision": "accept",
+            "pair": "ETH/USDC:USDC",
+            "side": "bid",
+            "rounded_price": 100.0,
             "trading_enabled": True,
             "dry_run": False,
             "params_fresh": True,
@@ -54,9 +57,14 @@ def canary_session(session_id: str, start: datetime, *, minutes: int = 2) -> lis
         {
             "event": "fill",
             "ts": iso(start + timedelta(seconds=20)),
+            "pair": "ETH/USDC:USDC",
             "trading_enabled": True,
             "dry_run": False,
             "liquidity": "maker",
+            "order_id": f"{session_id}-order",
+            "quote_side": "bid",
+            "price": 100.0,
+            "amount": 0.01,
             "actual_fee_rate": 0.00015,
             **common,
         },
@@ -98,6 +106,7 @@ def test_live_canary_report_passes_when_all_evidence_is_present():
     assert report["eligible_sessions"] == 3
     assert report["fills"]["maker"] == 3
     assert report["fills"]["taker"] == 0
+    assert report["fill_reconciliation"]["matched_live_maker_fills"] == 3
 
 
 def test_live_canary_report_requires_prior_gates_and_sessions():
@@ -255,6 +264,50 @@ def test_live_canary_report_rejects_non_live_quote_and_fill_evidence():
     assert "insufficient_canary_sessions:0<min_1" in report["reasons"]
     assert report["sessions"][0]["live_accepted_quotes"] == 0
     assert report["sessions"][0]["live_maker_fills"] == 0
+
+
+def test_live_canary_report_rejects_live_maker_fill_without_matching_quote():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events[2]["price"] = 99.5
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "live_maker_fills_without_matching_quote:1" in report["reasons"]
+    assert report["fill_reconciliation"]["matched_live_maker_fills"] == 0
+
+
+def test_live_canary_report_rejects_live_maker_fill_without_order_id():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    now = start + timedelta(hours=1)
+    events = canary_session("s1", start, minutes=2)
+    events[2].pop("order_id")
+
+    report = build_live_canary_report(
+        events,
+        post_only_report=ok_report(now),
+        fee_report=ok_report(now),
+        replay_report=ok_report(now),
+        min_sessions=1,
+        min_session_minutes=1,
+        manual_monitoring_ack=True,
+        now=now,
+    )
+
+    assert report["ok"] is False
+    assert "live_maker_fills_missing_order_id:1" in report["reasons"]
+    assert report["fill_reconciliation"]["matched_live_maker_fills"] == 1
 
 
 def test_live_canary_report_rejects_param_or_hjb_errors():
