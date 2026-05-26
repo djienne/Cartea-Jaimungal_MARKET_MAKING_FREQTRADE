@@ -85,6 +85,14 @@ def fee_rate_matches(expected: float | None, observed: float | None, tolerance: 
     return abs(float(expected) - float(observed)) <= float(tolerance)
 
 
+def first_finite_float(payload: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = finite_float(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
 def normalized_text(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
@@ -215,6 +223,10 @@ def build_fee_evidence_report(
     maker_fill_tif_invalid = 0
     maker_fill_expected_fee_invalid = 0
     maker_fill_actual_fee_paid_missing = 0
+    maker_fill_actual_fee_paid_invalid = 0
+    maker_fill_price_invalid = 0
+    maker_fill_amount_invalid = 0
+    maker_fill_actual_fee_paid_mismatch = 0
 
     for fill in maker_fills:
         quote_side = normalized_text(fill.get("quote_side"))
@@ -234,10 +246,34 @@ def build_fee_evidence_report(
         actual_fee_paid = finite_float(fill.get("actual_fee_paid"))
         if actual_fee_paid is None:
             maker_fill_actual_fee_paid_missing += 1
+        elif actual_fee_paid < 0:
+            maker_fill_actual_fee_paid_invalid += 1
+
+        fill_price = first_finite_float(fill, ("price", "fill_price", "rate"))
+        fill_amount = first_finite_float(fill, ("amount", "filled", "fill_size", "size"))
+        if fill_price is None or fill_price <= 0:
+            maker_fill_price_invalid += 1
+        if fill_amount is None or fill_amount <= 0:
+            maker_fill_amount_invalid += 1
 
         actual_fee_rate = finite_float(fill.get("actual_fee_rate"))
         if actual_fee_rate is None:
             continue
+
+        if actual_fee_paid is not None and fill_price is not None and fill_amount is not None:
+            expected_paid = abs(float(fill_price) * float(fill_amount) * float(actual_fee_rate))
+            paid_tolerance = max(float(tolerance), expected_paid * 1e-6)
+            if abs(float(actual_fee_paid) - expected_paid) > paid_tolerance:
+                maker_fill_actual_fee_paid_mismatch += 1
+                mismatches.append(
+                    {
+                        "field": "actual_maker_fill_fee_paid",
+                        "observed": actual_fee_paid,
+                        "expected": expected_paid,
+                        "order_id": fill.get("order_id"),
+                    }
+                )
+
         maker_actual_fee_observed += 1
         age_ok, age_reason, age_seconds = evidence_age_status(
             fill,
@@ -302,6 +338,14 @@ def build_fee_evidence_report(
         reasons.append(f"maker_fill_expected_fee_invalid:{maker_fill_expected_fee_invalid}")
     if maker_fill_actual_fee_paid_missing:
         reasons.append(f"maker_fill_actual_fee_paid_missing:{maker_fill_actual_fee_paid_missing}")
+    if maker_fill_actual_fee_paid_invalid:
+        reasons.append(f"maker_fill_actual_fee_paid_invalid:{maker_fill_actual_fee_paid_invalid}")
+    if maker_fill_price_invalid:
+        reasons.append(f"maker_fill_price_invalid:{maker_fill_price_invalid}")
+    if maker_fill_amount_invalid:
+        reasons.append(f"maker_fill_amount_invalid:{maker_fill_amount_invalid}")
+    if maker_fill_actual_fee_paid_mismatch:
+        reasons.append(f"maker_fill_actual_fee_paid_mismatch:{maker_fill_actual_fee_paid_mismatch}")
     if any(item.get("field") in {"config_fee_rate", "exchange_maker_fee_rate"} for item in mismatches):
         reasons.append("fee_snapshot_mismatch")
 
@@ -342,6 +386,10 @@ def build_fee_evidence_report(
             "maker_fill_tif_invalid": maker_fill_tif_invalid,
             "maker_fill_expected_fee_invalid": maker_fill_expected_fee_invalid,
             "maker_fill_actual_fee_paid_missing": maker_fill_actual_fee_paid_missing,
+            "maker_fill_actual_fee_paid_invalid": maker_fill_actual_fee_paid_invalid,
+            "maker_fill_price_invalid": maker_fill_price_invalid,
+            "maker_fill_amount_invalid": maker_fill_amount_invalid,
+            "maker_fill_actual_fee_paid_mismatch": maker_fill_actual_fee_paid_mismatch,
             "min_maker_fills": int(min_maker_fills),
         },
         "mismatches": mismatches[:50],

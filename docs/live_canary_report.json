@@ -12,9 +12,9 @@
   },
   "dependencies": {
     "fee": {
-      "age_seconds": 21.837831,
+      "age_seconds": 20.753758,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T08:34:19Z",
+      "generated_at": "2026-05-26T08:47:45Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -27,9 +27,9 @@
       "report_ok": false
     },
     "post_only": {
-      "age_seconds": 569.837831,
+      "age_seconds": 566.753758,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T08:25:11Z",
+      "generated_at": "2026-05-26T08:38:39Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -41,23 +41,23 @@
       "report_ok": false
     },
     "replay": {
-      "age_seconds": 0.837831,
+      "age_seconds": 0.753758,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T08:34:40Z",
+      "generated_at": "2026-05-26T08:48:05Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
-        "baseline:insufficient_coverage_days:0.005392<min_3.000000",
+        "baseline:insufficient_coverage_days:0.005691<min_3.000000",
         "baseline:no_maker_fills",
-        "fee_2x:insufficient_coverage_days:0.005392<min_3.000000",
+        "fee_2x:insufficient_coverage_days:0.005691<min_3.000000",
         "fee_2x:no_maker_fills",
-        "latency_2x:insufficient_coverage_days:0.005392<min_3.000000",
+        "latency_2x:insufficient_coverage_days:0.005691<min_3.000000",
         "latency_2x:no_maker_fills",
-        "params_soft:insufficient_coverage_days:0.005392<min_3.000000",
+        "params_soft:insufficient_coverage_days:0.005691<min_3.000000",
         "params_soft:no_maker_fills",
-        "params_hard:insufficient_coverage_days:0.005392<min_3.000000",
+        "params_hard:insufficient_coverage_days:0.005691<min_3.000000",
         "params_hard:no_maker_fills"
       ],
       "report_ok": false
@@ -68,10 +68,10 @@
     "param_update_failed": 9,
     "param_update_rejected": 6
   },
-  "event_count": 2431,
+  "event_count": 2464,
   "event_freshness": {
-    "fresh": 2431,
-    "max_age_seconds": 67546.107831,
+    "fresh": 2464,
+    "max_age_seconds": 68351.023758,
     "max_allowed_age_seconds": 604800.0,
     "stale": 0,
     "timestamp_missing": 0
@@ -82,7 +82,7 @@
     "taker": 0,
     "unknown_liquidity": 12
   },
-  "generated_at": "2026-05-26T08:34:40Z",
+  "generated_at": "2026-05-26T08:48:05Z",
   "health_failures": {
     "no_live_health_events": true,
     "too_many_symbols": [
@@ -94,9 +94,9 @@
   "ok": false,
   "quote_failures": {
     "accepted_quote_missing_fee_agreement": 101,
-    "accepted_quote_not_live_enabled": 336,
-    "accepted_quote_not_post_only": 336,
-    "accepted_quote_post_only_unverified": 336,
+    "accepted_quote_not_live_enabled": 341,
+    "accepted_quote_not_post_only": 341,
+    "accepted_quote_post_only_unverified": 341,
     "accepted_quote_stale_collector": 10,
     "accepted_quote_stale_orderbook": 10,
     "accepted_quote_stale_params": 10
@@ -110,9 +110,9 @@
     "unknown_fill_liquidity:12",
     "fill_not_live_enabled:12",
     "accepted_quote_missing_fee_agreement:101",
-    "accepted_quote_not_live_enabled:336",
-    "accepted_quote_not_post_only:336",
-    "accepted_quote_post_only_unverified:336",
+    "accepted_quote_not_live_enabled:341",
+    "accepted_quote_not_post_only:341",
+    "accepted_quote_post_only_unverified:341",
     "accepted_quote_stale_collector:10",
     "accepted_quote_stale_orderbook:10",
     "accepted_quote_stale_params:10",
@@ -123,17 +123,17 @@
   ],
   "sessions": [
     {
-      "accepted_quotes": 336,
-      "duration_minutes": 1124.8544833333333,
-      "end_ts": "2026-05-26T08:33:45.999000Z",
-      "events": 2431,
-      "health_events": 379,
+      "accepted_quotes": 341,
+      "duration_minutes": 1138.4076,
+      "end_ts": "2026-05-26T08:47:19.186000Z",
+      "events": 2464,
+      "health_events": 384,
       "kill_switches": 0,
       "live_accepted_quotes": 0,
       "live_health_events": 0,
       "live_maker_fills": 0,
       "maker_fills": 0,
-      "quote_decisions": 336,
+      "quote_decisions": 341,
       "session_id": "implicit-1",
       "start_ts": "2026-05-25T13:48:54.730000Z",
       "taker_fills": 0

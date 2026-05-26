@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 219 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 220 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -134,9 +134,11 @@ Generated from the current local worktree after the latest safety-gate run.
   maker-fee evidence, and at least one maker fill with an actual fee rate that
   matches the configured maker fee. Maker-fill proof must also include quote
   side, limit order type, post-only/Alo TIF, expected fee rate, and actual fee
-  paid. The underlying fee snapshot and actual maker-fill fee records must
-  also have fresh event timestamps, so stale logs cannot satisfy the gate by
-  regenerating a new report. The same
+  paid. The checker now also requires fill price and amount, and reconciles
+  `actual_fee_paid` against `price * amount * actual_fee_rate`. The underlying
+  fee snapshot and actual maker-fill fee records must also have fresh event
+  timestamps, so stale logs cannot satisfy the gate by regenerating a new
+  report. The same
   `--audit-log-input` runner option feeds this report, so promotion evidence can
   come from retained testnet/tiny integration logs. The current report can be
   `ok=false` until testnet/tiny integration supplies real account fee and

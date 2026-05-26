@@ -51,6 +51,8 @@ def maker_fill_event(**overrides):
         "expected_fee_rate": 0.00015,
         "actual_fee_paid": 0.015,
         "actual_fee_rate": 0.00015,
+        "price": 10000.0,
+        "amount": 0.01,
         "order_id": "maker-1",
     }
     event.update(overrides)
@@ -171,6 +173,23 @@ def test_fee_evidence_requires_fill_accounting_fields():
     assert "maker_fill_tif_invalid:1" in report["reasons"]
     assert "maker_fill_expected_fee_invalid:1" in report["reasons"]
     assert "maker_fill_actual_fee_paid_missing:1" in report["reasons"]
+    assert "maker_fill_price_invalid:1" in report["reasons"]
+    assert "maker_fill_amount_invalid:1" in report["reasons"]
+
+
+def test_fee_evidence_reconciles_actual_fee_paid_to_notional_and_rate():
+    report = build_fee_evidence_report(
+        [
+            fee_snapshot_event(),
+            maker_fill_event(actual_fee_paid=0.001, order_id="bad-paid-fee"),
+        ]
+    )
+
+    assert report["ok"] is False
+    assert "maker_fill_actual_fee_paid_mismatch:1" in report["reasons"]
+    assert report["fills"]["maker_fill_actual_fee_paid_mismatch"] == 1
+    assert report["mismatches"][0]["field"] == "actual_maker_fill_fee_paid"
+    assert report["mismatches"][0]["expected"] == 0.015
 
 
 def test_read_jsonl_events_skips_invalid_lines(tmp_path):
