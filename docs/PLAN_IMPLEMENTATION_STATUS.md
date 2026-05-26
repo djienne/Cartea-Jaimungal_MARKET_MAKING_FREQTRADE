@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 254 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 258 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -204,9 +204,12 @@ Generated from the current local worktree after the latest safety-gate run.
   `--manual-monitoring-ack` flag after actual monitored canary sessions. It
   also requires the audit log to contain a fresh `manual_monitoring_ack` or
   `canary_manual_monitoring_ack` event with `acknowledged=true`; the CLI flag
-  alone is not enough to satisfy the gate. The runner accepts
-  `--audit-log-input` so retained canary logs can be evaluated by the same full
-  gate runner. Accepted quote and fill evidence must now carry
+  alone is not enough to satisfy the gate.
+  `scripts/record_manual_monitoring_ack.py` appends that event to a retained
+  JSONL audit log and refuses to write it unless `--acknowledge-risk` is passed.
+  The runner accepts `--audit-log-input` so retained canary logs can be
+  evaluated by the same full gate runner. Accepted quote and fill evidence must
+  now carry
   `trading_enabled=true` and `dry_run=false`, so live health events cannot be
   combined with unrelated research/dry-run quotes to satisfy canary session
   eligibility. Live maker fills must carry an order id plus side/price/amount

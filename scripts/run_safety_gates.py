@@ -317,6 +317,7 @@ def local_gates(
                 "tests/test_config_safety.py",
                 "tests/test_fee_evidence.py",
                 "tests/test_live_canary.py",
+                "tests/test_manual_monitoring_ack.py",
                 "tests/test_plan_status.py",
                 "tests/test_strategy_guards.py",
                 "tests/test_strategy_safety.py",

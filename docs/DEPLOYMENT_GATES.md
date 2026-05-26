@@ -291,6 +291,12 @@ python scripts/run_safety_gates.py --include-runtime --audit-log-input docs/live
   not reconcile to a prior accepted order attempt, parameter/HJB/collector
   error events, excessive stake, excessive symbols, missing live health, and
   missing or stale manual-monitoring acknowledgement evidence in the audit log.
+  Record the required acknowledgement event with:
+
+```bash
+python scripts/record_manual_monitoring_ack.py --output user_data/logs/mm_debug.jsonl --session-id <CANARY_SESSION_ID> --operator <NAME> --acknowledge-risk
+```
+
   The default dependency-report age is 86400 seconds, and the default live
   canary event age is 604800 seconds; tighten those windows with
   `--max-dependency-report-age-seconds` and `--max-canary-event-age-seconds`
