@@ -24,6 +24,7 @@ DEFAULT_AUDIT_LOG_INPUT = Path("user_data/logs/mm_debug.jsonl")
 DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY = 1_000.0
 DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS = 300.0
 DEFAULT_REPORT_MAX_AGE_SECONDS = 86_400.0
+DEFAULT_LIVE_CANARY_MAX_EVENT_AGE_SECONDS = 604_800.0
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 
@@ -138,12 +139,15 @@ def post_only_evidence_command(
     crossing_result: Path | None = None,
     passive_result: Path | None = None,
     use_default_artifacts: bool = True,
+    max_evidence_age_seconds: float = DEFAULT_REPORT_MAX_AGE_SECONDS,
 ) -> list[str]:
     command = [
         py,
         "scripts/verify_post_only_mapping.py",
         "--mode",
         "evaluate-evidence",
+        "--max-evidence-age-seconds",
+        str(float(max_evidence_age_seconds)),
         "--output",
         "docs/post_only_evidence_report.json",
     ]
@@ -178,12 +182,15 @@ def fee_evidence_command(
     py: str,
     *,
     audit_log_input: Path = DEFAULT_AUDIT_LOG_INPUT,
+    max_evidence_age_seconds: float = DEFAULT_REPORT_MAX_AGE_SECONDS,
 ) -> list[str]:
     return [
         py,
         "scripts/verify_fee_evidence.py",
         "--input",
         str(audit_log_input),
+        "--max-evidence-age-seconds",
+        str(float(max_evidence_age_seconds)),
         "--output",
         "docs/fee_evidence_report.json",
     ]
@@ -205,12 +212,18 @@ def live_canary_evidence_command(
     *,
     audit_log_input: Path = DEFAULT_AUDIT_LOG_INPUT,
     manual_monitoring_ack: bool = False,
+    max_dependency_report_age_seconds: float = DEFAULT_REPORT_MAX_AGE_SECONDS,
+    max_canary_event_age_seconds: float = DEFAULT_LIVE_CANARY_MAX_EVENT_AGE_SECONDS,
 ) -> list[str]:
     command = [
         py,
         "scripts/verify_live_canary.py",
         "--input",
         str(audit_log_input),
+        "--max-dependency-report-age-seconds",
+        str(float(max_dependency_report_age_seconds)),
+        "--max-canary-event-age-seconds",
+        str(float(max_canary_event_age_seconds)),
         "--output",
         "docs/live_canary_report.json",
     ]
@@ -279,6 +292,8 @@ def local_gates(
     post_only_crossing_result: Path | None = None,
     post_only_passive_result: Path | None = None,
     use_default_post_only_artifacts: bool = True,
+    max_evidence_age_seconds: float = DEFAULT_REPORT_MAX_AGE_SECONDS,
+    max_canary_event_age_seconds: float = DEFAULT_LIVE_CANARY_MAX_EVENT_AGE_SECONDS,
     replay_acceptance_symbol: str = "ETH",
     replay_acceptance_mid: float = 2116.95,
     replay_acceptance_newest_per_stream: int | None = 25,
@@ -394,6 +409,7 @@ def local_gates(
                 crossing_result=post_only_crossing_result,
                 passive_result=post_only_passive_result,
                 use_default_artifacts=use_default_post_only_artifacts,
+                max_evidence_age_seconds=max_evidence_age_seconds,
             ),
             [0, 1],
         ),
@@ -477,6 +493,7 @@ def local_gates(
                     fee_evidence_command(
                         sys.executable,
                         audit_log_input=audit_log_input,
+                        max_evidence_age_seconds=max_evidence_age_seconds,
                     ),
                     [0, 1],
                 ),
@@ -543,6 +560,8 @@ def local_gates(
                         sys.executable,
                         audit_log_input=audit_log_input,
                         manual_monitoring_ack=manual_monitoring_ack,
+                        max_dependency_report_age_seconds=max_evidence_age_seconds,
+                        max_canary_event_age_seconds=max_canary_event_age_seconds,
                     ),
                     [0, 1],
                 ),
@@ -556,6 +575,8 @@ def local_gates(
                     py,
                     audit_log_input=audit_log_input,
                     manual_monitoring_ack=manual_monitoring_ack,
+                    max_dependency_report_age_seconds=max_evidence_age_seconds,
+                    max_canary_event_age_seconds=max_canary_event_age_seconds,
                 ),
                 [0, 1],
             )
@@ -563,7 +584,11 @@ def local_gates(
     return gates
 
 
-def manual_gate_specs(*, include_runtime: bool = False) -> list[ManualGateSpec]:
+def manual_gate_specs(
+    *,
+    include_runtime: bool = False,
+    max_report_age_seconds: float = DEFAULT_REPORT_MAX_AGE_SECONDS,
+) -> list[ManualGateSpec]:
     gates = [
         ManualGateSpec(
             name="hyperliquid_post_only_mapping",
@@ -572,21 +597,25 @@ def manual_gate_specs(*, include_runtime: bool = False) -> list[ManualGateSpec]:
                 "Hyperliquid Alo or the direct SDK Alo fallback submits native post-only orders safely."
             ),
             report_path="docs/post_only_evidence_report.json",
+            max_age_seconds=max_report_age_seconds,
         ),
         ManualGateSpec(
             name="multi_day_event_replay",
             reason="Requires several days of fresh HL_data and review of markout/latency/fee sensitivity.",
             report_path="docs/replay_acceptance_report.json",
+            max_age_seconds=max_report_age_seconds,
         ),
         ManualGateSpec(
             name="hyperliquid_fee_tier",
             reason="Requires exchange/account maker-fee evidence and actual maker fill fee rates.",
             report_path="docs/fee_evidence_report.json",
+            max_age_seconds=max_report_age_seconds,
         ),
         ManualGateSpec(
             name="live_canary",
             reason="Requires docs/live_canary_report.json to pass after several tiny live sessions with post-only, fee, replay, zero-taker, freshness, and kill-switch evidence.",
             report_path="docs/live_canary_report.json",
+            max_age_seconds=max_report_age_seconds,
         ),
     ]
     if not include_runtime:
@@ -611,9 +640,13 @@ def manual_gate_specs(*, include_runtime: bool = False) -> list[ManualGateSpec]:
     return gates
 
 
-def manual_gate_statuses(*, include_runtime: bool = False) -> list[dict[str, object]]:
+def manual_gate_statuses(
+    *,
+    include_runtime: bool = False,
+    max_report_age_seconds: float = DEFAULT_REPORT_MAX_AGE_SECONDS,
+) -> list[dict[str, object]]:
     statuses: list[dict[str, object]] = []
-    for spec in manual_gate_specs(include_runtime=include_runtime):
+    for spec in manual_gate_specs(include_runtime=include_runtime, max_report_age_seconds=max_report_age_seconds):
         passed = False
         status_reason = "no_machine_check"
         report_reasons: list[str] = []
@@ -657,8 +690,12 @@ def manual_gate_statuses(*, include_runtime: bool = False) -> list[dict[str, obj
     return statuses
 
 
-def manual_gates(*, include_runtime: bool = False) -> list[dict[str, object]]:
-    return manual_gate_statuses(include_runtime=include_runtime)
+def manual_gates(
+    *,
+    include_runtime: bool = False,
+    max_report_age_seconds: float = DEFAULT_REPORT_MAX_AGE_SECONDS,
+) -> list[dict[str, object]]:
+    return manual_gate_statuses(include_runtime=include_runtime, max_report_age_seconds=max_report_age_seconds)
 
 
 def plan_status_audit_command(gates_path: Path, output_path: Path) -> list[str]:
@@ -754,6 +791,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--max-evidence-age-seconds",
+        type=float,
+        default=DEFAULT_REPORT_MAX_AGE_SECONDS,
+        help=(
+            "Maximum age for external evidence reports and underlying post-only/fee/dependency "
+            "evidence consumed by the gate runner. Defaults to 86400 seconds."
+        ),
+    )
+    parser.add_argument(
+        "--max-canary-event-age-seconds",
+        type=float,
+        default=DEFAULT_LIVE_CANARY_MAX_EVENT_AGE_SECONDS,
+        help="Maximum age for live-canary audit events. Defaults to 604800 seconds.",
+    )
+    parser.add_argument(
         "--post-only-crossing-result",
         type=Path,
         default=None,
@@ -826,6 +878,8 @@ def main() -> int:
             manual_monitoring_ack=args.manual_monitoring_ack,
             post_only_crossing_result=args.post_only_crossing_result,
             post_only_passive_result=args.post_only_passive_result,
+            max_evidence_age_seconds=args.max_evidence_age_seconds,
+            max_canary_event_age_seconds=args.max_canary_event_age_seconds,
             replay_acceptance_symbol=args.replay_acceptance_symbol,
             replay_acceptance_mid=args.replay_acceptance_mid,
             replay_acceptance_newest_per_stream=args.replay_acceptance_newest_per_stream,
@@ -835,7 +889,10 @@ def main() -> int:
             replay_acceptance_allow_incomplete=not args.replay_acceptance_require_pass,
         )
     ]
-    manual_gate_list = manual_gates(include_runtime=args.include_runtime)
+    manual_gate_list = manual_gates(
+        include_runtime=args.include_runtime,
+        max_report_age_seconds=float(args.max_evidence_age_seconds),
+    )
     deployment_blockers = [str(gate["name"]) for gate in manual_gate_list if gate.get("passed") is not True]
     all_local_passed = all(result.passed for result in results)
     payload = {
@@ -850,6 +907,10 @@ def main() -> int:
         "runtime_gates_included": bool(args.include_runtime),
         "audit_log_input": str(args.audit_log_input),
         "manual_monitoring_ack": bool(args.manual_monitoring_ack),
+        "evidence_freshness": {
+            "max_evidence_age_seconds": float(args.max_evidence_age_seconds),
+            "max_canary_event_age_seconds": float(args.max_canary_event_age_seconds),
+        },
         "post_only_crossing_result": str(args.post_only_crossing_result)
         if args.post_only_crossing_result
         else None,

@@ -34,6 +34,8 @@ def gate_command(
     post_only_crossing_result: Path | None = None,
     post_only_passive_result: Path | None = None,
     use_default_post_only_artifacts: bool = False,
+    max_evidence_age_seconds: float = 86_400.0,
+    max_canary_event_age_seconds: float = 604_800.0,
     replay_acceptance_newest_per_stream: int | None = 25,
     replay_acceptance_max_price_events: int | None = 2000,
     replay_acceptance_min_price_events_per_day: float = 1000.0,
@@ -47,6 +49,8 @@ def gate_command(
         post_only_crossing_result=post_only_crossing_result,
         post_only_passive_result=post_only_passive_result,
         use_default_post_only_artifacts=use_default_post_only_artifacts,
+        max_evidence_age_seconds=max_evidence_age_seconds,
+        max_canary_event_age_seconds=max_canary_event_age_seconds,
         replay_acceptance_newest_per_stream=replay_acceptance_newest_per_stream,
         replay_acceptance_max_price_events=replay_acceptance_max_price_events,
         replay_acceptance_min_price_events_per_day=replay_acceptance_min_price_events_per_day,
@@ -92,6 +96,17 @@ def test_post_only_gate_can_pass_external_evidence_artifacts():
     assert "docs/post_only_crossing_result.json" in normalized
     assert "--passive-result" in command
     assert "docs/post_only_passive_result.json" in normalized
+
+
+def test_post_only_gate_passes_evidence_age_window_to_checker():
+    command = gate_command(
+        "post_only_evidence_report",
+        include_runtime=True,
+        max_evidence_age_seconds=3600.0,
+    )
+
+    assert "--max-evidence-age-seconds" in command
+    assert command[command.index("--max-evidence-age-seconds") + 1] == "3600.0"
 
 
 def test_post_only_gate_keeps_incomplete_artifact_check_when_no_evidence_is_supplied():
@@ -142,6 +157,23 @@ def test_runtime_log_artifact_gates_can_use_external_audit_log_input():
 
         assert "--input" in command
         assert "docs/testnet_mm_debug.jsonl" in normalized
+
+
+def test_runtime_evidence_age_windows_are_passed_to_fee_and_canary_checks():
+    fee_command = gate_command("fee_evidence_report", include_runtime=True, max_evidence_age_seconds=1800.0)
+    canary_command = gate_command(
+        "live_canary_evidence_report",
+        include_runtime=True,
+        max_evidence_age_seconds=1800.0,
+        max_canary_event_age_seconds=7200.0,
+    )
+
+    assert "--max-evidence-age-seconds" in fee_command
+    assert fee_command[fee_command.index("--max-evidence-age-seconds") + 1] == "1800.0"
+    assert "--max-dependency-report-age-seconds" in canary_command
+    assert canary_command[canary_command.index("--max-dependency-report-age-seconds") + 1] == "1800.0"
+    assert "--max-canary-event-age-seconds" in canary_command
+    assert canary_command[canary_command.index("--max-canary-event-age-seconds") + 1] == "7200.0"
 
 
 def test_fee_capture_plan_gate_is_read_only_plan_mode():
@@ -202,6 +234,26 @@ def test_manual_gate_status_rejects_stale_ok_reports(tmp_path, monkeypatch):
     assert all(status["passed"] is False for status in statuses)
     assert all(str(status["freshness_reason"]).startswith("report_stale:") for status in statuses)
     assert all(str(status["freshness_reason"]).endswith(">max_86400.0s") for status in statuses)
+
+
+def test_manual_gate_status_uses_custom_report_age_window(tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    report = {"ok": True, "generated_at": "2000-01-01T00:00:00Z", "reasons": []}
+    for name in (
+        "post_only_evidence_report.json",
+        "replay_acceptance_report.json",
+        "fee_evidence_report.json",
+        "live_canary_report.json",
+    ):
+        (docs / name).write_text(json.dumps(report), encoding="utf-8")
+    monkeypatch.setattr(run_safety_gates, "ROOT", tmp_path)
+
+    statuses = manual_gate_statuses(include_runtime=True, max_report_age_seconds=60.0)
+
+    assert all(status["passed"] is False for status in statuses)
+    assert all(str(status["freshness_reason"]).startswith("report_stale:") for status in statuses)
+    assert all(str(status["freshness_reason"]).endswith(">max_60.0s") for status in statuses)
 
 
 def test_post_only_manual_gate_reason_mentions_direct_sdk_fallback():

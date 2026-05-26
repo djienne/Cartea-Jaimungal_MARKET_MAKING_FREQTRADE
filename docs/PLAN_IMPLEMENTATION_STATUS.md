@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 247 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 250 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -213,6 +213,12 @@ Generated from the current local worktree after the latest safety-gate run.
   that ID as authoritative and will not accept a same-price fill linked to a
   different quote decision or order attempt. The current report is expected to
   be `ok=false` until Gates 4-5 pass and real canary sessions are supplied.
+- Promotion evidence freshness controls:
+  `scripts/run_safety_gates.py` now exposes `--max-evidence-age-seconds` for
+  external report freshness plus post-only/fee/dependency evidence age, and
+  `--max-canary-event-age-seconds` for live canary audit events. This allows a
+  single promotion gate run to require fresher external proof than the default
+  86400-second report/evidence window.
 - Strategy-level deployment gate enforcement:
   non-dry-run `trading_enabled=true` now requires a declared
   `market_making.deployment_stage`. `canary` mode requires post-only, fee, and

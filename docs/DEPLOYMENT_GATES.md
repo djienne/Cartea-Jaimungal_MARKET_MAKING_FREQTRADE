@@ -20,6 +20,13 @@ pass the log explicitly:
 python scripts/run_safety_gates.py --include-runtime --audit-log-input docs/testnet_mm_debug.jsonl --markdown-output docs/LAST_SAFETY_GATES.md
 ```
 
+Promotion runs can also tighten the accepted evidence window from the default
+86400 seconds:
+
+```bash
+python scripts/run_safety_gates.py --include-runtime --audit-log-input docs/testnet_mm_debug.jsonl --max-evidence-age-seconds 3600 --max-canary-event-age-seconds 86400 --markdown-output docs/LAST_SAFETY_GATES.md
+```
+
 Non-dry-run strategy enablement is also guarded at runtime. Setting
 `market_making.trading_enabled=true` in live mode is rejected unless
 `market_making.deployment_stage` is explicitly set:
@@ -63,9 +70,10 @@ These gates do not require a live exchange connection:
   check, not as exchange proof. The report must become `ok=true` before live
   trading can be considered. The crossing/passive submit artifacts must also
   carry fresh `generated_at` timestamps, so regenerating a fresh report from
-  stale exchange probes does not satisfy Gate 4. The safety runner accepts
-  explicit `--post-only-crossing-result` and `--post-only-passive-result`
-  artifact paths, and auto-detects `docs/post_only_crossing_result.json` plus
+  stale exchange probes does not satisfy Gate 4. The safety runner passes
+  `--max-evidence-age-seconds` through to the checker, accepts explicit
+  `--post-only-crossing-result` and `--post-only-passive-result` artifact paths,
+  and auto-detects `docs/post_only_crossing_result.json` plus
   `docs/post_only_passive_result.json` when those conventional files exist.
 - `direct_alo_adapter_plan`: writes `docs/direct_alo_adapter_plan.json`,
   documenting the no-network direct Hyperliquid SDK fallback path that submits
@@ -150,7 +158,8 @@ Optional Docker runtime gates:
   a report from stale fee-tier or fill logs does not satisfy the gate. It is
   expected to be `ok=false` until testnet/tiny integration produces real
   fee-tier and fill-fee evidence. Use `--audit-log-input` when those records are
-  in a retained integration log rather than the default debug log.
+  in a retained integration log rather than the default debug log, and
+  `--max-evidence-age-seconds` to tighten the accepted event/report age.
 - `live_canary_evidence_report`: parses the audit log and prior gate artifacts,
   then writes `docs/live_canary_report.json`. It is expected to be `ok=false`
   until post-only, fee-tier, and multi-day replay gates are already `ok=true`
@@ -163,7 +172,9 @@ Optional Docker runtime gates:
   live evidence. When `run_safety_gates.py --include-runtime` is used, this gate
   runs after fee and replay artifacts are regenerated so it evaluates the
   current dependency reports. Use `--audit-log-input` together with
-  `--manual-monitoring-ack` after actual monitored live-canary sessions.
+  `--manual-monitoring-ack` after actual monitored live-canary sessions, plus
+  `--max-evidence-age-seconds` to tighten dependency report freshness and
+  `--max-canary-event-age-seconds` to tighten canary audit event freshness.
 - `hl_data_validation_report`: reads the newest collector Parquet shards and
   validates required streams/columns plus the actual `timestamp` values inside
   the files. Freshness is based on row timestamps, not file modification time,
