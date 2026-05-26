@@ -36,6 +36,10 @@ These gates do not require a live exchange connection:
   `user_data/strategies`.
 - `pytest_core`: HJB math, strategy guard, parameter writer, and replay smoke
   tests.
+- `config_safety_report`: writes `docs/config_safety_report.json` and fails if
+  the checked-in config drifts away from Phase 0 safety defaults: dry-run on,
+  force-entry disabled, tiny fixed stake, capped tradable balance, aligned
+  maker fee, limit orders, and no checked-in market-making live enablement.
 - `compute_spreads_boundary_smoke`: verifies disabled HJB boundary sides render
   as disabled instead of finite quotes.
 - `replay_smoke`: verifies the replay CLI runs without candle-fill assumptions.

@@ -1,0 +1,36 @@
+{
+  "checks": {
+    "expected_fee": 0.00015,
+    "max_custom_price_distance_ratio": 0.05,
+    "max_stake_amount": 25.0,
+    "max_tradable_balance_ratio": 0.1
+  },
+  "config_path": "user_data\\config.json",
+  "generated_at": "2026-05-26T01:44:46Z",
+  "observed": {
+    "api_force_entry_enable": false,
+    "api_forcebuy_enable": false,
+    "custom_price_max_distance_ratio": 0.05,
+    "dry_run": true,
+    "fee": 0.00015,
+    "force_entry_enable": false,
+    "market_making": {
+      "deployment_stage": "research",
+      "post_only_verified": null,
+      "trading_enabled": null
+    },
+    "max_open_trades": 1,
+    "order_time_in_force": {
+      "entry": "GTC",
+      "exit": "GTC"
+    },
+    "order_types": {
+      "entry": "limit",
+      "exit": "limit"
+    },
+    "stake_amount": 25,
+    "tradable_balance_ratio": 0.1
+  },
+  "ok": true,
+  "reasons": []
+}

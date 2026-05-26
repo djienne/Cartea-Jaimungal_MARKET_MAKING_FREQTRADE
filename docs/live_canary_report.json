@@ -12,9 +12,9 @@
   },
   "dependencies": {
     "fee": {
-      "age_seconds": 23.479006,
+      "age_seconds": 21.982039,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T01:40:31Z",
+      "generated_at": "2026-05-26T01:53:56Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -27,9 +27,9 @@
       "report_ok": false
     },
     "post_only": {
-      "age_seconds": 571.479006,
+      "age_seconds": 568.982039,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T01:31:23Z",
+      "generated_at": "2026-05-26T01:44:49Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -41,23 +41,23 @@
       "report_ok": false
     },
     "replay": {
-      "age_seconds": 0.479006,
+      "age_seconds": 0.982039,
       "freshness_reason": "ok",
-      "generated_at": "2026-05-26T01:40:54Z",
+      "generated_at": "2026-05-26T01:54:17Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
       "ok": false,
       "reasons": [
-        "baseline:insufficient_coverage_days:0.002816<min_3.000000",
+        "baseline:insufficient_coverage_days:0.003365<min_3.000000",
         "baseline:no_maker_fills",
-        "fee_2x:insufficient_coverage_days:0.002816<min_3.000000",
+        "fee_2x:insufficient_coverage_days:0.003365<min_3.000000",
         "fee_2x:no_maker_fills",
-        "latency_2x:insufficient_coverage_days:0.002816<min_3.000000",
+        "latency_2x:insufficient_coverage_days:0.003365<min_3.000000",
         "latency_2x:no_maker_fills",
-        "params_soft:insufficient_coverage_days:0.002816<min_3.000000",
+        "params_soft:insufficient_coverage_days:0.003365<min_3.000000",
         "params_soft:no_maker_fills",
-        "params_hard:insufficient_coverage_days:0.002816<min_3.000000",
+        "params_hard:insufficient_coverage_days:0.003365<min_3.000000",
         "params_hard:no_maker_fills"
       ],
       "report_ok": false
@@ -68,10 +68,10 @@
     "param_update_failed": 9,
     "param_update_rejected": 6
   },
-  "event_count": 1446,
+  "event_count": 1479,
   "event_freshness": {
-    "fresh": 1446,
-    "max_age_seconds": 42719.749006,
+    "fresh": 1479,
+    "max_age_seconds": 43523.252039,
     "max_allowed_age_seconds": 604800.0,
     "stale": 0,
     "timestamp_missing": 0
@@ -82,7 +82,7 @@
     "taker": 0,
     "unknown_liquidity": 9
   },
-  "generated_at": "2026-05-26T01:40:54Z",
+  "generated_at": "2026-05-26T01:54:17Z",
   "health_failures": {
     "no_live_health_events": true
   },
@@ -90,8 +90,8 @@
   "ok": false,
   "quote_failures": {
     "accepted_quote_missing_fee_agreement": 101,
-    "accepted_quote_not_post_only": 195,
-    "accepted_quote_post_only_unverified": 195,
+    "accepted_quote_not_post_only": 200,
+    "accepted_quote_post_only_unverified": 200,
     "accepted_quote_stale_collector": 10,
     "accepted_quote_stale_orderbook": 10,
     "accepted_quote_stale_params": 10
@@ -104,8 +104,8 @@
     "insufficient_canary_sessions:0<min_3",
     "unknown_fill_liquidity:9",
     "accepted_quote_missing_fee_agreement:101",
-    "accepted_quote_not_post_only:195",
-    "accepted_quote_post_only_unverified:195",
+    "accepted_quote_not_post_only:200",
+    "accepted_quote_post_only_unverified:200",
     "accepted_quote_stale_collector:10",
     "accepted_quote_stale_orderbook:10",
     "accepted_quote_stale_params:10",
@@ -115,15 +115,15 @@
   ],
   "sessions": [
     {
-      "accepted_quotes": 195,
-      "duration_minutes": 711.0575,
-      "end_ts": "2026-05-26T01:39:58.180000Z",
-      "events": 1446,
-      "health_events": 232,
+      "accepted_quotes": 200,
+      "duration_minutes": 724.6046,
+      "end_ts": "2026-05-26T01:53:31.006000Z",
+      "events": 1479,
+      "health_events": 237,
       "kill_switches": 0,
       "live_health_events": 0,
       "maker_fills": 0,
-      "quote_decisions": 195,
+      "quote_decisions": 200,
       "session_id": "implicit-1",
       "start_ts": "2026-05-25T13:48:54.730000Z",
       "taker_fills": 0

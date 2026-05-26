@@ -8,6 +8,11 @@ Generated from the current local worktree after the latest safety-gate run.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
+- Checked-in config safety:
+  `scripts/verify_config_safety.py` writes `docs/config_safety_report.json` and
+  fails if the repository config reintroduces live mode, force-entry, unlimited
+  stake, oversized test exposure, fee mismatch, non-limit passive order types,
+  or checked-in market-making live enablement.
 - Post-only evidence harness:
   `scripts/verify_post_only_mapping.py` now writes a plan artifact and evaluates
   crossing/passive `Alo` submit artifacts. The current
