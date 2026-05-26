@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 190 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 192 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -101,9 +101,12 @@ Generated from the current local worktree after the latest safety-gate run.
   exposure, margin used, maintenance margin, equity, liquidation buffer, and
   maintenance-margin breach counts. The report also includes refusal checks
   proving bad parameters and stale collector data reject quoting, and fails any
-  replay variant that breaches maintenance margin. The current report correctly
-  fails because the local data window is much shorter than the required
-  multi-day coverage and has no maker fills.
+  replay variant that breaches maintenance margin. The safety-gate runner
+  defaults to a short capped replay artifact, but exposes replay acceptance
+  symbol, mid, shard cap, event cap, and require-pass knobs so a promotion run
+  can regenerate the same report from the full multi-day dataset. The current
+  report correctly fails because the local data window is much shorter than the
+  required multi-day coverage and has no maker fills.
 - Replay log calibration:
   `scripts/calibrate_replay_from_logs.py` reads JSONL quote/fill/markout audit
   logs and writes `docs/replay_log_calibration.json` with accepted quote counts,

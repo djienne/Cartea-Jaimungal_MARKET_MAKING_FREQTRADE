@@ -31,6 +31,9 @@ def gate_command(
     post_only_crossing_result: Path | None = None,
     post_only_passive_result: Path | None = None,
     use_default_post_only_artifacts: bool = False,
+    replay_acceptance_newest_per_stream: int | None = 25,
+    replay_acceptance_max_price_events: int | None = 2000,
+    replay_acceptance_allow_incomplete: bool = True,
 ) -> list[str]:
     for gate_name, command, _ in local_gates(
         include_runtime=include_runtime,
@@ -38,6 +41,9 @@ def gate_command(
         post_only_crossing_result=post_only_crossing_result,
         post_only_passive_result=post_only_passive_result,
         use_default_post_only_artifacts=use_default_post_only_artifacts,
+        replay_acceptance_newest_per_stream=replay_acceptance_newest_per_stream,
+        replay_acceptance_max_price_events=replay_acceptance_max_price_events,
+        replay_acceptance_allow_incomplete=replay_acceptance_allow_incomplete,
     ):
         if gate_name == name:
             return command
@@ -84,6 +90,30 @@ def test_post_only_gate_keeps_incomplete_artifact_check_when_no_evidence_is_supp
 
     assert "--crossing-result" not in command
     assert "--passive-result" not in command
+
+
+def test_replay_acceptance_gate_defaults_to_short_artifact_mode():
+    command = gate_command("replay_acceptance_report_artifact", include_runtime=True)
+
+    assert "--newest-per-stream" in command
+    assert command[command.index("--newest-per-stream") + 1] == "25"
+    assert "--max-price-events" in command
+    assert command[command.index("--max-price-events") + 1] == "2000"
+    assert "--allow-incomplete" in command
+
+
+def test_replay_acceptance_gate_can_run_uncapped_promotion_mode():
+    command = gate_command(
+        "replay_acceptance_report_artifact",
+        include_runtime=True,
+        replay_acceptance_newest_per_stream=None,
+        replay_acceptance_max_price_events=None,
+        replay_acceptance_allow_incomplete=False,
+    )
+
+    assert "--newest-per-stream" not in command
+    assert "--max-price-events" not in command
+    assert "--allow-incomplete" not in command
 
 
 def test_live_canary_gate_does_not_ack_manual_monitoring_by_default():

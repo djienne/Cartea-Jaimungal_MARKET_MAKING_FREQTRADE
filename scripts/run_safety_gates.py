@@ -134,6 +134,52 @@ def live_canary_evidence_command(py: str, *, manual_monitoring_ack: bool = False
     return command
 
 
+def optional_positive_int(value: int | None) -> int | None:
+    if value is None or int(value) <= 0:
+        return None
+    return int(value)
+
+
+def replay_acceptance_report_command(
+    py: str,
+    *,
+    symbol: str = "ETH",
+    mid: float = 2116.95,
+    newest_per_stream: int | None = 25,
+    max_price_events: int | None = 2000,
+    allow_incomplete: bool = True,
+) -> list[str]:
+    command = [
+        py,
+        "scripts/run_replay_report.py",
+        "--symbol",
+        str(symbol),
+        "--mid",
+        str(float(mid)),
+        "--kappa-plus",
+        "2.0",
+        "--kappa-minus",
+        "2.0",
+        "--lambda-plus",
+        "0.1",
+        "--lambda-minus",
+        "0.1",
+        "--output",
+        "docs/replay_acceptance_report.json",
+        "--markdown-output",
+        "docs/replay_acceptance_report.md",
+    ]
+    newest = optional_positive_int(newest_per_stream)
+    max_events = optional_positive_int(max_price_events)
+    if newest is not None:
+        command.extend(["--newest-per-stream", str(newest)])
+    if max_events is not None:
+        command.extend(["--max-price-events", str(max_events)])
+    if allow_incomplete:
+        command.append("--allow-incomplete")
+    return command
+
+
 def local_gates(
     *,
     include_runtime: bool = False,
@@ -141,6 +187,11 @@ def local_gates(
     post_only_crossing_result: Path | None = None,
     post_only_passive_result: Path | None = None,
     use_default_post_only_artifacts: bool = True,
+    replay_acceptance_symbol: str = "ETH",
+    replay_acceptance_mid: float = 2116.95,
+    replay_acceptance_newest_per_stream: int | None = 25,
+    replay_acceptance_max_price_events: int | None = 2000,
+    replay_acceptance_allow_incomplete: bool = True,
 ) -> list[tuple[str, list[str], list[int]]]:
     py = sys.executable
     gates = [
@@ -382,31 +433,14 @@ def local_gates(
                 ),
                 (
                     "replay_acceptance_report_artifact",
-                    [
+                    replay_acceptance_report_command(
                         sys.executable,
-                        "scripts/run_replay_report.py",
-                        "--symbol",
-                        "ETH",
-                        "--mid",
-                        "2116.95",
-                        "--newest-per-stream",
-                        "25",
-                        "--max-price-events",
-                        "2000",
-                        "--kappa-plus",
-                        "2.0",
-                        "--kappa-minus",
-                        "2.0",
-                        "--lambda-plus",
-                        "0.1",
-                        "--lambda-minus",
-                        "0.1",
-                        "--output",
-                        "docs/replay_acceptance_report.json",
-                        "--markdown-output",
-                        "docs/replay_acceptance_report.md",
-                        "--allow-incomplete",
-                    ],
+                        symbol=replay_acceptance_symbol,
+                        mid=replay_acceptance_mid,
+                        newest_per_stream=replay_acceptance_newest_per_stream,
+                        max_price_events=replay_acceptance_max_price_events,
+                        allow_incomplete=replay_acceptance_allow_incomplete,
+                    ),
                     [0],
                 ),
                 (
@@ -610,6 +644,30 @@ def parse_args() -> argparse.Namespace:
             "Defaults to docs/post_only_passive_result.json when that file exists."
         ),
     )
+    parser.add_argument("--replay-acceptance-symbol", default="ETH", help="Symbol for the replay acceptance report.")
+    parser.add_argument(
+        "--replay-acceptance-mid",
+        type=float,
+        default=2116.95,
+        help="Mid-price fallback for the replay acceptance report.",
+    )
+    parser.add_argument(
+        "--replay-acceptance-newest-per-stream",
+        type=int,
+        default=25,
+        help="Newest shards per stream for the replay acceptance report. Use 0 to scan all available shards.",
+    )
+    parser.add_argument(
+        "--replay-acceptance-max-price-events",
+        type=int,
+        default=2000,
+        help="Maximum price events for the replay acceptance report. Use 0 for no event cap.",
+    )
+    parser.add_argument(
+        "--replay-acceptance-require-pass",
+        action="store_true",
+        help="Omit --allow-incomplete so the replay acceptance command fails when report.ok is false.",
+    )
     parser.add_argument(
         "--plan-status-audit-output",
         type=Path,
@@ -628,6 +686,11 @@ def main() -> int:
             manual_monitoring_ack=args.manual_monitoring_ack,
             post_only_crossing_result=args.post_only_crossing_result,
             post_only_passive_result=args.post_only_passive_result,
+            replay_acceptance_symbol=args.replay_acceptance_symbol,
+            replay_acceptance_mid=args.replay_acceptance_mid,
+            replay_acceptance_newest_per_stream=args.replay_acceptance_newest_per_stream,
+            replay_acceptance_max_price_events=args.replay_acceptance_max_price_events,
+            replay_acceptance_allow_incomplete=not args.replay_acceptance_require_pass,
         )
     ]
     manual_gate_list = manual_gates(include_runtime=args.include_runtime)
@@ -650,6 +713,13 @@ def main() -> int:
         "post_only_passive_result": str(args.post_only_passive_result)
         if args.post_only_passive_result
         else None,
+        "replay_acceptance": {
+            "symbol": str(args.replay_acceptance_symbol),
+            "mid": float(args.replay_acceptance_mid),
+            "newest_per_stream": optional_positive_int(args.replay_acceptance_newest_per_stream),
+            "max_price_events": optional_positive_int(args.replay_acceptance_max_price_events),
+            "allow_incomplete": not bool(args.replay_acceptance_require_pass),
+        },
     }
 
     if args.include_runtime:

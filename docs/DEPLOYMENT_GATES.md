@@ -102,7 +102,12 @@ Optional Docker runtime gates:
   parameter-perturbation replay variants and writes
   `docs/replay_acceptance_report.json` plus a markdown summary. The gate command
   uses `--allow-incomplete` so the artifact is always produced; the report's own
-  `ok` field remains false until the multi-day acceptance criteria are met. The
+  `ok` field remains false until the multi-day acceptance criteria are met. By
+  default the safety runner caps this artifact to a short local data window; for
+  a promotion run, pass `--replay-acceptance-newest-per-stream 0`,
+  `--replay-acceptance-max-price-events 0`, and optionally
+  `--replay-acceptance-require-pass` so the same runner evaluates the full
+  multi-day dataset instead of overwriting it with the smoke-sized report. The
   report includes a directional-drift ratio so mark-to-market PnL that is not
   explained by net realized spread cannot masquerade as maker edge. Replay
   quotes and fill accounting both use the configured maker fee, so fee
