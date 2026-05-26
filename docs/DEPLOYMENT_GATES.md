@@ -112,9 +112,11 @@ Optional Docker runtime gates:
 - `fee_evidence_report`: parses the same audit log and writes
   `docs/fee_evidence_report.json`. The report requires strategy/config fee
   agreement, an exchange/account maker-fee snapshot, and at least one maker fill
-  whose actual fee rate matches the configured maker fee. It is expected to be
-  `ok=false` until testnet/tiny integration produces real fee-tier and fill-fee
-  evidence.
+  whose actual fee rate matches the configured maker fee. Fee snapshots and
+  actual maker-fill fee records must carry fresh event timestamps; regenerating
+  a report from stale fee-tier or fill logs does not satisfy the gate. It is
+  expected to be `ok=false` until testnet/tiny integration produces real
+  fee-tier and fill-fee evidence.
 - `live_canary_evidence_report`: parses the audit log and prior gate artifacts,
   then writes `docs/live_canary_report.json`. It is expected to be `ok=false`
   until post-only, fee-tier, and multi-day replay gates are already `ok=true`
@@ -203,6 +205,9 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   logs, then run `python scripts/verify_fee_evidence.py --input user_data/logs/mm_debug.jsonl --output docs/fee_evidence_report.json`.
   This report must be `ok=true` before canary: config/strategy fee agreement is
   not enough without exchange/account fee and actual maker fill-fee evidence.
+  The default maximum event age for fee snapshots and actual maker-fill fee
+  records is 86400 seconds; use `--max-evidence-age-seconds` to make the
+  evidence window stricter.
 - `live_canary`: only after all previous gates pass, with tiny fixed stake,
   one symbol, hard loss limits, post-only required, kill-on-taker-fill enabled,
   and manual monitoring. After the sessions, run:

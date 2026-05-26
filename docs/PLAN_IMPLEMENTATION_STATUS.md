@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 159 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 161 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -84,8 +84,11 @@ Generated from the current local worktree after the latest safety-gate run.
   `scripts/verify_fee_evidence.py` writes `docs/fee_evidence_report.json` from
   JSONL audit logs. It requires strategy/config fee agreement, exchange/account
   maker-fee evidence, and at least one maker fill with an actual fee rate that
-  matches the configured maker fee. The current report can be `ok=false` until
-  testnet/tiny integration supplies real account fee and fill-fee evidence.
+  matches the configured maker fee. The underlying fee snapshot and actual
+  maker-fill fee records must also have fresh event timestamps, so stale logs
+  cannot satisfy the gate by regenerating a new report. The current report can
+  be `ok=false` until testnet/tiny integration supplies real account fee and
+  fill-fee evidence.
 - Risk audit trail:
   realized-PnL fills now emit `risk_update` events with daily realized PnL,
   daily loss limits, consecutive-loss counts, and consecutive-loss limits.
