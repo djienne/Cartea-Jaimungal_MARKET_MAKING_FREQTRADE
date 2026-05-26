@@ -259,6 +259,80 @@ class Market_Making(IStrategy):
             return None
         return Path(str(raw_dir))
 
+    def _repo_root(self) -> Path:
+        return Path(__file__).resolve().parents[2]
+
+    def _resolve_repo_path(self, raw_path: Any, default_path: str) -> Path:
+        path = Path(str(raw_path or default_path))
+        if not path.is_absolute():
+            path = self._repo_root() / path
+        return path
+
+    def _deployment_gate_report_paths(self) -> dict[str, Path]:
+        mm_config = self._mm_config()
+        return {
+            "post_only": self._resolve_repo_path(
+                mm_config.get("post_only_evidence_report_path"),
+                "docs/post_only_evidence_report.json",
+            ),
+            "fee": self._resolve_repo_path(
+                mm_config.get("fee_evidence_report_path"),
+                "docs/fee_evidence_report.json",
+            ),
+            "replay": self._resolve_repo_path(
+                mm_config.get("replay_acceptance_report_path"),
+                "docs/replay_acceptance_report.json",
+            ),
+            "live_canary": self._resolve_repo_path(
+                mm_config.get("live_canary_report_path"),
+                "docs/live_canary_report.json",
+            ),
+        }
+
+    def _read_gate_report_status(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"ok": False, "reason": "missing_report", "path": str(path)}
+        except Exception as exc:
+            return {"ok": False, "reason": "invalid_report", "path": str(path), "error": str(exc)}
+        if not isinstance(payload, dict):
+            return {"ok": False, "reason": "invalid_report", "path": str(path)}
+        return {
+            "ok": bool(payload.get("ok")),
+            "reason": "ok" if payload.get("ok") is True else "report_not_ok",
+            "path": str(path),
+            "reasons": payload.get("reasons", []),
+            "generated_at": payload.get("generated_at"),
+        }
+
+    def _live_deployment_gate_state(self) -> tuple[bool, str, dict[str, Any]]:
+        mm_config = self._mm_config()
+        stage = str(mm_config.get("deployment_stage") or "research").strip().lower()
+        payload: dict[str, Any] = {
+            "deployment_gate_reports_required": True,
+            "deployment_stage": stage,
+            "gate_reports": {},
+        }
+        if stage not in {"canary", "production"}:
+            return False, "deployment_stage_not_set", payload
+
+        if stage in {"canary", "production"} and not bool(mm_config.get("manual_monitoring_ack", False)):
+            return False, "manual_monitoring_not_acknowledged", payload
+
+        required = ["post_only", "fee", "replay"]
+        if stage == "production":
+            required.append("live_canary")
+
+        reports = self._deployment_gate_report_paths()
+        for name in required:
+            status = self._read_gate_report_status(reports[name])
+            payload["gate_reports"][name] = status
+            if not status.get("ok"):
+                return False, f"{name}_gate_not_passed", payload
+
+        return True, "ok", payload
+
     def _apply_runtime_safety_config(self) -> None:
         mm_config = self._mm_config()
         if not mm_config:
@@ -320,6 +394,15 @@ class Market_Making(IStrategy):
                 self._debug_log_event(
                     "trading_enable_rejected",
                     {"reason": reason, "dry_run": is_dry_run, **tif_payload},
+                )
+                return
+            ok, reason, gate_payload = self._live_deployment_gate_state()
+            if not ok:
+                self.trading_enabled = False
+                self.fail_closed_reason = reason
+                self._debug_log_event(
+                    "trading_enable_rejected",
+                    {"reason": reason, "dry_run": is_dry_run, **gate_payload},
                 )
                 return
 
@@ -1138,6 +1221,10 @@ class Market_Making(IStrategy):
         is_dry_run = bool(getattr(self, "config", {}).get("dry_run", True))
         if not self.post_only_verified and self.trading_enabled and not is_dry_run:
             return False, "post_only_not_verified"
+        if self.trading_enabled and not is_dry_run:
+            ok, reason, _ = self._live_deployment_gate_state()
+            if not ok:
+                return False, reason
 
         return True, "ok"
 
@@ -2133,6 +2220,7 @@ class Market_Making(IStrategy):
         open_order_count = self._open_order_count(pair)
         open_order_source = getattr(self, "_last_open_order_count_source", "unavailable")
         config = getattr(self, "config", {}) if isinstance(getattr(self, "config", {}), dict) else {}
+        mm_config = self._mm_config()
         entry_tif = self._expected_time_in_force("bid")
         exit_tif = self._expected_time_in_force("ask")
         self._debug_log_event(
@@ -2157,6 +2245,9 @@ class Market_Making(IStrategy):
                 "hjb_fresh": hjb_fresh,
                 "hjb_age_seconds": self._hjb_age_seconds(now),
                 "post_only_verified": bool(self.post_only_verified),
+                "deployment_stage": str(mm_config.get("deployment_stage") or "research"),
+                "deployment_gate_reports_required": True,
+                "manual_monitoring_ack": bool(mm_config.get("manual_monitoring_ack", False)),
                 "expected_entry_time_in_force": entry_tif,
                 "expected_exit_time_in_force": exit_tif,
                 "expected_entry_time_in_force_canonical": self._canonical_tif(entry_tif),

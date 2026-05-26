@@ -13,6 +13,19 @@ When Docker is available, include non-trading runtime load checks:
 python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md
 ```
 
+Non-dry-run strategy enablement is also guarded at runtime. Setting
+`market_making.trading_enabled=true` in live mode is rejected unless
+`market_making.deployment_stage` is explicitly set:
+
+- `canary`: requires `post_only_evidence_report`, `fee_evidence_report`, and
+  `replay_acceptance_report` to be `ok=true`, plus
+  `market_making.manual_monitoring_ack=true`.
+- `production`: requires all canary prerequisites and
+  `live_canary_report` to be `ok=true`.
+
+The same deployment-gate state is rechecked during quote validation so a runtime
+toggle cannot bypass startup gating.
+
 ## Automated Local Gates
 
 These gates do not require a live exchange connection:
@@ -207,3 +220,7 @@ python scripts/verify_live_canary.py --input user_data/logs/mm_debug.jsonl --man
   quote can pass the guards.
 - Live trading is still blocked unless post-only support is verified outside
   dry-run.
+- In live mode, the strategy also refuses enablement unless the declared
+  deployment stage has passing gate artifact reports. Canary mode requires
+  post-only, fee, replay, and manual-monitoring evidence; production additionally
+  requires passing live canary evidence.

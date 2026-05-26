@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 148 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 155 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks.
@@ -98,6 +98,13 @@ Generated from the current local worktree after the latest safety-gate run.
   switches, and no parameter/HJB/collector error events. The current report is
   expected to be `ok=false` until Gates 4-5 pass and real canary sessions are
   supplied.
+- Strategy-level deployment gate enforcement:
+  non-dry-run `trading_enabled=true` now requires a declared
+  `market_making.deployment_stage`. `canary` mode requires post-only, fee, and
+  replay reports to be `ok=true` plus `manual_monitoring_ack=true`; `production`
+  mode additionally requires `docs/live_canary_report.json` to be `ok=true`.
+  Quote validation rechecks the same gate state so runtime toggles cannot bypass
+  the startup guard.
 
 ## Phase Status
 
@@ -111,7 +118,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, schema v2 tests, status locking, and row-timestamp-based collector freshness validation. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
 | Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, freshness-age fields, fee agreement snapshots, canary-relevant health fields, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, realized-PnL risk updates, delayed fill markouts, post-only reject-rate enforcement, and kill-switch tests/log artifacts exist. |
-| Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gate 6 now has a log/artifact verifier. Gates 4-6 still require external/manual evidence. |
+| Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gate 6 now has a log/artifact verifier, and live strategy enablement is gated on deployment-stage artifacts. Gates 4-6 still require external/manual evidence. |
 
 ## Remaining Required Gates
 

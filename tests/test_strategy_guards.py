@@ -4,6 +4,7 @@ import sys
 import types
 import inspect
 import os
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -194,6 +195,25 @@ def make_bot() -> Market_Making:
     return bot
 
 
+def write_gate_report(tmp_path: Path, name: str, *, ok: bool = True) -> str:
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps({"ok": ok, "reasons": [] if ok else [f"{name}_failed"]}), encoding="utf-8")
+    return str(path)
+
+
+def live_gate_config(tmp_path: Path, *, stage: str = "canary", include_live_canary: bool = False) -> dict:
+    config = {
+        "deployment_stage": stage,
+        "manual_monitoring_ack": True,
+        "post_only_evidence_report_path": write_gate_report(tmp_path, "post_only"),
+        "fee_evidence_report_path": write_gate_report(tmp_path, "fee"),
+        "replay_acceptance_report_path": write_gate_report(tmp_path, "replay"),
+    }
+    if include_live_canary:
+        config["live_canary_report_path"] = write_gate_report(tmp_path, "live_canary")
+    return config
+
+
 def test_trading_disabled_clears_entry_signal():
     bot = make_bot()
     df = pd.DataFrame({"close": [100.0, 101.0]})
@@ -297,6 +317,24 @@ def test_live_config_cannot_enable_without_post_only_verification():
     assert bot.fail_closed_reason == "post_only_not_verified"
 
 
+def test_live_quote_state_rechecks_deployment_gate_reports():
+    bot = make_bot()
+    now = datetime.now(timezone.utc)
+    bot.trading_enabled = True
+    bot.post_only_verified = True
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {"trading_enabled": True, "post_only_verified": True},
+    }
+
+    ok, reason = bot._quote_state_valid("ETH/USDC:USDC", "bid", 99.5, now)
+
+    assert not ok
+    assert reason == "deployment_stage_not_set"
+
+
 def test_live_config_cannot_enable_with_verified_post_only_but_gtc_tif():
     bot = make_bot()
     events = []
@@ -327,13 +365,77 @@ def test_live_config_cannot_enable_with_verified_post_only_but_gtc_tif():
     ]
 
 
-def test_live_config_can_enable_after_post_only_tif_and_verification():
+def test_live_config_cannot_enable_without_deployment_stage():
     bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
     bot.config = {
         "dry_run": False,
         "fee": 0.00015,
         "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
         "market_making": {"trading_enabled": True, "post_only_verified": True},
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "deployment_stage_not_set"
+    assert events[0][0] == "trading_enable_rejected"
+    assert events[0][1]["reason"] == "deployment_stage_not_set"
+    assert events[0][1]["deployment_stage"] == "research"
+
+
+def test_live_canary_config_requires_manual_monitoring_ack(tmp_path):
+    bot = make_bot()
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **live_gate_config(tmp_path),
+            "manual_monitoring_ack": False,
+        },
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "manual_monitoring_not_acknowledged"
+
+
+def test_live_canary_config_requires_gate_reports(tmp_path):
+    bot = make_bot()
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **live_gate_config(tmp_path),
+            "fee_evidence_report_path": write_gate_report(tmp_path, "fee", ok=False),
+        },
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "fee_gate_not_passed"
+
+
+def test_live_config_can_enable_after_post_only_tif_verification_and_gate_reports(tmp_path):
+    bot = make_bot()
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **live_gate_config(tmp_path),
+        },
     }
 
     bot._apply_runtime_safety_config()
@@ -351,6 +453,65 @@ def test_live_config_can_enable_after_post_only_tif_and_verification():
             "exit_time_in_force_canonical": "post_only",
         },
     )
+
+
+def test_production_config_requires_live_canary_report(tmp_path):
+    bot = make_bot()
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **live_gate_config(tmp_path, stage="production", include_live_canary=False),
+        },
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "live_canary_gate_not_passed"
+
+
+def test_production_config_requires_manual_monitoring_ack(tmp_path):
+    bot = make_bot()
+    config = live_gate_config(tmp_path, stage="production", include_live_canary=True)
+    config["manual_monitoring_ack"] = False
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **config,
+        },
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "manual_monitoring_not_acknowledged"
+
+
+def test_production_config_can_enable_after_live_canary_report(tmp_path):
+    bot = make_bot()
+    bot.config = {
+        "dry_run": False,
+        "fee": 0.00015,
+        "order_time_in_force": {"entry": "Alo", "exit": "Alo"},
+        "market_making": {
+            "trading_enabled": True,
+            "post_only_verified": True,
+            **live_gate_config(tmp_path, stage="production", include_live_canary=True),
+        },
+    }
+
+    bot._apply_runtime_safety_config()
+
+    assert bot.trading_enabled is True
+    assert bot.fail_closed_reason == "none"
 
 
 def test_custom_stake_amount_caps_to_one_inventory_unit():
@@ -1314,6 +1475,9 @@ def test_health_log_counts_open_orders_and_logs_position():
     assert payload["position"] == 0.0
     assert payload["signed_base_position"] == 0.0
     assert payload["kill_on_taker_fill"] is True
+    assert payload["deployment_stage"] == "research"
+    assert payload["deployment_gate_reports_required"] is True
+    assert payload["manual_monitoring_ack"] is False
     assert payload["expected_entry_time_in_force"] == "GTC"
     assert payload["expected_entry_time_in_force_canonical"] == "gtc"
     assert payload["unrealized_pnl"] == 0.0
