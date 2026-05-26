@@ -58,6 +58,7 @@ def render_plan(symbol: str) -> str:
         "expected_passive_order_result": "resting_maker_order",
         "required_evidence": [
             "submitted params contain timeInForce=Alo",
+            "actual exchange/order time-in-force is confirmed as Alo",
             "crossing ALO order has zero filled amount",
             "crossing ALO order rejects/cancels/expires rather than rests",
             "passive ALO order rests or fills as maker only",
@@ -167,6 +168,29 @@ def submitted_params(payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def actual_time_in_force(payload: dict[str, Any]) -> str | None:
+    for key in ("actual_time_in_force", "actual_tif", "timeInForce", "time_in_force", "tif"):
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    raw_result = payload.get("raw_result")
+    if isinstance(raw_result, dict):
+        value = find_nested_value(raw_result, {"actual_time_in_force", "actual_tif", "timeinforce", "time_in_force", "tif"})
+        if value is not None:
+            return str(value)
+    classification = payload.get("classification")
+    if isinstance(classification, dict):
+        value = find_nested_value(classification, {"actual_time_in_force", "actual_tif", "timeinforce", "time_in_force", "tif"})
+        if value is not None:
+            return str(value)
+    return None
+
+
+def has_actual_alo_tif(payload: dict[str, Any]) -> bool:
+    actual = actual_time_in_force(payload)
+    return str(actual or "").lower() == "alo"
+
+
 def has_alo_params(payload: dict[str, Any]) -> bool:
     params = submitted_params(payload)
     tif = str(params.get("timeInForce") or params.get("time_in_force") or "").lower()
@@ -178,6 +202,8 @@ def evaluate_crossing_result(payload: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if not has_alo_params(payload):
         reasons.append("crossing_missing_alo_params")
+    if not has_actual_alo_tif(payload):
+        reasons.append("crossing_actual_tif_not_alo")
     filled = filled_amount(payload)
     if abs(filled) > 1e-12:
         reasons.append(f"crossing_filled_nonzero:{filled}")
@@ -194,6 +220,8 @@ def evaluate_passive_result(payload: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if not has_alo_params(payload):
         reasons.append("passive_missing_alo_params")
+    if not has_actual_alo_tif(payload):
+        reasons.append("passive_actual_tif_not_alo")
     filled = filled_amount(payload)
     status = order_status(payload)
     if status not in {"open", "new", "canceled", "cancelled", "closed", "filled", "partially_filled", "expired"}:
@@ -285,6 +313,8 @@ def evaluate_evidence(
             "status": order_status(crossing_payload) if crossing_payload else None,
             "liquidity": liquidity_flag(crossing_payload) if crossing_payload else None,
             "has_alo_params": has_alo_params(crossing_payload) if crossing_payload else False,
+            "actual_time_in_force": actual_time_in_force(crossing_payload) if crossing_payload else None,
+            "has_actual_alo_tif": has_actual_alo_tif(crossing_payload) if crossing_payload else False,
             "age_ok": crossing_age_ok,
             **crossing_age_meta,
         },
@@ -295,6 +325,8 @@ def evaluate_evidence(
             "status": order_status(passive_payload) if passive_payload else None,
             "liquidity": liquidity_flag(passive_payload) if passive_payload else None,
             "has_alo_params": has_alo_params(passive_payload) if passive_payload else False,
+            "actual_time_in_force": actual_time_in_force(passive_payload) if passive_payload else None,
+            "has_actual_alo_tif": has_actual_alo_tif(passive_payload) if passive_payload else False,
             "age_ok": passive_age_ok,
             **passive_age_meta,
         },
@@ -371,6 +403,7 @@ def submit_crossing_alo(args: argparse.Namespace) -> dict[str, Any]:
         "submitted_price": crossing_bid,
         "submitted_amount": args.amount,
         "submitted_params": params,
+        "actual_time_in_force": actual_time_in_force({"raw_result": result}),
         "order_status": status,
         "filled": filled,
         "raw_result": result,
@@ -415,6 +448,7 @@ def submit_passive_alo(args: argparse.Namespace) -> dict[str, Any]:
         "submitted_price": passive_bid,
         "submitted_amount": args.amount,
         "submitted_params": params,
+        "actual_time_in_force": actual_time_in_force({"raw_result": result}),
         "order_status": status,
         "filled": filled,
         "cancel_result": cancel_result,

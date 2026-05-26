@@ -193,9 +193,10 @@ These gates require the real Freqtrade/Hyperliquid runtime:
   enablement also rejects unless configured entry and exit TIF canonicalize to
   post-only/Alo. See `docs/POST_ONLY_VERIFICATION.md`.
   Prove a native `Alo` path before live use; intentionally crossing `Alo` orders
-  must reject or cancel without filling, and passive `Alo` orders must rest or
-  fill maker-only. A zero-filled passive cancel without resting proof does not
-  satisfy the gate.
+  must reject or cancel without filling, passive `Alo` orders must rest or fill
+  maker-only, and submit artifacts must confirm the actual order TIF as `Alo`
+  separately from the requested params. A zero-filled passive cancel without
+  resting proof does not satisfy the gate.
   Start with the no-network probe plan:
 
 ```bash

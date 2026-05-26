@@ -118,6 +118,7 @@ def test_post_only_crossing_evidence_requires_cancel_or_reject():
     ok, reasons = evaluate_crossing_result(
         {
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "open",
             "filled": 0.0,
         }
@@ -131,6 +132,7 @@ def test_post_only_crossing_evidence_accepts_zero_fill_rejection():
     ok, reasons = evaluate_crossing_result(
         {
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "rejected",
             "filled": 0.0,
         }
@@ -140,10 +142,24 @@ def test_post_only_crossing_evidence_accepts_zero_fill_rejection():
     assert reasons == []
 
 
+def test_post_only_evidence_rejects_submitted_alo_without_actual_tif_confirmation():
+    ok, reasons = evaluate_crossing_result(
+        {
+            "submitted_params": alo_order_params(),
+            "order_status": "rejected",
+            "filled": 0.0,
+        }
+    )
+
+    assert not ok
+    assert "crossing_actual_tif_not_alo" in reasons
+
+
 def test_post_only_passive_evidence_rejects_taker_liquidity():
     ok, reasons = evaluate_passive_result(
         {
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "closed",
             "filled": 0.01,
             "raw_result": {"info": {"liquidity": "taker"}},
@@ -159,6 +175,7 @@ def test_post_only_evidence_report_requires_both_results():
         {
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "rejected",
             "filled": 0.0,
         },
@@ -175,12 +192,14 @@ def test_post_only_evidence_report_passes_complete_safe_results():
         {
             "generated_at": generated_at,
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "rejected",
             "filled": 0.0,
         },
         {
             "generated_at": generated_at,
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "open",
             "filled": 0.0,
         },
@@ -190,12 +209,17 @@ def test_post_only_evidence_report_passes_complete_safe_results():
     assert report["reasons"] == []
     assert report["crossing"]["age_ok"] is True
     assert report["passive"]["age_ok"] is True
+    assert report["crossing"]["actual_time_in_force"] == "Alo"
+    assert report["crossing"]["has_actual_alo_tif"] is True
+    assert report["passive"]["actual_time_in_force"] == "Alo"
+    assert report["passive"]["has_actual_alo_tif"] is True
 
 
 def test_post_only_passive_evidence_rejects_zero_fill_cancel_without_resting_proof():
     ok, reasons = evaluate_passive_result(
         {
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "canceled",
             "filled": 0.0,
         }
@@ -209,11 +233,13 @@ def test_post_only_evidence_report_rejects_missing_artifact_timestamps():
     report = evaluate_evidence(
         {
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "rejected",
             "filled": 0.0,
         },
         {
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "canceled",
             "filled": 0.0,
         },
@@ -229,12 +255,14 @@ def test_post_only_evidence_report_rejects_stale_artifacts():
         {
             "generated_at": "2026-05-24T11:59:00Z",
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "rejected",
             "filled": 0.0,
         },
         {
             "generated_at": "2026-05-25T11:59:59Z",
             "submitted_params": alo_order_params(),
+            "actual_time_in_force": "Alo",
             "order_status": "canceled",
             "filled": 0.0,
         },
@@ -252,6 +280,7 @@ def test_post_only_evaluator_accepts_direct_sdk_alo_rejection():
     ok, reasons = evaluate_crossing_result(
         {
             "sdk_order_args": {"order_type": {"limit": {"tif": "Alo"}}},
+            "actual_time_in_force": "Alo",
             "classification": {
                 "ok": True,
                 "alo_rejected": True,
@@ -269,6 +298,7 @@ def test_post_only_evaluator_accepts_direct_sdk_resting_order():
     ok, reasons = evaluate_passive_result(
         {
             "sdk_order_args": {"order_type": {"limit": {"tif": "Alo"}}},
+            "actual_time_in_force": "Alo",
             "classification": {
                 "ok": True,
                 "saw_resting": True,
@@ -286,6 +316,7 @@ def test_post_only_evaluator_rejects_direct_sdk_taker_fill():
     ok, reasons = evaluate_passive_result(
         {
             "sdk_order_args": {"order_type": {"limit": {"tif": "Alo"}}},
+            "actual_time_in_force": "Alo",
             "classification": {
                 "ok": False,
                 "saw_filled": True,

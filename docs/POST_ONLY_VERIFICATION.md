@@ -46,6 +46,8 @@ python scripts/verify_post_only_mapping.py --mode evaluate-evidence --crossing-r
 The evidence report passes only when:
 
 - submitted params contain `timeInForce=Alo` and `postOnly=true`
+- actual exchange/order TIF is confirmed as `Alo`; submitted params alone are
+  not enough
 - the intentionally crossing ALO order has zero fill and rejects/cancels/expires
 - the passive ALO order rests or fills maker-only; a zero-filled cancel without
   resting proof is not enough

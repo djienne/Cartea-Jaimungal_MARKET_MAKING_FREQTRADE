@@ -5,6 +5,7 @@
   "native_time_in_force": "Alo",
   "required_evidence": [
     "submitted params contain timeInForce=Alo",
+    "actual exchange/order time-in-force is confirmed as Alo",
     "crossing ALO order has zero filled amount",
     "crossing ALO order rejects/cancels/expires rather than rests",
     "passive ALO order rests or fills as maker only",
