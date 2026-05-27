@@ -361,7 +361,12 @@ python scripts/hyperliquid_risk_executor.py --mode plan
   The default maximum event age for fee snapshots and actual maker-fill fee
   records is 86400 seconds; use `--max-evidence-age-seconds` to make the
   evidence window stricter. The full safety runner can evaluate a retained
-  integration log with `--audit-log-input`.
+  integration log with `--audit-log-input`. Read-only fee capture can normalize
+  Hyperliquid `userFees` / `userFills` with
+  `scripts/capture_hyperliquid_fee_evidence.py`; when supplied order evidence
+  contains a direct ALO `quote_link`, the resulting fill event preserves
+  `quote_id`, `session_id`, `hjb_generation`, `client_order_id`, and `cloid` so
+  the fee/canary logs can reconcile actual exchange fills to quote decisions.
 - `live_canary`: only after all previous gates pass, with tiny fixed stake,
   one symbol, hard loss limits, post-only required, kill-on-taker-fill enabled,
   and manual monitoring. After the sessions, run:

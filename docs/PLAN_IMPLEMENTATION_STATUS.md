@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 322 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 325 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -243,7 +243,11 @@ Generated from the current local worktree after the latest safety-gate run.
   Hyperliquid `userFees` / `userFills` payloads into the JSONL audit events
   consumed by `scripts/verify_fee_evidence.py`. Fill events only carry
   post-only TIF and limit-order proof when matching order-id evidence is
-  supplied, so raw fills alone cannot satisfy the fee gate.
+  supplied, so raw fills alone cannot satisfy the fee gate. When the matching
+  direct ALO order artifact contains `quote_link`, the normalized fill now also
+  preserves `quote_id`, `session_id`, `hjb_generation`, `client_order_id`, and
+  Hyperliquid `cloid`, giving the live-canary verifier a direct path to
+  reconcile exchange fills back to accepted quote decisions and order attempts.
 - Promotion evidence manifest:
   `scripts/build_promotion_evidence_manifest.py` writes
   `docs/promotion_evidence_manifest.json` from the current dry-run quality, TIF

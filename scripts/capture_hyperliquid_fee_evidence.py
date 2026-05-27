@@ -21,6 +21,7 @@ from typing import Any, Iterable
 
 FEE_EVIDENCE_ALLOW_ENV = "HYPERLIQUID_FEE_EVIDENCE_ALLOW"
 DEFAULT_OUTPUT = Path("docs/hyperliquid_fee_evidence_capture.jsonl")
+QUOTE_LINK_KEYS = ("quote_id", "session_id", "hjb_generation", "client_order_id", "cloid")
 
 
 def utc_now() -> datetime:
@@ -90,6 +91,13 @@ def normalized_quote_side(value: Any) -> str | None:
     return None
 
 
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def order_type_from_sdk_args(order_args: dict[str, Any]) -> str | None:
     order_type = order_args.get("order_type")
     if isinstance(order_type, dict) and isinstance(order_type.get("limit"), dict):
@@ -149,24 +157,40 @@ def iter_order_evidence(payload: Any) -> Iterable[dict[str, Any]]:
         yield payload
 
 
+def quote_link_fields(item: dict[str, Any]) -> dict[str, Any]:
+    quote_link = item.get("quote_link") if isinstance(item.get("quote_link"), dict) else {}
+    fields: dict[str, Any] = {}
+    for key in QUOTE_LINK_KEYS:
+        value = first_present(quote_link.get(key) if isinstance(quote_link, dict) else None, item.get(key))
+        if value not in (None, ""):
+            fields[key] = value
+    if fields:
+        fields["quote_link_source"] = "order_evidence_quote_link" if quote_link else "order_evidence_fields"
+    return fields
+
+
 def build_order_evidence_by_oid(payload: Any) -> dict[str, dict[str, Any]]:
     evidence: dict[str, dict[str, Any]] = {}
     for item in iter_order_evidence(payload):
         order_args = item.get("sdk_order_args") if isinstance(item.get("sdk_order_args"), dict) else {}
         intent = item.get("intent") if isinstance(item.get("intent"), dict) else {}
-        quote_side = normalized_quote_side(item.get("quote_side") or intent.get("side"))
+        quote_link = item.get("quote_link") if isinstance(item.get("quote_link"), dict) else {}
+        quote_side = normalized_quote_side(item.get("quote_side") or quote_link.get("side") or intent.get("side"))
         if quote_side is None and isinstance(order_args, dict) and "is_buy" in order_args:
             quote_side = "bid" if bool(order_args.get("is_buy")) else "ask"
         order_type = item.get("order_type") or order_type_from_sdk_args(order_args)
         tif = tif_from_payload(item)
         source = item.get("mode") or item.get("source") or "order_evidence"
+        link_fields = quote_link_fields(item)
         for oid in collect_oids(item):
-            evidence[oid] = {
+            event = {
                 "quote_side": quote_side,
                 "order_type": str(order_type) if order_type else None,
                 "tif": tif,
                 "source": str(source),
             }
+            event.update(link_fields)
+            evidence[oid] = event
     return evidence
 
 
@@ -216,7 +240,7 @@ def normalize_user_fill_event(
         actual_fee_rate = actual_fee_paid / abs(float(price) * float(amount))
     expected_fee_rate = expected_maker_fee_rate if liquidity == "maker" else expected_taker_fee_rate if liquidity == "taker" else None
     quote_side = order_evidence.get("quote_side") or normalized_quote_side(fill.get("side"))
-    return {
+    event = {
         "event": "fill",
         "ts": timestamp_ms_to_iso(fill.get("time")),
         "pair": f"{fill.get('coin')}/USDC:USDC" if fill.get("coin") else None,
@@ -234,6 +258,16 @@ def normalize_user_fill_event(
         "fee_token": fill.get("feeToken"),
         "raw_fill": fill,
     }
+    for key in QUOTE_LINK_KEYS:
+        value = first_present(order_evidence.get(key), fill.get(key))
+        if value not in (None, ""):
+            event[key] = value
+    if any(key in event for key in QUOTE_LINK_KEYS):
+        event["quote_link_source"] = order_evidence.get("quote_link_source") or "fill_fields"
+    if order_evidence.get("tif"):
+        event["post_only"] = str(order_evidence["tif"]).lower() in {"alo", "po", "post_only", "postonly"}
+        event["post_only_verified"] = event["post_only"]
+    return event
 
 
 def normalize_events(
@@ -318,7 +352,7 @@ def render_plan() -> dict[str, Any]:
         ],
         "normalized_outputs": [
             "fee_snapshot audit event with exchange maker/taker fee rates",
-            "fill audit events with maker/taker liquidity, actual fee paid, actual fee rate, price, amount, and order TIF when oid evidence exists",
+            "fill audit events with maker/taker liquidity, actual fee paid, actual fee rate, price, amount, order TIF, and quote/client-order linkage when oid evidence exists",
         ],
         "downstream_checker": "scripts/verify_fee_evidence.py",
     }
