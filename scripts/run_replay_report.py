@@ -114,6 +114,8 @@ def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
         leverage=base.leverage,
         maintenance_margin_rate=base.maintenance_margin_rate,
         queue_decay_per_second=base.queue_decay_per_second,
+        price_tick_size=base.price_tick_size,
+        amount_step_size=base.amount_step_size,
         fill_calibration_path=base.fill_calibration_path,
         newest_per_stream=base.newest_per_stream,
         max_price_events=base.max_price_events,
@@ -738,6 +740,8 @@ def build_report(
             "leverage": config.leverage,
             "maintenance_margin_rate": config.maintenance_margin_rate,
             "queue_decay_per_second": config.queue_decay_per_second,
+            "price_tick_size": config.price_tick_size,
+            "amount_step_size": config.amount_step_size,
             "fill_calibration_path": str(config.fill_calibration_path) if config.fill_calibration_path else None,
         },
         "base_params": params,
@@ -835,6 +839,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--starting-equity-usdc", type=float, default=1000.0)
     parser.add_argument("--leverage", type=float, default=1.0)
     parser.add_argument("--maintenance-margin-rate", type=float, default=0.05)
+    parser.add_argument("--price-tick-size", type=float, default=0.0)
+    parser.add_argument("--amount-step-size", type=float, default=0.0)
     parser.add_argument(
         "--quote-refresh-interval-ms",
         type=int,
@@ -872,6 +878,8 @@ def main() -> int:
         starting_equity_usdc=args.starting_equity_usdc,
         leverage=args.leverage,
         maintenance_margin_rate=args.maintenance_margin_rate,
+        price_tick_size=args.price_tick_size,
+        amount_step_size=args.amount_step_size,
         quote_refresh_interval_ms=args.quote_refresh_interval_ms,
         fill_calibration_path=args.fill_calibration,
         newest_per_stream=args.newest_per_stream,

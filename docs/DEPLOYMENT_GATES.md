@@ -172,9 +172,12 @@ Optional Docker runtime gates:
   `--replay-acceptance-max-price-events 0`, tune
   `--replay-acceptance-min-price-events-per-day` and
   `--replay-acceptance-max-price-gap-seconds` if the source cadence differs,
-  and optionally `--replay-acceptance-require-pass` so the same runner evaluates
-  the full multi-day dataset instead of overwriting it with the smoke-sized
-  report. Promotion replay should also pass retained testnet/canary logs through
+  set `--replay-acceptance-price-tick-size` and
+  `--replay-acceptance-amount-step-size` to the exchange constraints being
+  tested, and optionally `--replay-acceptance-require-pass` so the same runner
+  evaluates the full multi-day dataset instead of overwriting it with the
+  smoke-sized report. Promotion replay should also pass retained testnet/canary
+  logs through
   `--audit-log-input` and use `--replay-acceptance-require-fill-calibration` so
   replay fills are throttled by usable observed side/depth fill probabilities.
   The report includes price-event density and maximum inter-event gap
@@ -186,8 +189,10 @@ Optional Docker runtime gates:
   queue model includes queue-ahead traded volume plus conservative cancellation
   decay, reported as `queue_decay_base`. Replay quote placement uses an
   explicit `quote_refresh_interval_ms` cadence rather than cancelling on every
-  BBO event, records quote-decision counts, and consumes matched trade events
-  once so overlapping simulated quote windows cannot reuse one historical trade.
+  BBO event, records quote-decision counts, rounds bid prices down and ask
+  prices up to `price_tick_size` before maker-safety checks, rounds base order
+  size down to `amount_step_size`, and consumes matched trade events once so
+  overlapping simulated quote windows cannot reuse one historical trade.
   When `--fill-calibration` points to a usable
   `docs/replay_log_calibration.json`, replay bucketizes simulated quotes with
   the calibration depth bucket size and deterministically limits accepted fills

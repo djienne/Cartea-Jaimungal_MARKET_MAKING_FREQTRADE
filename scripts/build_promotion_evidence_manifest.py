@@ -310,7 +310,11 @@ def promotion_commands() -> dict[str, list[dict[str, Any]]]:
                     "--markdown-output",
                     "docs/LAST_SAFETY_GATES.md",
                 ],
-                note="Requires several days of HL_data shards with sufficient price-event density.",
+                note=(
+                    "Requires several days of HL_data shards with sufficient price-event density. "
+                    "Set --replay-acceptance-price-tick-size and --replay-acceptance-amount-step-size "
+                    "to the exchange constraints being validated."
+                ),
             ),
         ],
         "live_canary": [

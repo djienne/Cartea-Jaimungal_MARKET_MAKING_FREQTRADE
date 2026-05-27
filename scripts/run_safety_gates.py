@@ -301,6 +301,8 @@ def replay_acceptance_report_command(
     max_price_events: int | None = 2000,
     min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
     max_price_gap_seconds: float = DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS,
+    price_tick_size: float = 0.0,
+    amount_step_size: float = 0.0,
     fill_calibration: Path | None = DEFAULT_REPLAY_FILL_CALIBRATION,
     require_fill_calibration: bool = False,
     allow_incomplete: bool = True,
@@ -328,6 +330,10 @@ def replay_acceptance_report_command(
         str(float(min_price_events_per_day)),
         "--max-price-gap-seconds",
         str(float(max_price_gap_seconds)),
+        "--price-tick-size",
+        str(float(price_tick_size)),
+        "--amount-step-size",
+        str(float(amount_step_size)),
     ]
     newest = optional_positive_int(newest_per_stream)
     max_events = optional_positive_int(max_price_events)
@@ -360,6 +366,8 @@ def local_gates(
     replay_acceptance_max_price_events: int | None = 2000,
     replay_acceptance_min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
     replay_acceptance_max_price_gap_seconds: float = DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS,
+    replay_acceptance_price_tick_size: float = 0.0,
+    replay_acceptance_amount_step_size: float = 0.0,
     replay_acceptance_fill_calibration: Path | None = DEFAULT_REPLAY_FILL_CALIBRATION,
     replay_acceptance_require_fill_calibration: bool = False,
     replay_acceptance_allow_incomplete: bool = True,
@@ -704,6 +712,8 @@ def local_gates(
                         max_price_events=replay_acceptance_max_price_events,
                         min_price_events_per_day=replay_acceptance_min_price_events_per_day,
                         max_price_gap_seconds=replay_acceptance_max_price_gap_seconds,
+                        price_tick_size=replay_acceptance_price_tick_size,
+                        amount_step_size=replay_acceptance_amount_step_size,
                         fill_calibration=replay_acceptance_fill_calibration,
                         require_fill_calibration=replay_acceptance_require_fill_calibration,
                         allow_incomplete=replay_acceptance_allow_incomplete,
@@ -1062,6 +1072,18 @@ def parse_args() -> argparse.Namespace:
         help="Maximum allowed gap between replay price events in the acceptance report.",
     )
     parser.add_argument(
+        "--replay-acceptance-price-tick-size",
+        type=float,
+        default=0.0,
+        help="Price tick size used by replay acceptance rounding. Defaults to disabled.",
+    )
+    parser.add_argument(
+        "--replay-acceptance-amount-step-size",
+        type=float,
+        default=0.0,
+        help="Base amount step size used by replay acceptance sizing. Defaults to disabled.",
+    )
+    parser.add_argument(
         "--replay-acceptance-require-pass",
         action="store_true",
         help="Omit --allow-incomplete so the replay acceptance command fails when report.ok is false.",
@@ -1104,6 +1126,8 @@ def main() -> int:
             replay_acceptance_max_price_events=args.replay_acceptance_max_price_events,
             replay_acceptance_min_price_events_per_day=args.replay_acceptance_min_price_events_per_day,
             replay_acceptance_max_price_gap_seconds=args.replay_acceptance_max_price_gap_seconds,
+            replay_acceptance_price_tick_size=args.replay_acceptance_price_tick_size,
+            replay_acceptance_amount_step_size=args.replay_acceptance_amount_step_size,
             replay_acceptance_fill_calibration=args.replay_acceptance_fill_calibration,
             replay_acceptance_require_fill_calibration=args.replay_acceptance_require_fill_calibration,
             replay_acceptance_allow_incomplete=not args.replay_acceptance_require_pass,
@@ -1150,6 +1174,8 @@ def main() -> int:
             "max_price_events": optional_positive_int(args.replay_acceptance_max_price_events),
             "min_price_events_per_day": float(args.replay_acceptance_min_price_events_per_day),
             "max_price_gap_seconds": float(args.replay_acceptance_max_price_gap_seconds),
+            "price_tick_size": float(args.replay_acceptance_price_tick_size),
+            "amount_step_size": float(args.replay_acceptance_amount_step_size),
             "fill_calibration": str(args.replay_acceptance_fill_calibration)
             if args.replay_acceptance_fill_calibration
             else None,

@@ -40,6 +40,8 @@ def gate_command(
     replay_acceptance_max_price_events: int | None = 2000,
     replay_acceptance_min_price_events_per_day: float = 1000.0,
     replay_acceptance_max_price_gap_seconds: float = 300.0,
+    replay_acceptance_price_tick_size: float = 0.0,
+    replay_acceptance_amount_step_size: float = 0.0,
     replay_acceptance_fill_calibration: Path | None = Path("docs/replay_log_calibration.json"),
     replay_acceptance_require_fill_calibration: bool = False,
     replay_acceptance_allow_incomplete: bool = True,
@@ -63,6 +65,8 @@ def gate_command(
         replay_acceptance_max_price_events=replay_acceptance_max_price_events,
         replay_acceptance_min_price_events_per_day=replay_acceptance_min_price_events_per_day,
         replay_acceptance_max_price_gap_seconds=replay_acceptance_max_price_gap_seconds,
+        replay_acceptance_price_tick_size=replay_acceptance_price_tick_size,
+        replay_acceptance_amount_step_size=replay_acceptance_amount_step_size,
         replay_acceptance_fill_calibration=replay_acceptance_fill_calibration,
         replay_acceptance_require_fill_calibration=replay_acceptance_require_fill_calibration,
         replay_acceptance_allow_incomplete=replay_acceptance_allow_incomplete,
@@ -152,6 +156,10 @@ def test_replay_acceptance_gate_defaults_to_short_artifact_mode():
     assert command[command.index("--min-price-events-per-day") + 1] == "1000.0"
     assert "--max-price-gap-seconds" in command
     assert command[command.index("--max-price-gap-seconds") + 1] == "300.0"
+    assert "--price-tick-size" in command
+    assert command[command.index("--price-tick-size") + 1] == "0.0"
+    assert "--amount-step-size" in command
+    assert command[command.index("--amount-step-size") + 1] == "0.0"
     assert "--fill-calibration" in command
     assert command[command.index("--fill-calibration") + 1].replace("\\", "/") == "docs/replay_log_calibration.json"
     assert "--allow-incomplete" in command
@@ -165,6 +173,8 @@ def test_replay_acceptance_gate_can_run_uncapped_promotion_mode_with_custom_cove
         replay_acceptance_max_price_events=None,
         replay_acceptance_min_price_events_per_day=2000.0,
         replay_acceptance_max_price_gap_seconds=120.0,
+        replay_acceptance_price_tick_size=0.1,
+        replay_acceptance_amount_step_size=0.001,
         replay_acceptance_require_fill_calibration=True,
         replay_acceptance_allow_incomplete=False,
     )
@@ -173,6 +183,8 @@ def test_replay_acceptance_gate_can_run_uncapped_promotion_mode_with_custom_cove
     assert "--max-price-events" not in command
     assert command[command.index("--min-price-events-per-day") + 1] == "2000.0"
     assert command[command.index("--max-price-gap-seconds") + 1] == "120.0"
+    assert command[command.index("--price-tick-size") + 1] == "0.1"
+    assert command[command.index("--amount-step-size") + 1] == "0.001"
     assert "--require-fill-calibration" in command
     assert "--allow-incomplete" not in command
 

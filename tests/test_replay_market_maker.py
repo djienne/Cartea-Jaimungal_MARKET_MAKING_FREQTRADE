@@ -25,6 +25,8 @@ from replay_market_maker import (  # noqa: E402
     post_only_check,
     quote_depth_bucket_key,
     quote_depth_key,
+    round_amount_down,
+    round_price_for_side,
     run_replay,
     selected_parquet_files,
 )
@@ -68,6 +70,18 @@ def test_compute_quotes_uses_configurable_maker_fee_cushion():
     assert round(float(ask_base), 6) == 100.7
     assert round(float(bid_wide), 6) == 99.1
     assert round(float(ask_wide), 6) == 100.9
+
+
+def test_replay_rounds_prices_in_maker_safe_direction():
+    assert round_price_for_side("bid", 100.09, 0.1) == 100.0
+    assert round_price_for_side("ask", 100.01, 0.1) == 100.1
+    assert round_price_for_side("bid", 100.09, 0.0) == 100.09
+
+
+def test_replay_rounds_amount_down_to_step():
+    assert round_amount_down(0.019, 0.01) == 0.01
+    assert round_amount_down(0.009, 0.01) == 0.0
+    assert round_amount_down(0.019, 0.0) == 0.019
 
 
 def test_replay_applies_latency_and_records_markouts(monkeypatch):
@@ -406,6 +420,99 @@ def test_replay_applies_usable_fill_calibration_conservatively(monkeypatch, tmp_
     assert metrics.calibration_attempts_by_key == {calibration_key: 2}
     assert metrics.calibration_fills_by_key == {calibration_key: 1}
     assert payload["fill_calibration"]["applied"] is True
+
+
+def test_replay_uses_rounded_price_and_amount_for_fills(monkeypatch):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame([{"timestamp": ts0, "bid": 100.0, "ask": 101.0}])
+    trades = pd.DataFrame(
+        [
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=500), "price": 100.0, "size": 0.02},
+        ]
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.09, None, {}),
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.019,
+            q_max=3,
+            decision_latency_ms=0,
+            order_ack_latency_ms=0,
+            cancel_latency_ms=0,
+            quote_refresh_interval_ms=1000,
+            price_tick_size=0.1,
+            amount_step_size=0.01,
+        ),
+        params,
+    )
+
+    payload = metrics.to_dict()
+    depth_key = quote_depth_key("bid", 100.5, 100.0)
+    assert metrics.maker_fills == 1
+    assert metrics.price_rounding_adjustments == 1
+    assert metrics.inventory_base == 0.01
+    assert metrics.fills_by_depth == {depth_key: 1}
+    assert round(metrics.realized_spread_usdc, 8) == 0.005
+    assert payload["price_tick_size"] == 0.1
+    assert payload["amount_step_size"] == 0.01
+
+
+def test_replay_rejects_quote_when_amount_rounds_to_zero(monkeypatch):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame([{"timestamp": ts0, "bid": 100.0, "ask": 101.0}])
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, pd.DataFrame(), pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.0, None, {}),
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.009,
+            q_max=3,
+            amount_step_size=0.01,
+        ),
+        params,
+    )
+
+    assert metrics.quote_attempts == 0
+    assert metrics.amount_rounding_rejects == 1
 
 
 def test_replay_tracks_margin_equity_and_liquidation_buffer(monkeypatch):

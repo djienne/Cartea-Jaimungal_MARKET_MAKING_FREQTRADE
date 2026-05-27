@@ -48,6 +48,8 @@ class ReplayConfig:
     leverage: float = 1.0
     maintenance_margin_rate: float = 0.05
     queue_decay_per_second: float = 0.05
+    price_tick_size: float = 0.0
+    amount_step_size: float = 0.0
     fill_calibration_path: Path | None = None
     newest_per_stream: int | None = None
     max_price_events: int | None = None
@@ -73,6 +75,10 @@ class ReplayMetrics:
     quote_refresh_interval_ms: int = 0
     consumed_trade_events: int = 0
     calibration_rejected_fills: int = 0
+    price_tick_size: float = 0.0
+    amount_step_size: float = 0.0
+    price_rounding_adjustments: int = 0
+    amount_rounding_rejects: int = 0
     calibration_attempts_by_key: dict[str, int] = field(default_factory=dict)
     calibration_fills_by_key: dict[str, int] = field(default_factory=dict)
     fill_calibration: dict[str, Any] = field(default_factory=dict)
@@ -131,6 +137,10 @@ class ReplayMetrics:
             "quote_refresh_interval_ms": self.quote_refresh_interval_ms,
             "consumed_trade_events": self.consumed_trade_events,
             "calibration_rejected_fills": self.calibration_rejected_fills,
+            "price_tick_size": self.price_tick_size,
+            "amount_step_size": self.amount_step_size,
+            "price_rounding_adjustments": self.price_rounding_adjustments,
+            "amount_rounding_rejects": self.amount_rounding_rejects,
             "calibration_attempts_by_key": self.calibration_attempts_by_key,
             "calibration_fills_by_key": self.calibration_fills_by_key,
             "fill_calibration": self.fill_calibration,
@@ -419,6 +429,26 @@ def quote_depth_bucket_key(side: str, mid: float, price: float, bucket_bps: floa
     return f"{side}:{lower:.2f}-{upper:.2f}bps"
 
 
+def round_price_for_side(side: str, price: float, tick_size: float) -> float:
+    tick = finite_float_or_none(tick_size)
+    if tick is None or tick <= 0:
+        return float(price)
+    scaled = float(price) / tick
+    if side == "bid":
+        rounded = np.floor(scaled) * tick
+    else:
+        rounded = np.ceil(scaled) * tick
+    return float(round(rounded, 12))
+
+
+def round_amount_down(amount: float, step_size: float) -> float:
+    step = finite_float_or_none(step_size)
+    if step is None or step <= 0:
+        return max(0.0, float(amount))
+    rounded = np.floor(float(amount) / step) * step
+    return float(round(max(0.0, rounded), 12))
+
+
 def load_fill_calibration(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {
@@ -667,6 +697,8 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     metrics.min_equity_usdc = float(config.starting_equity_usdc)
     metrics.min_liquidation_buffer_usdc = float(config.starting_equity_usdc)
     metrics.quote_refresh_interval_ms = int(config.quote_refresh_interval_ms)
+    metrics.price_tick_size = float(config.price_tick_size)
+    metrics.amount_step_size = float(config.amount_step_size)
     metrics.fill_calibration = load_fill_calibration(config.fill_calibration_path)
 
     if prices.empty:
@@ -756,10 +788,17 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
         stale_at = max(active_at, refresh_due_at) + pd.Timedelta(milliseconds=config.cancel_latency_ms)
         next_quote_decision_at = refresh_due_at
 
-        for side, price in (("bid", bid), ("ask", ask)):
-            if price is None:
+        for side, raw_price in (("bid", bid), ("ask", ask)):
+            if raw_price is None:
                 continue
             if side == "ask" and inventory_at_decision <= 0:
+                continue
+            price = round_price_for_side(side, raw_price, config.price_tick_size)
+            if abs(float(price) - float(raw_price)) > 1e-12:
+                metrics.price_rounding_adjustments += 1
+            order_amount = round_amount_down(config.inventory_unit_base, config.amount_step_size)
+            if order_amount <= 0:
+                metrics.amount_rounding_rejects += 1
                 continue
             metrics.quote_attempts += 1
             depth_key = quote_depth_key(side, mid, price)
@@ -802,11 +841,11 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                 continue
 
             trade_price = float(fill_trade.get("price", np.nan))
-            trade_size = float(fill_trade.get("size", config.inventory_unit_base) or config.inventory_unit_base)
+            trade_size = float(fill_trade.get("size", order_amount) or order_amount)
             if side == "ask":
-                fill_size = min(trade_size, config.inventory_unit_base, max(0.0, metrics.inventory_base))
+                fill_size = min(trade_size, order_amount, max(0.0, metrics.inventory_base))
             else:
-                fill_size = min(trade_size, config.inventory_unit_base)
+                fill_size = min(trade_size, order_amount)
             if fill_size <= 0:
                 continue
 
@@ -919,6 +958,8 @@ def parse_args() -> argparse.Namespace:
         default=0.05,
         help="Conservative queue-ahead cancellation decay as a fraction of initial queue per second.",
     )
+    parser.add_argument("--price-tick-size", type=float, default=0.0)
+    parser.add_argument("--amount-step-size", type=float, default=0.0)
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
     parser.add_argument(
@@ -957,6 +998,8 @@ def main() -> int:
         leverage=args.leverage,
         maintenance_margin_rate=args.maintenance_margin_rate,
         queue_decay_per_second=args.queue_decay_per_second,
+        price_tick_size=args.price_tick_size,
+        amount_step_size=args.amount_step_size,
         quote_refresh_interval_ms=args.quote_refresh_interval_ms,
         fill_calibration_path=args.fill_calibration,
         newest_per_stream=args.newest_per_stream,
