@@ -241,6 +241,15 @@ def freqtrade_callback_surface_command() -> list[str]:
     ]
 
 
+def freqtrade_tif_runtime_command(py: str) -> list[str]:
+    return [
+        py,
+        "scripts/verify_freqtrade_tif_runtime.py",
+        "--output",
+        "docs/freqtrade_tif_runtime_report.json",
+    ]
+
+
 def live_canary_evidence_command(
     py: str,
     *,
@@ -351,6 +360,7 @@ def local_gates(
                 "tests/test_hyperliquid_fee_capture.py",
                 "tests/test_config_safety.py",
                 "tests/test_freqtrade_callback_surface.py",
+                "tests/test_freqtrade_tif_runtime.py",
                 "tests/test_dry_run_quality.py",
                 "tests/test_fee_evidence.py",
                 "tests/test_live_canary.py",
@@ -496,6 +506,11 @@ def local_gates(
                 (
                     "freqtrade_callback_surface",
                     freqtrade_callback_surface_command(),
+                    [0],
+                ),
+                (
+                    "freqtrade_tif_runtime",
+                    freqtrade_tif_runtime_command(py),
                     [0],
                 ),
                 (

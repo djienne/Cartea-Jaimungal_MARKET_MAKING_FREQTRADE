@@ -66,7 +66,8 @@ def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     names = gate_names(include_runtime=True)
 
     assert names.index("freqtrade_runtime_load") < names.index("freqtrade_callback_surface")
-    assert names.index("freqtrade_callback_surface") < names.index("dry_run_disabled_smoke")
+    assert names.index("freqtrade_callback_surface") < names.index("freqtrade_tif_runtime")
+    assert names.index("freqtrade_tif_runtime") < names.index("dry_run_disabled_smoke")
     assert names.index("dry_run_enabled_smoke") < names.index("dry_run_quality_report")
     assert names.index("dry_run_quality_report") < names.index("replay_log_calibration_artifact")
     assert names.index("post_only_evidence_report") < names.index("live_canary_evidence_report")
@@ -188,6 +189,15 @@ def test_dry_run_quality_gate_checks_quotes_amounts_and_pnl():
     assert command[command.index("--max-order-amount-units") + 1] == "0.01"
     assert "--max-loss-usdc" in command
     assert command[command.index("--max-loss-usdc") + 1] == "1"
+
+
+def test_freqtrade_tif_runtime_gate_writes_runtime_artifact():
+    command = gate_command("freqtrade_tif_runtime", include_runtime=True)
+    normalized = [item.replace("\\", "/") for item in command]
+
+    assert "scripts/verify_freqtrade_tif_runtime.py" in normalized
+    assert "--output" in command
+    assert "docs/freqtrade_tif_runtime_report.json" in normalized
 
 
 def test_runtime_evidence_age_windows_are_passed_to_fee_and_canary_checks():

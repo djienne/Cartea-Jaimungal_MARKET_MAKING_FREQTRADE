@@ -2,17 +2,22 @@
 
 Current status: **not verified for Freqtrade live execution**.
 
-Runtime evidence from the Docker/Freqtrade dry-run gate showed that Freqtrade
-2025.4 rejects `order_time_in_force = {"entry": "PO", "exit": "PO"}` for
-Hyperliquid with:
+Runtime evidence from `docs/freqtrade_tif_runtime_report.json` probes the exact
+`freqtradeorg/freqtrade:2025.4` Docker runtime with generated `GTC`, `PO`, and
+`Alo` configs. The current result is:
 
-```text
-Configuration error: Time in force policies are not supported for Hyperliquid yet.
-```
+- `GTC` loads.
+- `PO` loads at Freqtrade startup/config validation.
+- Native Hyperliquid `Alo` is rejected by Freqtrade config validation.
 
-Therefore the repository uses `GTC` in `user_data/config.json` and
-`Market_Making.order_time_in_force` only so the Freqtrade research/dry-run
-harness can start. This does **not** satisfy maker-safe live execution.
+That means Freqtrade can currently start with `order_time_in_force =
+{"entry": "PO", "exit": "PO"}`, but this is only startup evidence. It does
+**not** prove that a submitted Hyperliquid order carries native `Alo`, rests as
+maker-only, or reports maker liquidity/fees after fill.
+
+The checked-in research config still uses `GTC` so the dry-run harness can
+start in environments where post-only support has not been exchange-verified.
+This does **not** satisfy maker-safe live execution.
 
 Live trading remains blocked by strategy state:
 
@@ -73,8 +78,9 @@ python scripts/run_safety_gates.py --include-runtime --post-only-crossing-result
 
 ## Direct SDK Fallback
 
-Because Freqtrade 2025.4 rejects Hyperliquid `PO`, the repo also includes a
-guarded direct SDK adapter:
+Because Freqtrade `PO` startup acceptance is not the same as proven native
+Hyperliquid `Alo` submit behavior, the repo also includes a guarded direct SDK
+adapter:
 
 ```bash
 python scripts/hyperliquid_alo_executor.py --mode plan --output docs/direct_alo_adapter_plan.json

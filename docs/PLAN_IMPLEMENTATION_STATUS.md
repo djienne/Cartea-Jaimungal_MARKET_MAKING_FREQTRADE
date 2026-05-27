@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 308 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 314 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -48,6 +48,15 @@ Generated from the current local worktree after the latest safety-gate run.
   `confirm_trade_entry`, `confirm_trade_exit`, `adjust_entry_price`,
   `adjust_exit_price`, `leverage`, and `order_filled`, including `**kwargs`
   support for forward-compatible callback changes.
+- Runtime TIF compatibility:
+  `freqtrade_tif_runtime` runs `scripts/verify_freqtrade_tif_runtime.py` and
+  writes `docs/freqtrade_tif_runtime_report.json` after probing generated
+  `GTC`, `PO`, and `Alo` configs with `freqtrade list-strategies` in the exact
+  Docker runtime. This artifact records whether the container accepts post-only
+  config values, but it is deliberately not deployment proof: even an accepted
+  config still requires exchange submit evidence that Hyperliquid receives
+  native `Alo`, crossing orders reject/cancel without fills, passive orders rest
+  or fill maker-only, and actual fill fees/liquidity are logged.
 - Post-only evidence harness:
   `scripts/verify_post_only_mapping.py` now writes a plan artifact and evaluates
   crossing/passive `Alo` submit artifacts. The current

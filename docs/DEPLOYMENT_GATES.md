@@ -96,6 +96,12 @@ Optional Docker runtime gates:
   It verifies the runtime-visible callback signatures for custom pricing,
   custom stake sizing, confirmation, repricing, leverage, and fill callbacks,
   including `**kwargs` support for Freqtrade callback evolution.
+- `freqtrade_tif_runtime`: writes `docs/freqtrade_tif_runtime_report.json`
+  after probing the exact Freqtrade container with generated `GTC`, `PO`, and
+  `Alo` configs using `freqtrade list-strategies`. This is a startup/config
+  compatibility artifact only. It can show whether a post-only TIF config loads,
+  but it still does not prove Hyperliquid native `Alo` order submission,
+  resting behavior, maker fills, or fee evidence.
 - `dry_run_disabled_smoke`: starts the configured bot briefly in dry-run with
   the default safety lock, stops it, stores logs, and fails if any order creation
   line appears.
@@ -252,11 +258,17 @@ These gates require the real Freqtrade/Hyperliquid runtime:
   quote and create a dry-run order, while checked-in config/params remain
   locked.
 - `hyperliquid_post_only_mapping`: Freqtrade `PO` is currently not verified for
-  Hyperliquid. In local runtime evidence, Freqtrade 2025.4 rejected Hyperliquid
-  `PO` as unsupported, so the dry-run harness uses `GTC` and live trading remains
-  blocked. Even if `post_only_verified=true` is supplied, live strategy
-  enablement also rejects unless configured entry and exit TIF canonicalize to
-  post-only/Alo. See `docs/POST_ONLY_VERIFICATION.md`.
+  Hyperliquid live execution. Current local runtime evidence shows that
+  Freqtrade 2025.4 accepts generated `GTC` and `PO` configs at startup, while
+  native `Alo` is rejected by Freqtrade config validation. The checked-in
+  dry-run harness still uses `GTC` for research startup compatibility and live
+  trading remains blocked. Even if `post_only_verified=true` is supplied, live
+  strategy enablement also rejects unless configured entry and exit TIF
+  canonicalize to post-only/Alo. See `docs/POST_ONLY_VERIFICATION.md`.
+  The `freqtrade_tif_runtime` artifact records current container-level config
+  acceptance for `GTC`, `PO`, and `Alo`, but exchange submit artifacts are still
+  required before this gate can pass. Startup acceptance of `PO` is not proof
+  that Hyperliquid receives native `Alo`.
   Prove a native `Alo` path before live use; intentionally crossing `Alo` orders
   must reject or cancel without filling, passive `Alo` orders must rest or fill
   maker-only, and submit artifacts must confirm the actual order TIF as `Alo`
