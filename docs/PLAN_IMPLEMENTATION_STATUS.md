@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 318 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 320 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -85,7 +85,10 @@ Generated from the current local worktree after the latest safety-gate run.
   direct execution layer. The adapter accepts `--quote-id`, `--session-id`, and
   `--hjb-generation`, stores a readable client order id in the artifact, and
   submits a deterministic Hyperliquid `cloid` derived from those fields for
-  future quote-to-fill reconciliation. The safety-gate runner can consume post-only
+  future quote-to-fill reconciliation. Direct submit artifacts now also carry
+  `actual_time_in_force="Alo"` with source
+  `hyperliquid_sdk_order_type`, so the post-only evidence checker can evaluate
+  generated SDK artifacts without manual edits. The safety-gate runner can consume post-only
   crossing/passive evidence through explicit artifact path flags, and it also
   auto-detects the conventional `docs/post_only_crossing_result.json` and
   `docs/post_only_passive_result.json` paths when they exist.

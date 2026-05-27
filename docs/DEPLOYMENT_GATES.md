@@ -309,7 +309,10 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   Direct SDK submit artifacts from `hyperliquid_alo_executor.py` can be fed to
   the same `verify_post_only_mapping.py --mode evaluate-evidence` checker. The
   checker normalizes SDK `order_type={"limit": {"tif": "Alo"}}` and evaluates
-  the adapter's resting/rejected/fill classification. Use
+  the adapter's resting/rejected/fill classification. Direct submit artifacts
+  also carry `actual_time_in_force="Alo"` with
+  `actual_time_in_force_source="hyperliquid_sdk_order_type"`, so the checker can
+  verify native SDK `Alo` evidence without manual artifact edits. Use
   `hyperliquid_alo_executor.py --mode submit-crossing-alo` for a direct SDK
   rejection probe and `--mode submit-passive-alo` for passive resting/maker
   evidence with automatic cancellation of any resting order ids returned by the

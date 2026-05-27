@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ if str(SCRIPTS) not in sys.path:
 
 from hyperliquid_alo_executor import (  # noqa: E402
     AloOrderIntent,
+    actual_tif_from_sdk_order_args,
     alo_order_type,
     build_client_order_id,
     build_hyperliquid_cloid,
@@ -25,7 +27,10 @@ from hyperliquid_alo_executor import (  # noqa: E402
     normalize_coin,
     quote_link_payload,
     render_plan,
+    submit_crossing_alo_probe,
+    submit_passive_alo_probe,
 )
+from verify_post_only_mapping import evaluate_crossing_result, evaluate_passive_result  # noqa: E402
 
 
 def test_normalize_coin_from_freqtrade_pair():
@@ -47,6 +52,7 @@ def test_build_sdk_order_args_uses_alo_order_type():
         "reduce_only": False,
     }
     assert alo_order_type()["limit"]["tif"] == "Alo"
+    assert actual_tif_from_sdk_order_args(args) == "Alo"
 
 
 def test_quote_link_payload_builds_deterministic_hyperliquid_cloid():
@@ -206,6 +212,8 @@ def test_plan_documents_submit_guards():
     plan = render_plan("ETH/USDC:USDC")
 
     assert plan["order_type"] == {"limit": {"tif": "Alo"}}
+    assert plan["post_only_evidence_fields"]["actual_time_in_force"] == "Alo"
+    assert plan["post_only_evidence_fields"]["actual_time_in_force_source"] == "hyperliquid_sdk_order_type"
     assert plan["quote_linking"]["sdk_arg"] == "cloid"
     assert "quote_id" in plan["quote_linking"]["client_order_id_fields"]
     assert any("HYPERLIQUID_DIRECT_ALO_ALLOW" in item for item in plan["submit_guards"])
@@ -213,3 +221,87 @@ def test_plan_documents_submit_guards():
     assert any("--quote-id" in item for item in plan["submit_guards"])
     assert any("--allow-crossing-probe" in item for item in plan["crossing_probe_guards"])
     assert any("--allow-passive-probe" in item for item in plan["passive_probe_guards"])
+
+
+def args_for_submit(**overrides):
+    payload = {
+        "symbol": "ETH/USDC:USDC",
+        "side": "bid",
+        "size": 0.01,
+        "price": 100.0,
+        "reduce_only": False,
+        "best_bid": 99.0,
+        "best_ask": 101.0,
+        "testnet": True,
+        "acknowledge_real_orders": True,
+        "allow_crossing_probe": False,
+        "allow_mainnet_crossing_probe": False,
+        "allow_passive_probe": False,
+        "allow_mainnet_passive_probe": False,
+        "quote_id": "quote-000000000123",
+        "session_id": "session-a",
+        "hjb_generation": 42,
+        "client_order_id": None,
+        "cloid": None,
+        "max_notional_usdc": 25.0,
+        "private_key": None,
+        "account_address": None,
+    }
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
+
+
+class FakeExchange:
+    def __init__(self, result):
+        self.result = result
+        self.orders = []
+        self.cancels = []
+
+    def order(self, **kwargs):
+        self.orders.append(kwargs)
+        return self.result
+
+    def cancel(self, coin, oid):
+        self.cancels.append((coin, oid))
+        return {"status": "ok", "oid": oid}
+
+
+def test_direct_passive_probe_artifact_carries_actual_alo_tif(monkeypatch):
+    result = {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": 123}}]}}}
+    exchange = FakeExchange(result)
+    monkeypatch.setenv("HYPERLIQUID_DIRECT_ALO_ALLOW", "1")
+    monkeypatch.setattr("hyperliquid_alo_executor.load_sdk_exchange", lambda args: exchange)
+
+    payload = submit_passive_alo_probe(args_for_submit(allow_passive_probe=True))
+    ok, reasons = evaluate_passive_result(payload)
+
+    assert payload["actual_time_in_force"] == "Alo"
+    assert payload["actual_time_in_force_source"] == "hyperliquid_sdk_order_type"
+    assert payload["sdk_order_args"]["order_type"] == {"limit": {"tif": "Alo"}}
+    assert payload["quote_link"]["quote_id"] == "quote-000000000123"
+    assert payload["cancel_results"][0]["oid"] == 123
+    assert exchange.cancels == [("ETH", 123)]
+    assert ok is True
+    assert reasons == []
+
+
+def test_direct_crossing_probe_artifact_carries_actual_alo_tif(monkeypatch):
+    result = {
+        "status": "ok",
+        "response": {"data": {"statuses": [{"error": "Post only order would immediately match"}]}},
+    }
+    exchange = FakeExchange(result)
+    monkeypatch.setenv("HYPERLIQUID_DIRECT_ALO_ALLOW", "1")
+    monkeypatch.setattr("hyperliquid_alo_executor.load_sdk_exchange", lambda args: exchange)
+
+    payload = submit_crossing_alo_probe(
+        args_for_submit(price=0.0, allow_crossing_probe=True, best_bid=99.0, best_ask=101.0)
+    )
+    ok, reasons = evaluate_crossing_result(payload)
+
+    assert payload["actual_time_in_force"] == "Alo"
+    assert payload["actual_time_in_force_source"] == "hyperliquid_sdk_order_type"
+    assert payload["sdk_order_args"]["limit_px"] == 101.0
+    assert payload["classification"]["alo_rejected"] is True
+    assert ok is True
+    assert reasons == []

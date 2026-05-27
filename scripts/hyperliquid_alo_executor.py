@@ -130,6 +130,17 @@ def build_sdk_order_args(intent: AloOrderIntent) -> dict[str, Any]:
     return order_args
 
 
+def actual_tif_from_sdk_order_args(order_args: dict[str, Any]) -> str | None:
+    order_type = order_args.get("order_type")
+    if not isinstance(order_type, dict):
+        return None
+    limit = order_type.get("limit")
+    if not isinstance(limit, dict):
+        return None
+    tif = limit.get("tif") or limit.get("timeInForce")
+    return str(tif) if tif else None
+
+
 def order_args_for_submit(order_args: dict[str, Any]) -> dict[str, Any]:
     submit_args = dict(order_args)
     raw_cloid = submit_args.get("cloid")
@@ -375,6 +386,7 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
     order_args = build_sdk_order_args(intent)
     result = exchange.order(**order_args_for_submit(order_args))
     classification = classify_order_result(result if isinstance(result, dict) else {"raw_result": result})
+    actual_tif = actual_tif_from_sdk_order_args(order_args)
     return {
         "generated_at": utc_now_iso(),
         "mode": "submit-alo",
@@ -383,6 +395,8 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
         "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
+        "actual_time_in_force": actual_tif,
+        "actual_time_in_force_source": "hyperliquid_sdk_order_type",
         "classification": classification,
         "raw_result": result,
     }
@@ -441,6 +455,7 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
     order_args = build_sdk_order_args(intent)
     result = exchange.order(**order_args_for_submit(order_args))
     classification = classify_order_result(result if isinstance(result, dict) else {"raw_result": result})
+    actual_tif = actual_tif_from_sdk_order_args(order_args)
     return {
         "generated_at": utc_now_iso(),
         "mode": "submit-crossing-alo",
@@ -449,6 +464,8 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         "crossing_probe_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
+        "actual_time_in_force": actual_tif,
+        "actual_time_in_force_source": "hyperliquid_sdk_order_type",
         "classification": classification,
         "raw_result": result,
     }
@@ -498,6 +515,7 @@ def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
     result = exchange.order(**order_args_for_submit(order_args))
     classification = classify_order_result(result if isinstance(result, dict) else {"raw_result": result})
     cancel_results = cancel_resting_orders(exchange, intent.coin, classification.get("resting_oids", []))
+    actual_tif = actual_tif_from_sdk_order_args(order_args)
     return {
         "generated_at": utc_now_iso(),
         "mode": "submit-passive-alo",
@@ -506,6 +524,8 @@ def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
+        "actual_time_in_force": actual_tif,
+        "actual_time_in_force_source": "hyperliquid_sdk_order_type",
         "classification": classification,
         "cancel_results": cancel_results,
         "raw_result": result,
@@ -525,6 +545,11 @@ def render_plan(symbol: str) -> dict[str, Any]:
             "cloid_format": "0x + 16-byte hex",
             "client_order_id_fields": ["session_id", "quote_id", "side", "hjb_generation"],
             "raw_client_order_id_stored_in_artifact": True,
+        },
+        "post_only_evidence_fields": {
+            "actual_time_in_force": "Alo",
+            "actual_time_in_force_source": "hyperliquid_sdk_order_type",
+            "submitted_params_source": "sdk_order_args.order_type.limit.tif",
         },
         "submit_guards": [
             f"{DIRECT_ALO_ALLOW_ENV}=1",

@@ -92,8 +92,19 @@ The adapter builds SDK orders with:
 order_type = {"limit": {"tif": "Alo"}}
 ```
 
-and requires local BBO maker-safety before submit. Submit mode is intentionally
-hard to invoke. It also caps submit notional at 25 USDC by default through
+and submit artifacts stamp:
+
+```json
+{
+  "actual_time_in_force": "Alo",
+  "actual_time_in_force_source": "hyperliquid_sdk_order_type"
+}
+```
+
+so the downstream post-only checker can verify the native SDK order type without
+operator hand-editing. The adapter still requires local BBO maker-safety before
+normal submit. Submit mode is intentionally hard to invoke. It also caps submit
+notional at 25 USDC by default through
 `--max-notional-usdc`; raise that only when the exchange minimum requires it and
 record the reason with the retained evidence.
 
