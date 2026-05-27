@@ -11,7 +11,7 @@
     "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-05-27T02:48:10Z",
+  "generated_at": "2026-05-27T03:12:50Z",
   "local_gates": {
     "failed": [],
     "missing": [],
@@ -34,6 +34,7 @@
       "live_canary_evidence_report",
       "post_only_evidence_report",
       "post_only_probe_plan",
+      "promotion_evidence_manifest",
       "pytest_core",
       "replay_acceptance_report_artifact",
       "replay_latest_data_smoke",
@@ -60,6 +61,7 @@
       "live_canary_evidence_report",
       "post_only_evidence_report",
       "post_only_probe_plan",
+      "promotion_evidence_manifest",
       "pytest_core",
       "replay_acceptance_report_artifact",
       "replay_latest_data_smoke",
@@ -91,8 +93,8 @@
   },
   "ok": true,
   "pytest_count": {
-    "latest_gates": 314,
-    "status": 314
+    "latest_gates": 318,
+    "status": 318
   },
   "reasons": [],
   "status_path": "docs\\PLAN_IMPLEMENTATION_STATUS.md",

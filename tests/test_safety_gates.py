@@ -75,12 +75,14 @@ def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     assert names.index("hyperliquid_fee_capture_plan") < names.index("fee_evidence_report")
     assert names.index("direct_risk_flatten_plan") < names.index("live_canary_evidence_report")
     assert names.index("replay_acceptance_report_artifact") < names.index("live_canary_evidence_report")
+    assert names.index("live_canary_evidence_report") < names.index("promotion_evidence_manifest")
 
 
 def test_live_canary_gate_is_still_available_without_runtime_gates():
     names = gate_names(include_runtime=False)
 
     assert "live_canary_evidence_report" in names
+    assert names.index("live_canary_evidence_report") < names.index("promotion_evidence_manifest")
 
 
 def test_external_evidence_report_gates_accept_incomplete_and_complete_returncodes():
@@ -198,6 +200,16 @@ def test_freqtrade_tif_runtime_gate_writes_runtime_artifact():
     assert "scripts/verify_freqtrade_tif_runtime.py" in normalized
     assert "--output" in command
     assert "docs/freqtrade_tif_runtime_report.json" in normalized
+
+
+def test_promotion_evidence_manifest_gate_writes_manifest_after_reports():
+    command = gate_command("promotion_evidence_manifest", include_runtime=True)
+    normalized = [item.replace("\\", "/") for item in command]
+
+    assert "scripts/build_promotion_evidence_manifest.py" in normalized
+    assert "--output" in command
+    assert "docs/promotion_evidence_manifest.json" in normalized
+    assert gate_expected_returncodes("promotion_evidence_manifest", include_runtime=True) == [0]
 
 
 def test_runtime_evidence_age_windows_are_passed_to_fee_and_canary_checks():

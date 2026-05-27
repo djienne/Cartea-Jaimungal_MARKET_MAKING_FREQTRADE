@@ -215,6 +215,14 @@ Optional Docker runtime gates:
   `--manual-monitoring-ack` after actual monitored live-canary sessions, plus
   `--max-evidence-age-seconds` to tighten dependency report freshness and
   `--max-canary-event-age-seconds` to tighten canary audit event freshness.
+- `promotion_evidence_manifest`: writes
+  `docs/promotion_evidence_manifest.json` after the local evidence reports have
+  been generated. The manifest summarizes dry-run quote/sizing/PnL quality,
+  Freqtrade TIF runtime compatibility, the four remaining external gate
+  reports, and the guarded commands/artifact paths needed to collect post-only,
+  fee, multi-day replay, and canary evidence. It is a checklist artifact only:
+  `ok=true` means the manifest was built, while `deployment_ready` remains false
+  until every external report is `ok=true`.
 - `hl_data_validation_report`: reads the newest collector Parquet shards and
   validates required streams/columns plus the actual `timestamp` values inside
   the files. Freshness is based on row timestamps, not file modification time,

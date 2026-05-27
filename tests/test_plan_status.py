@@ -25,6 +25,7 @@ def gate_payload(pytest_count: int = 173) -> dict:
         "direct_alo_adapter_plan",
         "direct_risk_flatten_plan",
         "hyperliquid_fee_capture_plan",
+        "promotion_evidence_manifest",
         "docker_compose_config",
         "freqtrade_runtime_load",
         "freqtrade_callback_surface",
@@ -88,6 +89,8 @@ def status_text(test_count: int = 173) -> str:
   runtime logs produce calibration artifacts for replay fill assumptions.
 - Hyperliquid fee evidence capture:
   read-only capture normalizes userFees/userFills evidence.
+- Promotion evidence manifest:
+  `docs/promotion_evidence_manifest.json` summarizes dry-run quality and remaining external evidence commands.
 - Hyperliquid risk flatten scaffold:
   direct reduce-only IOC flatten plans are generated without network access.
 ## Remaining Required Gates

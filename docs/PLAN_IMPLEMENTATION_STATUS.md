@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 314 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 318 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -238,6 +238,17 @@ Generated from the current local worktree after the latest safety-gate run.
   consumed by `scripts/verify_fee_evidence.py`. Fill events only carry
   post-only TIF and limit-order proof when matching order-id evidence is
   supplied, so raw fills alone cannot satisfy the fee gate.
+- Promotion evidence manifest:
+  `scripts/build_promotion_evidence_manifest.py` writes
+  `docs/promotion_evidence_manifest.json` from the current dry-run quality, TIF
+  runtime, post-only, fee, replay, and canary reports. It gives the operator one
+  machine-readable checklist for the remaining external gates: the current
+  dry-run quote/size/PnL assessment, the current Freqtrade `PO`/`Alo` runtime
+  status, which deployment blockers remain, and the guarded commands/artifact
+  paths needed to gather post-only, fee, multi-day replay, and canary evidence.
+  The manifest is intentionally not a shortcut to live trading: `ok=true` means
+  the manifest was generated, while `deployment_ready` stays false until all
+  four external gate reports are `ok=true`.
 - Risk audit trail:
   realized-PnL fills now emit `risk_update` events with daily realized PnL,
   daily loss limits, consecutive-loss counts, and consecutive-loss limits.

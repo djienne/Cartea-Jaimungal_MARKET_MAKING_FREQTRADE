@@ -212,6 +212,15 @@ def fee_evidence_capture_plan_command(py: str) -> list[str]:
     ]
 
 
+def promotion_evidence_manifest_command(py: str) -> list[str]:
+    return [
+        py,
+        "scripts/build_promotion_evidence_manifest.py",
+        "--output",
+        "docs/promotion_evidence_manifest.json",
+    ]
+
+
 def risk_flatten_plan_command(py: str) -> list[str]:
     return [
         py,
@@ -358,6 +367,7 @@ def local_gates(
                 "tests/test_hyperliquid_alo_executor.py",
                 "tests/test_hyperliquid_risk_executor.py",
                 "tests/test_hyperliquid_fee_capture.py",
+                "tests/test_promotion_evidence_manifest.py",
                 "tests/test_config_safety.py",
                 "tests/test_freqtrade_callback_surface.py",
                 "tests/test_freqtrade_tif_runtime.py",
@@ -662,6 +672,11 @@ def local_gates(
                     ),
                     [0, 1],
                 ),
+                (
+                    "promotion_evidence_manifest",
+                    promotion_evidence_manifest_command(sys.executable),
+                    [0],
+                ),
             ]
         )
     else:
@@ -676,6 +691,13 @@ def local_gates(
                     max_canary_event_age_seconds=max_canary_event_age_seconds,
                 ),
                 [0, 1],
+            )
+        )
+        gates.append(
+            (
+                "promotion_evidence_manifest",
+                promotion_evidence_manifest_command(py),
+                [0],
             )
         )
     return gates

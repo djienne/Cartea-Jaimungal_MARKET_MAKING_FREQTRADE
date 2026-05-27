@@ -2,17 +2,17 @@
 
 - status: FAIL
 - symbol: `ETH`
-- generated_at: `2026-05-27T02:48:09Z`
+- generated_at: `2026-05-27T03:12:50Z`
 
 ## Variant Summary
 
 | Variant | Status | Coverage days | Price events/day | Max gap s | Quotes | Maker fills | Taker fills | Post-only reject % | Stale cancel % | Net spread | Directional ratio | Reasons |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| baseline | FAIL | 0.003432 | 582788.45 | 1.796 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003432<min_3.000000, no_maker_fills |
-| fee_2x | FAIL | 0.003432 | 582788.45 | 1.796 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003432<min_3.000000, no_maker_fills |
-| latency_2x | FAIL | 0.003432 | 582788.45 | 1.796 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003432<min_3.000000, no_maker_fills |
-| params_soft | FAIL | 0.003432 | 582788.45 | 1.796 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003432<min_3.000000, no_maker_fills |
-| params_hard | FAIL | 0.003432 | 582788.45 | 1.796 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003432<min_3.000000, no_maker_fills |
+| baseline | FAIL | 0.003946 | 506788.60 | 2.665 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003946<min_3.000000, no_maker_fills |
+| fee_2x | FAIL | 0.003946 | 506788.60 | 2.665 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003946<min_3.000000, no_maker_fills |
+| latency_2x | FAIL | 0.003946 | 506788.60 | 2.665 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003946<min_3.000000, no_maker_fills |
+| params_soft | FAIL | 0.003946 | 506788.60 | 2.665 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003946<min_3.000000, no_maker_fills |
+| params_hard | FAIL | 0.003946 | 506788.60 | 2.665 | 2000 | 0 | 0 | 0.00% | 100.00% | 0.00000000 | 0.000000 | stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000, insufficient_coverage_days:0.003946<min_3.000000, no_maker_fills |
 
 ## Refusal Checks
 
@@ -25,17 +25,17 @@
 ## Blocking Reasons
 
 - `baseline:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000`
-- `baseline:insufficient_coverage_days:0.003432<min_3.000000`
+- `baseline:insufficient_coverage_days:0.003946<min_3.000000`
 - `baseline:no_maker_fills`
 - `fee_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000`
-- `fee_2x:insufficient_coverage_days:0.003432<min_3.000000`
+- `fee_2x:insufficient_coverage_days:0.003946<min_3.000000`
 - `fee_2x:no_maker_fills`
 - `latency_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000`
-- `latency_2x:insufficient_coverage_days:0.003432<min_3.000000`
+- `latency_2x:insufficient_coverage_days:0.003946<min_3.000000`
 - `latency_2x:no_maker_fills`
 - `params_soft:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000`
-- `params_soft:insufficient_coverage_days:0.003432<min_3.000000`
+- `params_soft:insufficient_coverage_days:0.003946<min_3.000000`
 - `params_soft:no_maker_fills`
 - `params_hard:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000`
-- `params_hard:insufficient_coverage_days:0.003432<min_3.000000`
+- `params_hard:insufficient_coverage_days:0.003946<min_3.000000`
 - `params_hard:no_maker_fills`
