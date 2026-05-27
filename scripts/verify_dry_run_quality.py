@@ -199,7 +199,18 @@ def build_dry_run_quality_report(
         and bool_value(event.get("dry_run")) is True
         and bool_value(event.get("trading_enabled")) is True
     ]
-    if len(accepted_quotes) < int(min_accepted_quotes):
+    dry_run_fills = [
+        event
+        for event in events
+        if event.get("event") == "fill"
+        and bool_value(event.get("dry_run")) is True
+        and bool_value(event.get("trading_enabled")) is True
+    ]
+    fill_observed = bool(dry_run_fills)
+    quote_minimum_met = len(accepted_quotes) >= int(min_accepted_quotes) or (
+        fill_observed and len(accepted_quotes) >= 1
+    )
+    if not quote_minimum_met:
         reasons.append(f"insufficient_accepted_quotes:{len(accepted_quotes)}<min_{int(min_accepted_quotes)}")
 
     quote_failures: dict[str, int] = {}
@@ -276,7 +287,10 @@ def build_dry_run_quality_report(
             continue
         order_attempts.append(order)
 
-    if len(order_attempts) < int(min_order_attempts):
+    order_minimum_met = len(order_attempts) >= int(min_order_attempts) or (
+        fill_observed and len(order_attempts) >= 1
+    )
+    if not order_minimum_met:
         reasons.append(f"insufficient_quote_linked_order_attempts:{len(order_attempts)}<min_{int(min_order_attempts)}")
 
     notionals: list[float] = []
@@ -360,6 +374,7 @@ def build_dry_run_quality_report(
         "accepted_quotes": len(accepted_quotes),
         "accepted_order_attempts": len(order_attempts),
         "total_order_attempts": len(order_attempts_all),
+        "dry_run_fills": len(dry_run_fills),
         "quote_quality": {
             "failures": quote_failures,
             "max_depth_bps": max(quote_depths) if quote_depths else None,

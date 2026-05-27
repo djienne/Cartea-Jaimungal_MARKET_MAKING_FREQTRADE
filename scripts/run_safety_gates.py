@@ -25,6 +25,11 @@ DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY = 1_000.0
 DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS = 300.0
 DEFAULT_REPORT_MAX_AGE_SECONDS = 86_400.0
 DEFAULT_LIVE_CANARY_MAX_EVENT_AGE_SECONDS = 604_800.0
+DEFAULT_ENABLED_DRY_RUN_SECONDS = 600
+DEFAULT_ENABLED_DRY_RUN_MIN_RUNTIME_SECONDS = 540
+DEFAULT_ENABLED_DRY_RUN_MIN_EVENT_SPAN_SECONDS = 300
+DEFAULT_ENABLED_DRY_RUN_MIN_ACCEPTED_QUOTES = 2
+DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS = 2
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 
@@ -218,6 +223,24 @@ def risk_flatten_plan_command(py: str) -> list[str]:
     ]
 
 
+def freqtrade_callback_surface_command() -> list[str]:
+    return [
+        "docker",
+        "compose",
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "python",
+        "freqtrade",
+        "/freqtrade/scripts/verify_freqtrade_callback_surface.py",
+        "--strategy-path",
+        "/freqtrade/user_data/strategies/Market_Making.py",
+        "--output",
+        "/freqtrade/docs/freqtrade_callback_surface_report.json",
+    ]
+
+
 def live_canary_evidence_command(
     py: str,
     *,
@@ -327,6 +350,7 @@ def local_gates(
                 "tests/test_hyperliquid_risk_executor.py",
                 "tests/test_hyperliquid_fee_capture.py",
                 "tests/test_config_safety.py",
+                "tests/test_freqtrade_callback_surface.py",
                 "tests/test_dry_run_quality.py",
                 "tests/test_fee_evidence.py",
                 "tests/test_live_canary.py",
@@ -470,6 +494,11 @@ def local_gates(
                     [0],
                 ),
                 (
+                    "freqtrade_callback_surface",
+                    freqtrade_callback_surface_command(),
+                    [0],
+                ),
+                (
                     "dry_run_disabled_smoke",
                     [
                         sys.executable,
@@ -491,7 +520,7 @@ def local_gates(
                         sys.executable,
                         "scripts/verify_dry_run_enabled.py",
                         "--seconds",
-                        "240",
+                        str(DEFAULT_ENABLED_DRY_RUN_SECONDS),
                         "--collector-warmup-seconds",
                         "70",
                         "--json-output",
@@ -511,13 +540,13 @@ def local_gates(
                         "--output",
                         "docs/dry_run_quality_report.json",
                         "--min-runtime-seconds",
-                        "180",
+                        str(DEFAULT_ENABLED_DRY_RUN_MIN_RUNTIME_SECONDS),
                         "--min-event-span-seconds",
-                        "60",
+                        str(DEFAULT_ENABLED_DRY_RUN_MIN_EVENT_SPAN_SECONDS),
                         "--min-accepted-quotes",
-                        "1",
+                        str(DEFAULT_ENABLED_DRY_RUN_MIN_ACCEPTED_QUOTES),
                         "--min-order-attempts",
-                        "1",
+                        str(DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS),
                         "--max-quote-distance-ratio",
                         "0.01",
                         "--max-quote-depth-bps",

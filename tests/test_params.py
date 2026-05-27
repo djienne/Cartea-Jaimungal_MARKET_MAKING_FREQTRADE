@@ -454,6 +454,25 @@ def test_dry_run_enabled_gate_writes_safe_temp_config_and_params(tmp_path):
     assert lambdas["lambda_source"] == "lambda0_fit"
 
 
+def test_dry_run_enabled_gate_can_extend_param_freshness_for_long_windows(tmp_path):
+    base_config = tmp_path / "config.json"
+    output_config = tmp_path / "enabled_config.json"
+    base_config.write_text(
+        json.dumps({"api_server": {"forcebuy_enable": True, "force_entry_enable": True}}),
+        encoding="utf-8",
+    )
+
+    write_gate_config(
+        base_config,
+        output_config,
+        "/freqtrade/user_data/logs/mm_gate_enabled_params",
+        max_param_age_seconds=780,
+    )
+
+    config = json.loads(output_config.read_text(encoding="utf-8"))
+    assert config["market_making"]["max_param_age_seconds"] == 780
+
+
 def test_dry_run_enabled_gate_requires_health_and_accepted_quote():
     health = {
         "event": "health",

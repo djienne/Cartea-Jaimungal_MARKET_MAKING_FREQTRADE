@@ -91,12 +91,18 @@ Optional Docker runtime gates:
 - `docker_compose_config`: validates Compose configuration.
 - `freqtrade_runtime_load`: runs `freqtrade list-strategies` inside the
   configured container and requires `Market_Making` to load with status `OK`.
+- `freqtrade_callback_surface`: imports `Market_Making` inside the same
+  Freqtrade container and writes `docs/freqtrade_callback_surface_report.json`.
+  It verifies the runtime-visible callback signatures for custom pricing,
+  custom stake sizing, confirmation, repricing, leverage, and fill callbacks,
+  including `**kwargs` support for Freqtrade callback evolution.
 - `dry_run_disabled_smoke`: starts the configured bot briefly in dry-run with
   the default safety lock, stops it, stores logs, and fails if any order creation
   line appears.
 - `dry_run_enabled_smoke`: starts the public collector, writes temporary
   schema-v2 OK parameter snapshots under `user_data/logs`, starts Freqtrade with
-  `dry_run=true` and `trading_enabled=true` through a temporary config, and
+  `dry_run=true` and `trading_enabled=true` through a temporary config for a
+  10-minute enabled window, and
   requires fresh collector data, fresh params, fresh HJB, an accepted quote
   decision, and dry-run order evidence. Checked-in config and checked-in params
   remain fail-closed. Strategy fill callbacks also schedule delayed
@@ -117,9 +123,12 @@ Optional Docker runtime gates:
   fires.
 - `dry_run_quality_report`: parses the enabled dry-run audit log and writes
   `docs/dry_run_quality_report.json`. It is stricter than the smoke gate: it
-  requires enough runtime and event span, accepted model-valid quotes, quote
-  distance/depth caps, quote-linked order attempts, order amount and notional
-  caps, fresh health fields, no kill/error events, and bounded loss/final PnL.
+  requires at least 9 minutes of runtime, at least 5 minutes of audit-log span,
+  at least two accepted model-valid quotes and quote-linked order attempts, or
+  at least one accepted quote/order when that order gets a dry-run fill and the
+  PnL/health checks remain bounded. It also requires quote distance/depth caps,
+  order amount and notional caps, fresh health fields, no kill/error events, and
+  bounded loss/final PnL.
   This is the automated answer to "did the dry run make reasonable quotes,
   reasonable trade amount, and avoid losing too much too quickly?" Passing this
   gate is still promotion evidence, not proof that live fills will remain maker

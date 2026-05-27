@@ -65,6 +65,8 @@ def gate_command(
 def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     names = gate_names(include_runtime=True)
 
+    assert names.index("freqtrade_runtime_load") < names.index("freqtrade_callback_surface")
+    assert names.index("freqtrade_callback_surface") < names.index("dry_run_disabled_smoke")
     assert names.index("dry_run_enabled_smoke") < names.index("dry_run_quality_report")
     assert names.index("dry_run_quality_report") < names.index("replay_log_calibration_artifact")
     assert names.index("post_only_evidence_report") < names.index("live_canary_evidence_report")
@@ -168,12 +170,18 @@ def test_runtime_log_artifact_gates_can_use_external_audit_log_input():
 
 
 def test_dry_run_quality_gate_checks_quotes_amounts_and_pnl():
+    enabled_command = gate_command("dry_run_enabled_smoke", include_runtime=True)
     command = gate_command("dry_run_quality_report", include_runtime=True)
     normalized = [item.replace("\\", "/") for item in command]
 
+    assert enabled_command[enabled_command.index("--seconds") + 1] == "600"
     assert "scripts/verify_dry_run_quality.py" in normalized
     assert "--gate-report" in command
     assert "docs/dry_run_enabled_gate.json" in normalized
+    assert command[command.index("--min-runtime-seconds") + 1] == "540"
+    assert command[command.index("--min-event-span-seconds") + 1] == "300"
+    assert command[command.index("--min-accepted-quotes") + 1] == "2"
+    assert command[command.index("--min-order-attempts") + 1] == "2"
     assert "--max-order-notional-usdc" in command
     assert command[command.index("--max-order-notional-usdc") + 1] == "25"
     assert "--max-order-amount-units" in command

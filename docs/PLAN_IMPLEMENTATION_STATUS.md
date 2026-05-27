@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 303 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 308 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -38,6 +38,16 @@ Generated from the current local worktree after the latest safety-gate run.
   signature plus an explicit 1x `leverage()` callback. Final tick-price guard
   detection is AST-based, so comments or unrelated source text cannot satisfy
   the check.
+- Runtime callback surface:
+  `freqtrade_callback_surface` runs
+  `scripts/verify_freqtrade_callback_surface.py` and writes
+  `docs/freqtrade_callback_surface_report.json` from inside the
+  `freqtradeorg/freqtrade:2025.4` Docker service. It imports the actual mounted
+  strategy module and verifies the callback signatures Freqtrade sees for
+  `custom_entry_price`, `custom_exit_price`, `custom_stake_amount`,
+  `confirm_trade_entry`, `confirm_trade_exit`, `adjust_entry_price`,
+  `adjust_exit_price`, `leverage`, and `order_filled`, including `**kwargs`
+  support for forward-compatible callback changes.
 - Post-only evidence harness:
   `scripts/verify_post_only_mapping.py` now writes a plan artifact and evaluates
   crossing/passive `Alo` submit artifacts. The current
@@ -90,7 +100,8 @@ Generated from the current local worktree after the latest safety-gate run.
   creation.
 - Enabled dry-run evidence:
   `docs/dry_run_enabled_gate.json` uses temporary ignored params/config and
-  shows `trading_enabled=true`, `params_fresh=true`, `collector_fresh=true`,
+  runs a 10-minute enabled dry-run window. It shows
+  `trading_enabled=true`, `params_fresh=true`, `collector_fresh=true`,
   accepted passive bid quotes, dry-run order creation lines, and quote audit
   fields for parameter age, collector age, HJB age, orderbook age, and
   strategy/config/exchange fee agreement snapshots. Quote admission now
@@ -109,12 +120,15 @@ Generated from the current local worktree after the latest safety-gate run.
   toward the post-only reject-rate kill switch.
 - Dry-run quality report:
   `scripts/verify_dry_run_quality.py` writes `docs/dry_run_quality_report.json`
-  from the enabled dry-run gate and JSONL audit log. It requires a sufficiently
-  long dry-run window, accepted model-valid quotes, quote distance and depth
-  caps, quote-linked order attempts, order amount and notional caps, fresh
-  health fields, no kill/error events, and bounded drawdown/final PnL. This is
-  a stricter dry-run promotion gate for checking whether quotes, trade amount,
-  and losses look reasonable; it is not live post-only/fill proof by itself.
+  from the enabled dry-run gate and JSONL audit log. It requires at least 9
+  minutes of runtime, at least 5 minutes of audit-log span, at least two
+  accepted model-valid quotes and quote-linked order attempts, or at least one
+  accepted quote/order when a dry-run fill occurs and the PnL/health checks stay
+  bounded. It also requires quote distance and depth caps, order amount and
+  notional caps, fresh health fields, no kill/error events, and bounded
+  drawdown/final PnL. This is a stricter dry-run promotion gate for checking
+  whether quotes, trade amount, and losses look reasonable; it is not live
+  post-only/fill proof by itself.
 - Latest-data replay smoke:
   `docs/replay_latest_smoke.json` replays the newest local shards and records
   input coverage, post-only rejects, stale cancels, maker/taker counts,
@@ -300,7 +314,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 0 - fail closed | Automated pass | Default strategy/config remain locked; locked dry-run gate proves zero orders. |
 | Phase 1 - HJB math | Automated pass | `tests/test_hjb.py`; `compute_spreads_boundary_smoke`. |
 | Phase 2 - inventory/units/risk | Automated pass for long-only research mode | Strategy guard tests, `docs/UNITS.md`, quote logs include signed base and q. |
-| Phase 3 - Freqtrade fail-closed wiring | Automated pass | Confirm gates, callback signature tests, proposed-rate fallback rejection tests, inventory-limit custom-pricing rejection tests, disabled and enabled dry-run smokes. |
+| Phase 3 - Freqtrade fail-closed wiring | Automated pass | Confirm gates, source and runtime callback signature tests, proposed-rate fallback rejection tests, inventory-limit custom-pricing rejection tests, disabled and enabled dry-run smokes. |
 | Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, fee evidence evaluator and capture normalizer, price and amount rounding guards, final confirm-time tick/lot safety guards, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` and account fee-tier evidence are not verified. |
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, atomic strategy-facing snapshot copies, schema v2 tests, status locking, process-level estimator locking, deterministic kappa -> epsilon -> raw-lambda updater order, snapshot validation for timestamped windows/fit diagnostics/toxicity diagnostics, `lambda0_fit` enforcement for HJB lambda, row-timestamp-based collector freshness validation, and no hardcoded symbol fallback when the strategy has no active pair. |
 | Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, quote-quality ratio gates, price-density/max-gap coverage gates, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |

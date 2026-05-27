@@ -108,7 +108,13 @@ def write_gate_params(param_dir: Path) -> None:
     atomic_write_json(param_dir / "epsilon.json", epsilon_payload)
 
 
-def write_gate_config(base_config: Path, output_config: Path, container_param_dir: str) -> None:
+def write_gate_config(
+    base_config: Path,
+    output_config: Path,
+    container_param_dir: str,
+    *,
+    max_param_age_seconds: int = 300,
+) -> None:
     config = json.loads(base_config.read_text(encoding="utf-8"))
     config["dry_run"] = True
     config["force_entry_enable"] = False
@@ -121,7 +127,7 @@ def write_gate_config(base_config: Path, output_config: Path, container_param_di
         "post_only_verified": False,
         "disable_param_refresh": True,
         "param_dir": container_param_dir,
-        "max_param_age_seconds": 300,
+        "max_param_age_seconds": int(max_param_age_seconds),
         "max_collector_age_seconds": 180,
     }
     api_server = config.get("api_server")
@@ -246,6 +252,7 @@ def _run_gate_once(
         ROOT / "user_data" / "config.json",
         config_path,
         "/freqtrade/user_data/logs/mm_gate_enabled_params",
+        max_param_age_seconds=max(300, int(seconds) + 180),
     )
 
     run(["docker", "rm", "-f", container_name], timeout=60)

@@ -27,6 +27,7 @@ def gate_payload(pytest_count: int = 173) -> dict:
         "hyperliquid_fee_capture_plan",
         "docker_compose_config",
         "freqtrade_runtime_load",
+        "freqtrade_callback_surface",
         "dry_run_disabled_smoke",
         "dry_run_enabled_smoke",
         "dry_run_quality_report",
@@ -72,6 +73,8 @@ def status_text(test_count: int = 173) -> str:
   `scripts/verify_strategy_safety.py` writes a report.
 - Runtime load gate:
   `freqtrade_runtime_load` proves the strategy loads in the Freqtrade runtime.
+- Runtime callback surface gate:
+  `freqtrade_callback_surface` imports the strategy in the Freqtrade container and checks callback signatures.
 - Locked dry-run evidence:
   the disabled dry-run smoke proves zero orders while locked.
 - Enabled dry-run evidence:

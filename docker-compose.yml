@@ -24,6 +24,7 @@ services:
     volumes:
       - "./user_data:/freqtrade/user_data"
       - "./scripts:/freqtrade/scripts"
+      - "./docs:/freqtrade/docs"
     # Expose api on port 8080 (localhost only)
     # Please read the https://www.freqtrade.io/en/stable/rest-api/ documentation
     # before enabling this.
@@ -81,6 +82,7 @@ services:
     volumes:
       - "./user_data:/freqtrade/user_data"
       - "./scripts:/freqtrade/scripts"
+      - "./docs:/freqtrade/docs"
     depends_on:
       - hl-collector2
     restart: unless-stopped

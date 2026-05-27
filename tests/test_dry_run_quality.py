@@ -102,6 +102,36 @@ def test_dry_run_quality_passes_reasonable_quotes_size_and_pnl():
     assert report["pnl"]["final_total_pnl_usdc"] == 0.05
 
 
+def test_dry_run_quality_accepts_single_quote_when_it_fills_and_pnl_is_bounded():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    events = dry_run_events(start)
+    events.insert(
+        3,
+        {
+            "event": "fill",
+            "ts": iso(start + timedelta(seconds=76)),
+            "trading_enabled": True,
+            "dry_run": True,
+            "quote_side": "bid",
+            "amount": 0.01,
+            "price": 99.5,
+            "liquidity": "unknown",
+        },
+    )
+
+    report = build_dry_run_quality_report(
+        events,
+        gate_report=gate_report(start),
+        min_accepted_quotes=2,
+        min_order_attempts=2,
+    )
+
+    assert report["ok"] is True
+    assert report["dry_run_fills"] == 1
+    assert report["accepted_quotes"] == 1
+    assert report["accepted_order_attempts"] == 1
+
+
 def test_dry_run_quality_rejects_short_runtime_and_missing_orders():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
     events = [event for event in dry_run_events(start) if event["event"] != "order_attempt_accepted"]
