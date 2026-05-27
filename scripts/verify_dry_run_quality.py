@@ -163,6 +163,27 @@ def health_pnl_stats(health_events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def dry_run_quality_conclusion(
+    *,
+    ok: bool,
+    dry_run_fills: int,
+    final_total_pnl_usdc: float | None,
+) -> str:
+    if not ok:
+        return "dry_run_quality_gate_not_passed"
+    break_even_or_profitable = final_total_pnl_usdc is not None and float(final_total_pnl_usdc) >= 0.0
+    profitable = final_total_pnl_usdc is not None and float(final_total_pnl_usdc) > 0.0
+    if dry_run_fills > 0 and profitable:
+        return "dry_run_quotes_sizing_and_small_profit_evidence_with_fills"
+    if dry_run_fills > 0 and break_even_or_profitable:
+        return "dry_run_quotes_sizing_and_break_even_evidence_with_fills"
+    if dry_run_fills > 0:
+        return "dry_run_quotes_sizing_and_bounded_loss_evidence_with_fills"
+    if break_even_or_profitable:
+        return "dry_run_quotes_and_sizing_passed_but_no_fill_profit_evidence"
+    return "dry_run_quotes_and_sizing_passed_with_bounded_loss_only"
+
+
 def build_dry_run_quality_report(
     events: list[dict[str, Any]],
     *,
@@ -352,9 +373,21 @@ def build_dry_run_quality_report(
             error_counts[name] = error_counts.get(name, 0) + 1
     reasons.extend(f"{key}:{value}" for key, value in sorted(error_counts.items()))
 
+    break_even_or_profitable = final_total is not None and float(final_total) >= 0.0
+    small_profit_observed = final_total is not None and float(final_total) > 0.0
+    loss_reason_seen = any(reason.startswith(("loss_", "final_pnl_below_threshold")) for reason in reasons)
+    health_reason_seen = any(reason.startswith("health_") or reason == "no_health_events" for reason in reasons)
+    ok = not reasons
+    conclusion = dry_run_quality_conclusion(
+        ok=ok,
+        dry_run_fills=len(dry_run_fills),
+        final_total_pnl_usdc=float(final_total) if final_total is not None else None,
+    )
+
     return {
         "generated_at": utc_now_iso(),
-        "ok": not reasons,
+        "ok": ok,
+        "conclusion": conclusion,
         "reasons": reasons,
         "criteria": {
             "min_runtime_seconds": float(min_runtime_seconds),
@@ -385,6 +418,21 @@ def build_dry_run_quality_report(
         "accepted_order_attempts": len(order_attempts),
         "total_order_attempts": len(order_attempts_all),
         "dry_run_fills": len(dry_run_fills),
+        "quality_verdict": {
+            "conclusion": conclusion,
+            "runtime_ok": runtime_seconds >= float(min_runtime_seconds),
+            "event_span_ok": span_seconds + float(event_span_tolerance_seconds) >= float(min_event_span_seconds),
+            "quote_count_ok": quote_minimum_met,
+            "order_attempt_count_ok": order_minimum_met,
+            "quotes_reasonable": not quote_failures,
+            "order_size_reasonable": not order_failures,
+            "health_fresh": not health_reason_seen,
+            "loss_bounded": not loss_reason_seen,
+            "break_even_or_profitable": break_even_or_profitable,
+            "small_profit_observed": small_profit_observed,
+            "dry_run_fill_profit_evidence": bool(dry_run_fills) and break_even_or_profitable,
+            "dry_run_alone_is_live_safe": False,
+        },
         "quote_quality": {
             "failures": quote_failures,
             "max_depth_bps": max(quote_depths) if quote_depths else None,

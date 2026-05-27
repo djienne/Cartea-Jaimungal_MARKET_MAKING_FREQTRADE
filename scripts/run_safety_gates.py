@@ -31,6 +31,7 @@ DEFAULT_ENABLED_DRY_RUN_MIN_EVENT_SPAN_SECONDS = 300
 DEFAULT_ENABLED_DRY_RUN_MIN_ACCEPTED_QUOTES = 2
 DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS = 2
 DEFAULT_ENABLED_DRY_RUN_MAX_LOSS_RATE_USDC_PER_HOUR = 6.0
+DEFAULT_ENABLED_DRY_RUN_MIN_FINAL_TOTAL_PNL_USDC = -1.0
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 DEFAULT_REPLAY_FILL_CALIBRATION = Path("docs/replay_log_calibration.json")
@@ -377,6 +378,7 @@ def local_gates(
     enabled_dry_run_min_accepted_quotes: int = DEFAULT_ENABLED_DRY_RUN_MIN_ACCEPTED_QUOTES,
     enabled_dry_run_min_order_attempts: int = DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS,
     enabled_dry_run_max_loss_rate_usdc_per_hour: float = DEFAULT_ENABLED_DRY_RUN_MAX_LOSS_RATE_USDC_PER_HOUR,
+    enabled_dry_run_min_final_total_pnl_usdc: float = DEFAULT_ENABLED_DRY_RUN_MIN_FINAL_TOTAL_PNL_USDC,
 ) -> list[tuple[str, list[str], list[int]]]:
     py = sys.executable
     gates = [
@@ -525,6 +527,10 @@ def local_gates(
                 "1999",
                 "--best-ask",
                 "2001",
+                "--price-tick-size",
+                "0.1",
+                "--amount-step-size",
+                "0.001",
                 "--quote-id",
                 "quote-safety-gate",
                 "--session-id",
@@ -638,7 +644,7 @@ def local_gates(
                         "--max-loss-rate-usdc-per-hour",
                         str(enabled_dry_run_max_loss_rate_usdc_per_hour),
                         "--min-final-total-pnl-usdc",
-                        "-1",
+                        str(enabled_dry_run_min_final_total_pnl_usdc),
                     ],
                     [0],
                 ),
@@ -1008,6 +1014,15 @@ def parse_args() -> argparse.Namespace:
         help="Maximum allowed negative PnL velocity for the enabled dry-run quality gate.",
     )
     parser.add_argument(
+        "--enabled-dry-run-min-final-total-pnl-usdc",
+        type=float,
+        default=DEFAULT_ENABLED_DRY_RUN_MIN_FINAL_TOTAL_PNL_USDC,
+        help=(
+            "Minimum final total PnL accepted by the enabled dry-run quality gate. "
+            "Use 0 for promotion runs that require break-even-or-better dry-run evidence."
+        ),
+    )
+    parser.add_argument(
         "--max-evidence-age-seconds",
         type=float,
         default=DEFAULT_REPORT_MAX_AGE_SECONDS,
@@ -1137,6 +1152,7 @@ def main() -> int:
             enabled_dry_run_min_accepted_quotes=int(args.enabled_dry_run_min_accepted_quotes),
             enabled_dry_run_min_order_attempts=int(args.enabled_dry_run_min_order_attempts),
             enabled_dry_run_max_loss_rate_usdc_per_hour=float(args.enabled_dry_run_max_loss_rate_usdc_per_hour),
+            enabled_dry_run_min_final_total_pnl_usdc=float(args.enabled_dry_run_min_final_total_pnl_usdc),
         )
     ]
     manual_gate_list = manual_gates(
@@ -1189,6 +1205,7 @@ def main() -> int:
             "min_accepted_quotes": int(args.enabled_dry_run_min_accepted_quotes),
             "min_order_attempts": int(args.enabled_dry_run_min_order_attempts),
             "max_loss_rate_usdc_per_hour": float(args.enabled_dry_run_max_loss_rate_usdc_per_hour),
+            "min_final_total_pnl_usdc": float(args.enabled_dry_run_min_final_total_pnl_usdc),
         },
     }
 

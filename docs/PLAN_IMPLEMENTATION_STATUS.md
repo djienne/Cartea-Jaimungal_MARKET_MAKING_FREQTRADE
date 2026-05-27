@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 338 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 343 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -88,7 +88,11 @@ Generated from the current local worktree after the latest safety-gate run.
   future quote-to-fill reconciliation. Direct submit artifacts now also carry
   `actual_time_in_force="Alo"` with source
   `hyperliquid_sdk_order_type`, so the post-only evidence checker can evaluate
-  generated SDK artifacts without manual edits. The safety-gate runner can consume post-only
+  generated SDK artifacts without manual edits. The direct adapter now accepts
+  `--price-tick-size` and `--amount-step-size`; regular/passive maker orders
+  round bids down and asks up before the local maker-safety check, while
+  intentionally crossing ALO probes round bids up and asks down so the rejection
+  probe remains crossing after exchange-style tick rounding. The safety-gate runner can consume post-only
   crossing/passive evidence through explicit artifact path flags, and it also
   auto-detects the conventional `docs/post_only_crossing_result.json` and
   `docs/post_only_passive_result.json` paths when they exist.
@@ -142,8 +146,12 @@ Generated from the current local worktree after the latest safety-gate run.
   stricter dry-run promotion gate for checking whether quotes, trade amount,
   and losses look reasonable over time; it is not live post-only/fill proof by
   itself. `scripts/run_safety_gates.py` now accepts enabled dry-run duration and
-  quality-threshold overrides, and the promotion manifest includes a guarded
-  30-minute dry-run command for collecting stronger dry-run evidence.
+  quality-threshold overrides, including an optional final-PnL floor. The report
+  now carries a `quality_verdict` and conclusion that distinguish small-profit
+  or break-even evidence with fills from bounded-loss/no-fill dry-run evidence.
+  The promotion manifest includes a guarded 30-minute dry-run command for
+  collecting stronger dry-run evidence with final total PnL required to be at
+  least zero.
 - Latest-data replay smoke:
   `docs/replay_latest_smoke.json` replays the newest local shards and records
   input coverage, post-only rejects, stale cancels, maker/taker counts,
@@ -272,6 +280,9 @@ Generated from the current local worktree after the latest safety-gate run.
   quote-linked client order id / `cloid`, and the downstream
   `verify_post_only_mapping.py --mode evaluate-evidence` command. Optional
   public BBO fetching requires `--fetch-bbo --acknowledge-public-market-read`.
+  When tick and amount-step constraints are supplied, the preparation artifact
+  records both raw and rounded price/size evidence and emits submit commands
+  carrying the same constraints.
 - Promotion evidence manifest:
   `scripts/build_promotion_evidence_manifest.py` writes
   `docs/promotion_evidence_manifest.json` from the current dry-run quality, TIF

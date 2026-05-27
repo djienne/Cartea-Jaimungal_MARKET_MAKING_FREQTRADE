@@ -94,9 +94,13 @@ def test_dry_run_quality_passes_reasonable_quotes_size_and_pnl():
     )
 
     assert report["ok"] is True
+    assert report["conclusion"] == "dry_run_quotes_and_sizing_passed_but_no_fill_profit_evidence"
     assert report["reasons"] == []
     assert report["accepted_quotes"] == 1
     assert report["accepted_order_attempts"] == 1
+    assert report["quality_verdict"]["break_even_or_profitable"] is True
+    assert report["quality_verdict"]["small_profit_observed"] is True
+    assert report["quality_verdict"]["dry_run_alone_is_live_safe"] is False
     assert report["quote_quality"]["max_depth_bps"] == 5.5
     assert report["order_sizing"]["max_notional_usdc"] == 0.995
     assert report["pnl"]["final_total_pnl_usdc"] == 0.05
@@ -128,6 +132,7 @@ def test_dry_run_quality_accepts_single_quote_when_it_fills_and_pnl_is_bounded()
     )
 
     assert report["ok"] is True
+    assert report["conclusion"] == "dry_run_quotes_sizing_and_small_profit_evidence_with_fills"
     assert report["dry_run_fills"] == 1
     assert report["accepted_quotes"] == 1
     assert report["accepted_order_attempts"] == 1
@@ -145,6 +150,7 @@ def test_dry_run_quality_rejects_short_runtime_and_missing_orders():
     )
 
     assert report["ok"] is False
+    assert report["conclusion"] == "dry_run_quality_gate_not_passed"
     assert "runtime_too_short:30.0<min_180.0" in report["reasons"]
     assert "insufficient_quote_linked_order_attempts:0<min_1" in report["reasons"]
 

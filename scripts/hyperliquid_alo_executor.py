@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import hashlib
 import json
 import os
@@ -38,12 +39,7 @@ class AloOrderIntent:
 
     @property
     def is_buy(self) -> bool:
-        side = self.side.lower()
-        if side in {"buy", "bid", "long"}:
-            return True
-        if side in {"sell", "ask", "short"}:
-            return False
-        raise ValueError(f"unsupported side: {self.side}")
+        return side_is_buy(self.side)
 
 
 def utc_now_iso() -> str:
@@ -56,6 +52,98 @@ def normalize_coin(symbol: str) -> str:
 
 def alo_order_type() -> dict[str, dict[str, str]]:
     return {"limit": {"tif": "Alo"}}
+
+
+def side_is_buy(side: str) -> bool:
+    side_l = str(side).lower()
+    if side_l in {"buy", "bid", "long"}:
+        return True
+    if side_l in {"sell", "ask", "short"}:
+        return False
+    raise ValueError(f"unsupported side: {side}")
+
+
+def _round_to_step(value: float, step: float | None, *, rounding: str) -> float:
+    value_f = float(value)
+    if step is None or float(step) <= 0:
+        return value_f
+    step_dec = Decimal(str(float(step)))
+    value_dec = Decimal(str(value_f))
+    units = (value_dec / step_dec).to_integral_value(rounding=rounding)
+    return float(units * step_dec)
+
+
+def round_price_for_side(
+    *,
+    side: str,
+    price: float,
+    price_tick_size: float | None,
+    rounding_policy: str = "maker_safe",
+) -> float:
+    """Round price without weakening the intended post-only safety property."""
+    if price_tick_size is None or float(price_tick_size) <= 0:
+        return float(price)
+    is_buy = side_is_buy(side)
+    if rounding_policy == "maker_safe":
+        rounding = ROUND_FLOOR if is_buy else ROUND_CEILING
+    elif rounding_policy == "crossing_probe":
+        rounding = ROUND_CEILING if is_buy else ROUND_FLOOR
+    else:
+        raise ValueError(f"unsupported rounding_policy: {rounding_policy}")
+    return _round_to_step(float(price), float(price_tick_size), rounding=rounding)
+
+
+def round_amount_down(size: float, amount_step_size: float | None) -> float:
+    return _round_to_step(float(size), amount_step_size, rounding=ROUND_FLOOR)
+
+
+def apply_execution_constraints(
+    intent: AloOrderIntent,
+    *,
+    price_tick_size: float | None = None,
+    amount_step_size: float | None = None,
+    rounding_policy: str = "maker_safe",
+) -> tuple[AloOrderIntent, dict[str, Any]]:
+    rounded_price = round_price_for_side(
+        side=intent.side,
+        price=float(intent.price),
+        price_tick_size=price_tick_size,
+        rounding_policy=rounding_policy,
+    )
+    rounded_size = round_amount_down(float(intent.size), amount_step_size)
+    payload = {
+        "ok": True,
+        "reason": "ok",
+        "rounding_policy": rounding_policy,
+        "price_tick_size": float(price_tick_size) if price_tick_size is not None and float(price_tick_size) > 0 else None,
+        "amount_step_size": float(amount_step_size) if amount_step_size is not None and float(amount_step_size) > 0 else None,
+        "raw_price": float(intent.price),
+        "rounded_price": float(rounded_price),
+        "price_adjusted": float(rounded_price) != float(intent.price),
+        "raw_size": float(intent.size),
+        "rounded_size": float(rounded_size),
+        "size_adjusted": float(rounded_size) != float(intent.size),
+    }
+    if float(rounded_size) <= 0:
+        payload["ok"] = False
+        payload["reason"] = "size_rounds_to_zero"
+    if float(rounded_price) <= 0:
+        payload["ok"] = False
+        payload["reason"] = "price_rounds_to_nonpositive"
+    if not payload["ok"]:
+        raise ValueError(f"execution constraints failed: {payload['reason']}")
+    return (
+        AloOrderIntent(
+            symbol=intent.symbol,
+            side=intent.side,
+            size=float(rounded_size),
+            price=float(rounded_price),
+            reduce_only=intent.reduce_only,
+            cloid=intent.cloid,
+            client_order_id=intent.client_order_id,
+        ),
+        payload,
+    )
 
 
 def build_client_order_id(
@@ -289,6 +377,15 @@ def quote_link_cli_args(quote_link: dict[str, Any]) -> list[str]:
     return args
 
 
+def execution_constraint_cli_args(price_tick_size: float | None, amount_step_size: float | None) -> list[str]:
+    args: list[str] = []
+    if price_tick_size is not None and float(price_tick_size) > 0:
+        args.extend(["--price-tick-size", format_cli_number(float(price_tick_size))])
+    if amount_step_size is not None and float(amount_step_size) > 0:
+        args.extend(["--amount-step-size", format_cli_number(float(amount_step_size))])
+    return args
+
+
 def build_probe_preparation(
     *,
     symbol: str,
@@ -304,6 +401,8 @@ def build_probe_preparation(
     hjb_generation: int | None = None,
     client_order_id: str | None = None,
     cloid: str | None = None,
+    price_tick_size: float | None = None,
+    amount_step_size: float | None = None,
     crossing_output: str = "docs/direct_alo_reject_result.json",
     passive_output: str = "docs/direct_alo_passive_result.json",
     evidence_output: str = "docs/post_only_evidence_report.json",
@@ -333,6 +432,12 @@ def build_probe_preparation(
         cloid=quote_link.get("cloid"),
         client_order_id=quote_link.get("client_order_id"),
     )
+    crossing_intent, crossing_constraints = apply_execution_constraints(
+        crossing_intent,
+        price_tick_size=price_tick_size,
+        amount_step_size=amount_step_size,
+        rounding_policy="crossing_probe",
+    )
     crossing_ok, crossing_reason = crossing_probe_check(crossing_intent, best_bid, best_ask)
     if not crossing_ok:
         raise ValueError(f"crossing probe check failed: {crossing_reason}")
@@ -346,6 +451,12 @@ def build_probe_preparation(
         price=float(passive_price) if passive_price is not None and float(passive_price) > 0 else default_passive_price,
         cloid=quote_link.get("cloid"),
         client_order_id=quote_link.get("client_order_id"),
+    )
+    passive_intent, passive_constraints = apply_execution_constraints(
+        passive_intent,
+        price_tick_size=price_tick_size,
+        amount_step_size=amount_step_size,
+        rounding_policy="maker_safe",
     )
     passive_ok, passive_reason = maker_safe(passive_intent, best_bid, best_ask)
     if not passive_ok:
@@ -372,13 +483,14 @@ def build_probe_preparation(
         "--side",
         side,
         "--size",
-        format_cli_number(size),
+        format_cli_number(crossing_intent.size),
         "--best-bid",
         format_cli_number(best_bid),
         "--best-ask",
         format_cli_number(best_ask),
         "--max-notional-usdc",
         format_cli_number(max_notional_usdc),
+        *execution_constraint_cli_args(price_tick_size, amount_step_size),
         *quote_link_cli_args(quote_link),
     ]
     if testnet:
@@ -422,12 +534,14 @@ def build_probe_preparation(
         "quote_link": quote_link,
         "crossing_probe": {
             "intent": asdict(crossing_intent),
+            "execution_constraints": crossing_constraints,
             "check": {"ok": crossing_ok, "reason": crossing_reason},
             "notional_check": {"ok": crossing_notional_ok, "reason": crossing_notional_reason, **crossing_notional},
             "command": crossing_command,
         },
         "passive_probe": {
             "intent": asdict(passive_intent),
+            "execution_constraints": passive_constraints,
             "check": {"ok": passive_ok, "reason": passive_reason},
             "notional_check": {"ok": passive_notional_ok, "reason": passive_notional_reason, **passive_notional},
             "command": passive_command,
@@ -600,6 +714,15 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
         cloid=quote_link.get("cloid"),
         client_order_id=quote_link.get("client_order_id"),
     )
+    try:
+        intent, execution_constraints = apply_execution_constraints(
+            intent,
+            price_tick_size=args.price_tick_size,
+            amount_step_size=args.amount_step_size,
+            rounding_policy="maker_safe",
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     ok, reason = maker_safe(intent, float(args.best_bid), float(args.best_ask))
     if not ok:
         raise SystemExit(f"local maker-safety failed: {reason}")
@@ -620,6 +743,7 @@ def submit_alo_order(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "submit-alo",
         "intent": asdict(intent),
         "quote_link": quote_link,
+        "execution_constraints": execution_constraints,
         "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
@@ -652,16 +776,6 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    ok, reason = crossing_probe_check(intent, float(args.best_bid), float(args.best_ask))
-    if not ok:
-        raise SystemExit(f"crossing probe check failed: {reason}")
-    notional_ok, notional_reason, notional_payload = notional_limit_check(intent, args.max_notional_usdc)
-    if not notional_ok:
-        raise SystemExit(
-            f"notional guard failed: {notional_reason} "
-            f"({notional_payload['notional_usdc']:.8f} > {notional_payload['max_notional_usdc']:.8f} USDC)"
-        )
-
     quote_link = quote_link_payload(
         quote_id=args.quote_id,
         side=args.side,
@@ -679,6 +793,24 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         cloid=quote_link.get("cloid"),
         client_order_id=quote_link.get("client_order_id"),
     )
+    try:
+        intent, execution_constraints = apply_execution_constraints(
+            intent,
+            price_tick_size=args.price_tick_size,
+            amount_step_size=args.amount_step_size,
+            rounding_policy="crossing_probe",
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    ok, reason = crossing_probe_check(intent, float(args.best_bid), float(args.best_ask))
+    if not ok:
+        raise SystemExit(f"crossing probe check failed: {reason}")
+    notional_ok, notional_reason, notional_payload = notional_limit_check(intent, args.max_notional_usdc)
+    if not notional_ok:
+        raise SystemExit(
+            f"notional guard failed: {notional_reason} "
+            f"({notional_payload['notional_usdc']:.8f} > {notional_payload['max_notional_usdc']:.8f} USDC)"
+        )
     exchange = load_sdk_exchange(args)
     order_args = build_sdk_order_args(intent)
     result = exchange.order(**order_args_for_submit(order_args))
@@ -689,6 +821,7 @@ def submit_crossing_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "submit-crossing-alo",
         "intent": asdict(intent),
         "quote_link": quote_link,
+        "execution_constraints": execution_constraints,
         "crossing_probe_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
@@ -728,6 +861,15 @@ def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         cloid=quote_link.get("cloid"),
         client_order_id=quote_link.get("client_order_id"),
     )
+    try:
+        intent, execution_constraints = apply_execution_constraints(
+            intent,
+            price_tick_size=args.price_tick_size,
+            amount_step_size=args.amount_step_size,
+            rounding_policy="maker_safe",
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     ok, reason = maker_safe(intent, float(args.best_bid), float(args.best_ask))
     if not ok:
         raise SystemExit(f"local maker-safety failed: {reason}")
@@ -749,6 +891,7 @@ def submit_passive_alo_probe(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "submit-passive-alo",
         "intent": asdict(intent),
         "quote_link": quote_link,
+        "execution_constraints": execution_constraints,
         "local_maker_check": {"ok": ok, "reason": reason, "best_bid": args.best_bid, "best_ask": args.best_ask},
         "notional_check": {"ok": notional_ok, "reason": notional_reason, **notional_payload},
         "sdk_order_args": order_args,
@@ -784,6 +927,8 @@ def render_plan(symbol: str) -> dict[str, Any]:
             "--acknowledge-real-orders",
             f"--max-notional-usdc defaults to {DEFAULT_MAX_SUBMIT_NOTIONAL_USDC}",
             "--best-bid and --best-ask local maker-safety inputs",
+            "--price-tick-size rounds bids down and asks up before maker-safety",
+            "--amount-step-size rounds base size down before notional/submission",
             "bid price must be below best ask",
             "ask price must be above best bid",
             "--quote-id/--session-id/--hjb-generation produce deterministic CLOID evidence",
@@ -795,6 +940,8 @@ def render_plan(symbol: str) -> dict[str, Any]:
             f"--max-notional-usdc defaults to {DEFAULT_MAX_SUBMIT_NOTIONAL_USDC}",
             "--testnet, or --allow-mainnet-crossing-probe for tiny mainnet evidence",
             "--best-bid and --best-ask crossing evidence inputs",
+            "--price-tick-size rounds crossing bid probes up and ask probes down so the probe remains crossing",
+            "--amount-step-size rounds base size down before notional/submission",
             "bid probe price is best ask; ask probe price is best bid",
             "--quote-id/--session-id/--hjb-generation produce deterministic CLOID evidence",
         ],
@@ -805,6 +952,8 @@ def render_plan(symbol: str) -> dict[str, Any]:
             f"--max-notional-usdc defaults to {DEFAULT_MAX_SUBMIT_NOTIONAL_USDC}",
             "--testnet, or --allow-mainnet-passive-probe for tiny mainnet evidence",
             "--best-bid and --best-ask local maker-safety inputs",
+            "--price-tick-size rounds bids down and asks up before maker-safety",
+            "--amount-step-size rounds base size down before notional/submission",
             "resting order ids are canceled after evidence capture",
             "--quote-id/--session-id/--hjb-generation produce deterministic CLOID evidence",
         ],
@@ -842,6 +991,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--side", default="bid", choices=["bid", "ask", "buy", "sell", "long", "short"])
     parser.add_argument("--size", type=float, default=0.0)
     parser.add_argument("--price", type=float, default=0.0)
+    parser.add_argument("--price-tick-size", type=float, default=None)
+    parser.add_argument("--amount-step-size", type=float, default=None)
     parser.add_argument("--reduce-only", action="store_true")
     parser.add_argument("--best-bid", type=float, default=None)
     parser.add_argument("--best-ask", type=float, default=None)
@@ -891,6 +1042,14 @@ def main() -> int:
             cloid=quote_link.get("cloid"),
             client_order_id=quote_link.get("client_order_id"),
         )
+        execution_constraints = None
+        if args.price_tick_size is not None or args.amount_step_size is not None:
+            intent, execution_constraints = apply_execution_constraints(
+                intent,
+                price_tick_size=args.price_tick_size,
+                amount_step_size=args.amount_step_size,
+                rounding_policy="maker_safe",
+            )
         maker_check = None
         if args.best_bid is not None and args.best_ask is not None:
             ok, reason = maker_safe(intent, args.best_bid, args.best_ask)
@@ -899,6 +1058,7 @@ def main() -> int:
             "generated_at": utc_now_iso(),
             "intent": asdict(intent),
             "quote_link": quote_link,
+            "execution_constraints": execution_constraints,
             "sdk_order_args": build_sdk_order_args(intent),
             "local_maker_check": maker_check,
         }
@@ -933,6 +1093,8 @@ def main() -> int:
             hjb_generation=args.hjb_generation,
             client_order_id=args.client_order_id,
             cloid=args.cloid,
+            price_tick_size=args.price_tick_size,
+            amount_step_size=args.amount_step_size,
             crossing_output=str(args.crossing_output),
             passive_output=str(args.passive_output),
             evidence_output=str(args.evidence_output),

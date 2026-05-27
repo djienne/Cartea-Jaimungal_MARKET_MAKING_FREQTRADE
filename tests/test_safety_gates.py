@@ -309,6 +309,8 @@ def test_direct_alo_probe_preparation_gate_is_no_order_plan():
     assert "--acknowledge-real-orders" not in command
     assert "--best-bid" in command
     assert "--best-ask" in command
+    assert "--price-tick-size" in command
+    assert "--amount-step-size" in command
     assert "--output" in command
     assert "docs/direct_alo_probe_commands.json" in normalized
 

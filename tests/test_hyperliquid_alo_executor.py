@@ -14,6 +14,7 @@ from hyperliquid_alo_executor import (  # noqa: E402
     AloOrderIntent,
     actual_tif_from_sdk_order_args,
     alo_order_type,
+    apply_execution_constraints,
     bbo_from_l2_snapshot,
     build_client_order_id,
     build_probe_preparation,
@@ -29,6 +30,8 @@ from hyperliquid_alo_executor import (  # noqa: E402
     normalize_coin,
     quote_link_payload,
     render_plan,
+    round_amount_down,
+    round_price_for_side,
     submit_crossing_alo_probe,
     submit_passive_alo_probe,
 )
@@ -101,6 +104,63 @@ def test_maker_safe_rejects_crossing_bid_and_ask():
 def test_maker_safe_accepts_passive_quotes():
     assert maker_safe(AloOrderIntent("ETH", "bid", 0.01, 100.0), 99.0, 101.0) == (True, "ok")
     assert maker_safe(AloOrderIntent("ETH", "ask", 0.01, 100.5), 99.0, 101.0) == (True, "ok")
+
+
+def test_execution_constraints_round_maker_quotes_away_from_crossing():
+    bid, bid_payload = apply_execution_constraints(
+        AloOrderIntent("ETH", "bid", 0.0109, 100.09),
+        price_tick_size=0.1,
+        amount_step_size=0.001,
+        rounding_policy="maker_safe",
+    )
+    ask, ask_payload = apply_execution_constraints(
+        AloOrderIntent("ETH", "ask", 0.0109, 100.01),
+        price_tick_size=0.1,
+        amount_step_size=0.001,
+        rounding_policy="maker_safe",
+    )
+
+    assert bid.price == 100.0
+    assert ask.price == 100.1
+    assert bid.size == 0.01
+    assert ask.size == 0.01
+    assert bid_payload["price_adjusted"] is True
+    assert ask_payload["size_adjusted"] is True
+    assert round_price_for_side(side="bid", price=100.09, price_tick_size=0.1) == 100.0
+    assert round_price_for_side(side="ask", price=100.01, price_tick_size=0.1) == 100.1
+    assert round_amount_down(0.0109, 0.001) == 0.01
+
+
+def test_execution_constraints_round_crossing_probe_to_remain_crossing():
+    bid, _ = apply_execution_constraints(
+        AloOrderIntent("ETH", "bid", 0.0109, 101.01),
+        price_tick_size=0.1,
+        amount_step_size=0.001,
+        rounding_policy="crossing_probe",
+    )
+    ask, _ = apply_execution_constraints(
+        AloOrderIntent("ETH", "ask", 0.0109, 99.09),
+        price_tick_size=0.1,
+        amount_step_size=0.001,
+        rounding_policy="crossing_probe",
+    )
+
+    assert bid.price == 101.1
+    assert ask.price == 99.0
+    assert bid.size == 0.01
+    assert ask.size == 0.01
+
+
+def test_execution_constraints_reject_amount_that_rounds_to_zero():
+    try:
+        apply_execution_constraints(
+            AloOrderIntent("ETH", "bid", 0.0009, 100.0),
+            amount_step_size=0.001,
+        )
+    except ValueError as exc:
+        assert "size_rounds_to_zero" in str(exc)
+    else:
+        raise AssertionError("expected amount-step rounding to reject zero-size order")
 
 
 def test_notional_limit_check_rejects_oversized_submit_intent():
@@ -272,6 +332,39 @@ def test_prepare_probe_plan_builds_guarded_commands_from_bbo():
     assert plan["evaluate_command"][-1] == "docs/post_only_evidence_report.json"
 
 
+def test_prepare_probe_plan_records_tick_and_amount_rounding():
+    plan = build_probe_preparation(
+        symbol="ETH/USDC:USDC",
+        side="bid",
+        size=0.0109,
+        best_bid=99.04,
+        best_ask=101.04,
+        passive_price=99.04,
+        testnet=True,
+        price_tick_size=0.1,
+        amount_step_size=0.001,
+        max_notional_usdc=25.0,
+    )
+
+    crossing = plan["crossing_probe"]
+    passive = plan["passive_probe"]
+
+    assert crossing["intent"]["price"] == 101.1
+    assert crossing["intent"]["size"] == 0.01
+    assert crossing["execution_constraints"]["rounding_policy"] == "crossing_probe"
+    assert crossing["check"] == {"ok": True, "reason": "bid_crosses_ask_for_alo_probe"}
+    assert passive["intent"]["price"] == 99.0
+    assert passive["intent"]["size"] == 0.01
+    assert passive["execution_constraints"]["rounding_policy"] == "maker_safe"
+    assert passive["check"] == {"ok": True, "reason": "ok"}
+    assert "--price-tick-size" in passive["command"]
+    assert passive["command"][passive["command"].index("--price-tick-size") + 1] == "0.1"
+    assert "--amount-step-size" in passive["command"]
+    assert passive["command"][passive["command"].index("--amount-step-size") + 1] == "0.001"
+    assert passive["command"][passive["command"].index("--size") + 1] == "0.01"
+    assert passive["command"][passive["command"].index("--price") + 1] == "99"
+
+
 def test_prepare_probe_plan_rejects_oversized_probe():
     try:
         build_probe_preparation(
@@ -295,6 +388,8 @@ def args_for_submit(**overrides):
         "side": "bid",
         "size": 0.01,
         "price": 100.0,
+        "price_tick_size": None,
+        "amount_step_size": None,
         "reduce_only": False,
         "best_bid": 99.0,
         "best_ask": 101.0,
@@ -371,3 +466,27 @@ def test_direct_crossing_probe_artifact_carries_actual_alo_tif(monkeypatch):
     assert payload["classification"]["alo_rejected"] is True
     assert ok is True
     assert reasons == []
+
+
+def test_direct_submit_artifacts_include_tick_and_lot_rounding(monkeypatch):
+    result = {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": 123}}]}}}
+    exchange = FakeExchange(result)
+    monkeypatch.setenv("HYPERLIQUID_DIRECT_ALO_ALLOW", "1")
+    monkeypatch.setattr("hyperliquid_alo_executor.load_sdk_exchange", lambda args: exchange)
+
+    payload = submit_passive_alo_probe(
+        args_for_submit(
+            allow_passive_probe=True,
+            size=0.0109,
+            price=100.09,
+            price_tick_size=0.1,
+            amount_step_size=0.001,
+        )
+    )
+
+    assert payload["intent"]["price"] == 100.0
+    assert payload["intent"]["size"] == 0.01
+    assert payload["execution_constraints"]["price_adjusted"] is True
+    assert payload["execution_constraints"]["size_adjusted"] is True
+    assert exchange.orders[0]["limit_px"] == 100.0
+    assert exchange.orders[0]["sz"] == 0.01

@@ -78,7 +78,13 @@ def test_manifest_keeps_good_dry_run_separate_from_live_readiness(tmp_path):
 
 
 def test_manifest_marks_ready_only_when_external_reports_are_green(tmp_path):
-    dry = write_json(tmp_path / "dry.json", dry_run_report(dry_run_fills=1))
+    dry = write_json(
+        tmp_path / "dry.json",
+        dry_run_report(
+            dry_run_fills=1,
+            conclusion="dry_run_quotes_sizing_and_break_even_evidence_with_fills",
+        ),
+    )
     tif = write_json(tmp_path / "tif.json", tif_runtime_report())
     reports = {
         name: write_json(tmp_path / f"{name}.json", {"ok": True, "generated_at": "2026-05-27T00:00:00Z"})
@@ -95,7 +101,7 @@ def test_manifest_marks_ready_only_when_external_reports_are_green(tmp_path):
     assert manifest["deployment_ready"] is True
     assert manifest["manual_gates_remaining"] == 0
     assert manifest["deployment_blockers"] == []
-    assert manifest["dry_run_quality"]["conclusion"] == "dry_run_quotes_sizing_and_bounded_pnl_passed_with_fills"
+    assert manifest["dry_run_quality"]["conclusion"] == "dry_run_quotes_sizing_and_break_even_evidence_with_fills"
 
 
 def test_manifest_includes_guarded_promotion_commands(tmp_path):
@@ -117,9 +123,12 @@ def test_manifest_includes_guarded_promotion_commands(tmp_path):
     assert prepare_command["requires_real_orders"] is False
     assert "--mode" in prepare_command["command"]
     assert prepare_command["command"][prepare_command["command"].index("--mode") + 1] == "prepare-probes"
+    assert "--price-tick-size" in prepare_command["command"]
+    assert "--amount-step-size" in prepare_command["command"]
     extended_command = manifest["promotion_commands"]["extended_dry_run"][0]["command"]
     assert extended_command[extended_command.index("--enabled-dry-run-seconds") + 1] == "1800"
     assert extended_command[extended_command.index("--enabled-dry-run-max-loss-rate-usdc-per-hour") + 1] == "2"
+    assert extended_command[extended_command.index("--enabled-dry-run-min-final-total-pnl-usdc") + 1] == "0"
     replay_command = manifest["promotion_commands"]["multi_day_replay"][0]["command"]
     assert replay_command[replay_command.index("--audit-log-input") + 1] == "docs/testnet_mm_debug.jsonl"
     assert "--replay-acceptance-require-fill-calibration" in replay_command

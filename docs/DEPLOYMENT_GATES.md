@@ -84,7 +84,11 @@ These gates do not require a live exchange connection:
   The direct adapter also applies a default 25 USDC submit-notional cap for
   evidence probes unless the operator explicitly raises `--max-notional-usdc`.
   Direct SDK orders can include quote-linked `cloid` evidence generated from
-  `session_id`, `quote_id`, side, and HJB generation.
+  `session_id`, `quote_id`, side, and HJB generation. Submit and probe modes
+  accept `--price-tick-size` and `--amount-step-size`; passive maker orders
+  round bids down and asks up before the maker-safety check, while intentionally
+  crossing ALO probes round in the opposite direction so the rejection probe
+  remains crossing.
 - `direct_alo_probe_preparation_plan`: writes
   `docs/direct_alo_probe_commands.json` without network or order submission. It
   converts a valid BBO into exact guarded direct SDK crossing/passive ALO probe
@@ -148,9 +152,13 @@ Optional Docker runtime gates:
   `--enabled-dry-run-min-event-span-seconds`,
   `--enabled-dry-run-min-accepted-quotes`,
   `--enabled-dry-run-min-order-attempts`, and
-  `--enabled-dry-run-max-loss-rate-usdc-per-hour`. For a longer validation
-  window, use the manifest command that runs a 30-minute enabled dry-run and
-  requires multiple model-valid quotes/orders with a tighter loss-rate cap.
+  `--enabled-dry-run-max-loss-rate-usdc-per-hour`, plus
+  `--enabled-dry-run-min-final-total-pnl-usdc` when a promotion run should
+  require break-even-or-better final dry-run PnL. For a longer validation
+  window, use the manifest command that runs a 30-minute enabled dry-run,
+  requires multiple model-valid quotes/orders, uses a tighter loss-rate cap, and
+  requires final total PnL to be at least zero. This still does not prove live
+  maker fills, queue position, post-only exchange behavior, or actual fees.
 - Strategy risk guard defaults now include `max_notional_exposure_usdc`,
   `max_margin_used_usdc`, and `min_liquidation_buffer_usdc`. Quote validation
   and final order confirmation reject risk-increasing orders that would exceed
@@ -343,8 +351,11 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   verify native SDK `Alo` evidence without manual artifact edits. Use
   `hyperliquid_alo_executor.py --mode prepare-probes` first to turn an observed
   BBO into exact guarded crossing/passive submit commands without placing an
-  order. `--fetch-bbo` is available for public Hyperliquid BBO reads but
-  requires `--acknowledge-public-market-read`.
+  order. Include the exchange `--price-tick-size` and `--amount-step-size` in
+  those commands so the resulting artifacts prove that submitted prices and
+  amounts were rounded before notional checks and order submission. `--fetch-bbo`
+  is available for public Hyperliquid BBO reads but requires
+  `--acknowledge-public-market-read`.
   Use
   `hyperliquid_alo_executor.py --mode submit-crossing-alo` for a direct SDK
   rejection probe and `--mode submit-passive-alo` for passive resting/maker

@@ -71,7 +71,10 @@ def dry_run_assessment(report: dict[str, Any]) -> dict[str, Any]:
     pnl = report.get("pnl") if isinstance(report.get("pnl"), dict) else {}
     fills = int(report.get("dry_run_fills") or 0)
     ok = report.get("ok") is True
-    if ok and fills > 0:
+    report_conclusion = report.get("conclusion") if isinstance(report.get("conclusion"), str) else None
+    if report_conclusion:
+        conclusion = report_conclusion
+    elif ok and fills > 0:
         conclusion = "dry_run_quotes_sizing_and_bounded_pnl_passed_with_fills"
     elif ok:
         conclusion = "dry_run_quotes_and_sizing_passed_but_no_fill_profit_evidence"
@@ -141,6 +144,8 @@ def promotion_commands() -> dict[str, list[dict[str, Any]]]:
                     "5",
                     "--enabled-dry-run-max-loss-rate-usdc-per-hour",
                     "2",
+                    "--enabled-dry-run-min-final-total-pnl-usdc",
+                    "0",
                     "--json-output",
                     "docs/last_safety_gates.json",
                     "--markdown-output",
@@ -175,6 +180,10 @@ def promotion_commands() -> dict[str, list[dict[str, Any]]]:
                     "<best_bid>",
                     "--best-ask",
                     "<best_ask>",
+                    "--price-tick-size",
+                    "<tick_size>",
+                    "--amount-step-size",
+                    "<amount_step>",
                     "--quote-id",
                     "<QUOTE_ID>",
                     "--session-id",
@@ -207,6 +216,10 @@ def promotion_commands() -> dict[str, list[dict[str, Any]]]:
                     "<best_bid>",
                     "--best-ask",
                     "<best_ask>",
+                    "--price-tick-size",
+                    "<tick_size>",
+                    "--amount-step-size",
+                    "<amount_step>",
                     "--allow-crossing-probe",
                     "--acknowledge-real-orders",
                     "--output",
@@ -235,6 +248,10 @@ def promotion_commands() -> dict[str, list[dict[str, Any]]]:
                     "<best_bid>",
                     "--best-ask",
                     "<best_ask>",
+                    "--price-tick-size",
+                    "<tick_size>",
+                    "--amount-step-size",
+                    "<amount_step>",
                     "--allow-passive-probe",
                     "--acknowledge-real-orders",
                     "--output",

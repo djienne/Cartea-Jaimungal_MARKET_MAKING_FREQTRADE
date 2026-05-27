@@ -27,6 +27,10 @@
       "2001",
       "--max-notional-usdc",
       "25",
+      "--price-tick-size",
+      "0.1",
+      "--amount-step-size",
+      "0.001",
       "--quote-id",
       "quote-safety-gate",
       "--session-id",
@@ -42,6 +46,19 @@
       "--output",
       "docs/direct_alo_reject_result.json"
     ],
+    "execution_constraints": {
+      "amount_step_size": 0.001,
+      "ok": true,
+      "price_adjusted": false,
+      "price_tick_size": 0.1,
+      "raw_price": 2001.0,
+      "raw_size": 0.01,
+      "reason": "ok",
+      "rounded_price": 2001.0,
+      "rounded_size": 0.01,
+      "rounding_policy": "crossing_probe",
+      "size_adjusted": false
+    },
     "intent": {
       "client_order_id": "mm|sess=safety-gate|qid=quote-safety-gate|side=bid|hjb=1",
       "cloid": "0x96f8459c85706af76cb2b68bfa9abc69",
@@ -71,7 +88,7 @@
     "--output",
     "docs/post_only_evidence_report.json"
   ],
-  "generated_at": "2026-05-27T07:38:56Z",
+  "generated_at": "2026-05-27T08:48:05Z",
   "mode": "prepare-probes",
   "passive_probe": {
     "check": {
@@ -96,6 +113,10 @@
       "2001",
       "--max-notional-usdc",
       "25",
+      "--price-tick-size",
+      "0.1",
+      "--amount-step-size",
+      "0.001",
       "--quote-id",
       "quote-safety-gate",
       "--session-id",
@@ -113,6 +134,19 @@
       "--output",
       "docs/direct_alo_passive_result.json"
     ],
+    "execution_constraints": {
+      "amount_step_size": 0.001,
+      "ok": true,
+      "price_adjusted": false,
+      "price_tick_size": 0.1,
+      "raw_price": 1999.0,
+      "raw_size": 0.01,
+      "reason": "ok",
+      "rounded_price": 1999.0,
+      "rounded_size": 0.01,
+      "rounding_policy": "maker_safe",
+      "size_adjusted": false
+    },
     "intent": {
       "client_order_id": "mm|sess=safety-gate|qid=quote-safety-gate|side=bid|hjb=1",
       "cloid": "0x96f8459c85706af76cb2b68bfa9abc69",
