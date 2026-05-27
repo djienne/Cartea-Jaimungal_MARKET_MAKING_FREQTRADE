@@ -36,6 +36,8 @@ class ReplayVariant:
     epsilon_add: float = 0.0
     maker_fee_multiplier: float = 1.0
     latency_multiplier: float = 1.0
+    price_tick_multiplier: float = 1.0
+    price_tick_floor_bps: float = 0.0
 
 
 DEFAULT_VARIANTS = (
@@ -44,6 +46,7 @@ DEFAULT_VARIANTS = (
     ReplayVariant("latency_2x", latency_multiplier=2.0),
     ReplayVariant("params_soft", params_multiplier=0.8, epsilon_add=0.01),
     ReplayVariant("params_hard", params_multiplier=1.2, epsilon_add=0.02),
+    ReplayVariant("widened_tick", price_tick_multiplier=5.0, price_tick_floor_bps=1.0),
 )
 
 REQUIRED_MARKOUT_HORIZONS_MS = (100, 1_000, 5_000, 30_000)
@@ -97,6 +100,11 @@ def variant_params(base: dict[str, float], variant: ReplayVariant) -> dict[str, 
 
 def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
     multiplier = float(variant.latency_multiplier)
+    price_tick = float(base.price_tick_size)
+    if float(variant.price_tick_floor_bps) > 0:
+        tick_floor = float(base.mid_fallback) * float(variant.price_tick_floor_bps) / 10_000.0
+        price_tick = max(price_tick, tick_floor)
+    price_tick *= float(variant.price_tick_multiplier)
     return ReplayConfig(
         symbol=base.symbol,
         data_dir=base.data_dir,
@@ -114,7 +122,7 @@ def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
         leverage=base.leverage,
         maintenance_margin_rate=base.maintenance_margin_rate,
         queue_decay_per_second=base.queue_decay_per_second,
-        price_tick_size=base.price_tick_size,
+        price_tick_size=price_tick,
         amount_step_size=base.amount_step_size,
         fill_calibration_path=base.fill_calibration_path,
         newest_per_stream=base.newest_per_stream,
@@ -479,6 +487,32 @@ def replay_data_fresh_guard(
     return True, "ok", age_seconds
 
 
+def replay_required_stream_guard(
+    metrics: dict[str, Any],
+    *,
+    required_streams: tuple[str, ...] = ("prices", "trades", "orderbooks"),
+) -> tuple[bool, str, list[str]]:
+    input_rows = metrics.get("input_rows") if isinstance(metrics.get("input_rows"), dict) else {}
+    input_files = metrics.get("input_files") if isinstance(metrics.get("input_files"), dict) else {}
+    missing: list[str] = []
+    for stream in required_streams:
+        rows = input_rows.get(stream)
+        files = input_files.get(stream)
+        row_count = int(rows) if is_finite_number(rows) else 0
+        file_count = int(files) if is_finite_number(files) else 0
+        if stream in input_rows:
+            stream_missing = row_count <= 0
+        elif stream in input_files:
+            stream_missing = file_count <= 0
+        else:
+            stream_missing = True
+        if stream_missing:
+            missing.append(stream)
+    if missing:
+        return False, f"missing_collector_streams:{','.join(missing)}", missing
+    return True, "ok", []
+
+
 def build_refusal_checks(
     *,
     params: dict[str, float],
@@ -534,6 +568,25 @@ def build_refusal_checks(
             "age_seconds": age_seconds,
             "max_age_seconds": float(max_data_age_seconds),
             "ok": (not ok and reason == "stale_collector_data"),
+        }
+    )
+
+    missing_stream_metrics = dict(baseline_metrics)
+    input_rows = dict(missing_stream_metrics.get("input_rows") or {})
+    input_files = dict(missing_stream_metrics.get("input_files") or {})
+    input_rows["trades"] = 0
+    input_files["trades"] = 0
+    missing_stream_metrics["input_rows"] = input_rows
+    missing_stream_metrics["input_files"] = input_files
+    ok, reason, missing = replay_required_stream_guard(missing_stream_metrics)
+    checks.append(
+        {
+            "name": "missing_trade_stream",
+            "expected_decision": "reject",
+            "decision": "accept" if ok else "reject",
+            "reason": reason,
+            "missing_streams": missing,
+            "ok": (not ok and reason == "missing_collector_streams:trades"),
         }
     )
 

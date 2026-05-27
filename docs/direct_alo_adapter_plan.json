@@ -12,7 +12,7 @@
     "bid probe price is best ask; ask probe price is best bid",
     "--quote-id/--session-id/--hjb-generation produce deterministic CLOID evidence"
   ],
-  "generated_at": "2026-05-27T08:48:05Z",
+  "generated_at": "2026-05-27T09:37:58Z",
   "order_type": {
     "limit": {
       "tif": "Alo"

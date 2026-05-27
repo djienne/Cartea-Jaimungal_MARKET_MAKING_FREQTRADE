@@ -330,7 +330,8 @@ def promotion_commands() -> dict[str, list[dict[str, Any]]]:
                 note=(
                     "Requires several days of HL_data shards with sufficient price-event density. "
                     "Set --replay-acceptance-price-tick-size and --replay-acceptance-amount-step-size "
-                    "to the exchange constraints being validated."
+                    "to the exchange constraints being validated; the report also exercises a widened-tick "
+                    "stress variant and missing-stream refusal checks."
                 ),
             ),
         ],

@@ -170,8 +170,8 @@ Optional Docker runtime gates:
   `docs/replay_latest_smoke.json` with input coverage, maker/taker counts,
   post-only rejects, stale cancels, inventory, PnL, and markout samples where
   fills occur.
-- `replay_acceptance_report_artifact`: runs baseline, fee, latency, and
-  parameter-perturbation replay variants and writes
+- `replay_acceptance_report_artifact`: runs baseline, fee, latency,
+  parameter-perturbation, and widened-tick replay variants and writes
   `docs/replay_acceptance_report.json` plus a markdown summary. The gate command
   uses `--allow-incomplete` so the artifact is always produced; the report's own
   `ok` field remains false until the multi-day acceptance criteria are met. By
@@ -206,8 +206,9 @@ Optional Docker runtime gates:
   the calibration depth bucket size and deterministically limits accepted fills
   to the observed probability for that side/depth bucket.
   The report also includes refusal checks
-  for bad parameters and stale collector data, proving those scenarios reject
-  quoting instead of silently producing orders. Replay metrics also track
+  for bad parameters, stale collector data, and missing required collector
+  streams, proving those scenarios reject quoting instead of silently producing
+  orders. Replay metrics also track
   starting equity, leverage, notional exposure, margin used, maintenance margin,
   equity, liquidation buffer, and maintenance-margin breach counts; acceptance
   fails any variant with a maintenance-margin breach.
@@ -388,7 +389,8 @@ python scripts/hyperliquid_risk_executor.py --mode plan
   parser and conservative fill loop work on real shards, and the acceptance
   report records exactly which criteria are still failing. The remaining manual
   gate is a several-day replay with acceptable realized spread, markouts, maker
-  ratio, inventory, latency, fee sensitivity, parameter perturbation, and
+  ratio, inventory, latency, fee sensitivity, parameter perturbation, widened
+  tick sensitivity, stale-data refusal, missing-stream refusal, and
   directional-drift attribution.
 - `hyperliquid_fee_tier`: provide exchange/account fee snapshots and maker fill
   logs, then run `python scripts/verify_fee_evidence.py --input user_data/logs/mm_debug.jsonl --output docs/fee_evidence_report.json`.

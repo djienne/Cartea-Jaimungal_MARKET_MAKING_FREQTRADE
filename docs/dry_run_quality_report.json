@@ -1,6 +1,6 @@
 {
-  "accepted_order_attempts": 5,
-  "accepted_quotes": 5,
+  "accepted_order_attempts": 11,
+  "accepted_quotes": 11,
   "conclusion": "dry_run_quotes_sizing_and_break_even_evidence_with_fills",
   "criteria": {
     "event_span_tolerance_seconds": 1.0,
@@ -18,25 +18,25 @@
   },
   "dry_run_fills": 1,
   "error_events": {},
-  "event_count": 72,
-  "event_span_seconds": 1718.919,
+  "event_count": 90,
+  "event_span_seconds": 1761.572,
   "gate_report": {
     "passed": true,
     "path": "docs\\dry_run_enabled_gate.json",
     "reason": "ok",
-    "runtime_seconds": 1800.016,
-    "started_at": "2026-05-27T08:12:59.985910Z"
+    "runtime_seconds": 1800.015,
+    "started_at": "2026-05-27T09:43:23.877600Z"
   },
-  "generated_at": "2026-05-27T08:43:02Z",
+  "generated_at": "2026-05-27T10:13:26Z",
   "health_events": 25,
   "loss_velocity_usdc_per_hour": 0.0,
   "ok": true,
   "order_sizing": {
-    "avg_notional_usdc": 20.837097736199794,
+    "avg_notional_usdc": 20.837806614381613,
     "failures": {},
     "ignored": {},
     "max_amount": 0.01,
-    "max_notional_usdc": 20.842895996199797
+    "max_notional_usdc": 20.845895096199797
   },
   "pnl": {
     "final_realized_pnl_usdc": 0.0,
@@ -63,14 +63,14 @@
     "runtime_ok": true,
     "small_profit_observed": false
   },
-  "quote_decisions": 5,
+  "quote_decisions": 11,
   "quote_quality": {
-    "avg_depth_bps": 5.564982076195102,
-    "avg_distance_ratio": 0.0005229396090829797,
+    "avg_depth_bps": 5.564894833464861,
+    "avg_distance_ratio": 0.0005325207573457025,
     "failures": {},
-    "max_depth_bps": 5.5662373972232615,
-    "max_distance_ratio": 0.0005326424704964066
+    "max_depth_bps": 5.5659911231514085,
+    "max_distance_ratio": 0.0005326201439636568
   },
   "reasons": [],
-  "total_order_attempts": 5
+  "total_order_attempts": 11
 }

@@ -10,16 +10,21 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from run_replay_report import (  # noqa: E402
+    DEFAULT_VARIANTS,
     REQUIRED_MARKOUT_HORIZONS_MS,
     build_refusal_checks,
+    build_report,
     coverage_days,
     directional_drift_ratio,
     directional_pnl_proxy_usdc,
     evaluate_metrics,
     markout_summary,
+    replay_required_stream_guard,
     render_markdown,
+    variant_config,
     replay_param_guard,
 )
+from replay_market_maker import ReplayConfig, ReplayMetrics  # noqa: E402
 
 
 def minimal_metrics(**overrides):
@@ -455,10 +460,104 @@ def test_refusal_checks_require_bad_params_and_stale_data_to_reject():
     assert {check["name"] for check in checks} == {
         "bad_params_nonpositive_kappa",
         "bad_params_toxicity",
+        "missing_trade_stream",
         "stale_collector_data",
     }
     assert all(check["ok"] for check in checks)
     assert all(check["decision"] == "reject" for check in checks)
+
+
+def test_replay_required_stream_guard_rejects_missing_trade_stream():
+    ok, reason, missing = replay_required_stream_guard(
+        minimal_metrics(input_rows={"prices": 10, "trades": 0, "orderbooks": 10})
+    )
+
+    assert ok is False
+    assert reason == "missing_collector_streams:trades"
+    assert missing == ["trades"]
+
+
+def test_replay_required_stream_guard_rejects_empty_stream_even_when_file_exists():
+    ok, reason, missing = replay_required_stream_guard(
+        minimal_metrics(
+            input_files={"prices": 1, "trades": 1, "orderbooks": 1},
+            input_rows={"prices": 10, "trades": 0, "orderbooks": 10},
+        )
+    )
+
+    assert ok is False
+    assert reason == "missing_collector_streams:trades"
+    assert missing == ["trades"]
+
+
+def test_default_replay_variants_include_widened_tick_stress():
+    names = [variant.name for variant in DEFAULT_VARIANTS]
+    widened = next(variant for variant in DEFAULT_VARIANTS if variant.name == "widened_tick")
+    config = ReplayConfig(symbol="ETH", data_dir=Path("unused"), mid_fallback=2000.0)
+
+    stressed = variant_config(config, widened)
+
+    assert "widened_tick" in names
+    assert stressed.price_tick_size == 1.0
+
+
+def test_build_report_runs_widened_tick_variant(monkeypatch):
+    def fake_run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
+        metrics = ReplayMetrics()
+        metrics.input_files = {"prices": 1, "trades": 1, "orderbooks": 1}
+        metrics.input_rows = {"prices": 3000, "trades": 300, "orderbooks": 300}
+        metrics.data_start = "2026-05-25T00:00:00Z"
+        metrics.data_end = "2026-05-28T00:00:00Z"
+        metrics.data_span_seconds = 259200.0
+        metrics.price_event_count = 3000
+        metrics.price_events_per_day = 1000.0
+        metrics.max_price_gap_seconds = 60.0
+        metrics.quote_attempts = 1000
+        metrics.maker_fills = 10
+        metrics.maker_ratio = 1.0
+        metrics.realized_spread_usdc = 1.0
+        metrics.fees_usdc = 0.1
+        metrics.mark_to_market_pnl_usdc = 0.9
+        metrics.inventory_histogram = {0: 900, 1: 100}
+        metrics.quote_attempts_by_depth = {"bid:5.00bps": 900, "ask:5.00bps": 100}
+        metrics.fills_by_depth = {"bid:5.00bps": 9, "ask:5.00bps": 1}
+        metrics.pnl_by_side = {"bid": 0.8, "ask": 0.1}
+        metrics.markout_samples = [
+            {"horizon_ms": horizon_ms, "markout_usdc": 0.02}
+            for horizon_ms in REQUIRED_MARKOUT_HORIZONS_MS
+        ]
+        metrics.parameter_series = minimal_metrics()["parameter_series"]
+        metrics.toxicity_series = minimal_metrics()["toxicity_series"]
+        metrics.price_tick_size = config.price_tick_size
+        return metrics
+
+    monkeypatch.setattr("run_replay_report.run_replay", fake_run_replay)
+    report = build_report(
+        config=ReplayConfig(symbol="ETH", data_dir=Path("unused"), mid_fallback=2000.0),
+        params={
+            "kappa+": 2.0,
+            "kappa-": 2.0,
+            "lambda+": 0.1,
+            "lambda-": 0.1,
+            "epsilon+": 0.0,
+            "epsilon-": 0.0,
+        },
+        min_days=3.0,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+        max_post_only_reject_ratio=0.8,
+        max_stale_quote_cancel_ratio=0.99,
+        min_price_events_per_day=1000.0,
+        max_price_gap_seconds=300.0,
+        require_fill_calibration=False,
+    )
+
+    widened = next(item for item in report["variants"] if item["variant"]["name"] == "widened_tick")
+    assert widened["metrics"]["price_tick_size"] == 1.0
+    assert any(check["name"] == "missing_trade_stream" for check in report["refusal_checks"])
 
 
 def test_render_markdown_includes_reasons():
