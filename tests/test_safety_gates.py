@@ -85,6 +85,7 @@ def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     assert names.index("post_only_evidence_report") < names.index("live_canary_evidence_report")
     assert names.index("fee_evidence_report") < names.index("live_canary_evidence_report")
     assert names.index("hyperliquid_fee_capture_plan") < names.index("fee_evidence_report")
+    assert names.index("direct_alo_adapter_plan") < names.index("direct_alo_probe_preparation_plan")
     assert names.index("direct_risk_flatten_plan") < names.index("live_canary_evidence_report")
     assert names.index("replay_acceptance_report_artifact") < names.index("live_canary_evidence_report")
     assert names.index("live_canary_evidence_report") < names.index("promotion_evidence_manifest")
@@ -276,6 +277,20 @@ def test_fee_capture_plan_gate_is_read_only_plan_mode():
     assert command[command.index("--mode") + 1] == "plan"
     assert "--output" in command
     assert "docs/hyperliquid_fee_capture_plan.json" in normalized
+
+
+def test_direct_alo_probe_preparation_gate_is_no_order_plan():
+    command = gate_command("direct_alo_probe_preparation_plan", include_runtime=True)
+    normalized = [item.replace("\\", "/") for item in command]
+
+    assert "scripts/hyperliquid_alo_executor.py" in normalized
+    assert "--mode" in command
+    assert command[command.index("--mode") + 1] == "prepare-probes"
+    assert "--acknowledge-real-orders" not in command
+    assert "--best-bid" in command
+    assert "--best-ask" in command
+    assert "--output" in command
+    assert "docs/direct_alo_probe_commands.json" in normalized
 
 
 def test_non_runtime_live_canary_gate_can_use_external_audit_log_input():

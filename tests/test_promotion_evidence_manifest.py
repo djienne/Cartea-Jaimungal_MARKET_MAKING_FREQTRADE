@@ -113,6 +113,10 @@ def test_manifest_includes_guarded_promotion_commands(tmp_path):
     post_only_commands = manifest["promotion_commands"]["post_only"]
     assert any(cmd["requires_real_orders"] for cmd in post_only_commands)
     assert any(any("verify_post_only_mapping.py" in part for part in cmd["command"]) for cmd in post_only_commands)
+    prepare_command = next(cmd for cmd in post_only_commands if cmd["label"] == "prepare_direct_sdk_alo_probe_commands")
+    assert prepare_command["requires_real_orders"] is False
+    assert "--mode" in prepare_command["command"]
+    assert prepare_command["command"][prepare_command["command"].index("--mode") + 1] == "prepare-probes"
     extended_command = manifest["promotion_commands"]["extended_dry_run"][0]["command"]
     assert extended_command[extended_command.index("--enabled-dry-run-seconds") + 1] == "1800"
     assert extended_command[extended_command.index("--enabled-dry-run-max-loss-rate-usdc-per-hour") + 1] == "2"

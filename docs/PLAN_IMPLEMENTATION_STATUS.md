@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 325 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 329 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -248,6 +248,13 @@ Generated from the current local worktree after the latest safety-gate run.
   preserves `quote_id`, `session_id`, `hjb_generation`, `client_order_id`, and
   Hyperliquid `cloid`, giving the live-canary verifier a direct path to
   reconcile exchange fills back to accepted quote decisions and order attempts.
+- Direct ALO probe preparation:
+  `scripts/hyperliquid_alo_executor.py --mode prepare-probes` converts an
+  observed BBO into exact guarded crossing/passive ALO submit commands without
+  placing an order. It computes the crossing/passive prices, notional checks,
+  quote-linked client order id / `cloid`, and the downstream
+  `verify_post_only_mapping.py --mode evaluate-evidence` command. Optional
+  public BBO fetching requires `--fetch-bbo --acknowledge-public-market-read`.
 - Promotion evidence manifest:
   `scripts/build_promotion_evidence_manifest.py` writes
   `docs/promotion_evidence_manifest.json` from the current dry-run quality, TIF

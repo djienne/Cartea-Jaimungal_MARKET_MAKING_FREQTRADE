@@ -219,6 +219,234 @@ def crossing_probe_check(intent: AloOrderIntent, best_bid: float, best_ask: floa
     return False, "probe_does_not_cross"
 
 
+def format_cli_number(value: float) -> str:
+    return f"{float(value):.12g}"
+
+
+def level_price(level: Any) -> float | None:
+    if isinstance(level, dict):
+        for key in ("px", "price", "p"):
+            if key in level:
+                try:
+                    return float(level[key])
+                except Exception:
+                    return None
+    if isinstance(level, (list, tuple)) and level:
+        try:
+            return float(level[0])
+        except Exception:
+            return None
+    return None
+
+
+def bbo_from_l2_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    levels = snapshot.get("levels") if isinstance(snapshot, dict) else None
+    bids: list[Any] | None = None
+    asks: list[Any] | None = None
+    if isinstance(levels, list) and len(levels) >= 2:
+        bids = levels[0] if isinstance(levels[0], list) else None
+        asks = levels[1] if isinstance(levels[1], list) else None
+    if bids is None and isinstance(snapshot.get("bids"), list):
+        bids = snapshot.get("bids")
+    if asks is None and isinstance(snapshot.get("asks"), list):
+        asks = snapshot.get("asks")
+    best_bid = level_price(bids[0]) if bids else None
+    best_ask = level_price(asks[0]) if asks else None
+    if best_bid is None or best_ask is None or best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
+        raise ValueError("Hyperliquid l2Book snapshot did not contain a valid uncrossed BBO")
+    return {
+        "best_bid": float(best_bid),
+        "best_ask": float(best_ask),
+        "raw_snapshot": snapshot,
+    }
+
+
+def fetch_public_bbo(symbol: str, *, testnet: bool) -> dict[str, Any]:
+    try:
+        from hyperliquid.info import Info  # type: ignore
+        from hyperliquid.utils import constants  # type: ignore
+    except Exception as exc:
+        raise SystemExit(f"hyperliquid-python-sdk is required to fetch public BBO: {exc}") from exc
+    base_url = constants.TESTNET_API_URL if testnet else constants.MAINNET_API_URL
+    info = Info(base_url, skip_ws=True)
+    snapshot = info.l2_snapshot(normalize_coin(symbol))
+    return bbo_from_l2_snapshot(snapshot)
+
+
+def quote_link_cli_args(quote_link: dict[str, Any]) -> list[str]:
+    args: list[str] = []
+    mapping = {
+        "quote_id": "--quote-id",
+        "session_id": "--session-id",
+        "hjb_generation": "--hjb-generation",
+        "client_order_id": "--client-order-id",
+        "cloid": "--cloid",
+    }
+    for key, flag in mapping.items():
+        value = quote_link.get(key)
+        if value not in (None, ""):
+            args.extend([flag, str(value)])
+    return args
+
+
+def build_probe_preparation(
+    *,
+    symbol: str,
+    side: str,
+    size: float,
+    best_bid: float,
+    best_ask: float,
+    passive_price: float | None = None,
+    testnet: bool = True,
+    max_notional_usdc: float = DEFAULT_MAX_SUBMIT_NOTIONAL_USDC,
+    quote_id: str | None = None,
+    session_id: str | None = None,
+    hjb_generation: int | None = None,
+    client_order_id: str | None = None,
+    cloid: str | None = None,
+    crossing_output: str = "docs/direct_alo_reject_result.json",
+    passive_output: str = "docs/direct_alo_passive_result.json",
+    evidence_output: str = "docs/post_only_evidence_report.json",
+) -> dict[str, Any]:
+    if float(size) <= 0:
+        raise ValueError("size must be positive")
+    best_bid = float(best_bid)
+    best_ask = float(best_ask)
+    if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
+        raise ValueError("best_bid/best_ask must describe a valid uncrossed book")
+
+    quote_link = quote_link_payload(
+        quote_id=quote_id,
+        side=side,
+        hjb_generation=hjb_generation,
+        session_id=session_id,
+        client_order_id=client_order_id,
+        cloid=cloid,
+    )
+    crossing_base = crossing_probe_intent(symbol, side, float(size), best_bid, best_ask)
+    crossing_intent = AloOrderIntent(
+        symbol=crossing_base.symbol,
+        side=crossing_base.side,
+        size=crossing_base.size,
+        price=crossing_base.price,
+        reduce_only=crossing_base.reduce_only,
+        cloid=quote_link.get("cloid"),
+        client_order_id=quote_link.get("client_order_id"),
+    )
+    crossing_ok, crossing_reason = crossing_probe_check(crossing_intent, best_bid, best_ask)
+    if not crossing_ok:
+        raise ValueError(f"crossing probe check failed: {crossing_reason}")
+
+    side_is_buy = crossing_intent.is_buy
+    default_passive_price = best_bid if side_is_buy else best_ask
+    passive_intent = AloOrderIntent(
+        symbol=symbol,
+        side=side,
+        size=float(size),
+        price=float(passive_price) if passive_price is not None and float(passive_price) > 0 else default_passive_price,
+        cloid=quote_link.get("cloid"),
+        client_order_id=quote_link.get("client_order_id"),
+    )
+    passive_ok, passive_reason = maker_safe(passive_intent, best_bid, best_ask)
+    if not passive_ok:
+        raise ValueError(f"passive probe maker-safety failed: {passive_reason}")
+
+    crossing_notional_ok, crossing_notional_reason, crossing_notional = notional_limit_check(
+        crossing_intent,
+        max_notional_usdc,
+    )
+    passive_notional_ok, passive_notional_reason, passive_notional = notional_limit_check(
+        passive_intent,
+        max_notional_usdc,
+    )
+    if not crossing_notional_ok:
+        raise ValueError(f"crossing probe notional guard failed: {crossing_notional_reason}")
+    if not passive_notional_ok:
+        raise ValueError(f"passive probe notional guard failed: {passive_notional_reason}")
+
+    common = [
+        "python",
+        "scripts/hyperliquid_alo_executor.py",
+        "--symbol",
+        symbol,
+        "--side",
+        side,
+        "--size",
+        format_cli_number(size),
+        "--best-bid",
+        format_cli_number(best_bid),
+        "--best-ask",
+        format_cli_number(best_ask),
+        "--max-notional-usdc",
+        format_cli_number(max_notional_usdc),
+        *quote_link_cli_args(quote_link),
+    ]
+    if testnet:
+        common.insert(2, "--testnet")
+
+    crossing_command = [
+        *common[:2],
+        "--mode",
+        "submit-crossing-alo",
+        *common[2:],
+        "--allow-crossing-probe",
+        "--acknowledge-real-orders",
+        "--output",
+        crossing_output,
+    ]
+    passive_command = [
+        *common[:2],
+        "--mode",
+        "submit-passive-alo",
+        *common[2:],
+        "--price",
+        format_cli_number(passive_intent.price),
+        "--allow-passive-probe",
+        "--acknowledge-real-orders",
+        "--output",
+        passive_output,
+    ]
+    if not testnet:
+        crossing_command.append("--allow-mainnet-crossing-probe")
+        passive_command.append("--allow-mainnet-passive-probe")
+
+    return {
+        "generated_at": utc_now_iso(),
+        "mode": "prepare-probes",
+        "safe_default": "no order submission",
+        "env_required_for_submit": f"{DIRECT_ALO_ALLOW_ENV}=1",
+        "symbol": symbol,
+        "side": side,
+        "testnet": bool(testnet),
+        "bbo": {"best_bid": best_bid, "best_ask": best_ask},
+        "quote_link": quote_link,
+        "crossing_probe": {
+            "intent": asdict(crossing_intent),
+            "check": {"ok": crossing_ok, "reason": crossing_reason},
+            "notional_check": {"ok": crossing_notional_ok, "reason": crossing_notional_reason, **crossing_notional},
+            "command": crossing_command,
+        },
+        "passive_probe": {
+            "intent": asdict(passive_intent),
+            "check": {"ok": passive_ok, "reason": passive_reason},
+            "notional_check": {"ok": passive_notional_ok, "reason": passive_notional_reason, **passive_notional},
+            "command": passive_command,
+        },
+        "evaluate_command": [
+            "python",
+            "scripts/verify_post_only_mapping.py",
+            "--mode",
+            "evaluate-evidence",
+            "--crossing-result",
+            crossing_output,
+            "--passive-result",
+            passive_output,
+            "--output",
+            evidence_output,
+        ],
+    }
+
+
 def nested_values(payload: Any) -> list[Any]:
     values: list[Any] = []
     if isinstance(payload, dict):
@@ -586,6 +814,12 @@ def render_plan(symbol: str) -> dict[str, Any]:
             "fills require explicit maker liquidity evidence",
             "any taker liquidity fails",
         ],
+        "prepare_probes": {
+            "mode": "prepare-probes",
+            "safe_default": "no order submission",
+            "purpose": "turn an observed BBO into exact guarded crossing/passive ALO probe commands",
+            "optional_public_bbo_fetch": "--fetch-bbo requires --acknowledge-public-market-read",
+        },
     }
 
 
@@ -593,7 +827,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Guarded direct Hyperliquid SDK Alo executor.")
     parser.add_argument(
         "--mode",
-        choices=["plan", "build-order", "classify-result", "submit-alo", "submit-crossing-alo", "submit-passive-alo"],
+        choices=[
+            "plan",
+            "build-order",
+            "classify-result",
+            "prepare-probes",
+            "submit-alo",
+            "submit-crossing-alo",
+            "submit-passive-alo",
+        ],
         default="plan",
     )
     parser.add_argument("--symbol", default="ETH/USDC:USDC")
@@ -613,6 +855,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-mainnet-crossing-probe", action="store_true")
     parser.add_argument("--allow-passive-probe", action="store_true")
     parser.add_argument("--allow-mainnet-passive-probe", action="store_true")
+    parser.add_argument("--fetch-bbo", action="store_true")
+    parser.add_argument("--acknowledge-public-market-read", action="store_true")
+    parser.add_argument("--crossing-output", default="docs/direct_alo_reject_result.json")
+    parser.add_argument("--passive-output", default="docs/direct_alo_passive_result.json")
+    parser.add_argument("--evidence-output", default="docs/post_only_evidence_report.json")
     parser.add_argument("--quote-id", default=None)
     parser.add_argument("--session-id", default=None)
     parser.add_argument("--hjb-generation", type=int, default=None)
@@ -659,6 +906,40 @@ def main() -> int:
         if args.result_json is None:
             raise SystemExit("--result-json is required for classify-result")
         payload = classify_order_result(json.loads(args.result_json.read_text(encoding="utf-8")))
+    elif args.mode == "prepare-probes":
+        fetched_bbo = None
+        if args.fetch_bbo:
+            if not args.acknowledge_public_market_read:
+                raise SystemExit("--acknowledge-public-market-read is required with --fetch-bbo")
+            fetched_bbo = fetch_public_bbo(args.symbol, testnet=bool(args.testnet))
+            best_bid = fetched_bbo["best_bid"]
+            best_ask = fetched_bbo["best_ask"]
+        else:
+            if args.best_bid is None or args.best_ask is None:
+                raise SystemExit("--best-bid and --best-ask are required unless --fetch-bbo is used")
+            best_bid = args.best_bid
+            best_ask = args.best_ask
+        payload = build_probe_preparation(
+            symbol=args.symbol,
+            side=args.side,
+            size=float(args.size),
+            best_bid=float(best_bid),
+            best_ask=float(best_ask),
+            passive_price=float(args.price) if args.price and args.price > 0 else None,
+            testnet=bool(args.testnet),
+            max_notional_usdc=float(args.max_notional_usdc),
+            quote_id=args.quote_id,
+            session_id=args.session_id,
+            hjb_generation=args.hjb_generation,
+            client_order_id=args.client_order_id,
+            cloid=args.cloid,
+            crossing_output=str(args.crossing_output),
+            passive_output=str(args.passive_output),
+            evidence_output=str(args.evidence_output),
+        )
+        payload["bbo"]["source"] = "hyperliquid_l2_snapshot" if fetched_bbo is not None else "cli"
+        if fetched_bbo is not None:
+            payload["bbo"]["raw_snapshot"] = fetched_bbo.get("raw_snapshot")
     elif args.mode == "submit-alo":
         payload = submit_alo_order(args)
     elif args.mode == "submit-crossing-alo":

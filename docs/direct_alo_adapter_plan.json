@@ -10,7 +10,7 @@
     "bid probe price is best ask; ask probe price is best bid",
     "--quote-id/--session-id/--hjb-generation produce deterministic CLOID evidence"
   ],
-  "generated_at": "2026-05-27T05:05:26Z",
+  "generated_at": "2026-05-27T05:50:35Z",
   "order_type": {
     "limit": {
       "tif": "Alo"
@@ -30,6 +30,12 @@
     "actual_time_in_force": "Alo",
     "actual_time_in_force_source": "hyperliquid_sdk_order_type",
     "submitted_params_source": "sdk_order_args.order_type.limit.tif"
+  },
+  "prepare_probes": {
+    "mode": "prepare-probes",
+    "optional_public_bbo_fetch": "--fetch-bbo requires --acknowledge-public-market-read",
+    "purpose": "turn an observed BBO into exact guarded crossing/passive ALO probe commands",
+    "safe_default": "no order submission"
   },
   "quote_linking": {
     "client_order_id_fields": [

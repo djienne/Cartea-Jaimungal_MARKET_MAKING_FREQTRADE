@@ -119,6 +119,18 @@ artifact and submits a deterministic Hyperliquid `cloid` (`0x` plus 16 bytes)
 derived from those fields, so later fills can reconcile
 `quote_id -> client_order_id/cloid -> exchange order/fill`.
 
+Before submitting either real/testnet probe, generate a no-order command plan
+from the observed BBO:
+
+```bash
+python scripts/hyperliquid_alo_executor.py --mode prepare-probes --testnet --symbol ETH/USDC:USDC --side bid --size <min_size> --best-bid <best_bid> --best-ask <best_ask> --quote-id <QUOTE_ID> --session-id <CANARY_SESSION_ID> --hjb-generation <HJB_GENERATION> --output docs/direct_alo_probe_commands.json
+```
+
+This computes the intentionally crossing ALO price, the passive ALO price, the
+notional checks, the quote-linked `cloid`, and the exact guarded submit/evaluate
+commands. Public BBO fetching is available with `--fetch-bbo`, but it requires
+`--acknowledge-public-market-read` and still does not submit orders.
+
 For evidence generation, prefer the passive probe mode. It submits the same
 native `Alo` order, classifies the response, and cancels any resting order ids
 reported by the SDK:

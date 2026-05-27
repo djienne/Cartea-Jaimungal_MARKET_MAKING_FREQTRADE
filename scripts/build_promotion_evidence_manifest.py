@@ -158,6 +158,38 @@ def promotion_commands() -> dict[str, list[dict[str, Any]]]:
                 ["python", "scripts/verify_post_only_mapping.py", "--mode", "plan", "--output", "docs/post_only_probe_plan.json"],
             ),
             command(
+                "prepare_direct_sdk_alo_probe_commands",
+                [
+                    "python",
+                    "scripts/hyperliquid_alo_executor.py",
+                    "--mode",
+                    "prepare-probes",
+                    "--testnet",
+                    "--symbol",
+                    "ETH/USDC:USDC",
+                    "--side",
+                    "bid",
+                    "--size",
+                    "<min_size>",
+                    "--best-bid",
+                    "<best_bid>",
+                    "--best-ask",
+                    "<best_ask>",
+                    "--quote-id",
+                    "<QUOTE_ID>",
+                    "--session-id",
+                    "<CANARY_SESSION_ID>",
+                    "--hjb-generation",
+                    "<HJB_GENERATION>",
+                    "--output",
+                    "docs/direct_alo_probe_commands.json",
+                ],
+                note=(
+                    "No order submission. Converts an observed BBO into exact crossing/passive ALO submit commands "
+                    "with quote-linked client order id and cloid evidence."
+                ),
+            ),
+            command(
                 "direct_sdk_crossing_alo_reject_probe",
                 [
                     "python",

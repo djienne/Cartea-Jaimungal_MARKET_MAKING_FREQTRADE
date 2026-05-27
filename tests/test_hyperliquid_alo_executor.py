@@ -14,7 +14,9 @@ from hyperliquid_alo_executor import (  # noqa: E402
     AloOrderIntent,
     actual_tif_from_sdk_order_args,
     alo_order_type,
+    bbo_from_l2_snapshot,
     build_client_order_id,
+    build_probe_preparation,
     build_hyperliquid_cloid,
     build_sdk_order_args,
     cancel_resting_orders,
@@ -221,6 +223,70 @@ def test_plan_documents_submit_guards():
     assert any("--quote-id" in item for item in plan["submit_guards"])
     assert any("--allow-crossing-probe" in item for item in plan["crossing_probe_guards"])
     assert any("--allow-passive-probe" in item for item in plan["passive_probe_guards"])
+    assert plan["prepare_probes"]["mode"] == "prepare-probes"
+    assert plan["prepare_probes"]["safe_default"] == "no order submission"
+
+
+def test_bbo_from_l2_snapshot_accepts_hyperliquid_levels_shape():
+    snapshot = {"levels": [[{"px": "99.5", "sz": "1.0"}], [{"px": "100.5", "sz": "2.0"}]]}
+
+    bbo = bbo_from_l2_snapshot(snapshot)
+
+    assert bbo["best_bid"] == 99.5
+    assert bbo["best_ask"] == 100.5
+
+
+def test_prepare_probe_plan_builds_guarded_commands_from_bbo():
+    plan = build_probe_preparation(
+        symbol="ETH/USDC:USDC",
+        side="bid",
+        size=0.01,
+        best_bid=99.0,
+        best_ask=101.0,
+        testnet=True,
+        quote_id="quote-000000000123",
+        session_id="session-a",
+        hjb_generation=42,
+    )
+
+    crossing = plan["crossing_probe"]
+    passive = plan["passive_probe"]
+
+    assert plan["safe_default"] == "no order submission"
+    assert crossing["intent"]["price"] == 101.0
+    assert crossing["intent"]["client_order_id"] == "mm|sess=session-a|qid=quote-000000000123|side=bid|hjb=42"
+    assert crossing["intent"]["cloid"] == plan["quote_link"]["cloid"]
+    assert crossing["check"] == {"ok": True, "reason": "bid_crosses_ask_for_alo_probe"}
+    assert passive["intent"]["price"] == 99.0
+    assert passive["intent"]["client_order_id"] == "mm|sess=session-a|qid=quote-000000000123|side=bid|hjb=42"
+    assert passive["intent"]["cloid"] == plan["quote_link"]["cloid"]
+    assert passive["check"] == {"ok": True, "reason": "ok"}
+    assert crossing["notional_check"]["notional_usdc"] == 1.01
+    assert passive["notional_check"]["notional_usdc"] == 0.99
+    assert "--testnet" in crossing["command"]
+    assert "--allow-crossing-probe" in crossing["command"]
+    assert "--acknowledge-real-orders" in crossing["command"]
+    assert "--allow-passive-probe" in passive["command"]
+    assert passive["command"][passive["command"].index("--price") + 1] == "99"
+    assert plan["quote_link"]["client_order_id"] == "mm|sess=session-a|qid=quote-000000000123|side=bid|hjb=42"
+    assert plan["evaluate_command"][-1] == "docs/post_only_evidence_report.json"
+
+
+def test_prepare_probe_plan_rejects_oversized_probe():
+    try:
+        build_probe_preparation(
+            symbol="ETH/USDC:USDC",
+            side="bid",
+            size=1.0,
+            best_bid=99.0,
+            best_ask=101.0,
+            testnet=True,
+            max_notional_usdc=25.0,
+        )
+    except ValueError as exc:
+        assert "notional guard failed" in str(exc)
+    else:
+        raise AssertionError("expected oversized probe to fail")
 
 
 def args_for_submit(**overrides):

@@ -23,6 +23,7 @@ def gate_payload(pytest_count: int = 173) -> dict:
         "post_only_probe_plan",
         "post_only_evidence_report",
         "direct_alo_adapter_plan",
+        "direct_alo_probe_preparation_plan",
         "direct_risk_flatten_plan",
         "hyperliquid_fee_capture_plan",
         "promotion_evidence_manifest",

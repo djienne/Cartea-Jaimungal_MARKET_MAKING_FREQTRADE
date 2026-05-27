@@ -85,6 +85,10 @@ These gates do not require a live exchange connection:
   evidence probes unless the operator explicitly raises `--max-notional-usdc`.
   Direct SDK orders can include quote-linked `cloid` evidence generated from
   `session_id`, `quote_id`, side, and HJB generation.
+- `direct_alo_probe_preparation_plan`: writes
+  `docs/direct_alo_probe_commands.json` without network or order submission. It
+  converts a valid BBO into exact guarded direct SDK crossing/passive ALO probe
+  commands, notional checks, and the downstream evidence evaluation command.
 
 Optional Docker runtime gates:
 
@@ -321,6 +325,11 @@ python scripts/hyperliquid_alo_executor.py --mode plan
   also carry `actual_time_in_force="Alo"` with
   `actual_time_in_force_source="hyperliquid_sdk_order_type"`, so the checker can
   verify native SDK `Alo` evidence without manual artifact edits. Use
+  `hyperliquid_alo_executor.py --mode prepare-probes` first to turn an observed
+  BBO into exact guarded crossing/passive submit commands without placing an
+  order. `--fetch-bbo` is available for public Hyperliquid BBO reads but
+  requires `--acknowledge-public-market-read`.
+  Use
   `hyperliquid_alo_executor.py --mode submit-crossing-alo` for a direct SDK
   rejection probe and `--mode submit-passive-alo` for passive resting/maker
   evidence with automatic cancellation of any resting order ids returned by the
