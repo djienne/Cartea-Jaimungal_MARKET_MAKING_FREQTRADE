@@ -40,6 +40,7 @@ class ReplayConfig:
     decision_latency_ms: int = 250
     order_ack_latency_ms: int = 250
     cancel_latency_ms: int = 250
+    quote_refresh_interval_ms: int = 1000
     maker_fee: float = MAKER_FEE
     taker_fee: float = TAKER_FEE
     funding_rate_per_hour: float = 0.0
@@ -63,10 +64,13 @@ class ReplayMetrics:
     max_price_gap_seconds: float | None = None
     p95_price_gap_seconds: float | None = None
     quote_attempts: int = 0
+    quote_decision_events: int = 0
     post_only_rejects: int = 0
     maker_fills: int = 0
     taker_fills: int = 0
     stale_quote_cancels: int = 0
+    quote_refresh_interval_ms: int = 0
+    consumed_trade_events: int = 0
     realized_spread_usdc: float = 0.0
     fees_usdc: float = 0.0
     cash_usdc: float = 0.0
@@ -111,6 +115,7 @@ class ReplayMetrics:
             "max_price_gap_seconds": self.max_price_gap_seconds,
             "p95_price_gap_seconds": self.p95_price_gap_seconds,
             "quote_attempts": self.quote_attempts,
+            "quote_decision_events": self.quote_decision_events,
             "post_only_rejects": self.post_only_rejects,
             "post_only_reject_ratio": self.post_only_rejects / attempts,
             "maker_fills": self.maker_fills,
@@ -118,6 +123,8 @@ class ReplayMetrics:
             "maker_ratio": self.maker_fills / max(fills, 1),
             "stale_quote_cancels": self.stale_quote_cancels,
             "stale_quote_cancel_ratio": self.stale_quote_cancels / attempts,
+            "quote_refresh_interval_ms": self.quote_refresh_interval_ms,
+            "consumed_trade_events": self.consumed_trade_events,
             "realized_spread_usdc": self.realized_spread_usdc,
             "fees_usdc": self.fees_usdc,
             "cash_usdc": self.cash_usdc,
@@ -521,6 +528,7 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     metrics.equity_usdc = float(config.starting_equity_usdc)
     metrics.min_equity_usdc = float(config.starting_equity_usdc)
     metrics.min_liquidation_buffer_usdc = float(config.starting_equity_usdc)
+    metrics.quote_refresh_interval_ms = int(config.quote_refresh_interval_ms)
 
     if prices.empty:
         return metrics
@@ -574,10 +582,14 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     )
 
     total_quote_latency_ms = config.decision_latency_ms + config.order_ack_latency_ms
+    quote_refresh_interval_ms = max(0, int(config.quote_refresh_interval_ms))
+    next_quote_decision_at: pd.Timestamp | None = None
+    used_trade_indices: set[int] = set()
     hjb_cache = compute_hjb_cache(params, config.q_max)
     for row_idx, row in prices.iterrows():
         mid, best_bid, best_ask = mid_from_price_row(row, config.mid_fallback)
         metrics.final_mid = mid
+        row_ts = row["timestamp"]
 
         q = inventory_q(metrics.inventory_base, config.inventory_unit_base, config.q_max)
         if q == 0:
@@ -588,18 +600,22 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
 
         if config.funding_rate_per_hour and row_idx > 0:
             prev_ts = prices.loc[row_idx - 1, "timestamp"]
-            elapsed_hours = max(0.0, (row["timestamp"] - prev_ts).total_seconds() / 3600.0)
+            elapsed_hours = max(0.0, (row_ts - prev_ts).total_seconds() / 3600.0)
             funding = -metrics.inventory_base * mid * float(config.funding_rate_per_hour) * elapsed_hours
             metrics.funding_usdc += funding
             metrics.cash_usdc += funding
 
+        if next_quote_decision_at is not None and row_ts < next_quote_decision_at:
+            update_margin_metrics(metrics, config, mid)
+            continue
+
+        metrics.quote_decision_events += 1
         bid, ask, _ = compute_quotes(mid, q, params, config.q_max, hjb_cache, maker_fee=config.maker_fee)
         inventory_at_decision = metrics.inventory_base
-        active_at = row["timestamp"] + pd.Timedelta(milliseconds=total_quote_latency_ms)
-        if row_idx + 1 < len(prices):
-            stale_at = prices.loc[row_idx + 1, "timestamp"] + pd.Timedelta(milliseconds=config.cancel_latency_ms)
-        else:
-            stale_at = active_at + pd.Timedelta(milliseconds=config.cancel_latency_ms)
+        active_at = row_ts + pd.Timedelta(milliseconds=total_quote_latency_ms)
+        refresh_due_at = row_ts + pd.Timedelta(milliseconds=quote_refresh_interval_ms)
+        stale_at = max(active_at, refresh_due_at) + pd.Timedelta(milliseconds=config.cancel_latency_ms)
+        next_quote_decision_at = refresh_due_at
 
         for side, price in (("bid", bid), ("ask", ask)):
             if price is None:
@@ -621,6 +637,8 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             queue_row = active_orderbook_row(orderbooks, active_at)
             queue_ahead = first_level_size(queue_row, side) if is_joining_best(side, price, best_bid, best_ask) else 0.0
             window = trades[(trades["timestamp"] >= active_at) & (trades["timestamp"] <= stale_at)]
+            if used_trade_indices:
+                window = window.loc[~window.index.isin(used_trade_indices)]
             fill_trade, queue_decay_base = matching_trade_with_queue_decay(
                 side,
                 price,
@@ -643,6 +661,8 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                 fill_size = min(trade_size, config.inventory_unit_base)
             if fill_size <= 0:
                 continue
+            used_trade_indices.add(int(fill_trade.name))
+            metrics.consumed_trade_events = len(used_trade_indices)
             notional = fill_size * price
             fee = notional * config.maker_fee
             gross_spread = abs(mid - price) * fill_size
@@ -739,6 +759,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
+    parser.add_argument(
+        "--quote-refresh-interval-ms",
+        type=int,
+        default=1000,
+        help="Minimum cadence between simulated quote decisions.",
+    )
     return parser.parse_args()
 
 
@@ -763,6 +789,7 @@ def main() -> int:
         leverage=args.leverage,
         maintenance_margin_rate=args.maintenance_margin_rate,
         queue_decay_per_second=args.queue_decay_per_second,
+        quote_refresh_interval_ms=args.quote_refresh_interval_ms,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,
     )

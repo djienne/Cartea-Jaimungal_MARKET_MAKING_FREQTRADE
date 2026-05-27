@@ -181,7 +181,11 @@ Optional Docker runtime gates:
   quotes and fill accounting both use the configured maker fee, so fee
   sensitivity changes quote distances as well as realized fees. The replay
   queue model includes queue-ahead traded volume plus conservative cancellation
-  decay, reported as `queue_decay_base`. The report also includes refusal checks
+  decay, reported as `queue_decay_base`. Replay quote placement uses an
+  explicit `quote_refresh_interval_ms` cadence rather than cancelling on every
+  BBO event, records quote-decision counts, and consumes matched trade events
+  once so overlapping simulated quote windows cannot reuse one historical trade.
+  The report also includes refusal checks
   for bad parameters and stale collector data, proving those scenarios reject
   quoting instead of silently producing orders. Replay metrics also track
   starting equity, leverage, notional exposure, margin used, maintenance margin,

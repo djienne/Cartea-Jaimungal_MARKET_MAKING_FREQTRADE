@@ -106,6 +106,7 @@ def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
         decision_latency_ms=int(round(base.decision_latency_ms * multiplier)),
         order_ack_latency_ms=int(round(base.order_ack_latency_ms * multiplier)),
         cancel_latency_ms=int(round(base.cancel_latency_ms * multiplier)),
+        quote_refresh_interval_ms=base.quote_refresh_interval_ms,
         maker_fee=float(base.maker_fee) * float(variant.maker_fee_multiplier),
         taker_fee=base.taker_fee,
         funding_rate_per_hour=base.funding_rate_per_hour,
@@ -699,6 +700,7 @@ def build_report(
             "decision_latency_ms": config.decision_latency_ms,
             "order_ack_latency_ms": config.order_ack_latency_ms,
             "cancel_latency_ms": config.cancel_latency_ms,
+            "quote_refresh_interval_ms": config.quote_refresh_interval_ms,
             "maker_fee": config.maker_fee,
             "taker_fee": config.taker_fee,
             "funding_rate_per_hour": config.funding_rate_per_hour,
@@ -796,6 +798,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--starting-equity-usdc", type=float, default=1000.0)
     parser.add_argument("--leverage", type=float, default=1.0)
     parser.add_argument("--maintenance-margin-rate", type=float, default=0.05)
+    parser.add_argument(
+        "--quote-refresh-interval-ms",
+        type=int,
+        default=1000,
+        help="Minimum cadence between simulated quote decisions.",
+    )
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
     parser.add_argument("--kappa-plus", type=float, required=True)
@@ -827,6 +835,7 @@ def main() -> int:
         starting_equity_usdc=args.starting_equity_usdc,
         leverage=args.leverage,
         maintenance_margin_rate=args.maintenance_margin_rate,
+        quote_refresh_interval_ms=args.quote_refresh_interval_ms,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,
     )

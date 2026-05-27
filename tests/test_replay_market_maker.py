@@ -229,6 +229,108 @@ def test_replay_records_queue_decay_metric(monkeypatch):
     assert metrics.to_dict()["queue_decay_base"] == 0.5
 
 
+def test_replay_keeps_final_quote_active_for_refresh_interval(monkeypatch):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame([{"timestamp": ts0, "bid": 100.0, "ask": 101.0}])
+    trades = pd.DataFrame(
+        [
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=700), "price": 100.0, "size": 0.01},
+        ]
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.0, None, {}),
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.01,
+            q_max=3,
+            decision_latency_ms=0,
+            order_ack_latency_ms=0,
+            cancel_latency_ms=0,
+            quote_refresh_interval_ms=1000,
+        ),
+        params,
+    )
+
+    payload = metrics.to_dict()
+    assert metrics.maker_fills == 1
+    assert metrics.quote_decision_events == 1
+    assert payload["quote_refresh_interval_ms"] == 1000
+
+
+def test_replay_consumes_trade_events_once_across_overlapping_windows(monkeypatch):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame(
+        [
+            {"timestamp": ts0, "bid": 100.0, "ask": 101.0},
+            {"timestamp": ts0 + pd.Timedelta(seconds=1), "bid": 100.0, "ask": 101.0},
+        ]
+    )
+    trades = pd.DataFrame(
+        [
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=1500), "price": 100.0, "size": 0.01},
+        ]
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.0, None, {}),
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.01,
+            q_max=3,
+            decision_latency_ms=0,
+            order_ack_latency_ms=0,
+            cancel_latency_ms=1000,
+            quote_refresh_interval_ms=1000,
+        ),
+        params,
+    )
+
+    assert metrics.quote_decision_events == 2
+    assert metrics.quote_attempts == 2
+    assert metrics.maker_fills == 1
+    assert metrics.consumed_trade_events == 1
+    assert metrics.stale_quote_cancels == 1
+
+
 def test_replay_tracks_margin_equity_and_liquidation_buffer(monkeypatch):
     ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
     prices = pd.DataFrame(

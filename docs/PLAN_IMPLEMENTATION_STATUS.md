@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 329 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 331 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -172,7 +172,11 @@ Generated from the current local worktree after the latest safety-gate run.
   threshold and stale-quote cancel ratios above the replay acceptance threshold,
   reconciles those ratios back to raw quote counts, and rejects sparse or gappy
   price-event coverage so a multi-day replay cannot pass from isolated start/end
-  timestamps. The report also includes
+  timestamps. Replay quote placement now uses an explicit
+  `quote_refresh_interval_ms` cadence instead of implicitly cancelling on every
+  BBO event, records `quote_decision_events`, and consumes matched trade events
+  once so overlapping simulated quote windows cannot count the same historical
+  trade as multiple fills. The report also includes
   refusal checks proving bad
   parameters and stale collector data reject quoting, and fails any replay
   variant that breaches maintenance margin. The safety-gate runner
