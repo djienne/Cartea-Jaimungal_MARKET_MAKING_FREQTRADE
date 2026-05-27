@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 331 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 334 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -176,7 +176,14 @@ Generated from the current local worktree after the latest safety-gate run.
   `quote_refresh_interval_ms` cadence instead of implicitly cancelling on every
   BBO event, records `quote_decision_events`, and consumes matched trade events
   once so overlapping simulated quote windows cannot count the same historical
-  trade as multiple fills. The report also includes
+  trade as multiple fills. Replay acceptance can now consume
+  `docs/replay_log_calibration.json`, bucket simulated quotes with the same
+  depth-bucket convention as the calibration artifact, and conservatively
+  throttle potential fills to the observed side/depth fill probability. A
+  promotion run can require this with
+  `--replay-acceptance-require-fill-calibration`; unusable or missing
+  calibration remains a blocking reason instead of silently becoming optimistic.
+  The report also includes
   refusal checks proving bad
   parameters and stale collector data reject quoting, and fails any replay
   variant that breaches maintenance margin. The safety-gate runner
@@ -197,7 +204,9 @@ Generated from the current local worktree after the latest safety-gate run.
   values, and the calibration report prefers exact quote-id matches when fills
   include them before falling back to time/side/price matching for older logs.
   It can be `usable_for_calibration=false` until enough real dry-run/testnet
-  fills exist.
+  fills exist. When usable calibration evidence is supplied to replay
+  acceptance, simulated fills are limited by the observed fill probability
+  instead of assuming every queue-eligible historical trade would have filled.
 - Quote admission and sizing hardening from `MEGA_PLAN.md`:
   `custom_entry_price()` and `custom_exit_price()` now log `quote_decision`
   `accept` only after `_quote_state_valid()`, custom-price distance, and local
@@ -358,7 +367,7 @@ Generated from the current local worktree after the latest safety-gate run.
 | Phase 3 - Freqtrade fail-closed wiring | Automated pass | Confirm gates, source and runtime callback signature tests, proposed-rate fallback rejection tests, inventory-limit custom-pricing rejection tests, disabled and enabled dry-run smokes. |
 | Phase 4 - maker safety | Partial | Local maker guards, fee alignment, fee agreement fail-closed guards, fee evidence evaluator and capture normalizer, price and amount rounding guards, final confirm-time tick/lot safety guards, post-only TIF confirmation/fill kill-switch guards, kill-on-taker-fill tests, post-only probe plan, Alo evidence evaluator, and direct SDK Alo adapter scaffold exist. Exchange-level `Alo` and account fee-tier evidence are not verified. |
 | Phase 5 - parameter/data pipeline | Automated pass for local pipeline | Atomic writers, atomic strategy-facing snapshot copies, schema v2 tests, status locking, process-level estimator locking, deterministic kappa -> epsilon -> raw-lambda updater order, snapshot validation for timestamped windows/fit diagnostics/toxicity diagnostics, `lambda0_fit` enforcement for HJB lambda, row-timestamp-based collector freshness validation, and no hardcoded symbol fallback when the strategy has no active pair. |
-| Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, quote-quality ratio gates, price-density/max-gap coverage gates, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
+| Phase 6 - replay | Partial | Event replay exists, runs on latest local shards, models latency, queue-ahead volume, conservative queue decay, fees/funding, margin/equity exposure, dry-run/testnet fill calibration artifacts, optional calibration-throttled fills by side/depth bucket, quote-quality ratio gates, price-density/max-gap coverage gates, and has a multi-variant acceptance report. Multi-day replay acceptance is still not complete. |
 | Phase 7 - observability/kill switches | Automated pass for local fields | Health, quote decisions, accepted-order quote linkage, fill-to-order-attempt reconciliation, freshness-age fields, stable quote IDs, HJB parameter fingerprints, fee agreement snapshots, canary-relevant health fields, source-labeled exchange/Trade/accepted-confirmation open-order counts, mark-to-mid unrealized PnL, fill accounting, realized-PnL risk updates, delayed fill markouts, post-only reject-rate enforcement, kill-switch cancellation fallback, strategy-side `risk_flatten_requested` audit events, guarded reduce-only IOC flatten scaffold, and kill-switch tests/log artifacts exist. |
 | Phase 8 - deployment gates | Partial | Gates 1-3 are automated and passing. Gate 6 now has a log/artifact verifier with live fill-to-quote reconciliation, and live strategy enablement is gated on deployment-stage artifacts. Gates 4-6 still require external/manual evidence. |
 

@@ -48,6 +48,7 @@ class ReplayConfig:
     leverage: float = 1.0
     maintenance_margin_rate: float = 0.05
     queue_decay_per_second: float = 0.05
+    fill_calibration_path: Path | None = None
     newest_per_stream: int | None = None
     max_price_events: int | None = None
 
@@ -71,6 +72,10 @@ class ReplayMetrics:
     stale_quote_cancels: int = 0
     quote_refresh_interval_ms: int = 0
     consumed_trade_events: int = 0
+    calibration_rejected_fills: int = 0
+    calibration_attempts_by_key: dict[str, int] = field(default_factory=dict)
+    calibration_fills_by_key: dict[str, int] = field(default_factory=dict)
+    fill_calibration: dict[str, Any] = field(default_factory=dict)
     realized_spread_usdc: float = 0.0
     fees_usdc: float = 0.0
     cash_usdc: float = 0.0
@@ -125,6 +130,10 @@ class ReplayMetrics:
             "stale_quote_cancel_ratio": self.stale_quote_cancels / attempts,
             "quote_refresh_interval_ms": self.quote_refresh_interval_ms,
             "consumed_trade_events": self.consumed_trade_events,
+            "calibration_rejected_fills": self.calibration_rejected_fills,
+            "calibration_attempts_by_key": self.calibration_attempts_by_key,
+            "calibration_fills_by_key": self.calibration_fills_by_key,
+            "fill_calibration": self.fill_calibration,
             "realized_spread_usdc": self.realized_spread_usdc,
             "fees_usdc": self.fees_usdc,
             "cash_usdc": self.cash_usdc,
@@ -400,6 +409,135 @@ def quote_depth_key(side: str, mid: float, price: float) -> str:
     return f"{side}:{depth_bps:.2f}bps"
 
 
+def quote_depth_bucket_key(side: str, mid: float, price: float, bucket_bps: float) -> str:
+    depth_bps = 0.0 if mid <= 0 else abs(float(mid) - float(price)) / float(mid) * 10_000.0
+    bucket = max(0.0, float(bucket_bps))
+    if bucket <= 0:
+        return f"{side}:{depth_bps:.2f}bps"
+    lower = np.floor(float(depth_bps) / bucket) * bucket
+    upper = lower + bucket
+    return f"{side}:{lower:.2f}-{upper:.2f}bps"
+
+
+def load_fill_calibration(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {
+            "provided": False,
+            "usable": False,
+            "applied": False,
+            "path": None,
+            "reasons": ["not_supplied"],
+            "bucket_bps": None,
+            "fill_probability_by_depth": {},
+            "fill_probability_by_side": {},
+        }
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {
+            "provided": True,
+            "usable": False,
+            "applied": False,
+            "path": str(path),
+            "reasons": ["missing_calibration_file"],
+            "bucket_bps": None,
+            "fill_probability_by_depth": {},
+            "fill_probability_by_side": {},
+        }
+    except Exception as exc:
+        return {
+            "provided": True,
+            "usable": False,
+            "applied": False,
+            "path": str(path),
+            "reasons": [f"invalid_calibration_file:{exc}"],
+            "bucket_bps": None,
+            "fill_probability_by_depth": {},
+            "fill_probability_by_side": {},
+        }
+    if not isinstance(payload, dict):
+        return {
+            "provided": True,
+            "usable": False,
+            "applied": False,
+            "path": str(path),
+            "reasons": ["calibration_not_object"],
+            "bucket_bps": None,
+            "fill_probability_by_depth": {},
+            "fill_probability_by_side": {},
+        }
+
+    usable = bool(payload.get("usable_for_calibration"))
+    inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {}
+    bucket_bps = finite_float_or_none(inputs.get("bucket_bps"))
+    by_depth_raw = payload.get("fill_probability_by_depth") if isinstance(payload.get("fill_probability_by_depth"), dict) else {}
+    by_side_raw = payload.get("fill_probability_by_side") if isinstance(payload.get("fill_probability_by_side"), dict) else {}
+    by_depth = {
+        str(key): float(value)
+        for key, value in by_depth_raw.items()
+        if finite_float_or_none(value) is not None and 0.0 <= float(value) <= 1.0
+    }
+    by_side = {
+        str(key).lower(): float(value)
+        for key, value in by_side_raw.items()
+        if finite_float_or_none(value) is not None and 0.0 <= float(value) <= 1.0
+    }
+    reasons = [str(reason) for reason in payload.get("reasons", []) if str(reason)]
+    if usable and bucket_bps is None:
+        usable = False
+        reasons.append("missing_calibration_bucket_bps")
+    if usable and not by_depth and not by_side:
+        usable = False
+        reasons.append("missing_calibration_probabilities")
+    return {
+        "provided": True,
+        "usable": usable,
+        "applied": usable,
+        "path": str(path),
+        "generated_at": payload.get("generated_at"),
+        "reasons": reasons,
+        "bucket_bps": bucket_bps,
+        "accepted_quotes": inputs.get("accepted_quotes"),
+        "maker_fills": payload.get("maker_fills"),
+        "maker_ratio": payload.get("maker_ratio"),
+        "fill_probability_by_depth": by_depth,
+        "fill_probability_by_side": by_side,
+    }
+
+
+def calibration_probability_key(calibration: dict[str, Any], side: str, depth_key: str) -> tuple[str, float | None]:
+    if not calibration.get("applied"):
+        return depth_key, None
+    by_depth = calibration.get("fill_probability_by_depth") or {}
+    if depth_key in by_depth:
+        return depth_key, float(by_depth[depth_key])
+    by_side = calibration.get("fill_probability_by_side") or {}
+    side_key = str(side).lower()
+    if side_key in by_side:
+        return f"{side_key}:side", float(by_side[side_key])
+    return depth_key, 0.0
+
+
+def calibrated_fill_allowed(
+    calibration: dict[str, Any],
+    attempts_by_key: dict[str, int],
+    fills_by_key: dict[str, int],
+    *,
+    side: str,
+    depth_key: str,
+) -> tuple[bool, str | None]:
+    key, probability = calibration_probability_key(calibration, side, depth_key)
+    if probability is None:
+        return True, None
+    attempts = int(attempts_by_key.get(key, 0))
+    accepted_fills = int(fills_by_key.get(key, 0))
+    max_fills = int(np.floor(float(attempts) * max(0.0, min(1.0, float(probability))) + 1e-12))
+    if accepted_fills + 1 > max_fills:
+        return False, key
+    fills_by_key[key] = accepted_fills + 1
+    return True, key
+
+
 def update_margin_metrics(metrics: ReplayMetrics, config: ReplayConfig, mid: float) -> None:
     notional = abs(float(metrics.inventory_base)) * float(mid)
     leverage = max(float(config.leverage), 1e-12)
@@ -529,6 +667,7 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     metrics.min_equity_usdc = float(config.starting_equity_usdc)
     metrics.min_liquidation_buffer_usdc = float(config.starting_equity_usdc)
     metrics.quote_refresh_interval_ms = int(config.quote_refresh_interval_ms)
+    metrics.fill_calibration = load_fill_calibration(config.fill_calibration_path)
 
     if prices.empty:
         return metrics
@@ -624,6 +763,15 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                 continue
             metrics.quote_attempts += 1
             depth_key = quote_depth_key(side, mid, price)
+            calibration_bucket_bps = metrics.fill_calibration.get("bucket_bps")
+            calibration_key = (
+                quote_depth_bucket_key(side, mid, price, calibration_bucket_bps)
+                if calibration_bucket_bps is not None
+                else depth_key
+            )
+            cal_key, _cal_probability = calibration_probability_key(metrics.fill_calibration, side, calibration_key)
+            if metrics.fill_calibration.get("applied"):
+                metrics.calibration_attempts_by_key[cal_key] = metrics.calibration_attempts_by_key.get(cal_key, 0) + 1
             metrics.quote_attempts_by_depth[depth_key] = metrics.quote_attempts_by_depth.get(depth_key, 0) + 1
             ok, _reason = post_only_check(side, price, best_bid, best_ask)
             if not ok:
@@ -660,6 +808,20 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             else:
                 fill_size = min(trade_size, config.inventory_unit_base)
             if fill_size <= 0:
+                continue
+
+            calibrated_allowed, _calibrated_key = calibrated_fill_allowed(
+                metrics.fill_calibration,
+                metrics.calibration_attempts_by_key,
+                metrics.calibration_fills_by_key,
+                side=side,
+                depth_key=calibration_key,
+            )
+            if not calibrated_allowed:
+                used_trade_indices.add(int(fill_trade.name))
+                metrics.consumed_trade_events = len(used_trade_indices)
+                metrics.calibration_rejected_fills += 1
+                metrics.stale_quote_cancels += 1
                 continue
             used_trade_indices.add(int(fill_trade.name))
             metrics.consumed_trade_events = len(used_trade_indices)
@@ -765,6 +927,12 @@ def parse_args() -> argparse.Namespace:
         default=1000,
         help="Minimum cadence between simulated quote decisions.",
     )
+    parser.add_argument(
+        "--fill-calibration",
+        type=Path,
+        default=None,
+        help="Optional replay_log_calibration.json artifact used to conservatively throttle simulated fills.",
+    )
     return parser.parse_args()
 
 
@@ -790,6 +958,7 @@ def main() -> int:
         maintenance_margin_rate=args.maintenance_margin_rate,
         queue_decay_per_second=args.queue_decay_per_second,
         quote_refresh_interval_ms=args.quote_refresh_interval_ms,
+        fill_calibration_path=args.fill_calibration,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,
     )

@@ -115,6 +115,47 @@ def test_evaluate_metrics_passes_when_acceptance_is_met():
     assert reasons == []
 
 
+def test_evaluate_metrics_requires_fill_calibration_when_requested():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+        require_fill_calibration=True,
+    )
+
+    assert not ok
+    assert "missing_fill_calibration" in reasons
+
+
+def test_evaluate_metrics_accepts_usable_fill_calibration_when_requested():
+    ok, reasons = evaluate_metrics(
+        minimal_metrics(
+            fill_calibration={
+                "provided": True,
+                "usable": True,
+                "applied": True,
+                "fill_probability_by_depth": {"bid:5.00-6.00bps": 0.01},
+            }
+        ),
+        min_days=3.0,
+        q_max=3,
+        min_quote_attempts=1000,
+        min_maker_ratio=0.99,
+        min_net_realized_spread=0.0,
+        min_mean_markout_usdc=-0.01,
+        max_directional_drift_ratio=0.75,
+        require_fill_calibration=True,
+    )
+
+    assert ok
+    assert reasons == []
+
+
 def test_evaluate_metrics_requires_parameter_and_toxicity_series():
     ok, reasons = evaluate_metrics(
         minimal_metrics(parameter_series=[], toxicity_series=[]),

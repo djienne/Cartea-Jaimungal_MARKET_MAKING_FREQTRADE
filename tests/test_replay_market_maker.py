@@ -23,6 +23,7 @@ from replay_market_maker import (  # noqa: E402
     normalize_price_bbo,
     normalize_timestamp_column,
     post_only_check,
+    quote_depth_bucket_key,
     quote_depth_key,
     run_replay,
     selected_parquet_files,
@@ -329,6 +330,82 @@ def test_replay_consumes_trade_events_once_across_overlapping_windows(monkeypatc
     assert metrics.maker_fills == 1
     assert metrics.consumed_trade_events == 1
     assert metrics.stale_quote_cancels == 1
+
+
+def test_replay_applies_usable_fill_calibration_conservatively(monkeypatch, tmp_path):
+    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
+    prices = pd.DataFrame(
+        [
+            {"timestamp": ts0, "bid": 100.0, "ask": 101.0},
+            {"timestamp": ts0 + pd.Timedelta(seconds=1), "bid": 100.0, "ask": 101.0},
+        ]
+    )
+    trades = pd.DataFrame(
+        [
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=500), "price": 100.0, "size": 0.01},
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=1500), "price": 100.0, "size": 0.01},
+        ]
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "load_symbol_data",
+        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+    )
+    monkeypatch.setattr(
+        replay_market_maker,
+        "compute_quotes",
+        lambda *_args, **_kwargs: (100.0, None, {}),
+    )
+    calibration_path = tmp_path / "calibration.json"
+    calibration_key = quote_depth_bucket_key("bid", 100.5, 100.0, 100.0)
+    calibration_path.write_text(
+        """{
+  "usable_for_calibration": true,
+  "generated_at": "2026-05-25T10:00:00Z",
+  "inputs": {"bucket_bps": 100.0, "accepted_quotes": 2},
+  "maker_fills": 1,
+  "maker_ratio": 1.0,
+  "reasons": [],
+  "fill_probability_by_depth": {"%s": 0.5},
+  "fill_probability_by_side": {}
+}
+"""
+        % calibration_key,
+        encoding="utf-8",
+    )
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.0,
+        "epsilon-": 0.0,
+    }
+
+    metrics = run_replay(
+        ReplayConfig(
+            symbol="ETH",
+            data_dir=Path("."),
+            mid_fallback=100.5,
+            inventory_unit_base=0.01,
+            q_max=3,
+            decision_latency_ms=0,
+            order_ack_latency_ms=0,
+            cancel_latency_ms=0,
+            quote_refresh_interval_ms=1000,
+            fill_calibration_path=calibration_path,
+        ),
+        params,
+    )
+
+    payload = metrics.to_dict()
+    assert metrics.quote_attempts == 2
+    assert metrics.maker_fills == 1
+    assert metrics.calibration_rejected_fills == 1
+    assert metrics.consumed_trade_events == 2
+    assert metrics.calibration_attempts_by_key == {calibration_key: 2}
+    assert metrics.calibration_fills_by_key == {calibration_key: 1}
+    assert payload["fill_calibration"]["applied"] is True
 
 
 def test_replay_tracks_margin_equity_and_liquidation_buffer(monkeypatch):

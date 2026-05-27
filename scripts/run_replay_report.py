@@ -114,6 +114,7 @@ def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
         leverage=base.leverage,
         maintenance_margin_rate=base.maintenance_margin_rate,
         queue_decay_per_second=base.queue_decay_per_second,
+        fill_calibration_path=base.fill_calibration_path,
         newest_per_stream=base.newest_per_stream,
         max_price_events=base.max_price_events,
     )
@@ -397,6 +398,26 @@ def add_quote_quality_reasons(
         )
 
 
+def add_fill_calibration_reasons(
+    metrics: dict[str, Any],
+    reasons: list[str],
+    *,
+    require_fill_calibration: bool,
+) -> None:
+    calibration = metrics.get("fill_calibration")
+    if not require_fill_calibration:
+        return
+    if not isinstance(calibration, dict):
+        reasons.append("missing_fill_calibration")
+        return
+    if not calibration.get("provided"):
+        reasons.append("fill_calibration_not_supplied")
+    if not calibration.get("usable"):
+        reasons.append("fill_calibration_not_usable")
+    if not calibration.get("applied"):
+        reasons.append("fill_calibration_not_applied")
+
+
 def add_data_coverage_quality_reasons(
     metrics: dict[str, Any],
     reasons: list[str],
@@ -531,6 +552,7 @@ def evaluate_metrics(
     max_stale_quote_cancel_ratio: float = DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO,
     min_price_events_per_day: float = DEFAULT_MIN_PRICE_EVENTS_PER_DAY,
     max_price_gap_seconds: float = DEFAULT_MAX_PRICE_GAP_SECONDS,
+    require_fill_calibration: bool = False,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     add_series_evidence_reasons(
@@ -552,6 +574,11 @@ def evaluate_metrics(
         reasons,
         max_post_only_reject_ratio=max_post_only_reject_ratio,
         max_stale_quote_cancel_ratio=max_stale_quote_cancel_ratio,
+    )
+    add_fill_calibration_reasons(
+        metrics,
+        reasons,
+        require_fill_calibration=require_fill_calibration,
     )
     add_data_coverage_quality_reasons(
         metrics,
@@ -633,6 +660,7 @@ def build_report(
     max_stale_quote_cancel_ratio: float,
     min_price_events_per_day: float,
     max_price_gap_seconds: float,
+    require_fill_calibration: bool,
     variants: tuple[ReplayVariant, ...] = DEFAULT_VARIANTS,
 ) -> dict[str, Any]:
     variant_payloads: list[dict[str, Any]] = []
@@ -653,6 +681,7 @@ def build_report(
             max_stale_quote_cancel_ratio=max_stale_quote_cancel_ratio,
             min_price_events_per_day=min_price_events_per_day,
             max_price_gap_seconds=max_price_gap_seconds,
+            require_fill_calibration=require_fill_calibration,
         )
         variant_payloads.append(
             {
@@ -691,6 +720,7 @@ def build_report(
             "max_stale_quote_cancel_ratio": float(max_stale_quote_cancel_ratio),
             "min_price_events_per_day": float(min_price_events_per_day),
             "max_price_gap_seconds": float(max_price_gap_seconds),
+            "require_fill_calibration": bool(require_fill_calibration),
             "q_max": int(config.q_max),
         },
         "config": {
@@ -708,6 +738,7 @@ def build_report(
             "leverage": config.leverage,
             "maintenance_margin_rate": config.maintenance_margin_rate,
             "queue_decay_per_second": config.queue_decay_per_second,
+            "fill_calibration_path": str(config.fill_calibration_path) if config.fill_calibration_path else None,
         },
         "base_params": params,
         "refusal_checks": refusal_checks,
@@ -792,6 +823,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-stale-quote-cancel-ratio", type=float, default=DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO)
     parser.add_argument("--min-price-events-per-day", type=float, default=DEFAULT_MIN_PRICE_EVENTS_PER_DAY)
     parser.add_argument("--max-price-gap-seconds", type=float, default=DEFAULT_MAX_PRICE_GAP_SECONDS)
+    parser.add_argument("--fill-calibration", type=Path, default=None)
+    parser.add_argument(
+        "--require-fill-calibration",
+        action="store_true",
+        help="Fail replay variants unless a usable fill calibration artifact is supplied and applied.",
+    )
     parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
     parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
     parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
@@ -836,6 +873,7 @@ def main() -> int:
         leverage=args.leverage,
         maintenance_margin_rate=args.maintenance_margin_rate,
         quote_refresh_interval_ms=args.quote_refresh_interval_ms,
+        fill_calibration_path=args.fill_calibration,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,
     )
@@ -852,6 +890,7 @@ def main() -> int:
         max_stale_quote_cancel_ratio=args.max_stale_quote_cancel_ratio,
         min_price_events_per_day=args.min_price_events_per_day,
         max_price_gap_seconds=args.max_price_gap_seconds,
+        require_fill_calibration=args.require_fill_calibration,
     )
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:

@@ -174,7 +174,10 @@ Optional Docker runtime gates:
   `--replay-acceptance-max-price-gap-seconds` if the source cadence differs,
   and optionally `--replay-acceptance-require-pass` so the same runner evaluates
   the full multi-day dataset instead of overwriting it with the smoke-sized
-  report. The report includes price-event density and maximum inter-event gap
+  report. Promotion replay should also pass retained testnet/canary logs through
+  `--audit-log-input` and use `--replay-acceptance-require-fill-calibration` so
+  replay fills are throttled by usable observed side/depth fill probabilities.
+  The report includes price-event density and maximum inter-event gap
   checks so isolated start/end timestamps cannot satisfy multi-day coverage. It
   also includes a directional-drift ratio so mark-to-market PnL that is not
   explained by net realized spread cannot masquerade as maker edge. Replay
@@ -185,6 +188,10 @@ Optional Docker runtime gates:
   explicit `quote_refresh_interval_ms` cadence rather than cancelling on every
   BBO event, records quote-decision counts, and consumes matched trade events
   once so overlapping simulated quote windows cannot reuse one historical trade.
+  When `--fill-calibration` points to a usable
+  `docs/replay_log_calibration.json`, replay bucketizes simulated quotes with
+  the calibration depth bucket size and deterministically limits accepted fills
+  to the observed probability for that side/depth bucket.
   The report also includes refusal checks
   for bad parameters and stale collector data, proving those scenarios reject
   quoting instead of silently producing orders. Replay metrics also track

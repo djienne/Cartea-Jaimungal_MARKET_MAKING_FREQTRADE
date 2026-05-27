@@ -1,7 +1,7 @@
 {
   "component": "hyperliquid_fee_evidence_capture",
   "downstream_checker": "scripts/verify_fee_evidence.py",
-  "generated_at": "2026-05-27T06:34:11Z",
+  "generated_at": "2026-05-27T07:17:02Z",
   "normalized_outputs": [
     "fee_snapshot audit event with exchange maker/taker fee rates",
     "fill audit events with maker/taker liquidity, actual fee paid, actual fee rate, price, amount, order TIF, and quote/client-order linkage when oid evidence exists"

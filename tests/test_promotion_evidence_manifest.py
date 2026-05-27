@@ -120,6 +120,9 @@ def test_manifest_includes_guarded_promotion_commands(tmp_path):
     extended_command = manifest["promotion_commands"]["extended_dry_run"][0]["command"]
     assert extended_command[extended_command.index("--enabled-dry-run-seconds") + 1] == "1800"
     assert extended_command[extended_command.index("--enabled-dry-run-max-loss-rate-usdc-per-hour") + 1] == "2"
+    replay_command = manifest["promotion_commands"]["multi_day_replay"][0]["command"]
+    assert replay_command[replay_command.index("--audit-log-input") + 1] == "docs/testnet_mm_debug.jsonl"
+    assert "--replay-acceptance-require-fill-calibration" in replay_command
     assert manifest["promotion_commands"]["multi_day_replay"][0]["command"][-4:] == [
         "--json-output",
         "docs/last_safety_gates.json",

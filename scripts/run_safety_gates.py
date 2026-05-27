@@ -33,6 +33,7 @@ DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS = 2
 DEFAULT_ENABLED_DRY_RUN_MAX_LOSS_RATE_USDC_PER_HOUR = 6.0
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
+DEFAULT_REPLAY_FILL_CALIBRATION = Path("docs/replay_log_calibration.json")
 
 
 @dataclass
@@ -300,6 +301,8 @@ def replay_acceptance_report_command(
     max_price_events: int | None = 2000,
     min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
     max_price_gap_seconds: float = DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS,
+    fill_calibration: Path | None = DEFAULT_REPLAY_FILL_CALIBRATION,
+    require_fill_calibration: bool = False,
     allow_incomplete: bool = True,
 ) -> list[str]:
     command = [
@@ -332,6 +335,10 @@ def replay_acceptance_report_command(
         command.extend(["--newest-per-stream", str(newest)])
     if max_events is not None:
         command.extend(["--max-price-events", str(max_events)])
+    if fill_calibration is not None:
+        command.extend(["--fill-calibration", str(fill_calibration)])
+    if require_fill_calibration:
+        command.append("--require-fill-calibration")
     if allow_incomplete:
         command.append("--allow-incomplete")
     return command
@@ -353,6 +360,8 @@ def local_gates(
     replay_acceptance_max_price_events: int | None = 2000,
     replay_acceptance_min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
     replay_acceptance_max_price_gap_seconds: float = DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS,
+    replay_acceptance_fill_calibration: Path | None = DEFAULT_REPLAY_FILL_CALIBRATION,
+    replay_acceptance_require_fill_calibration: bool = False,
     replay_acceptance_allow_incomplete: bool = True,
     enabled_dry_run_seconds: int = DEFAULT_ENABLED_DRY_RUN_SECONDS,
     enabled_dry_run_min_runtime_seconds: float = DEFAULT_ENABLED_DRY_RUN_MIN_RUNTIME_SECONDS,
@@ -695,6 +704,8 @@ def local_gates(
                         max_price_events=replay_acceptance_max_price_events,
                         min_price_events_per_day=replay_acceptance_min_price_events_per_day,
                         max_price_gap_seconds=replay_acceptance_max_price_gap_seconds,
+                        fill_calibration=replay_acceptance_fill_calibration,
+                        require_fill_calibration=replay_acceptance_require_fill_calibration,
                         allow_incomplete=replay_acceptance_allow_incomplete,
                     ),
                     [0],
@@ -1056,6 +1067,17 @@ def parse_args() -> argparse.Namespace:
         help="Omit --allow-incomplete so the replay acceptance command fails when report.ok is false.",
     )
     parser.add_argument(
+        "--replay-acceptance-fill-calibration",
+        type=Path,
+        default=DEFAULT_REPLAY_FILL_CALIBRATION,
+        help="Replay-log calibration artifact to pass into replay acceptance.",
+    )
+    parser.add_argument(
+        "--replay-acceptance-require-fill-calibration",
+        action="store_true",
+        help="Require replay acceptance variants to apply a usable fill calibration artifact.",
+    )
+    parser.add_argument(
         "--plan-status-audit-output",
         type=Path,
         default=Path("docs/plan_status_audit.json"),
@@ -1082,6 +1104,8 @@ def main() -> int:
             replay_acceptance_max_price_events=args.replay_acceptance_max_price_events,
             replay_acceptance_min_price_events_per_day=args.replay_acceptance_min_price_events_per_day,
             replay_acceptance_max_price_gap_seconds=args.replay_acceptance_max_price_gap_seconds,
+            replay_acceptance_fill_calibration=args.replay_acceptance_fill_calibration,
+            replay_acceptance_require_fill_calibration=args.replay_acceptance_require_fill_calibration,
             replay_acceptance_allow_incomplete=not args.replay_acceptance_require_pass,
             enabled_dry_run_seconds=int(args.enabled_dry_run_seconds),
             enabled_dry_run_min_runtime_seconds=float(args.enabled_dry_run_min_runtime_seconds),
@@ -1126,6 +1150,10 @@ def main() -> int:
             "max_price_events": optional_positive_int(args.replay_acceptance_max_price_events),
             "min_price_events_per_day": float(args.replay_acceptance_min_price_events_per_day),
             "max_price_gap_seconds": float(args.replay_acceptance_max_price_gap_seconds),
+            "fill_calibration": str(args.replay_acceptance_fill_calibration)
+            if args.replay_acceptance_fill_calibration
+            else None,
+            "require_fill_calibration": bool(args.replay_acceptance_require_fill_calibration),
             "allow_incomplete": not bool(args.replay_acceptance_require_pass),
         },
         "enabled_dry_run": {
