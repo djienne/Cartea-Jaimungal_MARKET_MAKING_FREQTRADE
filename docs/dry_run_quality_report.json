@@ -1,39 +1,41 @@
 {
-  "accepted_order_attempts": 12,
-  "accepted_quotes": 13,
+  "accepted_order_attempts": 28,
+  "accepted_quotes": 32,
   "criteria": {
     "event_span_tolerance_seconds": 1.0,
+    "max_loss_rate_usdc_per_hour": 2.0,
     "max_loss_usdc": 1.0,
     "max_order_amount_units": 0.01,
     "max_order_notional_usdc": 25.0,
     "max_quote_depth_bps": 50.0,
     "max_quote_distance_ratio": 0.01,
-    "min_accepted_quotes": 2,
-    "min_event_span_seconds": 300.0,
+    "min_accepted_quotes": 5,
+    "min_event_span_seconds": 1200.0,
     "min_final_total_pnl_usdc": -1.0,
-    "min_order_attempts": 2,
-    "min_runtime_seconds": 540.0
+    "min_order_attempts": 5,
+    "min_runtime_seconds": 1620.0
   },
   "dry_run_fills": 1,
   "error_events": {},
-  "event_count": 61,
-  "event_span_seconds": 550.864,
+  "event_count": 144,
+  "event_span_seconds": 1709.02,
   "gate_report": {
     "passed": true,
     "path": "docs\\dry_run_enabled_gate.json",
     "reason": "ok",
-    "runtime_seconds": 600.0,
-    "started_at": "2026-05-27T03:26:32.904179Z"
+    "runtime_seconds": 1800.015,
+    "started_at": "2026-05-27T03:51:22.206273Z"
   },
-  "generated_at": "2026-05-27T03:36:35Z",
-  "health_events": 9,
+  "generated_at": "2026-05-27T04:21:24Z",
+  "health_events": 25,
+  "loss_velocity_usdc_per_hour": 0.0,
   "ok": true,
   "order_sizing": {
-    "avg_notional_usdc": 20.748257729533126,
+    "avg_notional_usdc": 20.680194821199798,
     "failures": {},
     "ignored": {},
     "max_amount": 0.01,
-    "max_notional_usdc": 20.7569217961998
+    "max_notional_usdc": 20.688942196199797
   },
   "pnl": {
     "final_realized_pnl_usdc": 0.0,
@@ -43,16 +45,16 @@
     "min_realized_pnl_usdc": 0.0,
     "min_total_pnl_usdc": 0.0,
     "min_unrealized_pnl_usdc": 0.0,
-    "samples": 9
+    "samples": 25
   },
-  "quote_decisions": 13,
+  "quote_decisions": 32,
   "quote_quality": {
-    "avg_depth_bps": 5.575993759651805,
-    "avg_distance_ratio": 0.000533526955669306,
+    "avg_depth_bps": 5.584465204778425,
+    "avg_distance_ratio": 0.0005342949538795375,
     "failures": {},
-    "max_depth_bps": 5.576747922135397,
-    "max_distance_ratio": 0.0005335953259867279
+    "max_depth_bps": 5.58584357254597,
+    "max_distance_ratio": 0.0005344199129691013
   },
   "reasons": [],
-  "total_order_attempts": 12
+  "total_order_attempts": 28
 }

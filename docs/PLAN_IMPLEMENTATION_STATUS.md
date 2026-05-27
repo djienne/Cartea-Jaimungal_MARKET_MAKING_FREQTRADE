@@ -4,7 +4,7 @@ Generated from the current local worktree after the latest safety-gate run.
 
 ## Automated Evidence
 
-- Unit/integration tests: `python -m pytest tests` passed with 320 tests.
+- Unit/integration tests: `python -m pytest tests` passed with 322 tests.
 - Runtime gate runner:
   `python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md --json-output docs/last_safety_gates.json`
   passed all automated checks. The JSON payload now separates
@@ -138,9 +138,12 @@ Generated from the current local worktree after the latest safety-gate run.
   accepted quote/order when a dry-run fill occurs and the PnL/health checks stay
   bounded. It also requires quote distance and depth caps, order amount and
   notional caps, fresh health fields, no kill/error events, and bounded
-  drawdown/final PnL. This is a stricter dry-run promotion gate for checking
-  whether quotes, trade amount, and losses look reasonable; it is not live
-  post-only/fill proof by itself.
+  drawdown/final PnL plus bounded loss velocity in USDC/hour. This is a
+  stricter dry-run promotion gate for checking whether quotes, trade amount,
+  and losses look reasonable over time; it is not live post-only/fill proof by
+  itself. `scripts/run_safety_gates.py` now accepts enabled dry-run duration and
+  quality-threshold overrides, and the promotion manifest includes a guarded
+  30-minute dry-run command for collecting stronger dry-run evidence.
 - Latest-data replay smoke:
   `docs/replay_latest_smoke.json` replays the newest local shards and records
   input coverage, post-only rejects, stale cancels, maker/taker counts,

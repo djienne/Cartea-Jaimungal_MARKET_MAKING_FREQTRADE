@@ -100,6 +100,7 @@ def test_dry_run_quality_passes_reasonable_quotes_size_and_pnl():
     assert report["quote_quality"]["max_depth_bps"] == 5.5
     assert report["order_sizing"]["max_notional_usdc"] == 0.995
     assert report["pnl"]["final_total_pnl_usdc"] == 0.05
+    assert report["loss_velocity_usdc_per_hour"] == 0.0
 
 
 def test_dry_run_quality_accepts_single_quote_when_it_fills_and_pnl_is_bounded():
@@ -206,6 +207,24 @@ def test_dry_run_quality_rejects_large_order_and_bad_pnl():
     assert "order_amount_too_large:1" in report["reasons"]
     assert "order_notional_too_large:1" in report["reasons"]
     assert "loss_too_large:-2.500000<min_-1.000000" in report["reasons"]
+    assert "loss_rate_too_fast:51.428571>max_6.000000_usdc_per_hour" in report["reasons"]
+
+
+def test_dry_run_quality_rejects_fast_loss_even_when_absolute_loss_is_small():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    events = dry_run_events(start)
+    events[-1]["unrealized_pnl"] = -0.40
+
+    report = build_dry_run_quality_report(
+        events,
+        gate_report=gate_report(start),
+        max_loss_usdc=1.0,
+        max_loss_rate_usdc_per_hour=5.0,
+    )
+
+    assert report["ok"] is False
+    assert "loss_too_large" not in " ".join(report["reasons"])
+    assert "loss_rate_too_fast:8.228571>max_5.000000_usdc_per_hour" in report["reasons"]
 
 
 def test_read_jsonl_events_filters_since_and_bad_lines(tmp_path):

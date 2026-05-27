@@ -94,6 +94,7 @@ def dry_run_assessment(report: dict[str, Any]) -> dict[str, Any]:
         "avg_order_notional_usdc": order_sizing.get("avg_notional_usdc"),
         "min_total_pnl_usdc": pnl.get("min_total_pnl_usdc"),
         "final_total_pnl_usdc": pnl.get("final_total_pnl_usdc"),
+        "loss_velocity_usdc_per_hour": report.get("loss_velocity_usdc_per_hour"),
     }
 
 
@@ -121,6 +122,36 @@ def command(label: str, args: list[str], *, requires_real_orders: bool = False, 
 
 def promotion_commands() -> dict[str, list[dict[str, Any]]]:
     return {
+        "extended_dry_run": [
+            command(
+                "run_30_minute_enabled_dry_run_quality_gate",
+                [
+                    "python",
+                    "scripts/run_safety_gates.py",
+                    "--include-runtime",
+                    "--enabled-dry-run-seconds",
+                    "1800",
+                    "--enabled-dry-run-min-runtime-seconds",
+                    "1620",
+                    "--enabled-dry-run-min-event-span-seconds",
+                    "1200",
+                    "--enabled-dry-run-min-accepted-quotes",
+                    "5",
+                    "--enabled-dry-run-min-order-attempts",
+                    "5",
+                    "--enabled-dry-run-max-loss-rate-usdc-per-hour",
+                    "2",
+                    "--json-output",
+                    "docs/last_safety_gates.json",
+                    "--markdown-output",
+                    "docs/LAST_SAFETY_GATES.md",
+                ],
+                note=(
+                    "Promotion-grade dry-run evidence: longer runtime, multiple model-valid quotes/orders, "
+                    "tiny order size, bounded drawdown, and bounded loss velocity. This remains dry-run evidence only."
+                ),
+            )
+        ],
         "post_only": [
             command(
                 "write_no_network_plan",

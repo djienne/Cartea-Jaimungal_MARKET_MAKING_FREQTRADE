@@ -176,6 +176,7 @@ def build_dry_run_quality_report(
     max_order_notional_usdc: float = 25.0,
     max_order_amount_units: float = 1.0,
     max_loss_usdc: float = 1.0,
+    max_loss_rate_usdc_per_hour: float = 6.0,
     min_final_total_pnl_usdc: float = -1.0,
     event_span_tolerance_seconds: float = 1.0,
 ) -> dict[str, Any]:
@@ -335,6 +336,14 @@ def build_dry_run_quality_report(
         reasons.append(
             f"final_pnl_below_threshold:{float(final_total):.6f}<min_{float(min_final_total_pnl_usdc):.6f}"
         )
+    loss_velocity_usdc_per_hour: float | None = None
+    if min_total is not None and span_seconds > 0:
+        loss_velocity_usdc_per_hour = max(0.0, -float(min_total)) * 3600.0 / float(span_seconds)
+        if loss_velocity_usdc_per_hour > float(max_loss_rate_usdc_per_hour):
+            reasons.append(
+                "loss_rate_too_fast:"
+                f"{loss_velocity_usdc_per_hour:.6f}>max_{float(max_loss_rate_usdc_per_hour):.6f}_usdc_per_hour"
+            )
 
     error_counts: dict[str, int] = {}
     for event in events:
@@ -357,6 +366,7 @@ def build_dry_run_quality_report(
             "max_order_notional_usdc": float(max_order_notional_usdc),
             "max_order_amount_units": float(max_order_amount_units),
             "max_loss_usdc": float(max_loss_usdc),
+            "max_loss_rate_usdc_per_hour": float(max_loss_rate_usdc_per_hour),
             "min_final_total_pnl_usdc": float(min_final_total_pnl_usdc),
             "event_span_tolerance_seconds": float(event_span_tolerance_seconds),
         },
@@ -390,6 +400,7 @@ def build_dry_run_quality_report(
             "avg_notional_usdc": sum(notionals) / len(notionals) if notionals else None,
         },
         "pnl": pnl,
+        "loss_velocity_usdc_per_hour": loss_velocity_usdc_per_hour,
         "error_events": error_counts,
     }
 
@@ -408,6 +419,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-order-notional-usdc", type=float, default=25.0)
     parser.add_argument("--max-order-amount-units", type=float, default=1.0)
     parser.add_argument("--max-loss-usdc", type=float, default=1.0)
+    parser.add_argument("--max-loss-rate-usdc-per-hour", type=float, default=6.0)
     parser.add_argument("--min-final-total-pnl-usdc", type=float, default=-1.0)
     return parser.parse_args()
 
@@ -429,6 +441,7 @@ def main() -> int:
         max_order_notional_usdc=float(args.max_order_notional_usdc),
         max_order_amount_units=float(args.max_order_amount_units),
         max_loss_usdc=float(args.max_loss_usdc),
+        max_loss_rate_usdc_per_hour=float(args.max_loss_rate_usdc_per_hour),
         min_final_total_pnl_usdc=float(args.min_final_total_pnl_usdc),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

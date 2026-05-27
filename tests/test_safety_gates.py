@@ -41,6 +41,12 @@ def gate_command(
     replay_acceptance_min_price_events_per_day: float = 1000.0,
     replay_acceptance_max_price_gap_seconds: float = 300.0,
     replay_acceptance_allow_incomplete: bool = True,
+    enabled_dry_run_seconds: int = 600,
+    enabled_dry_run_min_runtime_seconds: float = 540.0,
+    enabled_dry_run_min_event_span_seconds: float = 300.0,
+    enabled_dry_run_min_accepted_quotes: int = 2,
+    enabled_dry_run_min_order_attempts: int = 2,
+    enabled_dry_run_max_loss_rate_usdc_per_hour: float = 6.0,
 ) -> list[str]:
     for gate_name, command, _ in local_gates(
         include_runtime=include_runtime,
@@ -56,6 +62,12 @@ def gate_command(
         replay_acceptance_min_price_events_per_day=replay_acceptance_min_price_events_per_day,
         replay_acceptance_max_price_gap_seconds=replay_acceptance_max_price_gap_seconds,
         replay_acceptance_allow_incomplete=replay_acceptance_allow_incomplete,
+        enabled_dry_run_seconds=enabled_dry_run_seconds,
+        enabled_dry_run_min_runtime_seconds=enabled_dry_run_min_runtime_seconds,
+        enabled_dry_run_min_event_span_seconds=enabled_dry_run_min_event_span_seconds,
+        enabled_dry_run_min_accepted_quotes=enabled_dry_run_min_accepted_quotes,
+        enabled_dry_run_min_order_attempts=enabled_dry_run_min_order_attempts,
+        enabled_dry_run_max_loss_rate_usdc_per_hour=enabled_dry_run_max_loss_rate_usdc_per_hour,
     ):
         if gate_name == name:
             return command
@@ -181,8 +193,8 @@ def test_dry_run_quality_gate_checks_quotes_amounts_and_pnl():
     assert "scripts/verify_dry_run_quality.py" in normalized
     assert "--gate-report" in command
     assert "docs/dry_run_enabled_gate.json" in normalized
-    assert command[command.index("--min-runtime-seconds") + 1] == "540"
-    assert command[command.index("--min-event-span-seconds") + 1] == "300"
+    assert command[command.index("--min-runtime-seconds") + 1] == "540.0"
+    assert command[command.index("--min-event-span-seconds") + 1] == "300.0"
     assert command[command.index("--min-accepted-quotes") + 1] == "2"
     assert command[command.index("--min-order-attempts") + 1] == "2"
     assert "--max-order-notional-usdc" in command
@@ -191,6 +203,32 @@ def test_dry_run_quality_gate_checks_quotes_amounts_and_pnl():
     assert command[command.index("--max-order-amount-units") + 1] == "0.01"
     assert "--max-loss-usdc" in command
     assert command[command.index("--max-loss-usdc") + 1] == "1"
+    assert "--max-loss-rate-usdc-per-hour" in command
+    assert command[command.index("--max-loss-rate-usdc-per-hour") + 1] == "6.0"
+
+
+def test_runtime_dry_run_gate_can_be_extended_for_promotion_evidence():
+    enabled_command = gate_command(
+        "dry_run_enabled_smoke",
+        include_runtime=True,
+        enabled_dry_run_seconds=1800,
+    )
+    quality_command = gate_command(
+        "dry_run_quality_report",
+        include_runtime=True,
+        enabled_dry_run_min_runtime_seconds=1620.0,
+        enabled_dry_run_min_event_span_seconds=1200.0,
+        enabled_dry_run_min_accepted_quotes=5,
+        enabled_dry_run_min_order_attempts=5,
+        enabled_dry_run_max_loss_rate_usdc_per_hour=2.0,
+    )
+
+    assert enabled_command[enabled_command.index("--seconds") + 1] == "1800"
+    assert quality_command[quality_command.index("--min-runtime-seconds") + 1] == "1620.0"
+    assert quality_command[quality_command.index("--min-event-span-seconds") + 1] == "1200.0"
+    assert quality_command[quality_command.index("--min-accepted-quotes") + 1] == "5"
+    assert quality_command[quality_command.index("--min-order-attempts") + 1] == "5"
+    assert quality_command[quality_command.index("--max-loss-rate-usdc-per-hour") + 1] == "2.0"
 
 
 def test_freqtrade_tif_runtime_gate_writes_runtime_artifact():

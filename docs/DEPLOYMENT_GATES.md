@@ -134,11 +134,19 @@ Optional Docker runtime gates:
   at least one accepted quote/order when that order gets a dry-run fill and the
   PnL/health checks remain bounded. It also requires quote distance/depth caps,
   order amount and notional caps, fresh health fields, no kill/error events, and
-  bounded loss/final PnL.
+  bounded loss/final PnL plus a bounded loss-velocity threshold in USDC/hour.
   This is the automated answer to "did the dry run make reasonable quotes,
   reasonable trade amount, and avoid losing too much too quickly?" Passing this
   gate is still promotion evidence, not proof that live fills will remain maker
   or match dry-run behavior.
+- `run_safety_gates.py` accepts promotion-grade dry-run overrides:
+  `--enabled-dry-run-seconds`, `--enabled-dry-run-min-runtime-seconds`,
+  `--enabled-dry-run-min-event-span-seconds`,
+  `--enabled-dry-run-min-accepted-quotes`,
+  `--enabled-dry-run-min-order-attempts`, and
+  `--enabled-dry-run-max-loss-rate-usdc-per-hour`. For a longer validation
+  window, use the manifest command that runs a 30-minute enabled dry-run and
+  requires multiple model-valid quotes/orders with a tighter loss-rate cap.
 - Strategy risk guard defaults now include `max_notional_exposure_usdc`,
   `max_margin_used_usdc`, and `min_liquidation_buffer_usdc`. Quote validation
   and final order confirmation reject risk-increasing orders that would exceed

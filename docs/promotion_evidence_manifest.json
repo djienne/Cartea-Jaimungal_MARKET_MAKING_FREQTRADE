@@ -7,24 +7,25 @@
   ],
   "deployment_ready": false,
   "dry_run_quality": {
-    "accepted_order_attempts": 12,
-    "accepted_quotes": 13,
-    "avg_order_notional_usdc": 20.748257729533126,
-    "avg_quote_depth_bps": 5.575993759651805,
+    "accepted_order_attempts": 28,
+    "accepted_quotes": 32,
+    "avg_order_notional_usdc": 20.680194821199798,
+    "avg_quote_depth_bps": 5.584465204778425,
     "conclusion": "dry_run_quotes_sizing_and_bounded_pnl_passed_with_fills",
     "dry_run_fills": 1,
-    "event_span_seconds": 550.864,
+    "event_span_seconds": 1709.02,
     "final_total_pnl_usdc": 0.0,
+    "loss_velocity_usdc_per_hour": 0.0,
     "max_order_amount": 0.01,
-    "max_order_notional_usdc": 20.7569217961998,
-    "max_quote_depth_bps": 5.576747922135397,
+    "max_order_notional_usdc": 20.688942196199797,
+    "max_quote_depth_bps": 5.58584357254597,
     "min_total_pnl_usdc": 0.0,
     "ok": true,
-    "runtime_seconds": 600.0
+    "runtime_seconds": 1800.015
   },
   "external_gates": [
     {
-      "generated_at": "2026-05-27T03:21:09Z",
+      "generated_at": "2026-05-27T03:45:57Z",
       "name": "hyperliquid_post_only_mapping",
       "ok": false,
       "path": "docs\\post_only_evidence_report.json",
@@ -34,7 +35,7 @@
       ]
     },
     {
-      "generated_at": "2026-05-27T03:36:36Z",
+      "generated_at": "2026-05-27T04:21:25Z",
       "name": "hyperliquid_fee_tier",
       "ok": false,
       "path": "docs\\fee_evidence_report.json",
@@ -45,30 +46,30 @@
       ]
     },
     {
-      "generated_at": "2026-05-27T03:36:58Z",
+      "generated_at": "2026-05-27T04:21:49Z",
       "name": "multi_day_event_replay",
       "ok": false,
       "path": "docs\\replay_acceptance_report.json",
       "reasons": [
         "baseline:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "baseline:insufficient_coverage_days:0.004301<min_3.000000",
+        "baseline:insufficient_coverage_days:0.002473<min_3.000000",
         "baseline:no_maker_fills",
         "fee_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "fee_2x:insufficient_coverage_days:0.004301<min_3.000000",
+        "fee_2x:insufficient_coverage_days:0.002473<min_3.000000",
         "fee_2x:no_maker_fills",
         "latency_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "latency_2x:insufficient_coverage_days:0.004301<min_3.000000",
+        "latency_2x:insufficient_coverage_days:0.002473<min_3.000000",
         "latency_2x:no_maker_fills",
         "params_soft:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "params_soft:insufficient_coverage_days:0.004301<min_3.000000",
+        "params_soft:insufficient_coverage_days:0.002473<min_3.000000",
         "params_soft:no_maker_fills",
         "params_hard:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "params_hard:insufficient_coverage_days:0.004301<min_3.000000",
+        "params_hard:insufficient_coverage_days:0.002473<min_3.000000",
         "params_hard:no_maker_fills"
       ]
     },
     {
-      "generated_at": "2026-05-27T03:36:58Z",
+      "generated_at": "2026-05-27T04:21:49Z",
       "name": "live_canary",
       "ok": false,
       "path": "docs\\live_canary_report.json",
@@ -78,14 +79,14 @@
         "replay_gate_not_passed",
         "manual_monitoring_not_acknowledged",
         "insufficient_canary_sessions:0<min_3",
-        "unknown_fill_liquidity:2",
-        "fill_not_live_enabled:2",
-        "accepted_quote_not_live_enabled:130",
-        "accepted_quote_not_post_only:130",
-        "accepted_quote_post_only_unverified:130",
-        "accepted_order_attempt_not_live_enabled:125",
-        "accepted_order_attempt_not_post_only:125",
-        "accepted_order_attempt_post_only_unverified:125",
+        "unknown_fill_liquidity:3",
+        "fill_not_live_enabled:3",
+        "accepted_quote_not_live_enabled:162",
+        "accepted_quote_not_post_only:162",
+        "accepted_quote_post_only_unverified:162",
+        "accepted_order_attempt_not_live_enabled:153",
+        "accepted_order_attempt_not_post_only:153",
+        "accepted_order_attempt_post_only_unverified:153",
         "param_update_rejected:4",
         "no_live_health_events"
       ]
@@ -105,10 +106,38 @@
     "requires_exchange_submit_evidence": true,
     "research_gtc_supported": true
   },
-  "generated_at": "2026-05-27T03:36:58Z",
+  "generated_at": "2026-05-27T04:21:49Z",
   "manual_gates_remaining": 4,
   "ok": true,
   "promotion_commands": {
+    "extended_dry_run": [
+      {
+        "command": [
+          "python",
+          "scripts/run_safety_gates.py",
+          "--include-runtime",
+          "--enabled-dry-run-seconds",
+          "1800",
+          "--enabled-dry-run-min-runtime-seconds",
+          "1620",
+          "--enabled-dry-run-min-event-span-seconds",
+          "1200",
+          "--enabled-dry-run-min-accepted-quotes",
+          "5",
+          "--enabled-dry-run-min-order-attempts",
+          "5",
+          "--enabled-dry-run-max-loss-rate-usdc-per-hour",
+          "2",
+          "--json-output",
+          "docs/last_safety_gates.json",
+          "--markdown-output",
+          "docs/LAST_SAFETY_GATES.md"
+        ],
+        "label": "run_30_minute_enabled_dry_run_quality_gate",
+        "note": "Promotion-grade dry-run evidence: longer runtime, multiple model-valid quotes/orders, tiny order size, bounded drawdown, and bounded loss velocity. This remains dry-run evidence only.",
+        "requires_real_orders": false
+      }
+    ],
     "fee": [
       {
         "command": [

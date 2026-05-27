@@ -30,6 +30,7 @@ DEFAULT_ENABLED_DRY_RUN_MIN_RUNTIME_SECONDS = 540
 DEFAULT_ENABLED_DRY_RUN_MIN_EVENT_SPAN_SECONDS = 300
 DEFAULT_ENABLED_DRY_RUN_MIN_ACCEPTED_QUOTES = 2
 DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS = 2
+DEFAULT_ENABLED_DRY_RUN_MAX_LOSS_RATE_USDC_PER_HOUR = 6.0
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 
@@ -353,6 +354,12 @@ def local_gates(
     replay_acceptance_min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
     replay_acceptance_max_price_gap_seconds: float = DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS,
     replay_acceptance_allow_incomplete: bool = True,
+    enabled_dry_run_seconds: int = DEFAULT_ENABLED_DRY_RUN_SECONDS,
+    enabled_dry_run_min_runtime_seconds: float = DEFAULT_ENABLED_DRY_RUN_MIN_RUNTIME_SECONDS,
+    enabled_dry_run_min_event_span_seconds: float = DEFAULT_ENABLED_DRY_RUN_MIN_EVENT_SPAN_SECONDS,
+    enabled_dry_run_min_accepted_quotes: int = DEFAULT_ENABLED_DRY_RUN_MIN_ACCEPTED_QUOTES,
+    enabled_dry_run_min_order_attempts: int = DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS,
+    enabled_dry_run_max_loss_rate_usdc_per_hour: float = DEFAULT_ENABLED_DRY_RUN_MAX_LOSS_RATE_USDC_PER_HOUR,
 ) -> list[tuple[str, list[str], list[int]]]:
     py = sys.executable
     gates = [
@@ -545,7 +552,7 @@ def local_gates(
                         sys.executable,
                         "scripts/verify_dry_run_enabled.py",
                         "--seconds",
-                        str(DEFAULT_ENABLED_DRY_RUN_SECONDS),
+                        str(enabled_dry_run_seconds),
                         "--collector-warmup-seconds",
                         "70",
                         "--json-output",
@@ -565,13 +572,13 @@ def local_gates(
                         "--output",
                         "docs/dry_run_quality_report.json",
                         "--min-runtime-seconds",
-                        str(DEFAULT_ENABLED_DRY_RUN_MIN_RUNTIME_SECONDS),
+                        str(enabled_dry_run_min_runtime_seconds),
                         "--min-event-span-seconds",
-                        str(DEFAULT_ENABLED_DRY_RUN_MIN_EVENT_SPAN_SECONDS),
+                        str(enabled_dry_run_min_event_span_seconds),
                         "--min-accepted-quotes",
-                        str(DEFAULT_ENABLED_DRY_RUN_MIN_ACCEPTED_QUOTES),
+                        str(enabled_dry_run_min_accepted_quotes),
                         "--min-order-attempts",
-                        str(DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS),
+                        str(enabled_dry_run_min_order_attempts),
                         "--max-quote-distance-ratio",
                         "0.01",
                         "--max-quote-depth-bps",
@@ -582,6 +589,8 @@ def local_gates(
                         "0.01",
                         "--max-loss-usdc",
                         "1",
+                        "--max-loss-rate-usdc-per-hour",
+                        str(enabled_dry_run_max_loss_rate_usdc_per_hour),
                         "--min-final-total-pnl-usdc",
                         "-1",
                     ],
@@ -910,6 +919,45 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--enabled-dry-run-seconds",
+        type=int,
+        default=DEFAULT_ENABLED_DRY_RUN_SECONDS,
+        help=(
+            "Seconds for the trading_enabled=True dry-run runtime gate. "
+            "Use a larger value, such as 1800, for promotion evidence."
+        ),
+    )
+    parser.add_argument(
+        "--enabled-dry-run-min-runtime-seconds",
+        type=float,
+        default=DEFAULT_ENABLED_DRY_RUN_MIN_RUNTIME_SECONDS,
+        help="Minimum reported runtime accepted by the enabled dry-run quality gate.",
+    )
+    parser.add_argument(
+        "--enabled-dry-run-min-event-span-seconds",
+        type=float,
+        default=DEFAULT_ENABLED_DRY_RUN_MIN_EVENT_SPAN_SECONDS,
+        help="Minimum audit-log event span accepted by the enabled dry-run quality gate.",
+    )
+    parser.add_argument(
+        "--enabled-dry-run-min-accepted-quotes",
+        type=int,
+        default=DEFAULT_ENABLED_DRY_RUN_MIN_ACCEPTED_QUOTES,
+        help="Minimum accepted quote decisions for the enabled dry-run quality gate.",
+    )
+    parser.add_argument(
+        "--enabled-dry-run-min-order-attempts",
+        type=int,
+        default=DEFAULT_ENABLED_DRY_RUN_MIN_ORDER_ATTEMPTS,
+        help="Minimum quote-linked accepted order attempts for the enabled dry-run quality gate.",
+    )
+    parser.add_argument(
+        "--enabled-dry-run-max-loss-rate-usdc-per-hour",
+        type=float,
+        default=DEFAULT_ENABLED_DRY_RUN_MAX_LOSS_RATE_USDC_PER_HOUR,
+        help="Maximum allowed negative PnL velocity for the enabled dry-run quality gate.",
+    )
+    parser.add_argument(
         "--max-evidence-age-seconds",
         type=float,
         default=DEFAULT_REPORT_MAX_AGE_SECONDS,
@@ -1006,6 +1054,12 @@ def main() -> int:
             replay_acceptance_min_price_events_per_day=args.replay_acceptance_min_price_events_per_day,
             replay_acceptance_max_price_gap_seconds=args.replay_acceptance_max_price_gap_seconds,
             replay_acceptance_allow_incomplete=not args.replay_acceptance_require_pass,
+            enabled_dry_run_seconds=int(args.enabled_dry_run_seconds),
+            enabled_dry_run_min_runtime_seconds=float(args.enabled_dry_run_min_runtime_seconds),
+            enabled_dry_run_min_event_span_seconds=float(args.enabled_dry_run_min_event_span_seconds),
+            enabled_dry_run_min_accepted_quotes=int(args.enabled_dry_run_min_accepted_quotes),
+            enabled_dry_run_min_order_attempts=int(args.enabled_dry_run_min_order_attempts),
+            enabled_dry_run_max_loss_rate_usdc_per_hour=float(args.enabled_dry_run_max_loss_rate_usdc_per_hour),
         )
     ]
     manual_gate_list = manual_gates(
@@ -1044,6 +1098,14 @@ def main() -> int:
             "min_price_events_per_day": float(args.replay_acceptance_min_price_events_per_day),
             "max_price_gap_seconds": float(args.replay_acceptance_max_price_gap_seconds),
             "allow_incomplete": not bool(args.replay_acceptance_require_pass),
+        },
+        "enabled_dry_run": {
+            "seconds": int(args.enabled_dry_run_seconds),
+            "min_runtime_seconds": float(args.enabled_dry_run_min_runtime_seconds),
+            "min_event_span_seconds": float(args.enabled_dry_run_min_event_span_seconds),
+            "min_accepted_quotes": int(args.enabled_dry_run_min_accepted_quotes),
+            "min_order_attempts": int(args.enabled_dry_run_min_order_attempts),
+            "max_loss_rate_usdc_per_hour": float(args.enabled_dry_run_max_loss_rate_usdc_per_hour),
         },
     }
 

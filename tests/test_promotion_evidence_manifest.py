@@ -33,6 +33,7 @@ def dry_run_report(**overrides):
             "avg_notional_usdc": 19.5,
         },
         "pnl": {"min_total_pnl_usdc": 0.0, "final_total_pnl_usdc": 0.0},
+        "loss_velocity_usdc_per_hour": 0.0,
     }
     payload.update(overrides)
     return payload
@@ -70,6 +71,7 @@ def test_manifest_keeps_good_dry_run_separate_from_live_readiness(tmp_path):
     assert manifest["manual_gates_remaining"] == 4
     assert manifest["dry_run_quality"]["ok"] is True
     assert manifest["dry_run_quality"]["conclusion"] == "dry_run_quotes_and_sizing_passed_but_no_fill_profit_evidence"
+    assert manifest["dry_run_quality"]["loss_velocity_usdc_per_hour"] == 0.0
     assert manifest["freqtrade_tif_runtime"]["freqtrade_post_only_supported_tifs"] == ["PO"]
     assert manifest["freqtrade_tif_runtime"]["live_safe_via_freqtrade"] is False
     assert manifest["real_money_policy"]["dry_run_alone_is_sufficient_for_live"] is False
@@ -111,6 +113,9 @@ def test_manifest_includes_guarded_promotion_commands(tmp_path):
     post_only_commands = manifest["promotion_commands"]["post_only"]
     assert any(cmd["requires_real_orders"] for cmd in post_only_commands)
     assert any(any("verify_post_only_mapping.py" in part for part in cmd["command"]) for cmd in post_only_commands)
+    extended_command = manifest["promotion_commands"]["extended_dry_run"][0]["command"]
+    assert extended_command[extended_command.index("--enabled-dry-run-seconds") + 1] == "1800"
+    assert extended_command[extended_command.index("--enabled-dry-run-max-loss-rate-usdc-per-hour") + 1] == "2"
     assert manifest["promotion_commands"]["multi_day_replay"][0]["command"][-4:] == [
         "--json-output",
         "docs/last_safety_gates.json",
