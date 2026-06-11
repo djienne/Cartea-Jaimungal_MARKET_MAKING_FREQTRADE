@@ -44,7 +44,7 @@
       "defaults": {
         "current_order_rate": null,
         "current_time": null,
-        "exit_tag": null,
+        "entry_tag": null,
         "kwargs": null,
         "order": null,
         "pair": null,
@@ -57,7 +57,7 @@
       "kinds": {
         "current_order_rate": "POSITIONAL_OR_KEYWORD",
         "current_time": "POSITIONAL_OR_KEYWORD",
-        "exit_tag": "POSITIONAL_OR_KEYWORD",
+        "entry_tag": "POSITIONAL_OR_KEYWORD",
         "kwargs": "VAR_KEYWORD",
         "order": "POSITIONAL_OR_KEYWORD",
         "pair": "POSITIONAL_OR_KEYWORD",
@@ -74,7 +74,7 @@
         "current_time",
         "proposed_rate",
         "current_order_rate",
-        "exit_tag",
+        "entry_tag",
         "side",
         "kwargs"
       ],
@@ -357,7 +357,7 @@
       "current_time",
       "proposed_rate",
       "current_order_rate",
-      "exit_tag",
+      "entry_tag",
       "side"
     ],
     "confirm_trade_entry": [
@@ -430,11 +430,11 @@
       "current_time"
     ]
   },
-  "generated_at": "2026-05-27T09:38:10Z",
+  "generated_at": "2026-06-11T06:19:37Z",
   "ok": true,
   "reasons": [],
   "runtime": {
-    "ccxt": "4.4.77",
+    "ccxt": "4.5.22",
     "freqtrade": "2025.4",
     "python": "3.12.10"
   },

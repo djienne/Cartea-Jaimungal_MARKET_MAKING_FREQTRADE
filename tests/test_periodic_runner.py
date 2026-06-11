@@ -162,14 +162,16 @@ def test_runner_copies_strategy_snapshots_atomically(tmp_path):
 def test_process_lock_is_exclusive_and_released(tmp_path):
     lock_path = tmp_path / "param_update.lock"
 
-    assert periodic_test_runner._acquire_process_lock(lock_path, "ETH")
-    assert not periodic_test_runner._acquire_process_lock(lock_path, "ETH")
+    token = periodic_test_runner._acquire_process_lock(lock_path, "ETH")
+    assert token
+    assert periodic_test_runner._acquire_process_lock(lock_path, "ETH") is None
     payload = json.loads(lock_path.read_text(encoding="utf-8"))
     assert payload["crypto"] == "ETH"
     assert payload["pid"] > 0
     assert payload["started_at"]
+    assert payload["token"] == token
 
-    periodic_test_runner._release_process_lock(lock_path)
+    periodic_test_runner._release_process_lock(lock_path, token)
 
     assert not lock_path.exists()
 
@@ -182,13 +184,67 @@ def test_stale_process_lock_is_replaced(tmp_path):
         encoding="utf-8",
     )
 
-    assert periodic_test_runner._acquire_process_lock(lock_path, "ETH", stale_after_seconds=60)
+    token = periodic_test_runner._acquire_process_lock(lock_path, "ETH", stale_after_seconds=60)
+    assert token
 
     payload = json.loads(lock_path.read_text(encoding="utf-8"))
     assert payload["pid"] != 123
     assert payload["crypto"] == "ETH"
 
-    periodic_test_runner._release_process_lock(lock_path)
+    periodic_test_runner._release_process_lock(lock_path, token)
+    assert not lock_path.exists()
+
+
+def test_release_with_wrong_token_leaves_foreign_lock(tmp_path):
+    lock_path = tmp_path / "param_update.lock"
+    token = periodic_test_runner._acquire_process_lock(lock_path, "ETH")
+    assert token
+
+    periodic_test_runner._release_process_lock(lock_path, "not-the-owner")
+    assert lock_path.exists()
+
+    periodic_test_runner._release_process_lock(lock_path, None)
+    assert lock_path.exists()
+
+    periodic_test_runner._release_process_lock(lock_path, token)
+    assert not lock_path.exists()
+
+
+def test_sigterm_handler_raises_keyboard_interrupt():
+    # Docker stops the sidecar with SIGTERM; the handler must convert it into
+    # KeyboardInterrupt so the lock-release/status finally paths run instead of
+    # the process dying with param_update.lock left behind.
+    try:
+        periodic_test_runner._sigterm_to_keyboard_interrupt(15, None)
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("expected KeyboardInterrupt from SIGTERM handler")
+
+
+def test_run_once_skip_does_not_delete_foreign_lock(tmp_path, monkeypatch):
+    # A --once invocation that cannot acquire the lock (another runner is
+    # mid-cycle) must exit WITHOUT deleting that runner's active lock —
+    # otherwise the strategy loses its estimator_running gate during the
+    # foreign runner's snapshot copy.
+    lock_path = tmp_path / "param_update.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": 123,
+                "crypto": "ETH",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "token": "foreign-owner",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(periodic_test_runner, "_runner_lock_path", lambda: lock_path)
+
+    periodic_test_runner.schedule_tests(run_once=True, crypto="ETH")
+
+    assert lock_path.exists()
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["token"] == "foreign-owner"
 
 
 def test_fresh_process_lock_is_not_replaced(tmp_path):

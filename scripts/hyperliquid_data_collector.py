@@ -134,6 +134,22 @@ class HyperliquidDataCollector:
             self.reconnect_backoff_sec = float(os.getenv("RECONNECT_BACKOFF_SEC", "5"))
         except ValueError:
             self.reconnect_backoff_sec = 5.0
+        # Flush cadence. The market-making strategy rejects collector data older
+        # than max_collector_age_seconds (30s by default), so the flush interval
+        # must stay comfortably below that window or quotes get rejected as
+        # stale_collector_data. Default to 10s; override with FLUSH_INTERVAL_SEC.
+        try:
+            self.flush_interval_sec = float(os.getenv("FLUSH_INTERVAL_SEC", "10"))
+        except ValueError:
+            self.flush_interval_sec = 10.0
+        if self.flush_interval_sec <= 0:
+            self.flush_interval_sec = 10.0
+        # Retention: prune shards older than this so the estimator (which reads
+        # every shard each cycle) and disk usage stay bounded. 0 disables.
+        try:
+            self.retention_minutes = float(os.getenv("RETENTION_MINUTES", "60"))
+        except ValueError:
+            self.retention_minutes = 60.0
         self._reconnecting = False
         
         # Ensure output directory exists and organize by symbol/type
@@ -566,11 +582,60 @@ class HyperliquidDataCollector:
             print(f"Error during data collection: {e}")
             self.stop_collection()
     
+    def _prune_old_shards(self):
+        """Delete parquet shards older than the retention window.
+
+        Shard age is derived from the millisecond timestamp embedded in the
+        filename ("<dtype>_<ms>.parquet"), not os.stat(): statting thousands of
+        files every cycle is pathologically slow on bind mounts and would stall
+        the flush loop. Falls back to mtime only if the name can't be parsed.
+        """
+        if self.retention_minutes <= 0:
+            return
+        cutoff_ms = (time.time() - self.retention_minutes * 60.0) * 1000.0
+        removed = 0
+        for symbol in self.symbols:
+            for dtype in ('prices', 'trades', 'orderbooks'):
+                directory = os.path.join(self.output_dir, symbol, dtype)
+                if not os.path.isdir(directory):
+                    continue
+                try:
+                    entries = os.listdir(directory)
+                except OSError:
+                    continue
+                for name in entries:
+                    if not name.endswith('.parquet'):
+                        continue
+                    stem = name[:-len('.parquet')]
+                    ts_ms = None
+                    if '_' in stem:
+                        try:
+                            ts_ms = float(stem.rsplit('_', 1)[1])
+                        except ValueError:
+                            ts_ms = None
+                    path = os.path.join(directory, name)
+                    try:
+                        if ts_ms is None:
+                            ts_ms = os.path.getmtime(path) * 1000.0
+                        if ts_ms < cutoff_ms:
+                            os.remove(path)
+                            removed += 1
+                    except OSError:
+                        continue
+        if removed:
+            print(f"Pruned {removed} parquet shards older than {self.retention_minutes:.0f} min")
+
     def _periodic_flush(self):
-        """Periodically flush buffers to disk"""
+        """Periodically flush buffers to disk; prune occasionally."""
+        last_prune = 0.0
         while self.running:
-            time.sleep(60)  # Flush every 60 seconds
+            time.sleep(self.flush_interval_sec)
             self._flush_buffers()
+            # Pruning scans whole directories, so throttle it to ~once a minute
+            # rather than running it on every flush.
+            if time.time() - last_prune >= 60.0:
+                self._prune_old_shards()
+                last_prune = time.time()
     
     def _periodic_summary(self):
         """Periodically print collection summary"""

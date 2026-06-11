@@ -66,6 +66,7 @@ def test_config_safety_rejects_force_entry_unlimited_stake_and_bad_fee():
 
 def test_config_safety_rejects_checked_in_live_enablement():
     config = safe_config()
+    config["dry_run"] = False
     config["market_making"]["trading_enabled"] = True
     config["market_making"]["post_only_verified"] = True
     config["market_making"]["deployment_stage"] = "canary"
@@ -74,10 +75,43 @@ def test_config_safety_rejects_checked_in_live_enablement():
     report = report_for(config)
 
     assert report["ok"] is False
-    assert "checked_in_trading_enabled_true" in report["reasons"]
+    assert "checked_in_trading_enabled_without_dry_run" in report["reasons"]
     assert "checked_in_post_only_verified_true" in report["reasons"]
     assert "checked_in_deployment_stage_not_research" in report["reasons"]
     assert "checked_in_internal_param_estimator_true" in report["reasons"]
+
+
+def test_config_safety_allows_trading_enabled_under_dry_run():
+    # trading_enabled=true with dry_run=true is the dry-run quoting mode; only
+    # the live combination (dry_run not true) counts as checked-in enablement.
+    config = safe_config()
+    config["market_making"]["trading_enabled"] = True
+
+    report = report_for(config)
+
+    assert report["ok"] is True
+    assert report["reasons"] == []
+
+
+def test_config_safety_fee_follows_maker_fee_rate_override():
+    # With market_making.maker_fee_rate present, the accounting fee must match
+    # it (mirrors the strategy's runtime config_fee_mismatch gate).
+    config = safe_config()
+    config["fee"] = 0.0001
+    config["market_making"]["maker_fee_rate"] = 0.0001
+    assert report_for(config)["ok"] is True
+
+    config["fee"] = 0.00015
+    report = report_for(config)
+    assert report["ok"] is False
+    assert "fee_mismatch:0.00015!=expected_0.0001" in report["reasons"]
+
+    # Absurd overrides are rejected outright rather than trusted.
+    config["fee"] = 0.0
+    config["market_making"]["maker_fee_rate"] = 0.0
+    report = report_for(config)
+    assert report["ok"] is False
+    assert "maker_fee_rate_invalid" in report["reasons"]
 
 
 def test_config_safety_rejects_oversized_testing_exposure():

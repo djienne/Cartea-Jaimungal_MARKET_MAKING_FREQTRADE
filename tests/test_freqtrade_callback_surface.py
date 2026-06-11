@@ -87,7 +87,7 @@ class GoodStrategy:
         current_time,
         proposed_rate,
         current_order_rate,
-        exit_tag,
+        entry_tag,
         side,
         **kwargs,
     ):

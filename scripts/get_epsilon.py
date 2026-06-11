@@ -354,6 +354,17 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, do_plot: bool = False
     eps_plus = final_estimates['epsilon_buy']['trimmed_mean']
     eps_minus = final_estimates['epsilon_sell']['trimmed_mean']
 
+    # The Cartea-Jaimungal model defines epsilon (permanent / adverse-selection
+    # impact) as >= 0. Over short windows the trimmed-mean estimate can come out
+    # slightly negative from noise / mean-reversion; a negative value means "no
+    # adverse selection", which is economically epsilon = 0. Floor at 0 so the
+    # strategy doesn't reject the whole snapshot (invalid_epsilon) and stall on
+    # stale params.
+    if eps_plus is not None and np.isfinite(eps_plus):
+        eps_plus = max(0.0, float(eps_plus))
+    if eps_minus is not None and np.isfinite(eps_minus):
+        eps_minus = max(0.0, float(eps_minus))
+
     print(f"{crypto}: epsilon+={eps_plus:.8f}, epsilon-={eps_minus:.8f}")
 
     # Check toxicity using kappa from kappa.json (per-crypto)

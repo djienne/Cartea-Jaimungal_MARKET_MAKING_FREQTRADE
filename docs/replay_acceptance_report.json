@@ -40,32 +40,32 @@
     "starting_equity_usdc": 1000.0,
     "taker_fee": 0.00045
   },
-  "generated_at": "2026-05-27T10:13:50Z",
+  "generated_at": "2026-06-11T06:35:12Z",
   "ok": false,
   "reasons": [
     "baseline:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "baseline:insufficient_coverage_days:0.004971<min_3.000000",
-    "baseline:insufficient_quote_attempts:349<min_1000",
+    "baseline:insufficient_coverage_days:0.002887<min_3.000000",
+    "baseline:insufficient_quote_attempts:214<min_1000",
     "baseline:no_maker_fills",
     "fee_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "fee_2x:insufficient_coverage_days:0.004971<min_3.000000",
-    "fee_2x:insufficient_quote_attempts:349<min_1000",
+    "fee_2x:insufficient_coverage_days:0.002887<min_3.000000",
+    "fee_2x:insufficient_quote_attempts:214<min_1000",
     "fee_2x:no_maker_fills",
     "latency_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "latency_2x:insufficient_coverage_days:0.004971<min_3.000000",
-    "latency_2x:insufficient_quote_attempts:349<min_1000",
+    "latency_2x:insufficient_coverage_days:0.002887<min_3.000000",
+    "latency_2x:insufficient_quote_attempts:214<min_1000",
     "latency_2x:no_maker_fills",
     "params_soft:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "params_soft:insufficient_coverage_days:0.004971<min_3.000000",
-    "params_soft:insufficient_quote_attempts:349<min_1000",
+    "params_soft:insufficient_coverage_days:0.002887<min_3.000000",
+    "params_soft:insufficient_quote_attempts:214<min_1000",
     "params_soft:no_maker_fills",
     "params_hard:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "params_hard:insufficient_coverage_days:0.004971<min_3.000000",
-    "params_hard:insufficient_quote_attempts:349<min_1000",
+    "params_hard:insufficient_coverage_days:0.002887<min_3.000000",
+    "params_hard:insufficient_quote_attempts:214<min_1000",
     "params_hard:no_maker_fills",
     "widened_tick:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "widened_tick:insufficient_coverage_days:0.004971<min_3.000000",
-    "widened_tick:insufficient_quote_attempts:349<min_1000",
+    "widened_tick:insufficient_coverage_days:0.002887<min_3.000000",
+    "widened_tick:insufficient_quote_attempts:214<min_1000",
     "widened_tick:no_maker_fills"
   ],
   "refusal_checks": [
@@ -106,7 +106,7 @@
   "symbol": "ETH",
   "variants": [
     {
-      "coverage_days": 0.00497052056712963,
+      "coverage_days": 0.0028867155555555558,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -118,38 +118,67 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-05-27T10:13:16.612816095+00:00",
-        "data_span_seconds": 429.452977,
-        "data_start": "2026-05-27T10:06:07.159838676+00:00",
+        "data_end": "2026-06-11T06:34:49.068366051+00:00",
+        "data_span_seconds": 249.412224,
+        "data_start": "2026-06-11T06:30:39.656141758+00:00",
         "equity_usdc": 1000.0,
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 119,
+          "accepted_quotes": 227,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "bid:5.00-6.00bps": 0.0
+            "ask:10.00-11.00bps": 0.0,
+            "ask:11.00-12.00bps": 0.0,
+            "ask:12.00-13.00bps": 0.0,
+            "ask:13.00-14.00bps": 0.0,
+            "ask:14.00-15.00bps": 0.14285714285714285,
+            "ask:16.00-17.00bps": 0.0,
+            "ask:17.00-18.00bps": 0.0,
+            "ask:18.00-19.00bps": 0.0,
+            "ask:20.00-21.00bps": 0.0,
+            "ask:21.00-22.00bps": 0.0,
+            "ask:22.00-23.00bps": 0.0,
+            "ask:5.00-6.00bps": 0.25,
+            "ask:6.00-7.00bps": 0.0,
+            "ask:7.00-8.00bps": 0.0625,
+            "ask:8.00-9.00bps": 0.0,
+            "bid:10.00-11.00bps": 0.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:12.00-13.00bps": 0.125,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.0,
+            "bid:17.00-18.00bps": 0.0,
+            "bid:18.00-19.00bps": 0.0,
+            "bid:2.00-3.00bps": 0.2,
+            "bid:4.00-5.00bps": 0.16666666666666666,
+            "bid:5.00-6.00bps": 0.0,
+            "bid:7.00-8.00bps": 0.2857142857142857,
+            "bid:8.00-9.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "bid": 0.04201680672268908
+            "ask": 0.018867924528301886,
+            "bid": 0.07352941176470588
           },
-          "generated_at": "2026-05-27T10:13:27Z",
+          "generated_at": "2026-06-11T06:34:58Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:5",
-            "no_fills_matched_to_quotes"
+            "unknown_liquidity_fills:8"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:5.57bps": 0.0
+          "bid:6.22bps": 0.0,
+          "bid:6.23bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 2083.1499999999996,
+        "final_mid": 1658.55,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -157,13 +186,13 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 796,
-          "prices": 2000,
-          "trades": 245
+          "orderbooks": 464,
+          "prices": 1806,
+          "trades": 331
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 1806
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -173,15 +202,15 @@
         "mark_to_market_pnl_usdc": 0.0,
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 2.343739509,
+        "max_price_gap_seconds": 1.418637276,
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.67406106,
+        "p95_price_gap_seconds": 0.45890784259999984,
         "parameter_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "epsilon_minus": 0.0,
             "epsilon_plus": 0.0,
             "kappa_minus": 2.0,
@@ -191,7 +220,7 @@
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -205,37 +234,38 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 402372.3416871319,
+        "price_event_count": 1806,
+        "price_events_per_day": 625624.5082839243,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 349,
+        "quote_attempts": 214,
         "quote_attempts_by_depth": {
-          "bid:5.57bps": 349
+          "bid:6.22bps": 147,
+          "bid:6.23bps": 67
         },
-        "quote_decision_events": 349,
+        "quote_decision_events": 214,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 349,
+        "stale_quote_cancels": 214,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 1806
         },
         "toxicity_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
             "toxicity_minus": 0.0,
             "toxicity_plus": 0.0,
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -244,8 +274,8 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.004971<min_3.000000",
-        "insufficient_quote_attempts:349<min_1000",
+        "insufficient_coverage_days:0.002887<min_3.000000",
+        "insufficient_quote_attempts:214<min_1000",
         "no_maker_fills"
       ],
       "variant": {
@@ -259,7 +289,7 @@
       }
     },
     {
-      "coverage_days": 0.00497052056712963,
+      "coverage_days": 0.0028867155555555558,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -271,38 +301,67 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-05-27T10:13:16.612816095+00:00",
-        "data_span_seconds": 429.452977,
-        "data_start": "2026-05-27T10:06:07.159838676+00:00",
+        "data_end": "2026-06-11T06:34:49.068366051+00:00",
+        "data_span_seconds": 249.412224,
+        "data_start": "2026-06-11T06:30:39.656141758+00:00",
         "equity_usdc": 1000.0,
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 119,
+          "accepted_quotes": 227,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "bid:5.00-6.00bps": 0.0
+            "ask:10.00-11.00bps": 0.0,
+            "ask:11.00-12.00bps": 0.0,
+            "ask:12.00-13.00bps": 0.0,
+            "ask:13.00-14.00bps": 0.0,
+            "ask:14.00-15.00bps": 0.14285714285714285,
+            "ask:16.00-17.00bps": 0.0,
+            "ask:17.00-18.00bps": 0.0,
+            "ask:18.00-19.00bps": 0.0,
+            "ask:20.00-21.00bps": 0.0,
+            "ask:21.00-22.00bps": 0.0,
+            "ask:22.00-23.00bps": 0.0,
+            "ask:5.00-6.00bps": 0.25,
+            "ask:6.00-7.00bps": 0.0,
+            "ask:7.00-8.00bps": 0.0625,
+            "ask:8.00-9.00bps": 0.0,
+            "bid:10.00-11.00bps": 0.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:12.00-13.00bps": 0.125,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.0,
+            "bid:17.00-18.00bps": 0.0,
+            "bid:18.00-19.00bps": 0.0,
+            "bid:2.00-3.00bps": 0.2,
+            "bid:4.00-5.00bps": 0.16666666666666666,
+            "bid:5.00-6.00bps": 0.0,
+            "bid:7.00-8.00bps": 0.2857142857142857,
+            "bid:8.00-9.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "bid": 0.04201680672268908
+            "ask": 0.018867924528301886,
+            "bid": 0.07352941176470588
           },
-          "generated_at": "2026-05-27T10:13:27Z",
+          "generated_at": "2026-06-11T06:34:58Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:5",
-            "no_fills_matched_to_quotes"
+            "unknown_liquidity_fills:8"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:8.57bps": 0.0
+          "bid:9.22bps": 0.0,
+          "bid:9.23bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 2083.1499999999996,
+        "final_mid": 1658.55,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -310,13 +369,13 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 796,
-          "prices": 2000,
-          "trades": 245
+          "orderbooks": 464,
+          "prices": 1806,
+          "trades": 331
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 1806
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -326,15 +385,15 @@
         "mark_to_market_pnl_usdc": 0.0,
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 2.343739509,
+        "max_price_gap_seconds": 1.418637276,
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.67406106,
+        "p95_price_gap_seconds": 0.45890784259999984,
         "parameter_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "epsilon_minus": 0.0,
             "epsilon_plus": 0.0,
             "kappa_minus": 2.0,
@@ -344,7 +403,7 @@
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -358,37 +417,38 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 402372.3416871319,
+        "price_event_count": 1806,
+        "price_events_per_day": 625624.5082839243,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 349,
+        "quote_attempts": 214,
         "quote_attempts_by_depth": {
-          "bid:8.57bps": 349
+          "bid:9.22bps": 147,
+          "bid:9.23bps": 67
         },
-        "quote_decision_events": 349,
+        "quote_decision_events": 214,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 349,
+        "stale_quote_cancels": 214,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 1806
         },
         "toxicity_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
             "toxicity_minus": 0.0,
             "toxicity_plus": 0.0,
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -397,8 +457,8 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.004971<min_3.000000",
-        "insufficient_quote_attempts:349<min_1000",
+        "insufficient_coverage_days:0.002887<min_3.000000",
+        "insufficient_quote_attempts:214<min_1000",
         "no_maker_fills"
       ],
       "variant": {
@@ -412,7 +472,7 @@
       }
     },
     {
-      "coverage_days": 0.00497052056712963,
+      "coverage_days": 0.0028867155555555558,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -424,38 +484,67 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-05-27T10:13:16.612816095+00:00",
-        "data_span_seconds": 429.452977,
-        "data_start": "2026-05-27T10:06:07.159838676+00:00",
+        "data_end": "2026-06-11T06:34:49.068366051+00:00",
+        "data_span_seconds": 249.412224,
+        "data_start": "2026-06-11T06:30:39.656141758+00:00",
         "equity_usdc": 1000.0,
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 119,
+          "accepted_quotes": 227,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "bid:5.00-6.00bps": 0.0
+            "ask:10.00-11.00bps": 0.0,
+            "ask:11.00-12.00bps": 0.0,
+            "ask:12.00-13.00bps": 0.0,
+            "ask:13.00-14.00bps": 0.0,
+            "ask:14.00-15.00bps": 0.14285714285714285,
+            "ask:16.00-17.00bps": 0.0,
+            "ask:17.00-18.00bps": 0.0,
+            "ask:18.00-19.00bps": 0.0,
+            "ask:20.00-21.00bps": 0.0,
+            "ask:21.00-22.00bps": 0.0,
+            "ask:22.00-23.00bps": 0.0,
+            "ask:5.00-6.00bps": 0.25,
+            "ask:6.00-7.00bps": 0.0,
+            "ask:7.00-8.00bps": 0.0625,
+            "ask:8.00-9.00bps": 0.0,
+            "bid:10.00-11.00bps": 0.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:12.00-13.00bps": 0.125,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.0,
+            "bid:17.00-18.00bps": 0.0,
+            "bid:18.00-19.00bps": 0.0,
+            "bid:2.00-3.00bps": 0.2,
+            "bid:4.00-5.00bps": 0.16666666666666666,
+            "bid:5.00-6.00bps": 0.0,
+            "bid:7.00-8.00bps": 0.2857142857142857,
+            "bid:8.00-9.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "bid": 0.04201680672268908
+            "ask": 0.018867924528301886,
+            "bid": 0.07352941176470588
           },
-          "generated_at": "2026-05-27T10:13:27Z",
+          "generated_at": "2026-06-11T06:34:58Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:5",
-            "no_fills_matched_to_quotes"
+            "unknown_liquidity_fills:8"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:5.57bps": 0.0
+          "bid:6.22bps": 0.0,
+          "bid:6.23bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 2083.1499999999996,
+        "final_mid": 1658.55,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -463,13 +552,13 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 796,
-          "prices": 2000,
-          "trades": 245
+          "orderbooks": 464,
+          "prices": 1806,
+          "trades": 331
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 1806
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -479,15 +568,15 @@
         "mark_to_market_pnl_usdc": 0.0,
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 2.343739509,
+        "max_price_gap_seconds": 1.418637276,
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.67406106,
+        "p95_price_gap_seconds": 0.45890784259999984,
         "parameter_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "epsilon_minus": 0.0,
             "epsilon_plus": 0.0,
             "kappa_minus": 2.0,
@@ -497,7 +586,7 @@
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -511,37 +600,38 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 402372.3416871319,
+        "price_event_count": 1806,
+        "price_events_per_day": 625624.5082839243,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 349,
+        "quote_attempts": 214,
         "quote_attempts_by_depth": {
-          "bid:5.57bps": 349
+          "bid:6.22bps": 147,
+          "bid:6.23bps": 67
         },
-        "quote_decision_events": 349,
+        "quote_decision_events": 214,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 349,
+        "stale_quote_cancels": 214,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 1806
         },
         "toxicity_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
             "toxicity_minus": 0.0,
             "toxicity_plus": 0.0,
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -550,8 +640,8 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.004971<min_3.000000",
-        "insufficient_quote_attempts:349<min_1000",
+        "insufficient_coverage_days:0.002887<min_3.000000",
+        "insufficient_quote_attempts:214<min_1000",
         "no_maker_fills"
       ],
       "variant": {
@@ -565,7 +655,7 @@
       }
     },
     {
-      "coverage_days": 0.00497052056712963,
+      "coverage_days": 0.0028867155555555558,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -577,38 +667,67 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-05-27T10:13:16.612816095+00:00",
-        "data_span_seconds": 429.452977,
-        "data_start": "2026-05-27T10:06:07.159838676+00:00",
+        "data_end": "2026-06-11T06:34:49.068366051+00:00",
+        "data_span_seconds": 249.412224,
+        "data_start": "2026-06-11T06:30:39.656141758+00:00",
         "equity_usdc": 1000.0,
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 119,
+          "accepted_quotes": 227,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "bid:5.00-6.00bps": 0.0
+            "ask:10.00-11.00bps": 0.0,
+            "ask:11.00-12.00bps": 0.0,
+            "ask:12.00-13.00bps": 0.0,
+            "ask:13.00-14.00bps": 0.0,
+            "ask:14.00-15.00bps": 0.14285714285714285,
+            "ask:16.00-17.00bps": 0.0,
+            "ask:17.00-18.00bps": 0.0,
+            "ask:18.00-19.00bps": 0.0,
+            "ask:20.00-21.00bps": 0.0,
+            "ask:21.00-22.00bps": 0.0,
+            "ask:22.00-23.00bps": 0.0,
+            "ask:5.00-6.00bps": 0.25,
+            "ask:6.00-7.00bps": 0.0,
+            "ask:7.00-8.00bps": 0.0625,
+            "ask:8.00-9.00bps": 0.0,
+            "bid:10.00-11.00bps": 0.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:12.00-13.00bps": 0.125,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.0,
+            "bid:17.00-18.00bps": 0.0,
+            "bid:18.00-19.00bps": 0.0,
+            "bid:2.00-3.00bps": 0.2,
+            "bid:4.00-5.00bps": 0.16666666666666666,
+            "bid:5.00-6.00bps": 0.0,
+            "bid:7.00-8.00bps": 0.2857142857142857,
+            "bid:8.00-9.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "bid": 0.04201680672268908
+            "ask": 0.018867924528301886,
+            "bid": 0.07352941176470588
           },
-          "generated_at": "2026-05-27T10:13:27Z",
+          "generated_at": "2026-06-11T06:34:58Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:5",
-            "no_fills_matched_to_quotes"
+            "unknown_liquidity_fills:8"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:6.23bps": 0.0
+          "bid:7.05bps": 0.0,
+          "bid:7.06bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 2083.1499999999996,
+        "final_mid": 1658.55,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -616,13 +735,13 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 796,
-          "prices": 2000,
-          "trades": 245
+          "orderbooks": 464,
+          "prices": 1806,
+          "trades": 331
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 1806
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -632,15 +751,15 @@
         "mark_to_market_pnl_usdc": 0.0,
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 2.343739509,
+        "max_price_gap_seconds": 1.418637276,
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.67406106,
+        "p95_price_gap_seconds": 0.45890784259999984,
         "parameter_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "epsilon_minus": 0.01,
             "epsilon_plus": 0.01,
             "kappa_minus": 1.6,
@@ -650,7 +769,7 @@
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -664,37 +783,38 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 402372.3416871319,
+        "price_event_count": 1806,
+        "price_events_per_day": 625624.5082839243,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 349,
+        "quote_attempts": 214,
         "quote_attempts_by_depth": {
-          "bid:6.23bps": 349
+          "bid:7.05bps": 171,
+          "bid:7.06bps": 43
         },
-        "quote_decision_events": 349,
+        "quote_decision_events": 214,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 349,
+        "stale_quote_cancels": 214,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 1806
         },
         "toxicity_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
             "toxicity_minus": 0.016,
             "toxicity_plus": 0.016,
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -703,8 +823,8 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.004971<min_3.000000",
-        "insufficient_quote_attempts:349<min_1000",
+        "insufficient_coverage_days:0.002887<min_3.000000",
+        "insufficient_quote_attempts:214<min_1000",
         "no_maker_fills"
       ],
       "variant": {
@@ -718,7 +838,7 @@
       }
     },
     {
-      "coverage_days": 0.00497052056712963,
+      "coverage_days": 0.0028867155555555558,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -730,39 +850,66 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-05-27T10:13:16.612816095+00:00",
-        "data_span_seconds": 429.452977,
-        "data_start": "2026-05-27T10:06:07.159838676+00:00",
+        "data_end": "2026-06-11T06:34:49.068366051+00:00",
+        "data_span_seconds": 249.412224,
+        "data_start": "2026-06-11T06:30:39.656141758+00:00",
         "equity_usdc": 1000.0,
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 119,
+          "accepted_quotes": 227,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "bid:5.00-6.00bps": 0.0
+            "ask:10.00-11.00bps": 0.0,
+            "ask:11.00-12.00bps": 0.0,
+            "ask:12.00-13.00bps": 0.0,
+            "ask:13.00-14.00bps": 0.0,
+            "ask:14.00-15.00bps": 0.14285714285714285,
+            "ask:16.00-17.00bps": 0.0,
+            "ask:17.00-18.00bps": 0.0,
+            "ask:18.00-19.00bps": 0.0,
+            "ask:20.00-21.00bps": 0.0,
+            "ask:21.00-22.00bps": 0.0,
+            "ask:22.00-23.00bps": 0.0,
+            "ask:5.00-6.00bps": 0.25,
+            "ask:6.00-7.00bps": 0.0,
+            "ask:7.00-8.00bps": 0.0625,
+            "ask:8.00-9.00bps": 0.0,
+            "bid:10.00-11.00bps": 0.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:12.00-13.00bps": 0.125,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.0,
+            "bid:17.00-18.00bps": 0.0,
+            "bid:18.00-19.00bps": 0.0,
+            "bid:2.00-3.00bps": 0.2,
+            "bid:4.00-5.00bps": 0.16666666666666666,
+            "bid:5.00-6.00bps": 0.0,
+            "bid:7.00-8.00bps": 0.2857142857142857,
+            "bid:8.00-9.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "bid": 0.04201680672268908
+            "ask": 0.018867924528301886,
+            "bid": 0.07352941176470588
           },
-          "generated_at": "2026-05-27T10:13:27Z",
+          "generated_at": "2026-06-11T06:34:58Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:5",
-            "no_fills_matched_to_quotes"
+            "unknown_liquidity_fills:8"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:5.24bps": 0.0,
-          "bid:5.25bps": 0.0
+          "bid:5.82bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 2083.1499999999996,
+        "final_mid": 1658.55,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -770,13 +917,13 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 796,
-          "prices": 2000,
-          "trades": 245
+          "orderbooks": 464,
+          "prices": 1806,
+          "trades": 331
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 1806
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -786,15 +933,15 @@
         "mark_to_market_pnl_usdc": 0.0,
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 2.343739509,
+        "max_price_gap_seconds": 1.418637276,
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.67406106,
+        "p95_price_gap_seconds": 0.45890784259999984,
         "parameter_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "epsilon_minus": 0.02,
             "epsilon_plus": 0.02,
             "kappa_minus": 2.4,
@@ -804,7 +951,7 @@
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -818,38 +965,37 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 402372.3416871319,
+        "price_event_count": 1806,
+        "price_events_per_day": 625624.5082839243,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 349,
+        "quote_attempts": 214,
         "quote_attempts_by_depth": {
-          "bid:5.24bps": 23,
-          "bid:5.25bps": 326
+          "bid:5.82bps": 214
         },
-        "quote_decision_events": 349,
+        "quote_decision_events": 214,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 349,
+        "stale_quote_cancels": 214,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 1806
         },
         "toxicity_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
             "toxicity_minus": 0.048,
             "toxicity_plus": 0.048,
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -858,8 +1004,8 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.004971<min_3.000000",
-        "insufficient_quote_attempts:349<min_1000",
+        "insufficient_coverage_days:0.002887<min_3.000000",
+        "insufficient_quote_attempts:214<min_1000",
         "no_maker_fills"
       ],
       "variant": {
@@ -873,7 +1019,7 @@
       }
     },
     {
-      "coverage_days": 0.00497052056712963,
+      "coverage_days": 0.0028867155555555558,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -885,48 +1031,85 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-05-27T10:13:16.612816095+00:00",
-        "data_span_seconds": 429.452977,
-        "data_start": "2026-05-27T10:06:07.159838676+00:00",
+        "data_end": "2026-06-11T06:34:49.068366051+00:00",
+        "data_span_seconds": 249.412224,
+        "data_start": "2026-06-11T06:30:39.656141758+00:00",
         "equity_usdc": 1000.0,
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 119,
+          "accepted_quotes": 227,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "bid:5.00-6.00bps": 0.0
+            "ask:10.00-11.00bps": 0.0,
+            "ask:11.00-12.00bps": 0.0,
+            "ask:12.00-13.00bps": 0.0,
+            "ask:13.00-14.00bps": 0.0,
+            "ask:14.00-15.00bps": 0.14285714285714285,
+            "ask:16.00-17.00bps": 0.0,
+            "ask:17.00-18.00bps": 0.0,
+            "ask:18.00-19.00bps": 0.0,
+            "ask:20.00-21.00bps": 0.0,
+            "ask:21.00-22.00bps": 0.0,
+            "ask:22.00-23.00bps": 0.0,
+            "ask:5.00-6.00bps": 0.25,
+            "ask:6.00-7.00bps": 0.0,
+            "ask:7.00-8.00bps": 0.0625,
+            "ask:8.00-9.00bps": 0.0,
+            "bid:10.00-11.00bps": 0.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:12.00-13.00bps": 0.125,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.0,
+            "bid:17.00-18.00bps": 0.0,
+            "bid:18.00-19.00bps": 0.0,
+            "bid:2.00-3.00bps": 0.2,
+            "bid:4.00-5.00bps": 0.16666666666666666,
+            "bid:5.00-6.00bps": 0.0,
+            "bid:7.00-8.00bps": 0.2857142857142857,
+            "bid:8.00-9.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "bid": 0.04201680672268908
+            "ask": 0.018867924528301886,
+            "bid": 0.07352941176470588
           },
-          "generated_at": "2026-05-27T10:13:27Z",
+          "generated_at": "2026-06-11T06:34:58Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:5",
-            "no_fills_matched_to_quotes"
+            "unknown_liquidity_fills:8"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:10.02bps": 0.0,
-          "bid:10.50bps": 0.0,
-          "bid:6.67bps": 0.0,
-          "bid:6.91bps": 0.0,
-          "bid:7.15bps": 0.0,
-          "bid:7.63bps": 0.0,
-          "bid:8.11bps": 0.0,
-          "bid:8.59bps": 0.0,
-          "bid:8.83bps": 0.0,
-          "bid:9.07bps": 0.0,
-          "bid:9.54bps": 0.0
+          "bid:10.11bps": 0.0,
+          "bid:11.08bps": 0.0,
+          "bid:11.68bps": 0.0,
+          "bid:11.98bps": 0.0,
+          "bid:12.04bps": 0.0,
+          "bid:12.28bps": 0.0,
+          "bid:12.58bps": 0.0,
+          "bid:6.50bps": 0.0,
+          "bid:6.86bps": 0.0,
+          "bid:7.10bps": 0.0,
+          "bid:7.16bps": 0.0,
+          "bid:7.46bps": 0.0,
+          "bid:7.71bps": 0.0,
+          "bid:8.06bps": 0.0,
+          "bid:8.31bps": 0.0,
+          "bid:8.61bps": 0.0,
+          "bid:8.67bps": 0.0,
+          "bid:8.91bps": 0.0,
+          "bid:9.27bps": 0.0,
+          "bid:9.51bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 2083.1499999999996,
+        "final_mid": 1658.55,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -934,13 +1117,13 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 796,
-          "prices": 2000,
-          "trades": 245
+          "orderbooks": 464,
+          "prices": 1806,
+          "trades": 331
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 1806
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -950,15 +1133,15 @@
         "mark_to_market_pnl_usdc": 0.0,
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 2.343739509,
+        "max_price_gap_seconds": 1.418637276,
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.67406106,
+        "p95_price_gap_seconds": 0.45890784259999984,
         "parameter_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "epsilon_minus": 0.0,
             "epsilon_plus": 0.0,
             "kappa_minus": 2.0,
@@ -968,7 +1151,7 @@
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -982,47 +1165,56 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 402372.3416871319,
-        "price_rounding_adjustments": 349,
+        "price_event_count": 1806,
+        "price_events_per_day": 625624.5082839243,
+        "price_rounding_adjustments": 214,
         "price_tick_size": 1.058475,
         "queue_decay_base": 0.0,
-        "quote_attempts": 349,
+        "quote_attempts": 214,
         "quote_attempts_by_depth": {
-          "bid:10.02bps": 13,
-          "bid:10.50bps": 23,
-          "bid:6.67bps": 17,
-          "bid:6.91bps": 1,
-          "bid:7.15bps": 61,
-          "bid:7.63bps": 37,
-          "bid:8.11bps": 3,
-          "bid:8.59bps": 9,
-          "bid:8.83bps": 1,
-          "bid:9.07bps": 29,
-          "bid:9.54bps": 155
+          "bid:10.11bps": 3,
+          "bid:11.08bps": 29,
+          "bid:11.68bps": 13,
+          "bid:11.98bps": 1,
+          "bid:12.04bps": 6,
+          "bid:12.28bps": 18,
+          "bid:12.58bps": 1,
+          "bid:6.50bps": 3,
+          "bid:6.86bps": 24,
+          "bid:7.10bps": 15,
+          "bid:7.16bps": 1,
+          "bid:7.46bps": 11,
+          "bid:7.71bps": 19,
+          "bid:8.06bps": 1,
+          "bid:8.31bps": 12,
+          "bid:8.61bps": 1,
+          "bid:8.67bps": 11,
+          "bid:8.91bps": 31,
+          "bid:9.27bps": 13,
+          "bid:9.51bps": 1
         },
-        "quote_decision_events": 349,
+        "quote_decision_events": 214,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 349,
+        "stale_quote_cancels": 214,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 1806
         },
         "toxicity_series": [
           {
-            "data_end": "2026-05-27T10:13:16.612816095+00:00",
-            "data_start": "2026-05-27T10:06:07.159838676+00:00",
+            "data_end": "2026-06-11T06:34:49.068366051+00:00",
+            "data_start": "2026-06-11T06:30:39.656141758+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
             "symbol": "ETH",
             "toxicity_minus": 0.0,
             "toxicity_plus": 0.0,
-            "ts": "2026-05-27T10:06:07.159838676+00:00",
+            "ts": "2026-06-11T06:30:39.656141758+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -1031,8 +1223,8 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.004971<min_3.000000",
-        "insufficient_quote_attempts:349<min_1000",
+        "insufficient_coverage_days:0.002887<min_3.000000",
+        "insufficient_quote_attempts:214<min_1000",
         "no_maker_fills"
       ],
       "variant": {

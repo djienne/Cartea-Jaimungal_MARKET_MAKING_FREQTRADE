@@ -19,12 +19,17 @@ The checked-in research config still uses `GTC` so the dry-run harness can
 start in environments where post-only support has not been exchange-verified.
 This does **not** satisfy maker-safe live execution.
 
-Live trading remains blocked by strategy state:
+Live trading remains blocked by strategy defaults:
 
 ```python
 trading_enabled = False
 post_only_verified = False
 ```
+
+The checked-in config enables `market_making.trading_enabled` for **dry-run
+quoting only** (`dry_run: true`). Any live use stays fail-closed regardless:
+with `dry_run: false`, the strategy forces `trading_enabled` back off unless
+`post_only_verified` is true and the deployment-stage evidence gates pass.
 
 The only acceptable live maker path is:
 

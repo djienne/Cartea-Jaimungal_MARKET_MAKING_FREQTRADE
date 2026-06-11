@@ -99,10 +99,22 @@ def build_config_safety_report(
         )
 
     fee = finite_float(config.get("fee"))
+    effective_expected_fee = float(expected_fee)
+    if "maker_fee_rate" in market_making:
+        # Mirror the strategy's runtime gate: market_making.maker_fee_rate is the
+        # maker fee the quotes assume (config override for what the exchange/ccxt
+        # actually reports), so the freqtrade accounting fee must match it.
+        # Bound it so a zero/absurd fee cannot be smuggled in via the override.
+        maker_fee_rate = finite_float(market_making.get("maker_fee_rate"))
+        if maker_fee_rate is None or maker_fee_rate <= 0 or maker_fee_rate > 0.001:
+            reasons.append("maker_fee_rate_invalid")
+        else:
+            effective_expected_fee = maker_fee_rate
+    checks["expected_fee"] = effective_expected_fee
     if fee is None:
         reasons.append("fee_missing")
-    elif abs(fee - float(expected_fee)) > 1e-12:
-        reasons.append(f"fee_mismatch:{fee:g}!=expected_{float(expected_fee):g}")
+    elif abs(fee - effective_expected_fee) > 1e-12:
+        reasons.append(f"fee_mismatch:{fee:g}!=expected_{effective_expected_fee:g}")
 
     custom_price_distance = finite_float(config.get("custom_price_max_distance_ratio"))
     if custom_price_distance is None or custom_price_distance <= 0:
@@ -127,8 +139,12 @@ def build_config_safety_report(
     if str(tif.get("exit") or "").strip().lower() not in {"gtc", "po", "alo"}:
         reasons.append("exit_time_in_force_unsupported")
 
-    if market_making.get("trading_enabled") is True:
-        reasons.append("checked_in_trading_enabled_true")
+    # trading_enabled=true is the dry-run operating mode (quotes in paper
+    # trading; the strategy fail-closes live use behind post_only_verified and
+    # deployment-stage evidence). Only flag it as live enablement when the same
+    # config also drops dry_run.
+    if market_making.get("trading_enabled") is True and config.get("dry_run") is not True:
+        reasons.append("checked_in_trading_enabled_without_dry_run")
     if market_making.get("post_only_verified") is True:
         reasons.append("checked_in_post_only_verified_true")
     if str(market_making.get("deployment_stage") or "research").strip().lower() != "research":
@@ -162,6 +178,7 @@ def build_config_safety_report(
             },
             "market_making": {
                 "trading_enabled": market_making.get("trading_enabled"),
+                "maker_fee_rate": market_making.get("maker_fee_rate"),
                 "post_only_verified": market_making.get("post_only_verified"),
                 "deployment_stage": market_making.get("deployment_stage", "research"),
                 "run_estimators_in_strategy": market_making.get("run_estimators_in_strategy"),

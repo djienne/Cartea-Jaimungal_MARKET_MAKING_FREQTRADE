@@ -404,6 +404,7 @@ def local_gates(
                 "tests/test_plan_status.py",
                 "tests/test_strategy_guards.py",
                 "tests/test_strategy_safety.py",
+                "tests/test_param_store.py",
                 "tests/test_params.py",
                 "tests/test_periodic_runner.py",
                 "tests/test_replay_market_maker.py",

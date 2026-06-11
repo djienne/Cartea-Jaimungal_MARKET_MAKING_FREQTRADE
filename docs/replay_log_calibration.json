@@ -1,38 +1,97 @@
 {
   "accepted_quotes_by_depth": {
-    "bid:5.00-6.00bps": 119
+    "ask:10.00-11.00bps": 7,
+    "ask:11.00-12.00bps": 10,
+    "ask:12.00-13.00bps": 6,
+    "ask:13.00-14.00bps": 7,
+    "ask:14.00-15.00bps": 7,
+    "ask:16.00-17.00bps": 9,
+    "ask:17.00-18.00bps": 6,
+    "ask:18.00-19.00bps": 2,
+    "ask:20.00-21.00bps": 29,
+    "ask:21.00-22.00bps": 25,
+    "ask:22.00-23.00bps": 6,
+    "ask:5.00-6.00bps": 4,
+    "ask:6.00-7.00bps": 21,
+    "ask:7.00-8.00bps": 16,
+    "ask:8.00-9.00bps": 4,
+    "bid:10.00-11.00bps": 6,
+    "bid:11.00-12.00bps": 2,
+    "bid:12.00-13.00bps": 8,
+    "bid:13.00-14.00bps": 3,
+    "bid:14.00-15.00bps": 2,
+    "bid:16.00-17.00bps": 3,
+    "bid:17.00-18.00bps": 5,
+    "bid:18.00-19.00bps": 3,
+    "bid:2.00-3.00bps": 5,
+    "bid:4.00-5.00bps": 6,
+    "bid:5.00-6.00bps": 7,
+    "bid:7.00-8.00bps": 7,
+    "bid:8.00-9.00bps": 5,
+    "bid:9.00-10.00bps": 6
   },
   "accepted_quotes_by_side": {
-    "bid": 119
+    "ask": 159,
+    "bid": 68
   },
   "actual_fee_rate": {
     "count": 0,
     "max": null,
     "mean": null,
     "min": null,
-    "outlier_count": 5,
+    "outlier_count": 8,
     "outlier_threshold": 0.01
   },
   "fill_probability_by_depth": {
-    "bid:5.00-6.00bps": 0.0
+    "ask:10.00-11.00bps": 0.0,
+    "ask:11.00-12.00bps": 0.0,
+    "ask:12.00-13.00bps": 0.0,
+    "ask:13.00-14.00bps": 0.0,
+    "ask:14.00-15.00bps": 0.14285714285714285,
+    "ask:16.00-17.00bps": 0.0,
+    "ask:17.00-18.00bps": 0.0,
+    "ask:18.00-19.00bps": 0.0,
+    "ask:20.00-21.00bps": 0.0,
+    "ask:21.00-22.00bps": 0.0,
+    "ask:22.00-23.00bps": 0.0,
+    "ask:5.00-6.00bps": 0.25,
+    "ask:6.00-7.00bps": 0.0,
+    "ask:7.00-8.00bps": 0.0625,
+    "ask:8.00-9.00bps": 0.0,
+    "bid:10.00-11.00bps": 0.0,
+    "bid:11.00-12.00bps": 0.0,
+    "bid:12.00-13.00bps": 0.125,
+    "bid:13.00-14.00bps": 0.0,
+    "bid:14.00-15.00bps": 0.0,
+    "bid:16.00-17.00bps": 0.0,
+    "bid:17.00-18.00bps": 0.0,
+    "bid:18.00-19.00bps": 0.0,
+    "bid:2.00-3.00bps": 0.2,
+    "bid:4.00-5.00bps": 0.16666666666666666,
+    "bid:5.00-6.00bps": 0.0,
+    "bid:7.00-8.00bps": 0.2857142857142857,
+    "bid:8.00-9.00bps": 0.0,
+    "bid:9.00-10.00bps": 0.0
   },
   "fill_probability_by_side": {
-    "bid": 0.04201680672268908
+    "ask": 0.018867924528301886,
+    "bid": 0.07352941176470588
   },
   "fills_by_side": {
+    "ask": 3,
     "bid": 5
   },
-  "generated_at": "2026-05-27T10:13:27Z",
+  "generated_at": "2026-06-11T06:34:58Z",
   "input_paths": [
     "user_data\\logs\\mm_debug.jsonl"
   ],
   "inputs": {
-    "accepted_quotes": 119,
-    "accepted_quotes_with_quote_id": 119,
+    "accepted_quotes": 227,
+    "accepted_quotes_with_quote_id": 227,
     "bucket_bps": 1.0,
-    "events": 680,
-    "fills": 5,
-    "fills_with_quote_id": 0,
+    "events": 916,
+    "fills": 8,
+    "fills_with_quote_id": 8,
     "match_window_seconds": 300.0,
     "max_fee_rate": 0.01,
     "min_fills": 10,
@@ -43,39 +102,55 @@
   "maker_ratio": 0.0,
   "markout_summary": {
     "100": {
-      "count": 5.0,
-      "max_usdc": -0.000500000000001819,
-      "mean_usdc": -0.0058999999999996364,
-      "min_usdc": -0.013500000000003638
+      "count": 8.0,
+      "max_usdc": 0.0075,
+      "mean_usdc": -0.010250000000000627,
+      "min_usdc": -0.04850000000000137
     },
     "1000": {
-      "count": 5.0,
-      "max_usdc": -0.000500000000001819,
-      "mean_usdc": -0.0058999999999996364,
-      "min_usdc": -0.013500000000003638
+      "count": 8.0,
+      "max_usdc": 0.0075,
+      "mean_usdc": -0.01000000000000057,
+      "min_usdc": -0.04850000000000137
     },
     "30000": {
-      "count": 5.0,
-      "max_usdc": 0.005500000000001819,
-      "mean_usdc": -0.006300000000001091,
-      "min_usdc": -0.02350000000000364
+      "count": 8.0,
+      "max_usdc": 0.02050000000000182,
+      "mean_usdc": -0.010125000000000172,
+      "min_usdc": -0.03950000000000046
     },
     "5000": {
-      "count": 5.0,
-      "max_usdc": 0.001499999999996362,
-      "mean_usdc": -0.005900000000001455,
-      "min_usdc": -0.0125
+      "count": 8.0,
+      "max_usdc": 0.0075,
+      "mean_usdc": -0.009500000000000456,
+      "min_usdc": -0.044500000000000456
     }
   },
-  "matched_fills_by_depth": {},
-  "matched_fills_by_quote_id": {},
+  "matched_fills_by_depth": {
+    "ask:14.00-15.00bps": 1,
+    "ask:5.00-6.00bps": 1,
+    "ask:7.00-8.00bps": 1,
+    "bid:12.00-13.00bps": 1,
+    "bid:2.00-3.00bps": 1,
+    "bid:4.00-5.00bps": 1,
+    "bid:7.00-8.00bps": 2
+  },
+  "matched_fills_by_quote_id": {
+    "quote-000000000005": 1,
+    "quote-000000000010": 1,
+    "quote-000000001572": 1,
+    "quote-000000001601": 1,
+    "quote-000000001616": 1,
+    "quote-000000001710": 1,
+    "quote-000000001713": 1,
+    "quote-000000001728": 1
+  },
   "reasons": [
     "insufficient_maker_fills:0<min_10",
-    "unknown_liquidity_fills:5",
-    "no_fills_matched_to_quotes"
+    "unknown_liquidity_fills:8"
   ],
   "taker_fills": 0,
-  "unknown_liquidity_fills": 5,
-  "unmatched_fills": 5,
+  "unknown_liquidity_fills": 8,
+  "unmatched_fills": 0,
   "usable_for_calibration": false
 }

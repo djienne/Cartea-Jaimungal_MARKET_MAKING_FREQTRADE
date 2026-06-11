@@ -25,6 +25,13 @@ services:
       - "./user_data:/freqtrade/user_data"
       - "./scripts:/freqtrade/scripts"
       - "./docs:/freqtrade/docs"
+    environment:
+      # Read the κ/ε/λ snapshot from Redis (atomic, no torn reads); falls back
+      # to the JSON files under user_data/strategies if Redis is unavailable.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      redis:
+        condition: service_healthy
     # Expose api on port 8080 (localhost only)
     # Please read the https://www.freqtrade.io/en/stable/rest-api/ documentation
     # before enabling this.
@@ -55,6 +62,11 @@ services:
       INACTIVITY_TIMEOUT_SEC: ${INACTIVITY_TIMEOUT_SEC:-180}
       MAX_RECONNECT_ATTEMPTS: ${MAX_RECONNECT_ATTEMPTS:-3}
       RECONNECT_BACKOFF_SEC: ${RECONNECT_BACKOFF_SEC:-5}
+      # Flush often enough to stay inside the strategy's collector freshness
+      # window (max_collector_age_seconds=30); prune old shards to bound disk
+      # and keep estimator cycles fast.
+      FLUSH_INTERVAL_SEC: ${FLUSH_INTERVAL_SEC:-10}
+      RETENTION_MINUTES: ${RETENTION_MINUTES:-60}
       TZ: ${TZ:-UTC}
     volumes:
       - ./scripts/HL_data:/app/HL_data
@@ -78,17 +90,47 @@ services:
           memory: '1024M'
     environment:
       CRYPTO_NAME: ${PARAM_ESTIMATOR_SYMBOL:-ETH}
+      # Headless matplotlib backend so the estimator scripts import cleanly.
+      MPLBACKEND: Agg
+      # Unbuffered stdout so `docker logs` shows runner output as it happens.
+      PYTHONUNBUFFERED: 1
+      # Publish each fresh κ/ε/λ snapshot to Redis as one atomic blob.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       TZ: ${TZ:-UTC}
     volumes:
       - "./user_data:/freqtrade/user_data"
       - "./scripts:/freqtrade/scripts"
       - "./docs:/freqtrade/docs"
     depends_on:
-      - hl-collector2
+      hl-collector2:
+        condition: service_started
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    # The freqtrade base image sets ENTRYPOINT=freqtrade; override it so we can
+    # run the estimator script directly with python.
+    entrypoint: ["python"]
     command: >
-      python /freqtrade/user_data/strategies/periodic_test_runner.py
+      /freqtrade/user_data/strategies/periodic_test_runner.py
       --loop
-      --interval ${PARAM_ESTIMATOR_INTERVAL:-60}
+      --interval ${PARAM_ESTIMATOR_INTERVAL:-30}
       --crypto ${PARAM_ESTIMATOR_SYMBOL:-ETH}
       --lock-stale-seconds ${PARAM_UPDATE_LOCK_STALE_SECONDS:-3600}
+  redis:
+    image: redis:7-alpine
+    container_name: mm-redis
+    # noeviction: the params blob must never be silently evicted; at 64mb the
+    # limit is unreachable for a single small key, and writes fail loudly if
+    # something ever does fill the instance.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: '128M'
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

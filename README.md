@@ -20,7 +20,7 @@ This project implements an advanced market making strategy that:
 ### 🎯 Dynamic Spread Calculation
 - **Kappa parameters** (`kappa+`, `kappa-`): Control order book depth and steepness
 - **Epsilon parameters** (`epsilon+`, `epsilon-`): Adjust for market volatility and adverse selection
-- **Real-time recalibration** every 15 seconds during trading, over a 30 minute Window by default
+- **Real-time recalibration** by the `param-estimator` sidecar (default every ~30s, over a 30-minute window); the strategy reloads the snapshot every 20s
 
 ### 📊 Market Data Integration
 - **Order book analysis** for bid-ask spread calculation
@@ -32,11 +32,11 @@ This project implements an advanced market making strategy that:
 - **Exponential decay models** for lambda estimation
 - **Statistical analysis** of trade patterns and volatility
 
-### 🏗️ Modular Architecture
-- **Core strategy**: `Market_Making.py` - Main Freqtrade strategy
-- **Parameter calculation**: `get_kappa.py`, `get_epsilon.py` - Dynamic parameter estimation
-- **Data collection**: `hyperliquid_data_collector.py` - Market data gathering
-- `periodic_test_runner.py` - Automated parameter updates to be used by Freqtrade
+### 🏗️ Modular Architecture (four Docker Compose services)
+- **`freqtrade` (MM_ADV)**: `Market_Making.py` - Main Freqtrade strategy (consumes parameter snapshots, quotes)
+- **`hl-collector2`**: `hyperliquid_data_collector.py` - Streams live Hyperliquid order book / trade / price data to Parquet shards
+- **`param-estimator`**: `periodic_test_runner.py --loop` - Sidecar that runs `get_kappa.py` / `get_epsilon.py` / `get_lambda.py` each cycle, validates the snapshot, copies it for the strategy, and publishes it to Redis
+- **`redis` (mm-redis)**: Atomic transport for the κ/ε/λ snapshot (`scripts/param_store.py`). The strategy prefers the single Redis blob (no torn multi-file reads, no estimator-lock stalls) and falls back to the JSON files when Redis is unavailable.
 
 ## Project Structure
 
@@ -48,16 +48,17 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │   │   └── mm_debug.jsonl                 # Strategy debug JSONL (quotes/HJB/params)
 │   └── strategies/
 │       ├── Market_Making.py               # Main market making strategy
-│       ├── periodic_test_runner.py        # Updates kappa/epsilon/lambda JSONs
+│       ├── periodic_test_runner.py        # Estimator sidecar (per-cycle lock, Redis publish)
 │       ├── kappa.json
 │       ├── epsilon.json
 │       ├── lambda.json
 │       └── lambda_trades.json
 ├── scripts/
-│   ├── docker-compose.yml                 # Hyperliquid data collector
+│   ├── docker-compose.yml                 # Hyperliquid data collector (standalone)
 │   ├── Dockerfile                         # Collector image (includes pyarrow)
 │   ├── hyperliquid_data_collector.py      # Writes Parquet shards to HL_data/<SYMBOL>/<dtype>/
 │   ├── run_collector.py
+│   ├── param_store.py                     # Redis transport for the κ/ε/λ snapshot
 │   ├── get_kappa.py
 │   ├── get_epsilon.py
 │   ├── get_lambda.py
@@ -65,8 +66,9 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │   ├── compute_spreads.py
 │   ├── mid_price.py
 │   └── HL_data/
-├── docker-compose.yml                     # Freqtrade compose
-├── Dockerfile.technical                   # Freqtrade image (adds deps)
+├── tests/                                 # pytest suite (strategy guards, runner, gates, replay)
+├── docker-compose.yml                     # Full stack: freqtrade + collector + estimator + redis
+├── Dockerfile.technical                   # Freqtrade image (adds deps + pinned ccxt)
 ├── analyze_trades.py
 └── README.md
 ```
@@ -167,21 +169,18 @@ Where:
    # Set your Hyperliquid API keys
    ```
 
-2. **Start data collection:**
+2. **Run the full stack** (collector + parameter estimator + redis + freqtrade):
    ```bash
-   cd scripts
-   docker-compose up -d
-   ```
-   Will write orderbook, price and orders data flow to files in directory `scripts/HL_data`
-
-3. **Run the strategy:**
-   ```bash
-   # cd to root directory of this project
+   # from the root directory of this project
    docker compose up -d
    ```
-   Only use in dry-run (paper trading)
-   Monitor from Freqtrade web client, or set-up Telegram interface.
-   **WARNING: run the data collector for a while before launching live trading**
+   - `hl-collector2` writes order book / price / trade Parquet shards to `scripts/HL_data` (flushed every `FLUSH_INTERVAL_SEC`, pruned after `RETENTION_MINUTES` — disable pruning when capturing replay datasets).
+   - `param-estimator` recomputes κ/ε/λ each cycle and publishes the snapshot to Redis (plus the JSON files as fallback).
+   - `freqtrade` (MM_ADV) quotes only when params, collector data, and order book are all fresh.
+
+   Only use in dry-run (paper trading).
+   Monitor from the Freqtrade web client, or set up the Telegram interface.
+   **WARNING: let the data collector run ~30 minutes before expecting valid parameters** (the estimators need a full window).
 
 ## Configuration
 
@@ -212,7 +211,14 @@ The system maintains dynamic parameters in JSON files:
 - `lambda.json`: Baseline trade arrival intensity (`lambda+`, `lambda-`)
 - `lambda_trades.json`: Raw trades/sec monitor (sanity check; optional)
 
-These are automatically updated each bot loop (throttled by `internals.process_throttle_secs`, default 15s) based on recent market data.
+These are regenerated by the `param-estimator` sidecar each cycle (default every ~30s) from recent collector data, published to Redis as one atomic blob, and copied to `user_data/strategies/` as the file fallback. The strategy reloads its snapshot every `market_making.param_snapshot_reload_interval_seconds` (default 20s) and rejects anything older than `max_param_age_seconds`.
+
+### Market-making knobs (`market_making` block in `config.json`)
+
+- `trading_enabled`: master switch for quoting (safe with `dry_run: true`; live use additionally requires post-only evidence and stage gates — fail-closed).
+- `maker_fee_rate`: the maker fee the quotes assume. Must match what ccxt reports for the exchange or the fee gate fail-closes (pinned ccxt 4.5.22 reports Hyperliquid's documented 0.00015).
+- `spread_multiplier`: uniformly widens (>1) or keeps (1.0) the model half-spread including the fee cushion.
+- `REDIS_URL` (environment, set in `docker-compose.yml`): enables the atomic Redis snapshot transport; without it the strategy uses the JSON files guarded by `param_update.lock`.
 
 ## Usage Examples
 

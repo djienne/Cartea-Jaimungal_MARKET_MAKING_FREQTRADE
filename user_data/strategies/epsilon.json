@@ -1,16 +1,22 @@
 {
     "ETH": {
-        "estimator": "trimmed_mean",
-        "generated_at": "2026-05-25T00:00:00Z",
-        "epsilon+": 0.0,
+        "epsilon+": 0.05865384615381467,
         "epsilon-": 0.0,
-        "n_buy_events": 0,
-        "n_sell_events": 0,
+        "estimator": "trimmed_mean",
+        "generated_at": "2026-06-11T06:35:24Z",
+        "n_buy_events": 65,
+        "n_quotes": 3323,
+        "n_sell_events": 52,
+        "n_trades": 4185,
         "schema_version": 2,
-        "status": "seeded_unverified",
-        "status_reason": "legacy_zero_snapshot_preserved_for_reference_only",
+        "status": "ok",
         "toxicity_minus": 0.0,
-        "toxicity_plus": 0.0,
-        "unit": "USDC"
+        "toxicity_plus": 0.1918129947373959,
+        "trades_analyzed": 117,
+        "trades_skipped": 4068,
+        "unit": "USDC",
+        "window_end": "2026-06-11T06:34:47Z",
+        "window_ms": 200,
+        "window_start": "2026-06-11T06:04:51Z"
     }
 }

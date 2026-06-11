@@ -49,6 +49,12 @@ class DummyTrade:
         return list(cls._open_trades)
 
     @classmethod
+    def get_trades_proxy(cls, **kwargs):
+        # Mirror freqtrade's Trade.get_trades_proxy (the strategy-safe accessor
+        # that works in live/dry-run/backtest, unlike get_trades).
+        return list(cls._open_trades)
+
+    @classmethod
     def get_open_order_trades(cls):
         return list(cls._open_order_trades)
 
@@ -241,6 +247,39 @@ def test_trading_disabled_clears_entry_signal():
     out = bot.populate_entry_trend(df, {"pair": "ETH/USDC:USDC"})
 
     assert out["enter_long"].sum() == 0
+
+
+def test_spread_multiplier_scales_half_spread():
+    pair = "ETH/USDC:USDC"
+    now = datetime.now(timezone.utc)
+
+    def delta_total_for(mult):
+        bot = make_bot()
+        bot.trading_enabled = True
+        bot.spread_multiplier = mult
+        events = []
+        bot._debug_log_event = lambda event, payload: events.append((event, payload))
+        bot.custom_entry_price(pair, None, now, proposed_rate=99.5, entry_tag="mm_bid", side="long")
+        decisions = [p for e, p in events if e == "quote_decision" and p.get("delta_total") is not None]
+        assert decisions, "expected a quote_decision with delta_total"
+        return float(decisions[-1]["delta_total"])
+
+    base = delta_total_for(1.0)
+    doubled = delta_total_for(2.0)
+    assert base > 0
+    assert abs(doubled - 2.0 * base) < 1e-9
+
+
+def test_spread_multiplier_config_override_rejects_invalid():
+    bot = make_bot()
+    bot.config = {"dry_run": True, "fee": 0.00015, "market_making": {"spread_multiplier": 3.0}}
+    bot._apply_runtime_safety_config()
+    assert bot.spread_multiplier == 3.0
+
+    # Non-positive / non-finite values are rejected and the prior value kept.
+    bot.config = {"dry_run": True, "fee": 0.00015, "market_making": {"spread_multiplier": 0}}
+    bot._apply_runtime_safety_config()
+    assert bot.spread_multiplier == 3.0
 
 
 def test_custom_entry_price_signature_includes_trade_argument():
@@ -1321,6 +1360,33 @@ def test_custom_exit_price_rejects_when_inventory_disallows_ask():
     assert events[0][1]["reason"] == "position_limit_reached"
 
 
+def test_custom_exit_price_accept_path_prices_ask_above_mid():
+    # Exercises the ACCEPT path of custom_exit_price, which logs the quote
+    # decision with the exit_tag. A NameError there (e.g. referencing entry_tag
+    # instead of exit_tag) only surfaces on this path, not the reject paths.
+    bot = make_bot()
+    bot.trading_enabled = True
+    DummyTrade._open_trades = [DummyTrade(amount=0.01)]  # q=1 -> inventory allows ask
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    returned = bot.custom_exit_price(
+        "ETH/USDC:USDC",
+        DummyTrade(amount=0.01),
+        datetime.now(timezone.utc),
+        proposed_rate=100.0,
+        current_profit=0.0,
+        exit_tag="mm_ask",
+    )
+
+    assert returned > 100.0  # ask sits above mid (DummyDP mid=100)
+    qd = [p for e, p in events if e == "quote_decision"]
+    assert qd, "expected a quote_decision on the accept path"
+    assert qd[-1]["action"] == "exit"
+    assert qd[-1]["decision"] == "accept"
+    assert qd[-1]["exit_tag"] == "mm_ask"
+
+
 def test_confirm_entry_rejects_crossing_bid():
     bot = make_bot()
     bot.trading_enabled = True
@@ -1728,6 +1794,129 @@ def test_bot_loop_rejects_internal_estimator_config_and_consumes_snapshots(monke
     assert ("param_update_skipped", {"reason": "internal_estimator_disabled_use_sidecar"}) in events
 
 
+class _FakeParamStore:
+    def __init__(self, blob):
+        self._blob = blob
+        self.calls = []
+
+    def fetch_params(self, redis_url, crypto):
+        self.calls.append((redis_url, crypto))
+        return self._blob
+
+
+def test_load_params_falls_back_to_files_without_redis(tmp_path):
+    bot = make_bot()
+    # No redis_url anywhere -> file path.
+    kappas, epsilons, lambdas = bot._load_params()
+    assert bot._param_source == "file"
+    # make_bot's repo ships kappa/epsilon/lambda.json, so we get a dict back.
+    assert isinstance(kappas, dict) and isinstance(epsilons, dict) and isinstance(lambdas, dict)
+
+
+def test_load_params_uses_redis_blob_when_available():
+    bot = make_bot()
+    bot.config["market_making"] = {"redis_url": "redis://fake:6379/0"}
+    blob = {
+        "kappa": {"kappa+": 3.0, "status": "ok"},
+        "epsilon": {"epsilon+": 0.0, "status": "ok"},
+        "lambda": {"lambda+": 0.2, "lambda_source": "lambda0_fit"},
+    }
+    bot._param_store = _FakeParamStore(blob)
+    bot._param_store_loaded = True
+
+    kappas, epsilons, lambdas = bot._load_params()
+
+    assert bot._param_source == "redis"
+    assert kappas == {"ETH": blob["kappa"]}
+    assert epsilons == {"ETH": blob["epsilon"]}
+    assert lambdas == {"ETH": blob["lambda"]}
+
+
+def test_redis_source_skips_file_lock_in_params_valid(tmp_path):
+    # A present lock file would reject the file path with estimator_running, but
+    # the Redis (atomic blob) path must not be blocked by it.
+    bot = make_bot()
+    status_path = tmp_path / "param_update_status.json"
+    bot.param_update_status_path = str(status_path)
+    status_path.with_name("param_update.lock").write_text(
+        json.dumps({"started_at": datetime.now(timezone.utc).isoformat()}),
+        encoding="utf-8",
+    )
+
+    bot._param_source = "file"
+    assert bot._params_are_valid("ETH/USDC:USDC") == (False, "estimator_running")
+
+    bot._param_source = "redis"
+    ok, reason = bot._params_are_valid("ETH/USDC:USDC")
+    assert reason != "estimator_running"
+    assert (ok, reason) == (True, "ok")
+
+
+def test_file_fallback_gate_blocks_reload_when_redis_down_and_estimator_running(tmp_path):
+    # Redis configured but unavailable -> _load_params falls back to the JSON
+    # files. On the periodic reload path (enforce_file_gate=True) a present
+    # estimator lock must block the load (torn-read protection), and the
+    # provenance marker must keep describing the params still in memory.
+    from Market_Making import ParamReloadBlocked
+
+    bot = make_bot()
+    bot.config["market_making"] = {"redis_url": "redis://fake:6379/0"}
+    bot._param_store = _FakeParamStore(None)  # configured but serving nothing
+    bot._param_store_loaded = True
+    status_path = tmp_path / "param_update_status.json"
+    bot.param_update_status_path = str(status_path)
+    status_path.with_name("param_update.lock").write_text(
+        json.dumps({"started_at": datetime.now(timezone.utc).isoformat()}),
+        encoding="utf-8",
+    )
+    bot._param_source = "redis"
+
+    try:
+        bot._load_params(enforce_file_gate=True)
+    except ParamReloadBlocked as blocked:
+        assert blocked.reason == "estimator_running"
+    else:
+        raise AssertionError("expected ParamReloadBlocked while estimator lock is present")
+    assert bot._param_source == "redis"  # marker untouched on a blocked reload
+
+    # Without the gate (bot_start initial load) the file load proceeds.
+    kappas, _, _ = bot._load_params()
+    assert bot._param_source == "file"
+    assert isinstance(kappas, dict)
+
+    # Once the estimator lock is gone, the gated reload also proceeds.
+    status_path.with_name("param_update.lock").unlink()
+    kappas, _, _ = bot._load_params(enforce_file_gate=True)
+    assert bot._param_source == "file"
+    assert isinstance(kappas, dict)
+
+
+def test_real_strategy_callback_surface_matches_freqtrade():
+    # Validate the ACTUAL strategy's callback signatures against freqtrade's
+    # expected surface. Previously only a hand-written reference class was
+    # checked, so real signature drift (e.g. adjust_exit_price using exit_tag
+    # instead of freqtrade's entry_tag) slipped through and only blew up at
+    # runtime.
+    from verify_freqtrade_callback_surface import build_callback_surface_report
+
+    report = build_callback_surface_report(
+        Market_Making, strategy_path=STRATEGIES / "Market_Making.py"
+    )
+    assert report["ok"] is True, report["reasons"]
+
+
+def test_strategy_uses_live_safe_trade_accessor():
+    # freqtrade's Trade.get_trades() takes a SQLAlchemy filter list, not
+    # is_open=/pair= kwargs, and raises TypeError at runtime when called that
+    # way. That error is swallowed (except: pass) and silently reads the
+    # position as zero, so the bot can enter but never sees its inventory and
+    # never quotes exits. The strategy must use the get_trades_proxy accessor,
+    # which works in live/dry-run/backtest.
+    src = (STRATEGIES / "Market_Making.py").read_text(encoding="utf-8")
+    assert "Trade.get_trades(" not in src, "use Trade.get_trades_proxy (kwargs-safe), not Trade.get_trades"
+    assert "Trade.get_trades_proxy(" in src
+
+
 def test_exchange_position_takes_priority_over_open_trade_count():
     bot = make_bot()
     bot.exchange.positions = [{"symbol": "ETH/USDC:USDC", "side": "long", "contracts": "0.02"}]
@@ -1952,7 +2141,7 @@ def test_adjust_exit_price_reprices_passive_ask():
         datetime.now(timezone.utc),
         proposed_rate=100.0,
         current_order_rate=100.0,
-        exit_tag="mm_ask",
+        entry_tag="mm_ask",
         side="long",
     )
 

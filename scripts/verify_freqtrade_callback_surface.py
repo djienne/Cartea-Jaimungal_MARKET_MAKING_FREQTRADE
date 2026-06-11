@@ -88,7 +88,9 @@ EXPECTED_CALLBACKS: dict[str, list[str]] = {
         "current_time",
         "proposed_rate",
         "current_order_rate",
-        "exit_tag",
+        # freqtrade passes the tag to adjust_exit_price under the name
+        # `entry_tag` (a freqtrade naming quirk), not `exit_tag`.
+        "entry_tag",
         "side",
     ],
     "order_filled": ["self", "pair", "trade", "order", "current_time"],

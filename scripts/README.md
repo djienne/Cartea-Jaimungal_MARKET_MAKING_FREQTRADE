@@ -126,7 +126,9 @@ docker compose up -d
 
 ## Output Files
 
-For each symbol, the collector writes **Parquet shards** into per-type subdirectories (flushed every ~60 seconds by default).
+For each symbol, the collector writes **Parquet shards** into per-type subdirectories. Flush cadence is controlled by `FLUSH_INTERVAL_SEC` (default 10s — it must stay well below the strategy's `max_collector_age_seconds=30` freshness window or quotes get rejected as `stale_collector_data`).
+
+> **Retention warning:** `RETENTION_MINUTES` (default 60, also set in `docker-compose.yml`) prunes shards older than the window. That is plenty for the live estimators (~30-min lookback), but it silently deletes the history the replay/calibration tooling (`replay_market_maker.py`, `calibrate_replay_from_logs.py`) consumes. When collecting a dataset for replays, set `RETENTION_MINUTES=0` (disable) or a value covering the full capture.
 
 * `HL_data/<SYMBOL>/prices/prices_<epoch_ms>.parquet` (BBO updates)
 * `HL_data/<SYMBOL>/trades/trades_<epoch_ms>.parquet` (trade executions)
@@ -228,7 +230,7 @@ Buffer sizes by symbol:
 
 ## Performance Features
 
-* **Buffered writing**: Data is collected in memory and flushed to disk periodically (default: every 60 seconds).
+* **Buffered writing**: Data is collected in memory and flushed to disk periodically (default: every 10 seconds, `FLUSH_INTERVAL_SEC`).
 * **Threaded I/O**: Parquet writing happens in background threads to avoid blocking.
 * **Configurable buffer sizes**: Prevent memory issues during bursts
 * **Efficient data structures**: Uses deques for O(1) appends

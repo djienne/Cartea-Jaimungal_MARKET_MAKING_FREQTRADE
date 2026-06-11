@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-27T09:37:55Z",
+  "generated_at": "2026-06-11T06:19:20Z",
   "observed": {
     "defaults": {
       "can_short": false,
@@ -72,7 +72,7 @@
         "current_time",
         "proposed_rate",
         "current_order_rate",
-        "exit_tag",
+        "entry_tag",
         "side"
       ],
       "confirm_trade_entry": [

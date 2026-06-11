@@ -42,18 +42,29 @@
         "exit": "GTC"
     },
     "market_making": {
-        "trading_enabled": false,
+        "trading_enabled": true,
         "post_only_verified": false,
         "deployment_stage": "research",
         "run_estimators_in_strategy": false,
-        "param_snapshot_reload_interval_seconds": 60,
-        "param_update_lock_stale_seconds": 300
+        "param_snapshot_reload_interval_seconds": 20,
+        "max_param_age_seconds": 120,
+        "param_update_lock_stale_seconds": 300,
+        "maker_fee_rate": 0.00015,
+        "spread_multiplier": 3.0
     },
     "exchange": {
         "name": "hyperliquid",
         "key": "",
         "secret": "",
-        "ccxt_config": {},
+        "ccxt_config": {
+            "options": {
+                "fetchMarkets": {
+                    "types": [
+                        "swap"
+                    ]
+                }
+            }
+        },
         "ccxt_async_config": {},
         "pair_whitelist": [
             "ETH/USDC:USDC"

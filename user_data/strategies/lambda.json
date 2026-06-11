@@ -1,18 +1,19 @@
 {
     "ETH": {
-        "generated_at": "2026-05-25T00:00:00Z",
-        "lambda+": 0.1364138970843998,
-        "lambda-": 0.09516227408346505,
+        "generated_at": "2026-06-11T06:35:09Z",
+        "lambda+": 0.4225983740912962,
+        "lambda-": 0.35286213770770514,
         "lambda_source": "lambda0_fit",
-        "n_points_minus": 0,
-        "n_points_plus": 0,
-        "n_quotes": 0,
-        "n_trades": 0,
-        "r2_minus": null,
-        "r2_plus": null,
+        "n_points_minus": 10,
+        "n_points_plus": 20,
+        "n_quotes": 3323,
+        "n_trades": 4185,
+        "r2_minus": 0.7604629544025577,
+        "r2_plus": 0.768311238353474,
         "schema_version": 2,
-        "status": "seeded_unverified",
-        "status_reason": "legacy_snapshot_preserved_for_reference_only",
-        "unit": "events_per_second"
+        "status": "ok",
+        "unit": "events_per_second",
+        "window_end": "2026-06-11T06:34:47Z",
+        "window_start": "2026-06-11T06:04:51Z"
     }
 }

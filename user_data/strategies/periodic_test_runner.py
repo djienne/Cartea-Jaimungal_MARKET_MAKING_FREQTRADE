@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,26 +99,36 @@ def _stale_lock_can_be_replaced(path: Path, stale_after_seconds: float) -> bool:
     return age > float(stale_after_seconds)
 
 
-def _acquire_process_lock(path: Path, crypto: str, stale_after_seconds: float = 3600.0) -> bool:
+def _acquire_process_lock(path: Path, crypto: str, stale_after_seconds: float = 3600.0) -> str | None:
+    """Acquire the cross-process lock; return an ownership token, or None.
+
+    The token (random per acquisition) is embedded in the lock payload and must
+    be presented to _release_process_lock. This prevents a runner that never
+    acquired the lock (or that had its stale lock replaced) from deleting a lock
+    another process currently holds. PIDs are not sufficient for ownership:
+    containers have separate PID namespaces and routinely collide.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     try:
         fd = os.open(str(path), flags)
     except FileExistsError:
         if not _stale_lock_can_be_replaced(path, stale_after_seconds):
-            return False
+            return None
         try:
             path.unlink()
         except OSError:
-            return False
+            return None
         try:
             fd = os.open(str(path), flags)
         except FileExistsError:
-            return False
+            return None
+    token = uuid.uuid4().hex
     payload = {
         "pid": os.getpid(),
         "crypto": crypto,
         "started_at": _utc_now_iso(),
+        "token": token,
     }
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -129,10 +140,28 @@ def _acquire_process_lock(path: Path, crypto: str, stale_after_seconds: float = 
         except OSError:
             pass
         raise
-    return True
+    return token
 
 
-def _release_process_lock(path: Path) -> None:
+def _release_process_lock(path: Path, token: str | None) -> None:
+    """Release the lock only if we own it (payload token matches).
+
+    A non-matching or unreadable payload means another process holds the lock
+    (or it is corrupt); leave it alone — the stale-lock handling in
+    _acquire_process_lock recovers abandoned locks.
+    """
+    if not token:
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except Exception:
+        print(f"{_ts()} [runner] WARNING: Lock payload unreadable; leaving {path} for stale handling.")
+        return
+    if not isinstance(payload, dict) or payload.get("token") != token:
+        print(f"{_ts()} [runner] WARNING: Lock {path} is held by another process; not releasing.")
+        return
     try:
         path.unlink()
     except FileNotFoundError:
@@ -389,6 +418,87 @@ def _validate_symbol_snapshot(config_paths: Dict[str, Optional[Path]], crypto: s
     return True, "ok"
 
 
+def _load_param_store():
+    """Load the optional param_store helper (from scripts/) by name or by path."""
+    try:
+        import param_store  # type: ignore
+
+        return param_store
+    except Exception:
+        pass
+    path = _find_upwards("param_store.py")
+    if path is None:
+        return None
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("param_store", str(path))
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def _publish_params_to_redis(config_paths: Dict[str, Optional[Path]], crypto: str) -> None:
+    """Best-effort publish of the validated snapshot to Redis as one atomic blob."""
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        return
+    store = _load_param_store()
+    if store is None:
+        print(f"{_ts()} [redis] param_store unavailable; skipping publish.")
+        return
+    try:
+        kappa = _load_json(config_paths["kappa.json"]).get(crypto)
+        epsilon = _load_json(config_paths["epsilon.json"]).get(crypto)
+        lam = _load_json(config_paths["lambda.json"]).get(crypto)
+    except Exception as exc:
+        print(f"{_ts()} [redis] could not read snapshot for publish: {exc}")
+        return
+    if not all(isinstance(x, dict) for x in (kappa, epsilon, lam)):
+        print(f"{_ts()} [redis] snapshot incomplete for {crypto}; skipping publish.")
+        return
+    ok = store.publish_params(
+        redis_url,
+        crypto,
+        kappa=kappa,
+        epsilon=epsilon,
+        lambda_=lam,
+        published_at=_utc_now_iso(),
+    )
+    print(
+        f"{_ts()} [redis] {'published' if ok else 'publish skipped (redis unavailable)'} "
+        f"params for {crypto}."
+    )
+
+
+async def _run_cycle_body(
+    start_dir: Optional[Path],
+    max_up: int,
+    copy_configs: bool,
+    crypto: str,
+) -> None:
+    """Run estimators once and (optionally) validate+publish the snapshots."""
+    found = locate_all(start_dir=start_dir, max_up=max_up)
+    missing = [k for k, v in found.items() if v is None]
+    if missing:
+        print(
+            f"{_ts()} [finder] Searching... missing: {', '.join(missing)}. "
+            f"Start dir: {(start_dir or Path(__file__).resolve().parent)}"
+        )
+    await _run_once(found, crypto)
+    if copy_configs:
+        configs = locate_configs(start_dir=start_dir, max_up=max_up)
+        ok, reason = _validate_symbol_snapshot(configs, crypto)
+        if not ok:
+            raise RuntimeError(f"parameter snapshot validation failed: {reason}")
+        _copy_configs_to_cwd(configs, Path(__file__).resolve().parent)
+        _publish_params_to_redis(configs, crypto)
+
+
 async def _periodic_worker(
     interval_seconds: float,
     start_dir: Optional[Path],
@@ -396,22 +506,40 @@ async def _periodic_worker(
     copy_configs: bool,
     run_once: bool,
     crypto: str,
+    lock_path: Path,
+    lock_stale_seconds: float,
+    lock_holder: dict,
 ) -> None:
+    """Run estimator cycles, holding the process lock only for the duration of
+    each cycle.
+
+    The market-making strategy treats the presence of param_update.lock (and a
+    "running" status) as "params are mid-update, do not quote". Holding the lock
+    for the whole lifetime of a looping runner would therefore block quoting
+    forever, so the lock is acquired at the start of each cycle and released
+    before sleeping between cycles.
+
+    lock_holder["token"] mirrors the currently held ownership token so the
+    caller can release the lock if this coroutine is interrupted mid-cycle.
+    """
     while True:
-        found = locate_all(start_dir=start_dir, max_up=max_up)
-        missing = [k for k, v in found.items() if v is None]
-        if missing:
-            print(
-                f"{_ts()} [finder] Searching... missing: {', '.join(missing)}. "
-                f"Start dir: {(start_dir or Path(__file__).resolve().parent)}"
-            )
-        await _run_once(found, crypto)
-        if copy_configs:
-            configs = locate_configs(start_dir=start_dir, max_up=max_up)
-            ok, reason = _validate_symbol_snapshot(configs, crypto)
-            if not ok:
-                raise RuntimeError(f"parameter snapshot validation failed: {reason}")
-            _copy_configs_to_cwd(configs, Path(__file__).resolve().parent)
+        token = _acquire_process_lock(lock_path, crypto, lock_stale_seconds)
+        if not token:
+            print(f"{_ts()} [runner] Skipping cycle; process lock exists at {lock_path}.")
+        else:
+            lock_holder["token"] = token
+            _write_status("running", {"crypto": crypto, "lock_path": str(lock_path)})
+            try:
+                await _run_cycle_body(start_dir, max_up, copy_configs, crypto)
+                _write_status("success", {"crypto": crypto})
+            except Exception as exc:
+                _write_status("failed", {"crypto": crypto, "error": str(exc)})
+                if run_once:
+                    raise
+                print(f"{_ts()} [runner] Cycle failed: {exc}; retrying after {interval_seconds:.0f}s.")
+            finally:
+                _release_process_lock(lock_path, token)
+                lock_holder["token"] = None
         if run_once:
             break
         await asyncio.sleep(interval_seconds)
@@ -447,24 +575,29 @@ def schedule_tests(
         return
 
     lock_path = _runner_lock_path()
-    acquired_process_lock = _acquire_process_lock(lock_path, crypto, lock_stale_seconds)
-    if not acquired_process_lock:
-        _RUNNER_LOCK.release()
-        print(f"{_ts()} [runner] Skipping; parameter update process lock exists at {lock_path}.")
-        return
-
-    _write_status("running", {"crypto": crypto, "lock_path": str(lock_path)})
+    lock_holder: dict = {"token": None}
     try:
-        asyncio.run(_periodic_worker(interval_seconds, start_dir, max_up, copy_configs, run_once, crypto))
-        _write_status("success", {"crypto": crypto})
+        asyncio.run(
+            _periodic_worker(
+                interval_seconds,
+                start_dir,
+                max_up,
+                copy_configs,
+                run_once,
+                crypto,
+                lock_path,
+                lock_stale_seconds,
+                lock_holder,
+            )
+        )
     except KeyboardInterrupt:
         _write_status("interrupted", {"crypto": crypto})
         print(f"{_ts()} [runner] Stopped by user.")
-    except Exception as exc:
-        _write_status("failed", {"crypto": crypto, "error": str(exc)})
-        raise
     finally:
-        _release_process_lock(lock_path)
+        # Defensive: the worker releases the lock per cycle; this only covers an
+        # interrupt that lands mid-cycle (token still held). Release is
+        # ownership-checked, so a lock held by another process is never deleted.
+        _release_process_lock(lock_path, lock_holder.get("token"))
         _RUNNER_LOCK.release()
 
 
@@ -520,12 +653,35 @@ def _parse_args(argv: list[str]):
     return p.parse_args(argv)
 
 
+def _sigterm_to_keyboard_interrupt(signum, frame):
+    """Translate SIGTERM into KeyboardInterrupt so lock release/status cleanup runs.
+
+    Docker stops containers with SIGTERM; python's default action terminates
+    immediately, skipping every finally block — which abandons param_update.lock
+    mid-cycle and stalls both the next runner (skips cycles until the stale
+    window, 1h) and the strategy (fail-closed on the lock). Raising
+    KeyboardInterrupt reuses the existing interrupted-shutdown path instead.
+    """
+    raise KeyboardInterrupt
+
+
+def _install_sigterm_handler() -> None:
+    try:
+        import signal
+
+        signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+    except Exception:
+        # Non-main thread or platform without SIGTERM: keep going without it.
+        pass
+
+
 if __name__ == "__main__":
     args = _parse_args(sys.argv[1:])
     if args.once and args.loop:
         import sys as _sys
         print("Cannot use --once and --loop together", file=_sys.stderr)
         raise SystemExit(2)
+    _install_sigterm_handler()
     run_once = True if args.once or not args.loop else False
     schedule_tests(
         interval_seconds=args.interval,

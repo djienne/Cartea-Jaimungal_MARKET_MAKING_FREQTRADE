@@ -272,10 +272,20 @@ Parameter sidecar:
   atomically updates the strategy snapshots. The strategy itself only consumes
   snapshots; checked-in config keeps `run_estimators_in_strategy=false`, and the
   strategy safety report rejects any reintroduced `schedule_tests()` call.
-- `param_update.lock` remains a fail-closed guard. The sidecar may replace a
-  stale lock after `PARAM_UPDATE_LOCK_STALE_SECONDS`; the strategy does not
-  remove locks and rejects active, stale, unreadable, or future-dated locks
-  until a valid status/snapshot set is present.
+- Each validated snapshot is additionally published to Redis as one atomic blob
+  (`scripts/param_store.py`, `REDIS_URL` env). The strategy prefers the Redis
+  blob (no torn multi-file reads, so the file lock is not consulted for it) and
+  falls back to the lock-guarded JSON files when Redis is unavailable. Blob
+  freshness stays enforced by the per-component `generated_at` age checks.
+- `param_update.lock` remains a fail-closed guard for the file path. The lock is
+  held per estimator cycle (not for the runner's lifetime) and releases are
+  ownership-checked via a per-acquisition token, so a runner that failed to
+  acquire can never delete another process's active lock. The runner traps
+  SIGTERM (docker stop) and releases the lock through its interrupted-shutdown
+  path. The sidecar may replace a stale lock after
+  `PARAM_UPDATE_LOCK_STALE_SECONDS`; the strategy does not remove locks and
+  rejects active, stale, unreadable, or future-dated locks until a valid
+  status/snapshot set is present.
 
 Data freshness/replay-readiness report:
 

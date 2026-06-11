@@ -7,6 +7,7 @@ import hashlib
 import math
 import numpy as np  # noqa
 import pandas as pd  # noqa
+import os
 import sys
 import threading
 from pandas import DataFrame
@@ -101,6 +102,52 @@ def load_hjb_solver():
 
     return None
 
+
+def load_param_store():
+    """Import the optional Redis param_store helper (scripts/param_store.py).
+
+    Mirrors load_hjb_solver: normal import first, then load by file path. Returns
+    None if unavailable, in which case the strategy falls back to JSON files.
+    """
+    try:
+        return import_module("param_store")
+    except Exception:
+        pass
+    try:
+        start_dir = Path(__file__).resolve().parent
+    except NameError:
+        start_dir = Path.cwd()
+    for rel in ("scripts/param_store.py", "param_store.py"):
+        try:
+            store_path = find_upwards(rel, start_dir, max_up=10)
+        except Exception:
+            store_path = None
+        if not store_path:
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("param_store", str(store_path))
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:
+            continue
+    return None
+
+
+class ParamReloadBlocked(Exception):
+    """The file-based param snapshot may be mid-update (lock present / status not ok).
+
+    Raised by _load_params(enforce_file_gate=True) so a periodic reload can skip
+    this cycle and keep the previous params instead of risking a torn read.
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 class Market_Making(IStrategy):
 
     # Strategy interface version - allow new iterations of the strategy interface.
@@ -132,6 +179,10 @@ class Market_Making(IStrategy):
     lambdas = None
     hjb_cache = None
     hjb_solver = load_hjb_solver()
+    # Optional Redis transport for the param snapshot (estimator -> strategy).
+    _param_store = None
+    _param_store_loaded: bool = False
+    _param_source: str = "file"
     _hjb_import_error_logged: bool = False
     _hjb_generation: int = 0
     _hjb_last_refresh_ts: str | None = None
@@ -165,11 +216,19 @@ class Market_Making(IStrategy):
     use_asymmetric_kappa = True  # always use backward-Euler asymmetric-κ solver (kappa+ != kappa-)
 
     inventory_unit_base = 0.01
+    # Widen (or tighten) quotes uniformly around mid: the final half-spread is
+    # (HJB depth + fee cushion) * spread_multiplier. 1.0 = model optimum;
+    # 2.0 ~ doubles the distance from mid. Overridable via
+    # market_making.spread_multiplier.
+    spread_multiplier = 1.0
     max_abs_inventory_units = 3
     max_param_age_seconds = 90
     max_collector_age_seconds = 30
     max_book_age_seconds = 5
-    collector_timestamp_cache_seconds = 90
+    # Must stay well below max_collector_age_seconds: this caches the newest
+    # collector row timestamp, and a cache longer than the freshness window
+    # makes the cached timestamp age past it and rejects quotes as stale.
+    collector_timestamp_cache_seconds = 5
     collector_timestamp_newest_files_per_stream = 5
     collector_required_streams = ("orderbooks", "prices", "trades")
     book_snapshot_cache_ms = 500
@@ -278,6 +337,69 @@ class Market_Making(IStrategy):
             return None
         return Path(str(raw_dir))
 
+    def _redis_url(self) -> str | None:
+        url = self._mm_config().get("redis_url")
+        if not url:
+            url = os.getenv("REDIS_URL")
+        return str(url) if url else None
+
+    def _load_params(self, enforce_file_gate: bool = False) -> tuple[dict, dict, dict]:
+        """Load (kappas, epsilons, lambdas).
+
+        Prefers the atomic Redis blob published by the estimator (one consistent
+        snapshot, no torn multi-file reads); falls back to the JSON files on disk
+        when Redis is not configured / unavailable / empty. Sets _param_source so
+        the validation path can skip the file lock when reading from Redis.
+
+        With enforce_file_gate=True (periodic reloads), the file fallback checks
+        the estimator lock/status BEFORE and AFTER reading the JSON files and
+        raises ParamReloadBlocked if either check fails — the estimator may be
+        mid-copy and the three files could mix adjacent cycles. The Redis path
+        never needs this (single atomic blob). bot_start keeps the lenient
+        default: the initial load tolerates a mid-cycle estimator because every
+        quote is gated by _params_are_valid anyway.
+        """
+        redis_url = self._redis_url()
+        if redis_url:
+            if not self._param_store_loaded:
+                self._param_store = load_param_store()
+                self._param_store_loaded = True
+            store = self._param_store
+            if store is not None:
+                try:
+                    pairs = self.dp.current_whitelist() if getattr(self, "dp", None) else []
+                except Exception:
+                    pairs = []
+                symbol = self._symbol_from_pair(pairs[0]) if pairs else None
+                if symbol:
+                    try:
+                        blob = store.fetch_params(redis_url, symbol)
+                    except Exception:
+                        blob = None
+                    if isinstance(blob, dict) and all(
+                        isinstance(blob.get(k), dict) for k in ("kappa", "epsilon", "lambda")
+                    ):
+                        self._param_source = "redis"
+                        return (
+                            {symbol: blob["kappa"]},
+                            {symbol: blob["epsilon"]},
+                            {symbol: blob["lambda"]},
+                        )
+        if enforce_file_gate:
+            ok, reason = self._param_update_status()
+            if not ok:
+                raise ParamReloadBlocked(reason)
+        loaded = load_configs(start_dir=self._param_config_dir())
+        if enforce_file_gate:
+            ok, reason = self._param_update_status()
+            if not ok:
+                raise ParamReloadBlocked(reason)
+        # Only flip the provenance marker once a file load is actually committed;
+        # a blocked reload must leave the marker describing the params still in
+        # memory (possibly Redis-sourced).
+        self._param_source = "file"
+        return loaded
+
     def _repo_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
 
@@ -384,11 +506,36 @@ class Market_Making(IStrategy):
             self.param_update_status_path = str(self._param_config_dir() / "param_update_status.json")
         if "kill_on_unknown_liquidity_fill" in mm_config:
             self.kill_on_unknown_liquidity_fill = bool(mm_config.get("kill_on_unknown_liquidity_fill"))
+        # The maker fee is exchange- and tier-dependent. The class default
+        # (0.00015) reflects Hyperliquid's documented base perp maker fee, but
+        # the live CCXT connector / account tier can differ, and the fee gate
+        # fail-closes on any mismatch. Allow operators to align the strategy fee
+        # with what their exchange actually reports via market_making.maker_fee_rate.
+        if "maker_fee_rate" in mm_config:
+            try:
+                self.fees_maker_HL = float(mm_config["maker_fee_rate"])
+            except Exception:
+                self._debug_log_event(
+                    "runtime_config_rejected",
+                    {"key": "maker_fee_rate", "value": mm_config.get("maker_fee_rate"), "reason": "non_numeric"},
+                )
+        if "spread_multiplier" in mm_config:
+            try:
+                value = float(mm_config["spread_multiplier"])
+                if not np.isfinite(value) or value <= 0:
+                    raise ValueError("spread_multiplier must be a positive finite number")
+                self.spread_multiplier = value
+            except Exception:
+                self._debug_log_event(
+                    "runtime_config_rejected",
+                    {"key": "spread_multiplier", "value": mm_config.get("spread_multiplier"), "reason": "invalid"},
+                )
         for numeric_key in (
             "max_param_age_seconds",
             "max_collector_age_seconds",
             "max_book_age_seconds",
             "max_toxicity",
+            "collector_timestamp_cache_seconds",
             "collector_timestamp_newest_files_per_stream",
             "max_deployment_report_age_seconds",
             "param_snapshot_reload_interval_seconds",
@@ -456,6 +603,18 @@ class Market_Making(IStrategy):
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         """
         logger.info('Loading market making parameters (Epsilon and Kappa)')
+        # Freqtrade does not set `self.exchange` on the strategy; the exchange
+        # object (with price_to_precision / amount_to_precision / markets) is
+        # only reachable via the DataProvider. Without it, tick/lot rounding in
+        # _round_quote_price/_round_quote_amount silently no-ops and quotes go
+        # out unrounded. Wire it up here (guarded so tests can inject a stub).
+        if getattr(self, "exchange", None) is None:
+            self.exchange = getattr(self.dp, "_exchange", None)
+            if self.exchange is None:
+                logger.warning(
+                    "Exchange handle unavailable from DataProvider; "
+                    "price/amount rounding will be skipped."
+                )
         pairs = self.dp.current_whitelist()
         if len(pairs) != 1:
             logger.error('Strategy requires exactly one trading pair')
@@ -463,7 +622,8 @@ class Market_Making(IStrategy):
         symbol = self._symbol_from_pair(pairs[0])
         logger.info(f"Trading symbol: {symbol}")
         self._apply_runtime_safety_config()
-        self.kappas, self.epsilons, self.lambdas = load_configs(start_dir=self._param_config_dir())
+        self.kappas, self.epsilons, self.lambdas = self._load_params()
+        logger.info(f"Parameter source: {self._param_source}")
         logger.info(f'Loaded kappa values: {self.kappas}')
         logger.info(f'Loaded epsilon values: {self.epsilons}')
         logger.info(f'Loaded lambda values: {self.lambdas}')
@@ -514,13 +674,19 @@ class Market_Making(IStrategy):
 
         self._param_update_running = True
         try:
-            ok, reason = self._param_update_status()
-            if not ok:
-                self._debug_log_event("param_update_skipped", {"pair": pair, "reason": reason})
+            # _load_params prefers the atomic Redis blob (no file lock needed)
+            # and only gates on the estimator lock/status when it actually falls
+            # back to reading the JSON files (enforce_file_gate=True). This way
+            # Redis reloads are never blocked by a mid-cycle estimator, while a
+            # Redis-configured-but-unavailable setup still gets the torn-read
+            # protection on the file fallback.
+            old_source = self._param_source
+            try:
+                new_kappas, new_epsilons, new_lambdas = self._load_params(enforce_file_gate=True)
+            except ParamReloadBlocked as blocked:
+                self._debug_log_event("param_update_skipped", {"pair": pair, "reason": blocked.reason})
                 return
-
             logger.info('Reloading market making parameter snapshots')
-            new_kappas, new_epsilons, new_lambdas = load_configs(start_dir=self._param_config_dir())
             self._last_param_update = now
             old_params = (self.kappas, self.epsilons, self.lambdas)
             self.kappas, self.epsilons, self.lambdas = new_kappas, new_epsilons, new_lambdas
@@ -528,6 +694,7 @@ class Market_Making(IStrategy):
                 ok, reason = self._params_are_valid(pair)
                 if not ok:
                     self.kappas, self.epsilons, self.lambdas = old_params
+                    self._param_source = old_source
                     self._debug_log_event("param_update_rejected", {"pair": pair, "reason": reason})
                     logger.warning(f"Parameter refresh rejected ({reason}); keeping last known values.")
                     return
@@ -713,6 +880,13 @@ class Market_Making(IStrategy):
             return dataframe
         if not self._inventory_allows_bid(pair):
             return dataframe
+        # freqtrade suppresses an exit signal whenever an entry signal is on the
+        # same candle (interface.py: `exit_ and not enter`). With one position
+        # (max_open_trades=1, no position adjustment) we can't add anyway, so
+        # only quote the bid when flat; once we hold inventory we quote the ask
+        # (exit) and must not emit an entry that would cancel that exit.
+        if self._inventory_level(pair) != 0:
+            return dataframe
         dataframe.loc[dataframe.index[-1], 'enter_long'] = 1
         dataframe.loc[dataframe.index[-1], 'enter_tag'] = "mm_bid"
         return dataframe
@@ -882,7 +1056,7 @@ class Market_Making(IStrategy):
 
         signed_base = 0.0
         try:
-            open_trades = Trade.get_trades(is_open=True, pair=pair)
+            open_trades = Trade.get_trades_proxy(is_open=True, pair=pair)
             for trade in open_trades:
                 amount = abs(float(getattr(trade, "amount", 0.0) or 0.0))
                 if bool(getattr(trade, "is_short", False)):
@@ -1219,9 +1393,14 @@ class Market_Making(IStrategy):
 
     def _params_are_valid(self, pair: str) -> tuple[bool, str]:
         symbol = self._symbol_from_pair(pair)
-        ok, reason = self._param_update_status()
-        if not ok:
-            return False, reason
+        # The file lock guards against torn multi-file reads. When the snapshot
+        # is sourced from Redis (single atomic blob) that can't happen, so the
+        # lock is irrelevant — freshness is still enforced by the generated_at
+        # age checks below. The file path keeps the lock gate.
+        if self._param_source != "redis":
+            ok, reason = self._param_update_status()
+            if not ok:
+                return False, reason
 
         params = self._combined_params(symbol)
         schema_versions: list[int] = []
@@ -2560,7 +2739,7 @@ class Market_Making(IStrategy):
             return count
 
         try:
-            open_trades = list(Trade.get_trades(is_open=True, pair=pair) or [])
+            open_trades = list(Trade.get_trades_proxy(is_open=True, pair=pair) or [])
         except Exception:
             return self._estimated_open_order_count()
 
@@ -2686,7 +2865,7 @@ class Market_Making(IStrategy):
             return 0.0
 
         try:
-            open_trades = list(Trade.get_trades(is_open=True, pair=pair) or [])
+            open_trades = list(Trade.get_trades_proxy(is_open=True, pair=pair) or [])
         except Exception:
             open_trades = []
 
@@ -2946,6 +3125,7 @@ class Market_Making(IStrategy):
                 "params_fresh": params_ok,
                 "params_fresh_reason": params_reason,
                 "param_age_seconds": self._param_age_seconds(symbol, now),
+                "param_source": self._param_source,
                 "book_fresh": book_ok,
                 "book_fresh_reason": book_reason,
                 "book_age_ms": self._book_age_ms(pair, now),
@@ -3043,7 +3223,7 @@ class Market_Making(IStrategy):
         # Add maker fee cushion (price units)
         delta_model = float(delta_m)
         fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
-        delta_total = float(delta_model + fee_cushion)
+        delta_total = float((delta_model + fee_cushion) * self.spread_multiplier)
         raw_rate = mid_price - delta_total
         returned_rate = self._round_quote_price(pair, "bid", raw_rate)
         self._log_spread("bid", mid_price, delta_total, delta_source)
@@ -3313,7 +3493,7 @@ class Market_Making(IStrategy):
 
         delta_model = float(delta_p)
         fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
-        delta_total = float(delta_model + fee_cushion)
+        delta_total = float((delta_model + fee_cushion) * self.spread_multiplier)
         raw_rate = mid_price + delta_total
         returned_rate = self._round_quote_price(pair, "ask", raw_rate)
 
@@ -3922,7 +4102,7 @@ class Market_Making(IStrategy):
         delta_source = "hjb_grid"
         delta_model = float(delta_m)
         fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
-        delta_total = float(delta_model + fee_cushion)
+        delta_total = float((delta_model + fee_cushion) * self.spread_multiplier)
         raw_rate = mid_price - delta_total
         returned_rate = self._round_quote_price(pair, "bid", raw_rate)
 
@@ -3963,7 +4143,10 @@ class Market_Making(IStrategy):
 
     def adjust_exit_price(self, trade: Trade, order: Order, pair: str,
                           current_time: datetime, proposed_rate: float, current_order_rate: float,
-                          exit_tag: str, side: str, **kwargs) -> float | None:
+                          entry_tag: str | None, side: str, **kwargs) -> float | None:
+        # NOTE: freqtrade passes the tag positionally/by keyword as `entry_tag`
+        # for adjust_exit_price (not `exit_tag`); the parameter name must match
+        # or freqtrade raises "missing required positional argument".
         if trade.is_short:
             return current_order_rate
 
@@ -3988,7 +4171,7 @@ class Market_Making(IStrategy):
                 extra={
                     "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                     "current_order_rate": float(current_order_rate),
-                    "exit_tag": exit_tag,
+                    "exit_tag": entry_tag,
                     "cancel_open_order": True,
                 },
             )
@@ -4012,7 +4195,7 @@ class Market_Making(IStrategy):
                 extra={
                     "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                     "current_order_rate": float(current_order_rate),
-                    "exit_tag": exit_tag,
+                    "exit_tag": entry_tag,
                     "cancel_open_order": True,
                 },
             )
@@ -4022,7 +4205,7 @@ class Market_Making(IStrategy):
         delta_source = "hjb_grid"
         delta_model = float(delta_p)
         fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
-        delta_total = float(delta_model + fee_cushion)
+        delta_total = float((delta_model + fee_cushion) * self.spread_multiplier)
         raw_rate = mid_price + delta_total
         returned_rate = self._round_quote_price(pair, "ask", raw_rate)
 
@@ -4050,7 +4233,7 @@ class Market_Making(IStrategy):
             extra={
                 "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                 "current_order_rate": float(current_order_rate),
-                "exit_tag": exit_tag,
+                "exit_tag": entry_tag,
                 "cancel_open_order": not ok,
                 "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
                 **distance_payload,
