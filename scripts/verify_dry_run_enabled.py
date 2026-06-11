@@ -171,6 +171,20 @@ def read_jsonl_events(path: Path, since: datetime, event_name: str | None = None
     return events
 
 
+def archive_audit_events(events: list[dict[str, Any]], archive_path: Path) -> str:
+    """Persist the gate window's audit events to a stable artifact.
+
+    The shared mm_debug.jsonl keeps mutating after the smoke (production
+    appends, restarts truncate), so evaluators that re-run later (e.g. the
+    quality gate under --reuse-smoke-artifacts) must read this frozen slice
+    instead of the live log.
+    """
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(event, sort_keys=True, default=str) for event in events]
+    archive_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return str(archive_path)
+
+
 def is_exchange_rate_limited(text: str) -> bool:
     lower = text.lower()
     return any(pattern in lower for pattern in RATE_LIMIT_PATTERNS)
@@ -313,6 +327,7 @@ def _run_gate_once(
     log_text = logs.stdout or ""
     log_path.write_text(log_text, encoding="utf-8")
     debug_events = read_jsonl_events(mm_debug_path, started_at)
+    audit_log_archive = archive_audit_events(debug_events, mm_debug_path.parent / "mm_gate_enabled_audit.jsonl")
     ok, reason, evidence = evaluate_enabled_gate(log_text, debug_events)
     order_evidence = [
         line
@@ -345,6 +360,7 @@ def _run_gate_once(
         "container_wait": wait_state,
         "log_path": str(log_path),
         "mm_debug_path": str(mm_debug_path),
+        "audit_log_archive": audit_log_archive,
         "health_events": len([event for event in debug_events if event.get("event") == "health"]),
         "quote_decisions": len(quote_events),
         "accepted_quote_decisions": len(accepted_quotes),

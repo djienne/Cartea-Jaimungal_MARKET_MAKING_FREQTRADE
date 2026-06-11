@@ -92,9 +92,8 @@ def test_live_canary_gate_runs_after_dependency_artifacts_with_runtime_gates():
     assert names.index("dry_run_quality_report") < names.index("replay_log_calibration_artifact")
     assert names.index("post_only_evidence_report") < names.index("live_canary_evidence_report")
     assert names.index("fee_evidence_report") < names.index("live_canary_evidence_report")
-    assert names.index("hyperliquid_fee_capture_plan") < names.index("fee_evidence_report")
-    assert names.index("direct_alo_adapter_plan") < names.index("direct_alo_probe_preparation_plan")
-    assert names.index("direct_risk_flatten_plan") < names.index("live_canary_evidence_report")
+    assert names.index("adapter_plans") < names.index("fee_evidence_report")
+    assert names.index("adapter_plans") < names.index("live_canary_evidence_report")
     assert names.index("replay_acceptance_report_artifact") < names.index("live_canary_evidence_report")
     assert names.index("live_canary_evidence_report") < names.index("promotion_evidence_manifest")
 
@@ -288,31 +287,41 @@ def test_runtime_evidence_age_windows_are_passed_to_fee_and_canary_checks():
     assert canary_command[canary_command.index("--max-canary-event-age-seconds") + 1] == "7200.0"
 
 
-def test_fee_capture_plan_gate_is_read_only_plan_mode():
-    command = gate_command("hyperliquid_fee_capture_plan", include_runtime=True)
+def test_adapter_plans_gate_runs_consolidated_plan_script():
+    command = gate_command("adapter_plans", include_runtime=False)
     normalized = [item.replace("\\", "/") for item in command]
 
-    assert "scripts/capture_hyperliquid_fee_evidence.py" in command
-    assert "--mode" in command
-    assert command[command.index("--mode") + 1] == "plan"
-    assert "--output" in command
-    assert "docs/hyperliquid_fee_capture_plan.json" in normalized
+    assert "scripts/run_adapter_plans.py" in normalized
 
 
-def test_direct_alo_probe_preparation_gate_is_no_order_plan():
-    command = gate_command("direct_alo_probe_preparation_plan", include_runtime=True)
-    normalized = [item.replace("\\", "/") for item in command]
+def test_adapter_plans_covers_all_former_plan_gates_read_only():
+    from run_adapter_plans import sub_plan_commands
 
-    assert "scripts/hyperliquid_alo_executor.py" in normalized
-    assert "--mode" in command
-    assert command[command.index("--mode") + 1] == "prepare-probes"
-    assert "--acknowledge-real-orders" not in command
-    assert "--best-bid" in command
-    assert "--best-ask" in command
-    assert "--price-tick-size" in command
-    assert "--amount-step-size" in command
-    assert "--output" in command
-    assert "docs/direct_alo_probe_commands.json" in normalized
+    plans = dict(sub_plan_commands("python"))
+    assert set(plans) == {
+        "post_only_probe_plan",
+        "direct_alo_adapter_plan",
+        "direct_alo_probe_preparation_plan",
+        "direct_risk_flatten_plan",
+        "hyperliquid_fee_capture_plan",
+    }
+
+    fee_plan = plans["hyperliquid_fee_capture_plan"]
+    assert "scripts/capture_hyperliquid_fee_evidence.py" in fee_plan
+    assert fee_plan[fee_plan.index("--mode") + 1] == "plan"
+    assert "docs/hyperliquid_fee_capture_plan.json" in [item.replace("\\", "/") for item in fee_plan]
+
+    probe_plan = plans["direct_alo_probe_preparation_plan"]
+    assert probe_plan[probe_plan.index("--mode") + 1] == "prepare-probes"
+    assert "--acknowledge-real-orders" not in probe_plan
+    assert "--best-bid" in probe_plan and "--best-ask" in probe_plan
+    assert "--price-tick-size" in probe_plan and "--amount-step-size" in probe_plan
+    assert "docs/direct_alo_probe_commands.json" in [item.replace("\\", "/") for item in probe_plan]
+
+    # Every sub-plan stays read-only plan/preparation mode.
+    for name, plan_command in plans.items():
+        assert "--acknowledge-real-orders" not in plan_command, name
+        assert "submit" not in " ".join(plan_command), name
 
 
 def test_non_runtime_live_canary_gate_can_use_external_audit_log_input():
@@ -325,6 +334,226 @@ def test_non_runtime_live_canary_gate_can_use_external_audit_log_input():
 
     assert "--input" in command
     assert "docs/live_canary_mm_debug.jsonl" in normalized
+
+
+# ---------------------------------------------------------------------------
+# --reuse-smoke-artifacts: evaluator reruns against prior smoke evidence
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from run_safety_gates import (  # noqa: E402
+    production_restore_commands,
+    reused_smoke_results,
+)
+
+
+def test_reuse_mode_skips_only_the_two_long_smokes():
+    full = [name for name, _, _ in local_gates(include_runtime=True)]
+    reuse = [name for name, _, _ in local_gates(include_runtime=True, reuse_smoke_artifacts=True)]
+
+    assert set(full) - set(reuse) == {"dry_run_disabled_smoke", "dry_run_enabled_smoke"}
+    # Everything cheap still runs live, including the quality evaluator.
+    assert "dry_run_quality_report" in reuse
+    assert "pytest_core" in reuse
+
+
+def _write_previous_gates(path: Path, *, disabled_passed=True, enabled_passed=True) -> None:
+    payload = {
+        "local_gates": [
+            {
+                "name": "dry_run_disabled_smoke",
+                "command": ["python", "scripts/verify_dry_run_disabled.py"],
+                "passed": disabled_passed,
+                "returncode": 0 if disabled_passed else 1,
+                "expected_returncodes": [0],
+                "elapsed_seconds": 225.0,
+                "stdout_tail": "",
+                "stderr_tail": "",
+            },
+            {
+                "name": "dry_run_enabled_smoke",
+                "command": ["python", "scripts/verify_dry_run_enabled.py"],
+                "passed": enabled_passed,
+                "returncode": 0 if enabled_passed else 1,
+                "expected_returncodes": [0],
+                "elapsed_seconds": 674.0,
+                "stdout_tail": "",
+                "stderr_tail": "",
+            },
+        ]
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_smoke_artifacts(tmp_path: Path, monkeypatch, *, age_seconds=60.0, passed=True) -> None:
+    started = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat().replace("+00:00", "Z")
+    artifacts = {}
+    for name in ("dry_run_disabled_smoke", "dry_run_enabled_smoke"):
+        artifact_path = tmp_path / f"{name}.json"
+        artifact_path.write_text(json.dumps({"passed": passed, "started_at": started}), encoding="utf-8")
+        artifacts[name] = artifact_path
+    monkeypatch.setattr(run_safety_gates, "SMOKE_GATE_ARTIFACTS", artifacts)
+
+
+def test_reused_smoke_results_happy_path(tmp_path, monkeypatch):
+    previous = tmp_path / "last_safety_gates.json"
+    _write_previous_gates(previous)
+    _write_smoke_artifacts(tmp_path, monkeypatch, age_seconds=60.0)
+
+    entries = reused_smoke_results(previous, max_age_seconds=21_600.0)
+
+    assert [entry["name"] for entry in entries] == ["dry_run_disabled_smoke", "dry_run_enabled_smoke"]
+    assert all(entry["passed"] is True for entry in entries)
+    assert all(entry["reused"] is True for entry in entries)
+    assert all(str(entry["stdout_tail"]).startswith("reused_from:") for entry in entries)
+
+
+def test_reused_smoke_results_fail_closed_on_stale_artifact(tmp_path, monkeypatch):
+    previous = tmp_path / "last_safety_gates.json"
+    _write_previous_gates(previous)
+    _write_smoke_artifacts(tmp_path, monkeypatch, age_seconds=10_000.0)
+
+    entries = reused_smoke_results(previous, max_age_seconds=3_600.0)
+
+    assert all(entry["passed"] is False for entry in entries)
+    assert all("artifact_stale" in entry["stderr_tail"] for entry in entries)
+
+
+def test_reused_smoke_results_fail_closed_on_missing_previous_gates(tmp_path, monkeypatch):
+    _write_smoke_artifacts(tmp_path, monkeypatch, age_seconds=60.0)
+
+    entries = reused_smoke_results(tmp_path / "nope.json", max_age_seconds=21_600.0)
+
+    assert all(entry["passed"] is False for entry in entries)
+    assert all("previous_gates_unreadable" in entry["stderr_tail"] for entry in entries)
+
+
+def test_reused_smoke_results_fail_closed_on_failed_prior_gate(tmp_path, monkeypatch):
+    previous = tmp_path / "last_safety_gates.json"
+    _write_previous_gates(previous, enabled_passed=False)
+    _write_smoke_artifacts(tmp_path, monkeypatch, age_seconds=60.0)
+
+    entries = {entry["name"]: entry for entry in reused_smoke_results(previous, max_age_seconds=21_600.0)}
+
+    assert entries["dry_run_disabled_smoke"]["passed"] is True
+    assert entries["dry_run_enabled_smoke"]["passed"] is False
+    assert "previous_gate_not_passed" in entries["dry_run_enabled_smoke"]["stderr_tail"]
+
+
+def test_reused_smoke_results_fail_closed_on_failed_artifact(tmp_path, monkeypatch):
+    previous = tmp_path / "last_safety_gates.json"
+    _write_previous_gates(previous)
+    _write_smoke_artifacts(tmp_path, monkeypatch, age_seconds=60.0, passed=False)
+
+    entries = reused_smoke_results(previous, max_age_seconds=21_600.0)
+
+    assert all(entry["passed"] is False for entry in entries)
+    assert all("artifact_passed_not_true" in entry["stderr_tail"] for entry in entries)
+
+
+def test_production_restore_commands_match_documented_recovery():
+    commands = production_restore_commands()
+
+    # The smokes replace MM_ADV and stop the collector on teardown; restore
+    # brings both back.
+    assert commands == [
+        ["docker", "rm", "-f", "MM_ADV"],
+        ["docker", "compose", "up", "-d", "freqtrade", "hl-collector2"],
+    ]
+
+
+def test_reuse_mode_can_point_quality_gate_at_archived_audit_log():
+    for gate_name, command, _expected in local_gates(
+        include_runtime=True,
+        reuse_smoke_artifacts=True,
+        quality_audit_log_input=Path("user_data/logs/mm_gate_enabled_audit.jsonl"),
+    ):
+        if gate_name == "dry_run_quality_report":
+            normalized = [item.replace("\\", "/") for item in command]
+            assert "user_data/logs/mm_gate_enabled_audit.jsonl" in normalized
+            return
+    raise AssertionError("missing dry_run_quality_report gate")
+
+
+def test_reuse_mode_drops_quality_gate_for_legacy_artifacts_without_archive():
+    names = [
+        name
+        for name, _, _ in local_gates(
+            include_runtime=True,
+            reuse_smoke_artifacts=True,
+            reuse_quality_report=True,
+        )
+    ]
+
+    assert "dry_run_quality_report" not in names
+    assert "dry_run_disabled_smoke" not in names
+    assert "dry_run_enabled_smoke" not in names
+
+
+def test_reused_quality_result_validates_report_artifact(tmp_path, monkeypatch):
+    from run_safety_gates import reused_quality_result
+
+    previous = tmp_path / "last_safety_gates.json"
+    previous.write_text(
+        json.dumps(
+            {
+                "local_gates": [
+                    {
+                        "name": "dry_run_quality_report",
+                        "command": ["python", "scripts/verify_dry_run_quality.py"],
+                        "passed": True,
+                        "returncode": 0,
+                        "expected_returncodes": [0],
+                        "elapsed_seconds": 0.1,
+                        "stdout_tail": "",
+                        "stderr_tail": "",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = tmp_path / "dry_run_quality_report.json"
+    fresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    report.write_text(json.dumps({"ok": True, "generated_at": fresh}), encoding="utf-8")
+    monkeypatch.setattr(run_safety_gates, "QUALITY_REPORT_ARTIFACT", report)
+
+    entry = reused_quality_result(previous, max_age_seconds=21_600.0)
+    assert entry["passed"] is True
+    assert entry["reused"] is True
+
+    report.write_text(json.dumps({"ok": False, "generated_at": fresh}), encoding="utf-8")
+    entry = reused_quality_result(previous, max_age_seconds=21_600.0)
+    assert entry["passed"] is False
+    assert "artifact_ok_not_true" in entry["stderr_tail"]
+
+
+def test_render_markdown_reports_reuse_and_restore_status():
+    payload = {
+        "all_automated_passed": True,
+        "deployment_ready": False,
+        "manual_gates_remaining": 4,
+        "smoke_artifacts_reused": True,
+        "production_restore": {"attempted": True, "ok": True},
+        "local_gates": [
+            {
+                "name": "dry_run_enabled_smoke",
+                "passed": True,
+                "elapsed_seconds": 0.0,
+                "returncode": 0,
+                "stderr_tail": "",
+                "reused": True,
+            }
+        ],
+        "manual_gates": [],
+    }
+
+    markdown = render_markdown(payload)
+
+    assert "Smoke artifacts: REUSED" in markdown
+    assert "Production restore: OK" in markdown
+    assert "(reused)" in markdown
 
 
 def test_live_canary_gate_does_not_ack_manual_monitoring_by_default():

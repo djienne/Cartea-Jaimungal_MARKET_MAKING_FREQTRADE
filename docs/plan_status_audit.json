@@ -11,17 +11,15 @@
     "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-06-11T06:35:12Z",
+  "generated_at": "2026-06-11T16:49:31Z",
   "local_gates": {
     "failed": [],
     "missing": [],
     "present": [
+      "adapter_plans",
       "compileall",
       "compute_spreads_boundary_smoke",
       "config_safety_report",
-      "direct_alo_adapter_plan",
-      "direct_alo_probe_preparation_plan",
-      "direct_risk_flatten_plan",
       "docker_compose_config",
       "dry_run_disabled_smoke",
       "dry_run_enabled_smoke",
@@ -31,10 +29,8 @@
       "freqtrade_runtime_load",
       "freqtrade_tif_runtime",
       "hl_data_validation_report",
-      "hyperliquid_fee_capture_plan",
       "live_canary_evidence_report",
       "post_only_evidence_report",
-      "post_only_probe_plan",
       "promotion_evidence_manifest",
       "pytest_core",
       "replay_acceptance_report_artifact",
@@ -44,12 +40,10 @@
       "strategy_safety_report"
     ],
     "required": [
+      "adapter_plans",
       "compileall",
       "compute_spreads_boundary_smoke",
       "config_safety_report",
-      "direct_alo_adapter_plan",
-      "direct_alo_probe_preparation_plan",
-      "direct_risk_flatten_plan",
       "docker_compose_config",
       "dry_run_disabled_smoke",
       "dry_run_enabled_smoke",
@@ -59,10 +53,8 @@
       "freqtrade_runtime_load",
       "freqtrade_tif_runtime",
       "hl_data_validation_report",
-      "hyperliquid_fee_capture_plan",
       "live_canary_evidence_report",
       "post_only_evidence_report",
-      "post_only_probe_plan",
       "promotion_evidence_manifest",
       "pytest_core",
       "replay_acceptance_report_artifact",
@@ -95,8 +87,8 @@
   },
   "ok": true,
   "pytest_count": {
-    "latest_gates": 366,
-    "status": 366
+    "latest_gates": 424,
+    "status": 424
   },
   "reasons": [],
   "status_path": "docs\\PLAN_IMPLEMENTATION_STATUS.md",

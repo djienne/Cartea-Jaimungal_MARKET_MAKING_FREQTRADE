@@ -1,51 +1,47 @@
 {
   "accepted_quotes_by_depth": {
-    "ask:2.00-3.00bps": 18,
-    "ask:7.00-8.00bps": 5,
-    "ask:8.00-9.00bps": 6,
-    "bid:2.00-3.00bps": 3,
-    "bid:3.00-4.00bps": 6,
-    "bid:4.00-5.00bps": 8
+    "ask:2.00-3.00bps": 22,
+    "ask:3.00-4.00bps": 1,
+    "bid:2.00-3.00bps": 9,
+    "bid:5.00-6.00bps": 1
   },
   "accepted_quotes_by_side": {
-    "ask": 29,
-    "bid": 17
+    "ask": 23,
+    "bid": 10
   },
   "actual_fee_rate": {
     "count": 0,
     "max": null,
     "mean": null,
     "min": null,
-    "outlier_count": 12,
+    "outlier_count": 8,
     "outlier_threshold": 0.01
   },
   "fill_probability_by_depth": {
-    "ask:2.00-3.00bps": 0.2777777777777778,
-    "ask:7.00-8.00bps": 0.0,
-    "ask:8.00-9.00bps": 0.0,
-    "bid:2.00-3.00bps": 0.0,
-    "bid:3.00-4.00bps": 0.5,
-    "bid:4.00-5.00bps": 0.5
+    "ask:2.00-3.00bps": 0.13636363636363635,
+    "ask:3.00-4.00bps": 1.0,
+    "bid:2.00-3.00bps": 0.4444444444444444,
+    "bid:5.00-6.00bps": 0.0
   },
   "fill_probability_by_side": {
-    "ask": 0.1724137931034483,
-    "bid": 0.4117647058823529
+    "ask": 0.17391304347826086,
+    "bid": 0.4
   },
   "fills_by_side": {
-    "ask": 5,
-    "bid": 7
+    "ask": 4,
+    "bid": 4
   },
-  "generated_at": "2026-06-11T12:54:12Z",
+  "generated_at": "2026-06-11T16:49:17Z",
   "input_paths": [
     "user_data\\logs\\mm_debug.jsonl"
   ],
   "inputs": {
-    "accepted_quotes": 46,
-    "accepted_quotes_with_quote_id": 46,
+    "accepted_quotes": 33,
+    "accepted_quotes_with_quote_id": 33,
     "bucket_bps": 1.0,
-    "events": 1096,
-    "fills": 12,
-    "fills_with_quote_id": 12,
+    "events": 192,
+    "fills": 8,
+    "fills_with_quote_id": 8,
     "match_window_seconds": 300.0,
     "max_fee_rate": 0.01,
     "min_fills": 10,
@@ -56,55 +52,52 @@
   "maker_ratio": 0.0,
   "markout_summary": {
     "100": {
-      "count": 11.0,
-      "max_usdc": -0.0025,
-      "mean_usdc": -0.011863636363636531,
-      "min_usdc": -0.05149999999999864
+      "count": 7.0,
+      "max_usdc": 0.0004999999999995453,
+      "mean_usdc": -0.003928571428571753,
+      "min_usdc": -0.01150000000000091
     },
     "1000": {
-      "count": 11.0,
-      "max_usdc": -0.0025,
-      "mean_usdc": -0.012045454545454753,
-      "min_usdc": -0.05149999999999864
+      "count": 7.0,
+      "max_usdc": 0.0004999999999995453,
+      "mean_usdc": -0.0022142857142859744,
+      "min_usdc": -0.004500000000000455
     },
     "30000": {
-      "count": 11.0,
-      "max_usdc": 0.01150000000000091,
-      "mean_usdc": -0.007727272727272933,
-      "min_usdc": -0.02650000000000091
+      "count": 7.0,
+      "max_usdc": 0.0125,
+      "mean_usdc": 0.003142857142857208,
+      "min_usdc": -0.005499999999999545
     },
     "5000": {
-      "count": 11.0,
-      "max_usdc": 0.0034999999999990906,
-      "mean_usdc": -0.011227272727272851,
-      "min_usdc": -0.05149999999999864
+      "count": 7.0,
+      "max_usdc": 0.0004999999999995453,
+      "mean_usdc": -0.002071428571428961,
+      "min_usdc": -0.004500000000000455
     }
   },
   "matched_fills_by_depth": {
-    "ask:2.00-3.00bps": 5,
-    "bid:3.00-4.00bps": 3,
-    "bid:4.00-5.00bps": 4
+    "ask:2.00-3.00bps": 3,
+    "ask:3.00-4.00bps": 1,
+    "bid:2.00-3.00bps": 4
   },
   "matched_fills_by_quote_id": {
     "quote-000000000001": 1,
-    "quote-000000000002": 1,
-    "quote-000000000004": 2,
+    "quote-000000000003": 1,
+    "quote-000000000004": 1,
     "quote-000000000005": 1,
-    "quote-000000000009": 1,
-    "quote-000000000010": 1,
-    "quote-000000000012": 1,
-    "quote-000000000013": 1,
     "quote-000000000014": 1,
-    "quote-000000000015": 1,
-    "quote-000000000018": 1
+    "quote-000000000018": 1,
+    "quote-000000000019": 1,
+    "quote-000000000020": 1
   },
   "reasons": [
-    "insufficient_accepted_quotes:46<min_100",
+    "insufficient_accepted_quotes:33<min_100",
     "insufficient_maker_fills:0<min_10",
-    "unknown_liquidity_fills:12"
+    "unknown_liquidity_fills:8"
   ],
   "taker_fills": 0,
-  "unknown_liquidity_fills": 12,
+  "unknown_liquidity_fills": 8,
   "unmatched_fills": 0,
   "usable_for_calibration": false
 }

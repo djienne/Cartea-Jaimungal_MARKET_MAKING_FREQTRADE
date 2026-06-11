@@ -1,17 +1,45 @@
 # Deployment Gates
 
 This project must stay fail-closed until every automated and manual gate below
-has evidence. The local checks can be run with:
+has evidence.
+
+## Battery profiles
+
+Pick the profile by what changed; the slow part is the two dry-run smokes
+(~15 min combined), and they only need to re-run when runtime behavior changed.
+
+- **fast** (default, ≈2.5 min) — static gates, full pytest, plan artifacts and
+  evidence evaluators. Use during iteration:
 
 ```bash
 python scripts/run_safety_gates.py --markdown-output docs/LAST_SAFETY_GATES.md
 ```
 
-When Docker is available, include non-trading runtime load checks:
+- **full** (`--include-runtime`, ≈17 min) — adds the Docker probes and both
+  dry-run smokes (disabled + enabled), then the post-run plan-status audit. Use
+  pre-merge / pre-promotion. The disabled smoke replaces the production
+  `MM_ADV` container while it runs; the runner now restores it automatically
+  afterwards (`production_restore` in the payload; opt out with
+  `--no-restore-production`):
 
 ```bash
-python scripts/run_safety_gates.py --include-runtime --markdown-output docs/LAST_SAFETY_GATES.md
+python scripts/run_safety_gates.py --include-runtime --json-output docs/last_safety_gates.json --markdown-output docs/LAST_SAFETY_GATES.md
 ```
+
+- **rerun** (`--include-runtime --reuse-smoke-artifacts`, ≈3-4 min) — re-runs
+  everything cheap live (pytest, probes, evaluators, replays, audit) and reuses
+  the previous battery's smoke results, validated against
+  `docs/dry_run_disabled_gate.json` / `docs/dry_run_enabled_gate.json`
+  freshness (`--max-smoke-artifact-age-seconds`, default 6 h). Use to fix an
+  evaluator/doc nit without repeating the smokes. Fail-closed: missing, stale
+  or failed smoke evidence makes the reused gates FAIL.
+
+```bash
+python scripts/run_safety_gates.py --include-runtime --reuse-smoke-artifacts --json-output docs/last_safety_gates.json --markdown-output docs/LAST_SAFETY_GATES.md
+```
+
+Always pass `--json-output docs/last_safety_gates.json` on runtime batteries so
+the plan-status audit evidence is persisted for later reruns.
 
 For promotion evidence from retained dry-run, testnet, or canary audit logs,
 pass the log explicitly:
@@ -63,8 +91,13 @@ These gates do not require a live exchange connection:
 - `compute_spreads_boundary_smoke`: verifies disabled HJB boundary sides render
   as disabled instead of finite quotes.
 - `replay_smoke`: verifies the replay CLI runs without candle-fill assumptions.
-- `post_only_probe_plan`: documents the Hyperliquid `Alo` evidence required
-  without placing orders.
+- `adapter_plans`: one consolidated gate (scripts/run_adapter_plans.py) that
+  regenerates all five no-network planning artifacts that used to be separate
+  gates: `post_only_probe_plan` (documents the Hyperliquid `Alo` evidence
+  required without placing orders), `direct_alo_adapter_plan`,
+  `direct_alo_probe_preparation_plan`, `direct_risk_flatten_plan`, and
+  `hyperliquid_fee_capture_plan`. All sub-plans run even after one fails so a
+  single battery surfaces every broken plan.
 - `post_only_evidence_report`: writes
   `docs/post_only_evidence_report.json`. Without submit artifacts this command
   is expected to return nonzero and the gate runner treats that as an artifact
@@ -78,7 +111,7 @@ These gates do not require a live exchange connection:
   `docs/post_only_passive_result.json` when those conventional files exist.
   Submit-mode CCXT probes enforce a default 25 USDC notional cap unless the
   operator explicitly raises `--max-notional-usdc`.
-- `direct_alo_adapter_plan`: writes `docs/direct_alo_adapter_plan.json`,
+- `direct_alo_adapter_plan` (sub-plan of `adapter_plans`): writes `docs/direct_alo_adapter_plan.json`,
   documenting the no-network direct Hyperliquid SDK fallback path that submits
   `order_type={"limit": {"tif": "Alo"}}` only after local BBO maker-safety.
   The direct adapter also applies a default 25 USDC submit-notional cap for
@@ -89,7 +122,7 @@ These gates do not require a live exchange connection:
   round bids down and asks up before the maker-safety check, while intentionally
   crossing ALO probes round in the opposite direction so the rejection probe
   remains crossing.
-- `direct_alo_probe_preparation_plan`: writes
+- `direct_alo_probe_preparation_plan` (sub-plan of `adapter_plans`): writes
   `docs/direct_alo_probe_commands.json` without network or order submission. It
   converts a valid BBO into exact guarded direct SDK crossing/passive ALO probe
   commands, notional checks, and the downstream evidence evaluation command.

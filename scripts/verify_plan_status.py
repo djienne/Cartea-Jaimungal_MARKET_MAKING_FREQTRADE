@@ -23,12 +23,12 @@ REQUIRED_LOCAL_GATES = {
     "strategy_safety_report",
     "compute_spreads_boundary_smoke",
     "replay_smoke",
-    "post_only_probe_plan",
+    # adapter_plans consolidates the former post_only_probe_plan,
+    # direct_alo_adapter_plan, direct_alo_probe_preparation_plan,
+    # direct_risk_flatten_plan and hyperliquid_fee_capture_plan gates
+    # (see scripts/run_adapter_plans.py).
+    "adapter_plans",
     "post_only_evidence_report",
-    "direct_alo_adapter_plan",
-    "direct_alo_probe_preparation_plan",
-    "direct_risk_flatten_plan",
-    "hyperliquid_fee_capture_plan",
     "promotion_evidence_manifest",
     "docker_compose_config",
     "freqtrade_runtime_load",

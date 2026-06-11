@@ -35,6 +35,30 @@ DEFAULT_ENABLED_DRY_RUN_MIN_FINAL_TOTAL_PNL_USDC = -1.0
 DEFAULT_POST_ONLY_CROSSING_RESULT = Path("docs/post_only_crossing_result.json")
 DEFAULT_POST_ONLY_PASSIVE_RESULT = Path("docs/post_only_passive_result.json")
 DEFAULT_REPLAY_FILL_CALIBRATION = Path("docs/replay_log_calibration.json")
+DEFAULT_PREVIOUS_GATES = Path("docs/last_safety_gates.json")
+DEFAULT_MAX_SMOKE_ARTIFACT_AGE_SECONDS = 21_600.0  # 6 hours
+
+# The two long runtime smokes and the artifacts they write. --reuse-smoke-artifacts
+# skips re-running them and instead injects the previous run's results, validated
+# against these artifacts' freshness (fail-closed: missing/stale/failed inputs
+# inject FAILED gate results).
+SMOKE_GATE_ARTIFACTS: dict[str, Path] = {
+    "dry_run_disabled_smoke": Path("docs/dry_run_disabled_gate.json"),
+    "dry_run_enabled_smoke": Path("docs/dry_run_enabled_gate.json"),
+}
+
+# The quality evaluator's stable input: the audit-event slice the enabled
+# smoke archives (the live mm_debug.jsonl keeps mutating after the smoke).
+# Legacy gate artifacts without an archive fall back to reusing the previous
+# battery's quality result, validated against this report.
+QUALITY_REPORT_ARTIFACT = Path("docs/dry_run_quality_report.json")
+
+# The disabled smoke runs its gate container under the production name and the
+# smokes stop the collector on teardown, so a runtime battery leaves both
+# stopped; the runner restores them afterwards.
+PRODUCTION_FREQTRADE_CONTAINER = "MM_ADV"
+PRODUCTION_FREQTRADE_SERVICE = "freqtrade"
+COLLECTOR_SERVICE = "hl-collector2"
 
 
 @dataclass
@@ -204,34 +228,12 @@ def fee_evidence_command(
     ]
 
 
-def fee_evidence_capture_plan_command(py: str) -> list[str]:
-    return [
-        py,
-        "scripts/capture_hyperliquid_fee_evidence.py",
-        "--mode",
-        "plan",
-        "--output",
-        "docs/hyperliquid_fee_capture_plan.json",
-    ]
-
-
 def promotion_evidence_manifest_command(py: str) -> list[str]:
     return [
         py,
         "scripts/build_promotion_evidence_manifest.py",
         "--output",
         "docs/promotion_evidence_manifest.json",
-    ]
-
-
-def risk_flatten_plan_command(py: str) -> list[str]:
-    return [
-        py,
-        "scripts/hyperliquid_risk_executor.py",
-        "--mode",
-        "plan",
-        "--output",
-        "docs/hyperliquid_risk_flatten_plan.json",
     ]
 
 
@@ -356,6 +358,9 @@ def replay_acceptance_report_command(
 def local_gates(
     *,
     include_runtime: bool = False,
+    reuse_smoke_artifacts: bool = False,
+    reuse_quality_report: bool = False,
+    quality_audit_log_input: Path | None = None,
     audit_log_input: Path = DEFAULT_AUDIT_LOG_INPUT,
     manual_monitoring_ack: bool = False,
     post_only_crossing_result: Path | None = None,
@@ -482,14 +487,10 @@ def local_gates(
             [0],
         ),
         (
-            "post_only_probe_plan",
+            "adapter_plans",
             [
                 py,
-                "scripts/verify_post_only_mapping.py",
-                "--mode",
-                "plan",
-                "--output",
-                "docs/post_only_probe_plan.json",
+                "scripts/run_adapter_plans.py",
             ],
             [0],
         ),
@@ -503,61 +504,6 @@ def local_gates(
                 max_evidence_age_seconds=max_evidence_age_seconds,
             ),
             [0, 1],
-        ),
-        (
-            "direct_alo_adapter_plan",
-            [
-                py,
-                "scripts/hyperliquid_alo_executor.py",
-                "--mode",
-                "plan",
-                "--output",
-                "docs/direct_alo_adapter_plan.json",
-            ],
-            [0],
-        ),
-        (
-            "direct_alo_probe_preparation_plan",
-            [
-                py,
-                "scripts/hyperliquid_alo_executor.py",
-                "--mode",
-                "prepare-probes",
-                "--testnet",
-                "--symbol",
-                "ETH/USDC:USDC",
-                "--side",
-                "bid",
-                "--size",
-                "0.01",
-                "--best-bid",
-                "1999",
-                "--best-ask",
-                "2001",
-                "--price-tick-size",
-                "0.1",
-                "--amount-step-size",
-                "0.001",
-                "--quote-id",
-                "quote-safety-gate",
-                "--session-id",
-                "safety-gate",
-                "--hjb-generation",
-                "1",
-                "--output",
-                "docs/direct_alo_probe_commands.json",
-            ],
-            [0],
-        ),
-        (
-            "direct_risk_flatten_plan",
-            risk_flatten_plan_command(py),
-            [0],
-        ),
-        (
-            "hyperliquid_fee_capture_plan",
-            fee_evidence_capture_plan_command(py),
-            [0],
         ),
     ]
     if include_runtime:
@@ -625,7 +571,7 @@ def local_gates(
                         sys.executable,
                         "scripts/verify_dry_run_quality.py",
                         "--input",
-                        str(audit_log_input),
+                        str(quality_audit_log_input or audit_log_input),
                         "--gate-report",
                         "docs/dry_run_enabled_gate.json",
                         "--output",
@@ -776,6 +722,15 @@ def local_gates(
                 [0],
             )
         )
+    if reuse_smoke_artifacts:
+        # The smokes are injected from the previous run's artifacts instead
+        # (see reused_smoke_results); everything cheap still runs live.
+        skipped = set(SMOKE_GATE_ARTIFACTS)
+        if reuse_quality_report:
+            # Legacy enabled-smoke artifact without an audit_log_archive: the
+            # quality verdict is injected too (see reused_quality_result).
+            skipped.add("dry_run_quality_report")
+        gates = [gate for gate in gates if gate[0] not in skipped]
     return gates
 
 
@@ -893,6 +848,157 @@ def manual_gates(
     return manual_gate_statuses(include_runtime=include_runtime, max_report_age_seconds=max_report_age_seconds)
 
 
+def _previous_gate_entries(previous_gates_path: Path) -> tuple[dict[str, dict], str | None]:
+    previous, previous_error = load_json_report(ROOT / previous_gates_path)
+    previous_gates: dict[str, dict] = {}
+    if previous is not None:
+        for entry in previous.get("local_gates", []):
+            if isinstance(entry, dict) and entry.get("name"):
+                previous_gates[str(entry["name"])] = entry
+    return previous_gates, previous_error
+
+
+def _reused_gate_entry(
+    name: str,
+    prior: dict | None,
+    previous_error: str | None,
+    artifact_path: Path,
+    *,
+    ok_field: str,
+    ts_field: str,
+    max_age_seconds: float,
+    now: datetime,
+) -> dict:
+    """One payload-ready reused gate entry, fail-closed on any doubt."""
+    failure_reason: str | None = None
+    artifact_timestamp: str | None = None
+
+    if previous_error:
+        failure_reason = f"previous_gates_unreadable:{previous_error}"
+    elif prior is None:
+        failure_reason = "missing_previous_gate_result"
+    elif prior.get("passed") is not True:
+        failure_reason = "previous_gate_not_passed"
+    else:
+        artifact, artifact_error = load_json_report(ROOT / artifact_path)
+        if artifact_error:
+            failure_reason = f"artifact_unreadable:{artifact_error}"
+        elif artifact.get(ok_field) is not True:
+            failure_reason = f"artifact_{ok_field}_not_true"
+        else:
+            timestamp = parse_report_timestamp(artifact.get(ts_field))
+            if timestamp is None:
+                failure_reason = f"artifact_missing_{ts_field}"
+            else:
+                artifact_timestamp = str(artifact.get(ts_field))
+                age_seconds = (now - timestamp).total_seconds()
+                if age_seconds < 0 or age_seconds > float(max_age_seconds):
+                    failure_reason = (
+                        f"artifact_stale:age_{age_seconds:.0f}s>max_{float(max_age_seconds):.0f}s"
+                    )
+
+    if failure_reason is None:
+        return {
+            "name": name,
+            "command": list(prior.get("command") or []),
+            "passed": True,
+            "returncode": int(prior.get("returncode", 0)),
+            "expected_returncodes": list(prior.get("expected_returncodes") or [0]),
+            "elapsed_seconds": 0.0,
+            "stdout_tail": f"reused_from:{artifact_timestamp}",
+            "stderr_tail": "",
+            "reused": True,
+            "reused_from": artifact_timestamp,
+        }
+    return {
+        "name": name,
+        "command": [],
+        "passed": False,
+        "returncode": -1,
+        "expected_returncodes": [0],
+        "elapsed_seconds": 0.0,
+        "stdout_tail": "",
+        "stderr_tail": f"reuse_rejected:{failure_reason}",
+        "reused": True,
+        "reused_from": None,
+    }
+
+
+def reused_smoke_results(
+    previous_gates_path: Path,
+    max_age_seconds: float,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Payload-ready gate entries for the two smokes, reused from a prior run.
+
+    A smoke result is reused only when the previous battery recorded it as
+    passed AND its artifact still exists, reports passed, and its started_at
+    is within max_age_seconds. Anything else injects a FAILED entry — a reuse
+    run can never look greener than its inputs.
+    """
+    now = now or datetime.now(timezone.utc)
+    previous_gates, previous_error = _previous_gate_entries(previous_gates_path)
+    return [
+        _reused_gate_entry(
+            name,
+            previous_gates.get(name),
+            previous_error,
+            artifact_rel,
+            ok_field="passed",
+            ts_field="started_at",
+            max_age_seconds=max_age_seconds,
+            now=now,
+        )
+        for name, artifact_rel in SMOKE_GATE_ARTIFACTS.items()
+    ]
+
+
+def reused_quality_result(
+    previous_gates_path: Path,
+    max_age_seconds: float,
+    now: datetime | None = None,
+) -> dict:
+    """Reused dry_run_quality_report entry for legacy smoke artifacts.
+
+    Used only when the enabled-smoke gate report carries no audit_log_archive
+    (pre-archive artifacts): the live audit log can no longer reproduce the
+    smoke window, so the previous battery's quality verdict is reused,
+    validated against docs/dry_run_quality_report.json (ok + generated_at).
+    """
+    now = now or datetime.now(timezone.utc)
+    previous_gates, previous_error = _previous_gate_entries(previous_gates_path)
+    return _reused_gate_entry(
+        "dry_run_quality_report",
+        previous_gates.get("dry_run_quality_report"),
+        previous_error,
+        QUALITY_REPORT_ARTIFACT,
+        ok_field="ok",
+        ts_field="generated_at",
+        max_age_seconds=max_age_seconds,
+        now=now,
+    )
+
+
+def production_restore_commands() -> list[list[str]]:
+    """The exact documented manual recovery for the post-battery stopped stack."""
+    return [
+        ["docker", "rm", "-f", PRODUCTION_FREQTRADE_CONTAINER],
+        ["docker", "compose", "up", "-d", PRODUCTION_FREQTRADE_SERVICE, COLLECTOR_SERVICE],
+    ]
+
+
+def restore_production_container() -> dict:
+    outcomes: list[dict] = []
+    for command in production_restore_commands():
+        try:
+            proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+            outcomes.append({"command": command, "returncode": proc.returncode, "stderr_tail": tail(proc.stderr, 500)})
+        except Exception as exc:  # docker missing etc. — never crash the battery
+            outcomes.append({"command": command, "returncode": -1, "stderr_tail": str(exc)})
+    ok = bool(outcomes) and outcomes[-1]["returncode"] == 0
+    return {"attempted": True, "ok": ok, "commands": outcomes}
+
+
 def plan_status_audit_command(gates_path: Path, output_path: Path) -> list[str]:
     return [
         sys.executable,
@@ -919,10 +1025,16 @@ def render_markdown(payload: dict) -> str:
     lines.append(f"Automated gates: {automated_status}")
     lines.append(f"Deployment ready: {deployment_status}")
     lines.append(f"Manual gates remaining: {payload.get('manual_gates_remaining', len(payload.get('manual_gates', [])))}")
+    if payload.get("smoke_artifacts_reused"):
+        lines.append("Smoke artifacts: REUSED from previous battery (freshness-validated)")
+    restore = payload.get("production_restore") or {}
+    if restore.get("attempted"):
+        lines.append(f"Production restore: {'OK' if restore.get('ok') else 'FAILED (restart MM_ADV manually)'}")
     lines.append("")
     for result in payload["local_gates"]:
         status = "PASS" if result["passed"] else "FAIL"
-        lines.append(f"- {status} `{result['name']}` ({result['elapsed_seconds']}s)")
+        reused_marker = " (reused)" if result.get("reused") else ""
+        lines.append(f"- {status} `{result['name']}` ({result['elapsed_seconds']}s){reused_marker}")
         if not result["passed"]:
             lines.append(f"  - returncode: `{result['returncode']}`")
             if result["stderr_tail"]:
@@ -968,6 +1080,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-output", type=Path, default=None, help="Optional path for full JSON results.")
     parser.add_argument("--markdown-output", type=Path, default=None, help="Optional path for markdown summary.")
     parser.add_argument("--include-runtime", action="store_true", help="Also run non-trading Docker/Freqtrade load gates.")
+    parser.add_argument(
+        "--reuse-smoke-artifacts",
+        action="store_true",
+        help=(
+            "With --include-runtime: skip re-running the two long dry-run smokes and reuse the "
+            "previous battery's results, validated against the smoke artifacts' freshness. "
+            "Everything cheap (pytest, probes, evaluators, replays) still runs live."
+        ),
+    )
+    parser.add_argument(
+        "--previous-gates",
+        type=Path,
+        default=DEFAULT_PREVIOUS_GATES,
+        help="Previous battery JSON to reuse smoke results from (default docs/last_safety_gates.json).",
+    )
+    parser.add_argument(
+        "--max-smoke-artifact-age-seconds",
+        type=float,
+        default=DEFAULT_MAX_SMOKE_ARTIFACT_AGE_SECONDS,
+        help="Maximum age of the reused smoke artifacts' started_at (default 21600 = 6h).",
+    )
+    parser.add_argument(
+        "--no-restore-production",
+        action="store_true",
+        help="Skip restarting the production freqtrade container after the runtime smokes.",
+    )
     parser.add_argument(
         "--audit-log-input",
         type=Path,
@@ -1136,10 +1274,30 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.reuse_smoke_artifacts and not args.include_runtime:
+        print("--reuse-smoke-artifacts requires --include-runtime", file=sys.stderr)
+        return 2
+    # In reuse mode the quality evaluator needs a stable input: the audit-event
+    # slice archived by the enabled smoke. Legacy gate artifacts without an
+    # archive fall back to reusing the previous quality verdict (fail-closed).
+    reuse_quality_report = False
+    quality_audit_log_input: Path | None = None
+    if args.reuse_smoke_artifacts:
+        enabled_gate_report, _enabled_error = load_json_report(
+            ROOT / SMOKE_GATE_ARTIFACTS["dry_run_enabled_smoke"]
+        )
+        archive_raw = (enabled_gate_report or {}).get("audit_log_archive")
+        if archive_raw and Path(str(archive_raw)).exists():
+            quality_audit_log_input = Path(str(archive_raw))
+        else:
+            reuse_quality_report = True
     results = [
         run_command(name, command, expected_returncodes)
         for name, command, expected_returncodes in local_gates(
             include_runtime=args.include_runtime,
+            reuse_smoke_artifacts=args.reuse_smoke_artifacts,
+            reuse_quality_report=reuse_quality_report,
+            quality_audit_log_input=quality_audit_log_input,
             audit_log_input=args.audit_log_input,
             manual_monitoring_ack=args.manual_monitoring_ack,
             post_only_crossing_result=args.post_only_crossing_result,
@@ -1166,14 +1324,31 @@ def main() -> int:
             enabled_dry_run_min_final_total_pnl_usdc=float(args.enabled_dry_run_min_final_total_pnl_usdc),
         )
     ]
+    reused_entries: list[dict] = []
+    if args.reuse_smoke_artifacts:
+        reused_entries = reused_smoke_results(
+            args.previous_gates,
+            float(args.max_smoke_artifact_age_seconds),
+        )
+        if reuse_quality_report:
+            reused_entries.append(
+                reused_quality_result(
+                    args.previous_gates,
+                    float(args.max_smoke_artifact_age_seconds),
+                )
+            )
     manual_gate_list = manual_gates(
         include_runtime=args.include_runtime,
         max_report_age_seconds=float(args.max_evidence_age_seconds),
     )
     deployment_blockers = [str(gate["name"]) for gate in manual_gate_list if gate.get("passed") is not True]
-    all_local_passed = all(result.passed for result in results)
+    all_local_passed = all(result.passed for result in results) and all(
+        entry.get("passed") is True for entry in reused_entries
+    )
     payload = {
-        "local_gates": [asdict(result) for result in results],
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "local_gates": [asdict(result) for result in results] + reused_entries,
+        "smoke_artifacts_reused": bool(args.reuse_smoke_artifacts),
         "manual_gates": manual_gate_list,
         "manual_gates_remaining": len(deployment_blockers),
         "all_local_passed": all_local_passed,
@@ -1232,6 +1407,18 @@ def main() -> int:
         payload["post_run_audits"] = [asdict(audit_result)]
         payload["all_automated_passed"] = bool(payload["all_local_passed"] and audit_result.passed)
         payload["deployment_ready"] = bool(payload["all_automated_passed"] and not deployment_blockers)
+
+    # The disabled smoke replaces the production freqtrade container; bring it
+    # back so quoting does not stay silently halted after a runtime battery.
+    payload["production_restore"] = {"attempted": False}
+    if args.include_runtime and not args.reuse_smoke_artifacts and not args.no_restore_production:
+        payload["production_restore"] = restore_production_container()
+        if not payload["production_restore"].get("ok"):
+            print(
+                "WARNING: failed to restore the production freqtrade container; "
+                "run 'docker rm -f MM_ADV' then 'docker compose up -d freqtrade' manually.",
+                file=sys.stderr,
+            )
 
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)

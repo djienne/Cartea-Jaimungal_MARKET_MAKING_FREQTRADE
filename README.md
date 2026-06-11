@@ -250,6 +250,21 @@ python scripts/get_epsilon.py --crypto ETH
 python scripts/compute_spreads.py --crypto ETH --spread-multiplier 3.0
 ```
 
+### Safety gates
+
+```bash
+# fast profile (~2.5 min): static gates + full pytest + evidence evaluators
+python scripts/run_safety_gates.py --markdown-output docs/LAST_SAFETY_GATES.md
+
+# full battery (~17 min): adds docker probes + both dry-run smokes; restores MM_ADV afterwards
+python scripts/run_safety_gates.py --include-runtime --json-output docs/last_safety_gates.json --markdown-output docs/LAST_SAFETY_GATES.md
+
+# rerun: everything cheap re-runs live, smoke results reused from the last battery (<=6h old), ~4 min
+python scripts/run_safety_gates.py --include-runtime --reuse-smoke-artifacts --json-output docs/last_safety_gates.json --markdown-output docs/LAST_SAFETY_GATES.md
+```
+
+See `docs/DEPLOYMENT_GATES.md` for the full gate list, battery profiles, and promotion requirements.
+
 ## Key Components
 
 ### Market_Making.py
