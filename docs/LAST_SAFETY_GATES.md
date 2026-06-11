@@ -1,38 +1,39 @@
 # Safety Gate Results
 
-Automated gates: PASS
+Automated gates: FAIL
 Deployment ready: NO
 Manual gates remaining: 4
 
-- PASS `compileall` (0.165s)
-- PASS `pytest_core` (31.198s)
-- PASS `config_safety_report` (0.064s)
-- PASS `strategy_safety_report` (0.093s)
-- PASS `compute_spreads_boundary_smoke` (1.334s)
-- PASS `replay_smoke` (1.83s)
-- PASS `post_only_probe_plan` (0.084s)
-- PASS `post_only_evidence_report` (0.07s)
-- PASS `direct_alo_adapter_plan` (0.098s)
-- PASS `direct_alo_probe_preparation_plan` (0.086s)
-- PASS `direct_risk_flatten_plan` (0.093s)
-- PASS `hyperliquid_fee_capture_plan` (0.075s)
-- PASS `docker_compose_config` (0.128s)
-- PASS `freqtrade_runtime_load` (6.93s)
-- PASS `freqtrade_callback_surface` (8.035s)
-- PASS `freqtrade_tif_runtime` (20.947s)
-- PASS `dry_run_disabled_smoke` (224.367s)
-- PASS `dry_run_enabled_smoke` (673.143s)
-- PASS `dry_run_quality_report` (0.106s)
-- PASS `replay_log_calibration_artifact` (0.9s)
-- PASS `fee_evidence_report` (0.109s)
-- PASS `hl_data_validation_report` (0.998s)
-- PASS `replay_latest_data_smoke` (2.293s)
-- PASS `replay_acceptance_report_artifact` (10.505s)
-- PASS `live_canary_evidence_report` (0.14s)
-- PASS `promotion_evidence_manifest` (0.111s)
+- PASS `compileall` (0.12s)
+- PASS `pytest_core` (60.625s)
+- PASS `config_safety_report` (0.095s)
+- PASS `strategy_safety_report` (0.154s)
+- PASS `compute_spreads_boundary_smoke` (2.242s)
+- PASS `replay_smoke` (2.186s)
+- PASS `post_only_probe_plan` (0.085s)
+- PASS `post_only_evidence_report` (0.074s)
+- PASS `direct_alo_adapter_plan` (0.118s)
+- PASS `direct_alo_probe_preparation_plan` (0.122s)
+- PASS `direct_risk_flatten_plan` (0.122s)
+- PASS `hyperliquid_fee_capture_plan` (0.109s)
+- PASS `docker_compose_config` (0.186s)
+- PASS `freqtrade_runtime_load` (8.8s)
+- PASS `freqtrade_callback_surface` (8.737s)
+- PASS `freqtrade_tif_runtime` (26.251s)
+- PASS `dry_run_disabled_smoke` (224.634s)
+- PASS `dry_run_enabled_smoke` (673.471s)
+- PASS `dry_run_quality_report` (0.108s)
+- PASS `replay_log_calibration_artifact` (0.895s)
+- PASS `fee_evidence_report` (0.084s)
+- PASS `hl_data_validation_report` (0.975s)
+- PASS `replay_latest_data_smoke` (2.597s)
+- PASS `replay_acceptance_report_artifact` (11.095s)
+- PASS `live_canary_evidence_report` (0.138s)
+- PASS `promotion_evidence_manifest` (0.107s)
 
 Post-run audits:
-- PASS `plan_status_audit` (0.073s)
+- FAIL `plan_status_audit` (0.1s)
+  - returncode: `1`
 
 Manual/external gate evidence:
 - WAIT `hyperliquid_post_only_mapping`: Requires testnet/tiny integration evidence that either Freqtrade/CCXT PO maps to Hyperliquid Alo or the direct SDK Alo fallback submits native post-only orders safely.

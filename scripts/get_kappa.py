@@ -1,24 +1,57 @@
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
+#!/usr/bin/env python3
+"""Joint kappa/lambda estimation from Hyperliquid market data (schema v3).
+
+Methodology:
+- Trade prints are aggregated into market orders (same side + same exchange
+  timestamp); one MO sweeping several levels is ONE arrival whose depth is its
+  deepest print.
+- Depths are measured from the prevailing MID (last BBO update strictly before
+  the MO, exchange-timestamp aligned) — the same coordinate the strategy
+  quotes in. Negative depths (stale-feed noise) are truncated to 0, not
+  dropped.
+- kappa± comes from a weighted log-linear fit of the empirical survival
+  function P(depth >= delta): a resting order at depth delta fills when an MO
+  walks at least that deep, so the model fill intensity is
+  lambda(delta) = lambda± * exp(-kappa± * delta).
+- lambda± is the raw per-side MO arrival rate (count / covered window
+  seconds). The old binned-density regression intercept equals
+  lambda*kappa*binwidth (bin-width dependent) and is kept only as the
+  lambda0_intercept_± diagnostic.
+- Primary kappa±/lambda± values are EMA-smoothed across estimator cycles
+  (time-aware, tau via --ema-tau / PARAM_EMA_TAU_SECONDS, default 300 s);
+  unsmoothed values are stored in the *_raw keys.
+- Realized mid variance sigma2_per_sec (USDC^2/s) is published for the
+  strategy's volatility-aware inventory penalty.
+"""
+
 import argparse
 import os
-import json
-from scipy.optimize import curve_fit
-from scipy.stats import linregress
 import warnings
+from datetime import datetime, timezone
 
+import numpy as np
+
+from estimator_common import (
+    MIN_KAPPA_FIT_POINTS,
+    MIN_KAPPA_R2,
+    aggregate_market_orders,
+    attach_pre_mid,
+    fit_kappa_survival,
+    load_market_window,
+    mo_depths,
+    realized_sigma2_per_sec,
+    resolve_ema_tau,
+    ema_update,
+)
 from param_utils import (
     PARAM_SCHEMA_VERSION,
     atomic_write_json,
     finite_or_none,
     load_json_object,
-    timestamp_to_iso,
     utc_now_iso,
 )
 
-# Verbosity control: 0=minimal, 1=verbose (previous default)
+# Verbosity control: 0=minimal, 1=verbose
 VERBOSITY = 0
 
 def _set_verbosity(v: int):
@@ -31,104 +64,13 @@ def _set_verbosity(v: int):
 def vprint(*args, level: int = 1, **kwargs):
     if VERBOSITY >= level:
         print(*args, **kwargs)
+
 warnings.filterwarnings('ignore')
 
 def log_section(title: str) -> None:
     print("\n" + "=" * 60)
     print(title)
     print("=" * 60)
-
-def load_market_data(crypto='BTC', time_range_minutes=60):
-    """Load market data for specified cryptocurrency and time range from Parquet files."""
-    
-    vprint(f"Loading market data for {crypto} (last {time_range_minutes} minutes)...")
-    
-    # Define paths relative to this script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_dir = os.path.join(script_dir, 'HL_data')
-    
-    orderbook_dir = os.path.join(base_dir, crypto, 'orderbooks')
-    trades_dir = os.path.join(base_dir, crypto, 'trades')
-    
-    if not os.path.exists(orderbook_dir):
-        raise FileNotFoundError(f"Orderbook directory not found: {orderbook_dir}")
-    if not os.path.exists(trades_dir):
-        raise FileNotFoundError(f"Trades directory not found: {trades_dir}")
-    
-    # Helper to load all parquet files in a directory
-    def load_parquet_dir(directory):
-        files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.parquet')]
-        if not files:
-            return pd.DataFrame()
-        dfs = [pd.read_parquet(f) for f in files]
-        return pd.concat(dfs, ignore_index=True)
-
-    # Load data
-    vprint("Loading orderbook data...")
-    df_orderbook = load_parquet_dir(orderbook_dir)
-    if df_orderbook.empty:
-        raise ValueError(f"No orderbook data found in {orderbook_dir}")
-    # Parquet saves timestamps as float seconds (from data collector), convert to datetime
-    df_orderbook['timestamp'] = pd.to_datetime(df_orderbook['timestamp'], unit='s')
-    
-    vprint("Loading trade data...")
-    df_trades_raw = load_parquet_dir(trades_dir)
-    if df_trades_raw.empty:
-         # It's possible to have no trades but valid orderbook data, return empty trades df
-         vprint("Warning: No trade data found.")
-         df_trades_raw = pd.DataFrame(columns=['timestamp', 'side', 'size', 'price'])
-    else:
-        df_trades_raw['timestamp'] = pd.to_datetime(df_trades_raw['timestamp'], unit='s')
-    
-    # Find overlapping time window
-    most_recent_quotes = df_orderbook['timestamp'].max()
-    if not df_trades_raw.empty:
-        most_recent_trades = df_trades_raw['timestamp'].max()
-        most_recent = min(most_recent_quotes, most_recent_trades)
-    else:
-        most_recent = most_recent_quotes
-
-    time_window_start = most_recent - timedelta(minutes=time_range_minutes)
-    
-    vprint(f"Most recent data: {most_recent}")
-    vprint(f"Time window: {time_window_start} to {most_recent}")
-    
-    # Filter to time range
-    df_orderbook = df_orderbook[
-        (df_orderbook['timestamp'] >= time_window_start) & 
-        (df_orderbook['timestamp'] <= most_recent)
-    ].sort_values('timestamp').reset_index(drop=True)
-    
-    if not df_trades_raw.empty:
-        df_trades_raw = df_trades_raw[
-            (df_trades_raw['timestamp'] >= time_window_start) & 
-            (df_trades_raw['timestamp'] <= most_recent)
-        ].sort_values('timestamp').reset_index(drop=True)
-    
-    # Process trades
-    if not df_trades_raw.empty:
-        df_trades = df_trades_raw[['timestamp', 'side', 'size', 'price']].copy()
-    else:
-        df_trades = df_trades_raw # Empty DataFrame
-    
-    # Final overlap filtering if we have both
-    if not df_trades.empty:
-        start_time = max(df_orderbook['timestamp'].min(), df_trades['timestamp'].min())
-        end_time = min(df_orderbook['timestamp'].max(), df_trades['timestamp'].max())
-        
-        df_quotes = df_orderbook[
-            (df_orderbook['timestamp'] >= start_time) & 
-            (df_orderbook['timestamp'] <= end_time)
-        ].reset_index(drop=True)
-        
-        df_trades = df_trades[
-            (df_trades['timestamp'] >= start_time) & 
-            (df_trades['timestamp'] <= end_time)
-        ].reset_index(drop=True)
-    else:
-         df_quotes = df_orderbook
-
-    return df_quotes, df_trades
 
 
 def list_available_cryptos(data_dir: str = None):
@@ -140,363 +82,40 @@ def list_available_cryptos(data_dir: str = None):
     if not os.path.isdir(data_dir):
         return []
     try:
-        # Check subdirectories in HL_data
         candidates = [d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))]
-        # Filter for those having 'orderbooks' and 'trades' subdirs
         valid = []
         for sym in candidates:
-            if os.path.exists(os.path.join(data_dir, sym, 'orderbooks')) and \
-               os.path.exists(os.path.join(data_dir, sym, 'trades')):
+            has_mid = os.path.exists(os.path.join(data_dir, sym, 'prices')) or \
+                os.path.exists(os.path.join(data_dir, sym, 'orderbooks'))
+            if has_mid and os.path.exists(os.path.join(data_dir, sym, 'trades')):
                 valid.append(sym)
         return sorted(valid)
     except Exception:
         return []
 
-def calculate_trade_execution_rates(df_quotes, df_trades, lookback_ms=500):
-    """
-    Calculate actual trade execution rates at different depth levels.
-    
-    This improved method:
-    1. For each trade, finds the orderbook state just before
-    2. Calculates the depth at which the trade occurred
-    3. Bins trades by depth and calculates execution rates
-    """
-    
-    vprint("Calculating trade execution rates by depth...")
-    
-    # Sort by timestamp
-    df_quotes = df_quotes.sort_values('timestamp').reset_index(drop=True)
-    df_trades = df_trades.sort_values('timestamp').reset_index(drop=True)
-    
-    # Store trade depths
-    buy_depths = []   # When market order hits ask (positive depth from best ask)
-    sell_depths = []  # When market order hits bid (positive depth from best bid)
-    
-    trades_analyzed = 0
-    trades_skipped = 0
-    
-    for idx, trade in df_trades.iterrows():
-        trade_time = trade['timestamp']
-        
-        # Find orderbook state just before this trade
-        pre_trade_quotes = df_quotes[df_quotes['timestamp'] <= trade_time - pd.Timedelta(milliseconds=lookback_ms)]
-        
-        if len(pre_trade_quotes) == 0:
-            trades_skipped += 1
-            continue
-            
-        # Get the most recent quote before trade
-        recent_quote = pre_trade_quotes.iloc[-1]
-        
-        if trade['side'] == 'buy':
-            # Buy order hits ask side
-            best_ask = recent_quote['ask_price_0']
-            if pd.notna(best_ask) and trade['price'] >= best_ask:
-                depth = trade['price'] - best_ask
-                buy_depths.append(depth)
-                trades_analyzed += 1
-        else:
-            # Sell order hits bid side  
-            best_bid = recent_quote['bid_price_0']
-            if pd.notna(best_bid) and trade['price'] <= best_bid:
-                depth = best_bid - trade['price']
-                sell_depths.append(depth)
-                trades_analyzed += 1
-    
-    vprint(f"Analyzed {trades_analyzed} trades, skipped {trades_skipped}")
-    
-    return np.array(buy_depths), np.array(sell_depths)
-
-def bin_and_calculate_intensity(depths, n_bins=15, total_time_minutes=30):
-    """
-    Bin depths and calculate trade intensity (trades per second) for each bin.
-    """
-    
-    if len(depths) == 0:
-        return np.array([]), np.array([]), np.array([])
-    
-    # Remove outliers (beyond 99th percentile)
-    depth_99 = np.percentile(depths, 99)
-    depths_clean = depths[depths <= depth_99]
-    
-    if len(depths_clean) < 10:  # Need minimum data
-        return np.array([]), np.array([]), np.array([])
-    
-    # Create bins
-    max_depth = np.max(depths_clean) 
-    bins = np.linspace(0, max_depth, n_bins + 1)
-    bin_centers = (bins[:-1] + bins[1:]) / 2
-    
-    # Count trades in each bin
-    trade_counts, _ = np.histogram(depths_clean, bins=bins)
-    
-    # Calculate intensity (trades per second)
-    duration_seconds = total_time_minutes * 60.0
-    intensities = trade_counts / duration_seconds
-    
-    return bin_centers, intensities, trade_counts
-
-def fit_lambda_kappa(depths, counts, duration_seconds):
-    """
-    Fit lambda0 and kappa from binned counts using weighted log-linear regression
-    for lambda(delta) = lambda0 * exp(-kappa * delta). Approximates Poisson MLE.
-    """
-    mask = (counts > 0) & np.isfinite(depths)
-    if np.sum(mask) < 3:
-        return {
-            'lambda_0': np.nan,
-            'kappa': np.nan,
-            'r_squared': np.nan,
-            'n_points': 0
-        }
-    
-    delta = depths[mask]
-    counts_sel = counts[mask].astype(float)
-    intensity = counts_sel / duration_seconds
-    
-    if np.any(intensity <= 0):
-        return {
-            'lambda_0': np.nan,
-            'kappa': np.nan,
-            'r_squared': np.nan,
-            'n_points': 0
-        }
-    
-    # Weighted least squares on log intensity
-    y = np.log(intensity)
-    X = np.column_stack((np.ones_like(delta), -delta))
-    w = np.sqrt(counts_sel)
-    Xt = X * w[:, None]
-    yt = y * w
-    try:
-        coef, _, _, _ = np.linalg.lstsq(Xt, yt, rcond=None)
-        intercept, slope_neg_delta = coef
-    except Exception:
-        return {
-            'lambda_0': np.nan,
-            'kappa': np.nan,
-            'r_squared': np.nan,
-            'n_points': 0
-        }
-    
-    lambda_0 = np.exp(intercept)
-    kappa = max(slope_neg_delta, 0.0)
-    
-    # R^2 on weighted log space
-    y_pred = intercept + slope_neg_delta * (-delta)
-    ss_res = np.sum(w * w * (y - y_pred) ** 2)
-    ss_tot = np.sum(w * w * (y - np.average(y, weights=w*w)) ** 2)
-    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
-    
-    return {
-        'lambda_0': lambda_0,
-        'kappa': kappa,
-        'r_squared': r_squared,
-        'n_points': len(delta)
-    }
-
-def estimate_kappa_linear_method(depths, intensities):
-    """
-    Estimate kappa using linear regression on log(intensity) vs depth.
-    
-    From lambda(delta) = lambda0 * exp(-kappa * delta), taking log:
-    log(lambda(delta)) = log(lambda0) - kappa * delta
-    
-    So slope of log(intensity) vs depth gives -kappa.
-    """
-    
-    # Filter valid data points
-    valid_mask = (intensities > 0) & np.isfinite(intensities) & np.isfinite(depths)
-    
-    if np.sum(valid_mask) < 3:
-        return {
-            'kappa': np.nan,
-            'lambda_0': np.nan,
-            'r_squared': np.nan,
-            'p_value': np.nan,
-            'n_points': 0
-        }
-    
-    valid_depths = depths[valid_mask]
-    valid_intensities = intensities[valid_mask]
-    
-    # Linear regression on log scale
-    log_intensities = np.log(valid_intensities)
-    
-    slope, intercept, r_value, p_value, std_err = linregress(valid_depths, log_intensities)
-    
-    # Extract parameters
-    kappa_estimate = -slope  # Since slope = -kappa
-    lambda_0_estimate = np.exp(intercept)
-    r_squared = r_value ** 2
-    
-    return {
-        'kappa': max(kappa_estimate, 0),  # Ensure positive
-        'lambda_0': lambda_0_estimate,
-        'r_squared': r_squared,
-        'p_value': p_value,
-        'std_error': std_err,
-        'n_points': len(valid_depths)
-    }
-
-def estimate_kappa_nonlinear_method(depths, intensities):
-    """
-    Estimate kappa using nonlinear curve fitting.
-    """
-    
-    def exponential_decay(delta, lambda_0, kappa):
-        return lambda_0 * np.exp(-kappa * delta)
-    
-    # Filter valid data
-    valid_mask = (intensities > 0) & np.isfinite(intensities) & np.isfinite(depths)
-    
-    if np.sum(valid_mask) < 4:
-        return {
-            'kappa': np.nan,
-            'lambda_0': np.nan, 
-            'r_squared': np.nan,
-            'n_points': 0
-        }
-    
-    valid_depths = depths[valid_mask]
-    valid_intensities = intensities[valid_mask]
-    
-    try:
-        # Initial guess
-        p0 = [np.max(valid_intensities), 50]
-        
-        # Fit curve
-        popt, pcov = curve_fit(
-            exponential_decay, 
-            valid_depths, 
-            valid_intensities,
-            p0=p0,
-            bounds=([0, 1], [np.inf, 500]),
-            maxfev=3000
-        )
-        
-        lambda_0_est, kappa_est = popt
-        
-        # Calculate R-squared
-        y_pred = exponential_decay(valid_depths, *popt)
-        ss_res = np.sum((valid_intensities - y_pred) ** 2)
-        ss_tot = np.sum((valid_intensities - np.mean(valid_intensities)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot)
-        
-        return {
-            'kappa': kappa_est,
-            'lambda_0': lambda_0_est,
-            'r_squared': r_squared,
-            'std_error': np.sqrt(np.diag(pcov))[1] if len(pcov) > 1 else np.nan,
-            'n_points': len(valid_depths)
-        }
-        
-    except:
-        return {
-            'kappa': np.nan,
-            'lambda_0': np.nan,
-            'r_squared': np.nan,
-            'std_error': np.nan,
-            'n_points': 0
-        }
-
-def plot_kappa_analysis_improved(buy_depths, buy_intensities, sell_depths, sell_intensities, 
-                                buy_estimates_linear, buy_estimates_nonlinear,
-                                sell_estimates_linear, sell_estimates_nonlinear,
-                                crypto, time_minutes):
-    """Create improved diagnostic plots"""
-    
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
-    
-    # Add main title with crypto and time window info
-    fig.suptitle(f'Kappa Estimation Analysis - {crypto} (Last {time_minutes} minutes)', 
-                 fontsize=16, fontweight='bold', y=0.95)
-    
-    # Plot 1: Buy side linear scale
-    ax1.scatter(buy_depths, buy_intensities, alpha=0.7, color='blue', s=50, label='Observed')
-    
-    if not np.isnan(buy_estimates_linear['kappa']):
-        x_fit = np.linspace(0, np.max(buy_depths), 100)
-        y_fit_linear = buy_estimates_linear['lambda_0'] * np.exp(-buy_estimates_linear['kappa'] * x_fit)
-        ax1.plot(x_fit, y_fit_linear, 'r--', linewidth=2, 
-                label=f'Linear fit: k={buy_estimates_linear["kappa"]:.1f} (R^2={buy_estimates_linear["r_squared"]:.3f})')
-    
-    if not np.isnan(buy_estimates_nonlinear['kappa']):
-        x_fit = np.linspace(0, np.max(buy_depths), 100)
-        y_fit_nonlinear = buy_estimates_nonlinear['lambda_0'] * np.exp(-buy_estimates_nonlinear['kappa'] * x_fit)
-        ax1.plot(x_fit, y_fit_nonlinear, 'g:', linewidth=2,
-                label=f'Nonlinear fit: k={buy_estimates_nonlinear["kappa"]:.1f} (R^2={buy_estimates_nonlinear["r_squared"]:.3f})')
-    
-    ax1.set_xlabel('Buy Depth (price units)')
-    ax1.set_ylabel('Trade Intensity (trades/sec)')
-    ax1.set_title('Buy Side - Linear Scale')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    
-    # Plot 2: Buy side log scale
-    ax2.scatter(buy_depths, buy_intensities, alpha=0.7, color='blue', s=50)
-    
-    if not np.isnan(buy_estimates_linear['kappa']):
-        x_fit = np.linspace(0.01, np.max(buy_depths), 100)
-        y_fit = buy_estimates_linear['lambda_0'] * np.exp(-buy_estimates_linear['kappa'] * x_fit)
-        ax2.plot(x_fit, y_fit, 'r--', linewidth=2, label=f'k={buy_estimates_linear["kappa"]:.1f}')
-    
-    ax2.set_xlabel('Buy Depth (price units)')
-    ax2.set_ylabel('Trade Intensity (trades/sec)')
-    ax2.set_title('Buy Side - Log Scale')
-    ax2.set_yscale('log')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    # Plot 3: Sell side linear scale
-    ax3.scatter(sell_depths, sell_intensities, alpha=0.7, color='red', s=50, label='Observed')
-    
-    if not np.isnan(sell_estimates_linear['kappa']):
-        x_fit = np.linspace(0, np.max(sell_depths), 100)
-        y_fit_linear = sell_estimates_linear['lambda_0'] * np.exp(-sell_estimates_linear['kappa'] * x_fit)
-        ax3.plot(x_fit, y_fit_linear, 'b--', linewidth=2,
-                label=f'Linear fit: k={sell_estimates_linear["kappa"]:.1f} (R^2={sell_estimates_linear["r_squared"]:.3f})')
-    
-    if not np.isnan(sell_estimates_nonlinear['kappa']):
-        x_fit = np.linspace(0, np.max(sell_depths), 100)
-        y_fit_nonlinear = sell_estimates_nonlinear['lambda_0'] * np.exp(-sell_estimates_nonlinear['kappa'] * x_fit)
-        ax3.plot(x_fit, y_fit_nonlinear, 'g:', linewidth=2,
-                label=f'Nonlinear fit: k={sell_estimates_nonlinear["kappa"]:.1f} (R^2={sell_estimates_nonlinear["r_squared"]:.3f})')
-    
-    ax3.set_xlabel('Sell Depth (price units)')
-    ax3.set_ylabel('Trade Intensity (trades/sec)')
-    ax3.set_title('Sell Side - Linear Scale')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
-    
-    # Plot 4: Sell side log scale
-    ax4.scatter(sell_depths, sell_intensities, alpha=0.7, color='red', s=50)
-    
-    if not np.isnan(sell_estimates_linear['kappa']):
-        x_fit = np.linspace(0.01, np.max(sell_depths), 100)
-        y_fit = sell_estimates_linear['lambda_0'] * np.exp(-sell_estimates_linear['kappa'] * x_fit)
-        ax4.plot(x_fit, y_fit, 'b--', linewidth=2, label=f'k={sell_estimates_linear["kappa"]:.1f}')
-    
-    ax4.set_xlabel('Sell Depth (price units)')
-    ax4.set_ylabel('Trade Intensity (trades/sec)')
-    ax4.set_title('Sell Side - Log Scale')
-    ax4.set_yscale('log')
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.90)  # Adjust top margin for suptitle
-    plt.show()
 
 def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus,
                               crypto: str, kappa_file: str = "kappa.json", lambda_file: str = "lambda.json",
-                              metadata: dict | None = None):
-    """Persist kappa and base lambda0 estimates (per second) to JSON files."""
+                              metadata: dict | None = None, raw_values: dict | None = None):
+    """Persist kappa and per-side MO arrival rates (per second) to JSON files.
+
+    Primary keys hold the EMA-smoothed values; *_raw keys hold this window's
+    unsmoothed estimates (defaulting to the primaries when not supplied so
+    every v3 snapshot carries the full key set).
+    """
     metadata = dict(metadata or {})
     status = str(metadata.pop("status", "ok"))
     metadata.setdefault("generated_at", utc_now_iso())
+    raw = dict(raw_values or {})
     kappa_data = load_json_object(kappa_file)
     lambda_data = load_json_object(lambda_file)
+
+    raw_block = {
+        "kappa+_raw": finite_or_none(raw.get("kappa+_raw", kappa_plus)),
+        "kappa-_raw": finite_or_none(raw.get("kappa-_raw", kappa_minus)),
+        "lambda+_raw": finite_or_none(raw.get("lambda+_raw", lambda_plus)),
+        "lambda-_raw": finite_or_none(raw.get("lambda-_raw", lambda_minus)),
+    }
 
     kappa_data[crypto] = {
         "schema_version": PARAM_SCHEMA_VERSION,
@@ -505,7 +124,8 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
         "kappa-": finite_or_none(kappa_minus),
         "lambda+": finite_or_none(lambda_plus),
         "lambda-": finite_or_none(lambda_minus),
-        "lambda_source": "lambda0_fit",
+        **raw_block,
+        "lambda_source": "mo_survival_fit",
         "unit": {
             "kappa": "1/USDC",
             "lambda": "events_per_second",
@@ -517,7 +137,9 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
         "status": status,
         "lambda+": finite_or_none(lambda_plus),
         "lambda-": finite_or_none(lambda_minus),
-        "lambda_source": "lambda0_fit",
+        "lambda+_raw": raw_block["lambda+_raw"],
+        "lambda-_raw": raw_block["lambda-_raw"],
+        "lambda_source": "mo_survival_fit",
         "unit": "events_per_second",
         **metadata,
     }
@@ -526,118 +148,176 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
     atomic_write_json(lambda_file, lambda_data)
 
     print(f"[save] kappa -> {kappa_file}")
-    print(f"[save] lambda0 -> {lambda_file}")
+    print(f"[save] lambda (MO arrival rate) -> {lambda_file}")
 
 
-def run_kappa_for_crypto(crypto: str, minutes: int = 30, bins: int = 20, do_plot: bool = False):
-    """Run the full kappa estimation flow for a single crypto symbol."""
+def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None = None,
+                         kappa_file: str = "kappa.json", lambda_file: str = "lambda.json",
+                         data_dir=None):
+    """Run the full kappa/lambda estimation flow for a single crypto symbol."""
     log_section(f"KAPPA/LAMBDA FROM MARKET DATA - {crypto} (last {minutes} min)")
-    # Load market data
     try:
-        df_quotes, df_trades = load_market_data(crypto, minutes)
-    except FileNotFoundError as e:
+        window = load_market_window(crypto, minutes, data_dir=data_dir)
+    except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}")
         return
 
-    vprint(f"Loaded {len(df_quotes):,} quote records")
-    vprint(f"Loaded {len(df_trades):,} trade records")
-    total_time_minutes = minutes
+    vprint(f"Mid source: {window.mid_source} ({window.ts_source} time)")
+    vprint(f"Loaded {len(window.mids):,} mid updates and {len(window.trades):,} trade prints")
 
-    # Calculate trade execution depths
-    vprint("\n" + "="*60)
-    vprint("ANALYZING TRADE EXECUTION DEPTHS...")
-    vprint("="*60)
+    mos = attach_pre_mid(aggregate_market_orders(window.trades), window.mids)
+    depth_info = mo_depths(mos)
 
-    buy_depths, sell_depths = calculate_trade_execution_rates(df_quotes, df_trades)
+    n_buy_mos = int((mos["side"] == "buy").sum()) if not mos.empty else 0
+    n_sell_mos = int((mos["side"] == "sell").sum()) if not mos.empty else 0
 
-    vprint(f"Found {len(buy_depths)} buy trades and {len(sell_depths)} sell trades with valid depths")
+    buy_fit = fit_kappa_survival(depth_info["buy_depths"])
+    sell_fit = fit_kappa_survival(depth_info["sell_depths"])
 
-    if len(buy_depths) == 0 and len(sell_depths) == 0:
-        print("No valid trades found for depth analysis!")
-        return
+    # Arrival rate over the span both streams actually cover.
+    if window.mids.empty:
+        covered_seconds = 0.0
+    else:
+        data_start_ms = max(window.window_start_ms or 0.0, float(window.mids["ts_ms"].min()))
+        covered_seconds = max(((window.window_end_ms or 0.0) - data_start_ms) / 1000.0, 1e-6)
 
-    # Bin depths and calculate intensities
-    buy_depth_bins, buy_intensities, buy_counts = bin_and_calculate_intensity(buy_depths, bins, total_time_minutes)
-    sell_depth_bins, sell_intensities, sell_counts = bin_and_calculate_intensity(sell_depths, bins, total_time_minutes)
+    lambda_plus_raw = n_buy_mos / covered_seconds if covered_seconds > 0 else float("nan")
+    lambda_minus_raw = n_sell_mos / covered_seconds if covered_seconds > 0 else float("nan")
+    kappa_plus_raw = buy_fit["kappa"]
+    kappa_minus_raw = sell_fit["kappa"]
 
-    duration_seconds = total_time_minutes * 60.0
-
-    buy_est = fit_lambda_kappa(buy_depth_bins, buy_counts, duration_seconds) if len(buy_depth_bins) > 0 else {'lambda_0': np.nan, 'kappa': np.nan, 'r_squared': np.nan, 'n_points': 0}
-    sell_est = fit_lambda_kappa(sell_depth_bins, sell_counts, duration_seconds) if len(sell_depth_bins) > 0 else {'lambda_0': np.nan, 'kappa': np.nan, 'r_squared': np.nan, 'n_points': 0}
+    sigma2 = realized_sigma2_per_sec(window.mids)
 
     log_section(f"KAPPA/LAMBDA ESTIMATES - {crypto}")
-    print(f"Time window: {minutes} minutes ({duration_seconds:.0f} seconds)")
-    if not np.isnan(buy_est['kappa']):
-        print(f"  kappa+ (ask): {buy_est['kappa']:.4f}, lambda+ (delta=0)={buy_est['lambda_0']:.6f} trades/sec, R^2={buy_est['r_squared']:.3f}, n={buy_est['n_points']}")
-    else:
-        print("  kappa+/lambda+ unavailable (insufficient data)")
-    if not np.isnan(sell_est['kappa']):
-        print(f"  kappa- (bid): {sell_est['kappa']:.4f}, lambda- (delta=0)={sell_est['lambda_0']:.6f} trades/sec, R^2={sell_est['r_squared']:.3f}, n={sell_est['n_points']}")
-    else:
-        print("  kappa-/lambda- unavailable (insufficient data)")
+    print(f"Window: {window.window_start_iso()} -> {window.window_end_iso()} (covered {covered_seconds:.0f}s)")
+    for label, fit, lam_raw, n_mos in (
+        ("kappa+ (ask side, buy MOs)", buy_fit, lambda_plus_raw, n_buy_mos),
+        ("kappa- (bid side, sell MOs)", sell_fit, lambda_minus_raw, n_sell_mos),
+    ):
+        if np.isfinite(fit["kappa"]):
+            print(
+                f"  {label}: kappa={fit['kappa']:.4f}, lambda={lam_raw:.4f} MO/sec (n={n_mos}), "
+                f"R^2={fit['r_squared']:.3f}, fit_points={fit['n_points']}, depth_p95={fit['depth_p95']:.4f}"
+            )
+        else:
+            print(f"  {label}: unavailable (insufficient data)")
+    if sigma2 is not None:
+        print(f"  sigma2_per_sec: {sigma2:.6f} USDC^2/s")
+
+    generated_at_dt = datetime.now(timezone.utc)
+    generated_at = generated_at_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
 
     metadata = {
-        "window_start": timestamp_to_iso(df_quotes["timestamp"].min()) if not df_quotes.empty else None,
-        "window_end": timestamp_to_iso(df_quotes["timestamp"].max()) if not df_quotes.empty else None,
-        "generated_at": utc_now_iso(),
-        "n_quotes": int(len(df_quotes)),
-        "n_trades": int(len(df_trades)),
-        "r2_plus": finite_or_none(buy_est.get("r_squared")),
-        "r2_minus": finite_or_none(sell_est.get("r_squared")),
-        "n_points_plus": int(buy_est.get("n_points", 0) or 0),
-        "n_points_minus": int(sell_est.get("n_points", 0) or 0),
+        "window_start": window.window_start_iso(),
+        "window_end": window.window_end_iso(),
+        "generated_at": generated_at,
+        "n_quotes": int(len(window.mids)),
+        "n_trades": int(len(window.trades)),
+        "n_market_orders_plus": n_buy_mos,
+        "n_market_orders_minus": n_sell_mos,
+        "r2_plus": finite_or_none(buy_fit.get("r_squared")),
+        "r2_minus": finite_or_none(sell_fit.get("r_squared")),
+        "n_points_plus": int(buy_fit.get("n_points", 0) or 0),
+        "n_points_minus": int(sell_fit.get("n_points", 0) or 0),
+        "depth_p95_plus": finite_or_none(buy_fit.get("depth_p95")),
+        "depth_p95_minus": finite_or_none(sell_fit.get("depth_p95")),
+        "depth_max_fitted_plus": finite_or_none(buy_fit.get("depth_max_fitted")),
+        "depth_max_fitted_minus": finite_or_none(sell_fit.get("depth_max_fitted")),
+        "sigma2_per_sec": finite_or_none(sigma2) if sigma2 is not None else None,
+        "mid_source": window.mid_source,
+        "ts_source": window.ts_source,
+        "negative_depth_truncated_plus": int(depth_info["negative_depth_truncated_buy"]),
+        "negative_depth_truncated_minus": int(depth_info["negative_depth_truncated_sell"]),
+        "skipped_no_pre_mid": int(depth_info["skipped_no_pre_mid"]),
+        "lambda0_intercept_plus": finite_or_none(
+            lambda_plus_raw * buy_fit["survival_intercept"]
+            if np.isfinite(buy_fit["survival_intercept"]) and np.isfinite(lambda_plus_raw)
+            else None
+        ),
+        "lambda0_intercept_minus": finite_or_none(
+            lambda_minus_raw * sell_fit["survival_intercept"]
+            if np.isfinite(sell_fit["survival_intercept"]) and np.isfinite(lambda_minus_raw)
+            else None
+        ),
     }
+
     if (
-        finite_or_none(buy_est.get("kappa")) is None
-        or finite_or_none(sell_est.get("kappa")) is None
-        or finite_or_none(buy_est.get("lambda_0")) is None
-        or finite_or_none(sell_est.get("lambda_0")) is None
-        or metadata["n_points_plus"] < 2
-        or metadata["n_points_minus"] < 2
+        finite_or_none(kappa_plus_raw) is None
+        or finite_or_none(kappa_minus_raw) is None
+        or finite_or_none(lambda_plus_raw) is None
+        or finite_or_none(lambda_minus_raw) is None
+        or n_buy_mos <= 0
+        or n_sell_mos <= 0
+        or metadata["n_points_plus"] < MIN_KAPPA_FIT_POINTS
+        or metadata["n_points_minus"] < MIN_KAPPA_FIT_POINTS
     ):
         metadata["status"] = "insufficient_data"
     elif (
-        finite_or_none(buy_est.get("r_squared")) is None
-        or finite_or_none(sell_est.get("r_squared")) is None
-        or float(buy_est.get("r_squared")) < 0.0
-        or float(sell_est.get("r_squared")) < 0.0
+        finite_or_none(buy_fit.get("r_squared")) is None
+        or finite_or_none(sell_fit.get("r_squared")) is None
+        or float(buy_fit["r_squared"]) < MIN_KAPPA_R2
+        or float(sell_fit["r_squared"]) < MIN_KAPPA_R2
     ):
         metadata["status"] = "poor_fit"
     else:
         metadata["status"] = "ok"
 
+    raw_values = {
+        "kappa+_raw": finite_or_none(kappa_plus_raw),
+        "kappa-_raw": finite_or_none(kappa_minus_raw),
+        "lambda+_raw": finite_or_none(lambda_plus_raw),
+        "lambda-_raw": finite_or_none(lambda_minus_raw),
+    }
+
+    tau = resolve_ema_tau(ema_tau)
+    metadata["ema_tau_seconds"] = float(tau)
+    if metadata["status"] == "ok":
+        prev_entry = load_json_object(kappa_file).get(crypto)
+        prev_entry = prev_entry if isinstance(prev_entry, dict) else None
+        smoothed = {}
+        seeded_flags = []
+        for key, raw_value in (
+            ("kappa+", kappa_plus_raw),
+            ("kappa-", kappa_minus_raw),
+            ("lambda+", lambda_plus_raw),
+            ("lambda-", lambda_minus_raw),
+        ):
+            value, ema_meta = ema_update(raw_value, prev_entry, key, tau, now=generated_at_dt)
+            smoothed[key] = value
+            seeded_flags.append(bool(ema_meta["ema_seeded"]))
+        metadata["ema_seeded"] = all(seeded_flags)
+        kappa_plus_out, kappa_minus_out = smoothed["kappa+"], smoothed["kappa-"]
+        lambda_plus_out, lambda_minus_out = smoothed["lambda+"], smoothed["lambda-"]
+    else:
+        # Bad windows ship raw (consumers reject on status); the next ok cycle
+        # re-seeds rather than blending across the bad snapshot.
+        metadata["ema_seeded"] = True
+        kappa_plus_out, kappa_minus_out = raw_values["kappa+_raw"], raw_values["kappa-_raw"]
+        lambda_plus_out, lambda_minus_out = raw_values["lambda+_raw"], raw_values["lambda-_raw"]
+
     save_kappa_lambda_to_json(
-        buy_est['kappa'] if not np.isnan(buy_est['kappa']) else None,
-        sell_est['kappa'] if not np.isnan(sell_est['kappa']) else None,
-        buy_est['lambda_0'] if not np.isnan(buy_est['lambda_0']) else None,
-        sell_est['lambda_0'] if not np.isnan(sell_est['lambda_0']) else None,
+        kappa_plus_out,
+        kappa_minus_out,
+        lambda_plus_out,
+        lambda_minus_out,
         crypto,
+        kappa_file=kappa_file,
+        lambda_file=lambda_file,
         metadata=metadata,
+        raw_values=raw_values,
     )
 
-    # Create visualization (optional)
-    if (len(buy_depth_bins) > 0 or len(sell_depth_bins) > 0) and do_plot:
-        buy_est_linear = {'kappa': buy_est['kappa'], 'lambda_0': buy_est['lambda_0'], 'r_squared': buy_est['r_squared']}
-        sell_est_linear = {'kappa': sell_est['kappa'], 'lambda_0': sell_est['lambda_0'], 'r_squared': sell_est['r_squared']}
-        plot_kappa_analysis_improved(
-            buy_depth_bins, buy_intensities,
-            sell_depth_bins, sell_intensities,
-            buy_est_linear, {'kappa': np.nan, 'lambda_0': np.nan, 'r_squared': np.nan},
-            sell_est_linear, {'kappa': np.nan, 'lambda_0': np.nan, 'r_squared': np.nan},
-            crypto, minutes
-        )
 
 # Parse command line arguments
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Joint kappa/lambda estimation from market data')
-    parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'ETH'), 
+    parser = argparse.ArgumentParser(description='Joint kappa/lambda estimation from market data (survival fit + MO arrival rates)')
+    parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'ETH'),
                         help='Cryptocurrency symbol (e.g., ETH) or ALL to process every symbol in HL_data')
     parser.add_argument('--minutes', '-m', type=int, default=30,
                         help='Number of minutes from most recent data to analyze')
-    parser.add_argument('--bins', '-b', type=int, default=20,
-                        help='Number of depth bins for analysis')
-    parser.add_argument('--plot', '-p', action='store_true', default=False,
-                        help='Show diagnostic plots (disabled by default)')
+    parser.add_argument('--ema-tau', type=float, default=None,
+                        help='EMA time constant in seconds for smoothing primary values '
+                             '(default: PARAM_EMA_TAU_SECONDS env or 300; 0 disables smoothing)')
     parser.add_argument('--verbosity', '-v', type=int, choices=[0, 1], default=0,
                         help='Verbosity: 0=minimal (default), 1=verbose')
 
@@ -648,14 +328,14 @@ if __name__ == "__main__":
     if isinstance(args.crypto, str) and args.crypto.strip().upper() == 'ALL':
         symbols = list_available_cryptos('HL_data')
         if not symbols:
-            print("No crypto data found in HL_data (need orderbooks and trades parquet).")
+            print("No crypto data found in HL_data (need prices/orderbooks and trades parquet).")
             raise SystemExit(1)
     else:
         symbols = [args.crypto.strip().upper()]
 
     for sym in symbols:
         try:
-            run_kappa_for_crypto(sym, minutes=args.minutes, bins=args.bins, do_plot=args.plot)
+            run_kappa_for_crypto(sym, minutes=args.minutes, ema_tau=args.ema_tau)
         except KeyboardInterrupt:
             raise
         except Exception as e:

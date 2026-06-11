@@ -50,7 +50,9 @@
         "max_param_age_seconds": 120,
         "param_update_lock_stale_seconds": 300,
         "maker_fee_rate": 0.00015,
-        "spread_multiplier": 3.0
+        "spread_multiplier": 3.0,
+        "min_half_spread_bps": 3.0,
+        "max_half_spread_bps": 80.0
     },
     "exchange": {
         "name": "hyperliquid",

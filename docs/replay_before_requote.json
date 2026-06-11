@@ -1,0 +1,400 @@
+{
+  "amount_rounding_rejects": 0,
+  "amount_step_size": 0.0001,
+  "calibration_attempts_by_key": {},
+  "calibration_fills_by_key": {},
+  "calibration_rejected_fills": 0,
+  "cash_usdc": -37.0559580555,
+  "consumed_trade_events": 6,
+  "data_end": "2026-06-11T06:34:49.068366051+00:00",
+  "data_span_seconds": 3647.907629,
+  "data_start": "2026-06-11T05:34:01.160737038+00:00",
+  "equity_usdc": 999.9297069445,
+  "fees_usdc": 0.014328055499999999,
+  "fill_calibration": {
+    "applied": false,
+    "bucket_bps": null,
+    "fill_probability_by_depth": {},
+    "fill_probability_by_side": {},
+    "path": null,
+    "provided": false,
+    "reasons": [
+      "not_supplied"
+    ],
+    "usable": false
+  },
+  "fill_ratio_by_depth": {
+    "ask:5.72bps": 0.0,
+    "ask:5.73bps": 0.0070921985815602835,
+    "ask:6.03bps": 0.0,
+    "ask:6.32bps": 0.0,
+    "ask:6.33bps": 0.0,
+    "ask:6.34bps": 0.0,
+    "ask:6.62bps": 0.0,
+    "ask:6.63bps": 0.0,
+    "ask:6.64bps": 0.0,
+    "ask:6.67bps": 0.0,
+    "ask:6.68bps": 0.2,
+    "ask:6.93bps": 0.0,
+    "ask:6.97bps": 0.0,
+    "ask:6.98bps": 0.0,
+    "ask:6.99bps": 0.0,
+    "bid:2.71bps": 0.058823529411764705,
+    "bid:2.72bps": 0.0,
+    "bid:2.73bps": 0.0010787486515641855,
+    "bid:3.01bps": 0.0,
+    "bid:3.02bps": 0.0,
+    "bid:3.03bps": 0.0,
+    "bid:3.04bps": 0.0,
+    "bid:3.31bps": 0.008,
+    "bid:3.32bps": 0.0,
+    "bid:3.33bps": 0.0,
+    "bid:3.34bps": 0.0,
+    "bid:3.61bps": 0.0,
+    "bid:3.62bps": 0.0
+  },
+  "fills_by_depth": {
+    "ask:5.73bps": 1,
+    "ask:6.68bps": 1,
+    "bid:2.71bps": 1,
+    "bid:2.73bps": 1,
+    "bid:3.31bps": 2
+  },
+  "final_mid": 1658.55,
+  "funding_usdc": 0.0,
+  "input_files": {
+    "orderbooks": 364,
+    "prices": 364,
+    "trades": 360
+  },
+  "input_rows": {
+    "orderbooks": 6762,
+    "prices": 25865,
+    "trades": 5568
+  },
+  "inventory_base": 0.0223,
+  "inventory_histogram": {
+    "0": 9789,
+    "1": 7386,
+    "2": 7046,
+    "3": 1644
+  },
+  "liquidation_breach_events": 0,
+  "maintenance_margin_usdc": 1.84928325,
+  "maker_fills": 6,
+  "maker_ratio": 1.0,
+  "margin_used_usdc": 36.985665,
+  "mark_to_market_pnl_usdc": -0.07029305550000231,
+  "markout_samples": [
+    {
+      "fill_price": 1650.2,
+      "fill_ts": "2026-06-11T05:47:33.203231573+00:00",
+      "future_mid": 1650.25,
+      "horizon_ms": 100,
+      "markout_usdc": 0.0004999999999995453,
+      "markout_usdc_per_base": 0.049999999999954525,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1650.2,
+      "fill_ts": "2026-06-11T05:47:33.203231573+00:00",
+      "future_mid": 1650.15,
+      "horizon_ms": 1000,
+      "markout_usdc": -0.0004999999999995453,
+      "markout_usdc_per_base": -0.049999999999954525,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1650.2,
+      "fill_ts": "2026-06-11T05:47:33.203231573+00:00",
+      "future_mid": 1650.15,
+      "horizon_ms": 5000,
+      "markout_usdc": -0.0004999999999995453,
+      "markout_usdc_per_base": -0.049999999999954525,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1650.2,
+      "fill_ts": "2026-06-11T05:47:33.203231573+00:00",
+      "future_mid": 1649.15,
+      "horizon_ms": 30000,
+      "markout_usdc": -0.010499999999999546,
+      "markout_usdc_per_base": -1.0499999999999545,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1647.2,
+      "fill_ts": "2026-06-11T06:05:27.065943241+00:00",
+      "future_mid": 1647.85,
+      "horizon_ms": 100,
+      "markout_usdc": -0.006499999999998636,
+      "markout_usdc_per_base": -0.6499999999998636,
+      "side": "ask"
+    },
+    {
+      "fill_price": 1647.2,
+      "fill_ts": "2026-06-11T06:05:27.065943241+00:00",
+      "future_mid": 1647.35,
+      "horizon_ms": 1000,
+      "markout_usdc": -0.0014999999999986359,
+      "markout_usdc_per_base": -0.14999999999986358,
+      "side": "ask"
+    },
+    {
+      "fill_price": 1647.2,
+      "fill_ts": "2026-06-11T06:05:27.065943241+00:00",
+      "future_mid": 1646.95,
+      "horizon_ms": 5000,
+      "markout_usdc": 0.0025,
+      "markout_usdc_per_base": 0.25,
+      "side": "ask"
+    },
+    {
+      "fill_price": 1647.2,
+      "fill_ts": "2026-06-11T06:05:27.065943241+00:00",
+      "future_mid": 1647.85,
+      "horizon_ms": 30000,
+      "markout_usdc": -0.006499999999998636,
+      "markout_usdc_per_base": -0.6499999999998636,
+      "side": "ask"
+    },
+    {
+      "fill_price": 1659.5,
+      "fill_ts": "2026-06-11T06:15:46.521374226+00:00",
+      "future_mid": 1659.05,
+      "horizon_ms": 100,
+      "markout_usdc": -0.004500000000000455,
+      "markout_usdc_per_base": -0.4500000000000455,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.5,
+      "fill_ts": "2026-06-11T06:15:46.521374226+00:00",
+      "future_mid": 1659.05,
+      "horizon_ms": 1000,
+      "markout_usdc": -0.004500000000000455,
+      "markout_usdc_per_base": -0.4500000000000455,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.5,
+      "fill_ts": "2026-06-11T06:15:46.521374226+00:00",
+      "future_mid": 1658.65,
+      "horizon_ms": 5000,
+      "markout_usdc": -0.00849999999999909,
+      "markout_usdc_per_base": -0.849999999999909,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.5,
+      "fill_ts": "2026-06-11T06:15:46.521374226+00:00",
+      "future_mid": 1659.65,
+      "horizon_ms": 30000,
+      "markout_usdc": 0.0015000000000009095,
+      "markout_usdc_per_base": 0.15000000000009095,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:40.226479530+00:00",
+      "future_mid": 1658.9,
+      "horizon_ms": 100,
+      "markout_usdc": -0.002999999999999545,
+      "markout_usdc_per_base": -0.2999999999999545,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:40.226479530+00:00",
+      "future_mid": 1658.45,
+      "horizon_ms": 1000,
+      "markout_usdc": -0.0075,
+      "markout_usdc_per_base": -0.75,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:40.226479530+00:00",
+      "future_mid": 1659.45,
+      "horizon_ms": 5000,
+      "markout_usdc": 0.0025,
+      "markout_usdc_per_base": 0.25,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:40.226479530+00:00",
+      "future_mid": 1658.45,
+      "horizon_ms": 30000,
+      "markout_usdc": -0.0075,
+      "markout_usdc_per_base": -0.75,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:57.801166773+00:00",
+      "future_mid": 1659.25,
+      "horizon_ms": 100,
+      "markout_usdc": 0.0004999999999995453,
+      "markout_usdc_per_base": 0.049999999999954525,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:57.801166773+00:00",
+      "future_mid": 1659.25,
+      "horizon_ms": 1000,
+      "markout_usdc": 0.0004999999999995453,
+      "markout_usdc_per_base": 0.049999999999954525,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:57.801166773+00:00",
+      "future_mid": 1659.15,
+      "horizon_ms": 5000,
+      "markout_usdc": -0.0004999999999995453,
+      "markout_usdc_per_base": -0.049999999999954525,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:57.801166773+00:00",
+      "future_mid": 1658.45,
+      "horizon_ms": 30000,
+      "markout_usdc": -0.0075,
+      "markout_usdc_per_base": -0.75,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1658.1,
+      "fill_ts": "2026-06-11T06:20:07.955890894+00:00",
+      "future_mid": 1658.15,
+      "horizon_ms": 100,
+      "markout_usdc": -0.00038500000000140066,
+      "markout_usdc_per_base": -0.0500000000001819,
+      "side": "ask"
+    },
+    {
+      "fill_price": 1658.1,
+      "fill_ts": "2026-06-11T06:20:07.955890894+00:00",
+      "future_mid": 1658.15,
+      "horizon_ms": 1000,
+      "markout_usdc": -0.00038500000000140066,
+      "markout_usdc_per_base": -0.0500000000001819,
+      "side": "ask"
+    },
+    {
+      "fill_price": 1658.1,
+      "fill_ts": "2026-06-11T06:20:07.955890894+00:00",
+      "future_mid": 1658.75,
+      "horizon_ms": 5000,
+      "markout_usdc": -0.005005000000000701,
+      "markout_usdc_per_base": -0.650000000000091,
+      "side": "ask"
+    },
+    {
+      "fill_price": 1658.1,
+      "fill_ts": "2026-06-11T06:20:07.955890894+00:00",
+      "future_mid": 1658.85,
+      "horizon_ms": 30000,
+      "markout_usdc": -0.005775000000000001,
+      "markout_usdc_per_base": -0.75,
+      "side": "ask"
+    }
+  ],
+  "max_margin_used_usdc": 49.7925,
+  "max_price_gap_seconds": 5.869894505,
+  "min_equity_usdc": 999.87508705,
+  "min_liquidation_buffer_usdc": 997.39026205,
+  "notional_exposure_usdc": 36.985665,
+  "p95_price_gap_seconds": 0.51433780205,
+  "parameter_series": [
+    {
+      "data_end": "2026-06-11T06:34:49.068366051+00:00",
+      "data_start": "2026-06-11T05:34:01.160737038+00:00",
+      "epsilon_minus": 0.0,
+      "epsilon_plus": 0.05865384615381467,
+      "kappa_minus": 8.094785103415921,
+      "kappa_plus": 3.2702543365081773,
+      "lambda_minus": 0.35286213770770514,
+      "lambda_plus": 0.4225983740912962,
+      "schema_version": 1,
+      "source": "static_replay_params",
+      "symbol": "ETH",
+      "ts": "2026-06-11T05:34:01.160737038+00:00",
+      "unit": {
+        "epsilon": "USDC",
+        "kappa": "1/USDC",
+        "lambda": "events/second"
+      }
+    }
+  ],
+  "pnl_by_side": {
+    "ask": 0.013929094499999965,
+    "bid": 0.01005785
+  },
+  "post_only_reject_ratio": 0.0,
+  "post_only_rejects": 0,
+  "price_event_count": 25865,
+  "price_events_per_day": 612607.617099287,
+  "price_rounding_adjustments": 4575,
+  "price_tick_size": 0.1,
+  "queue_decay_base": 0.0,
+  "quote_attempts": 4575,
+  "quote_attempts_by_depth": {
+    "ask:5.72bps": 11,
+    "ask:5.73bps": 141,
+    "ask:6.03bps": 4,
+    "ask:6.32bps": 58,
+    "ask:6.33bps": 588,
+    "ask:6.34bps": 104,
+    "ask:6.62bps": 4,
+    "ask:6.63bps": 13,
+    "ask:6.64bps": 2,
+    "ask:6.67bps": 9,
+    "ask:6.68bps": 5,
+    "ask:6.93bps": 43,
+    "ask:6.97bps": 286,
+    "ask:6.98bps": 420,
+    "ask:6.99bps": 112,
+    "bid:2.71bps": 17,
+    "bid:2.72bps": 159,
+    "bid:2.73bps": 927,
+    "bid:3.01bps": 2,
+    "bid:3.02bps": 9,
+    "bid:3.03bps": 22,
+    "bid:3.04bps": 9,
+    "bid:3.31bps": 250,
+    "bid:3.32bps": 543,
+    "bid:3.33bps": 127,
+    "bid:3.34bps": 691,
+    "bid:3.61bps": 6,
+    "bid:3.62bps": 13
+  },
+  "quote_decision_events": 2931,
+  "quote_refresh_interval_ms": 1000,
+  "realized_spread_usdc": 0.03831499999999997,
+  "stale_quote_cancel_ratio": 0.9986885245901639,
+  "stale_quote_cancels": 4569,
+  "starting_equity_usdc": 1000.0,
+  "taker_fills": 0,
+  "time_at_q_boundary": {
+    "q_max": 1644,
+    "q_min": 9789
+  },
+  "toxicity_series": [
+    {
+      "data_end": "2026-06-11T06:34:49.068366051+00:00",
+      "data_start": "2026-06-11T05:34:01.160737038+00:00",
+      "formula": "kappa * epsilon",
+      "schema_version": 1,
+      "source": "static_replay_params",
+      "symbol": "ETH",
+      "toxicity_minus": 0.0,
+      "toxicity_plus": 0.1918129947373959,
+      "ts": "2026-06-11T05:34:01.160737038+00:00",
+      "unit": "kappa_times_epsilon"
+    }
+  ]
+}

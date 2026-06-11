@@ -184,13 +184,93 @@ def test_dry_run_quality_rejects_unreasonable_quote_distance_and_depth():
     events = dry_run_events(start)
     quote = next(event for event in events if event["event"] == "quote_decision")
     quote["custom_price_distance_ratio"] = 0.02
-    quote["bps"] = 75.0
+    quote["bps"] = 95.0  # beyond the 80 bps cap
 
     report = build_dry_run_quality_report(events, gate_report=gate_report(start))
 
     assert report["ok"] is False
     assert "accepted_quote_depth_too_wide:1" in report["reasons"]
     assert "accepted_quote_too_far_from_proposed:1" in report["reasons"]
+
+
+def test_dry_run_quality_rejects_quote_tighter_than_floor():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    events = dry_run_events(start)
+    quote = next(event for event in events if event["event"] == "quote_decision")
+    quote["bps"] = 1.5  # below the 3 bps floor: clamps not applied / fee-losing
+
+    report = build_dry_run_quality_report(events, gate_report=gate_report(start))
+
+    assert report["ok"] is False
+    assert "accepted_quote_depth_too_tight:1" in report["reasons"]
+
+
+def test_dry_run_quality_tolerates_order_amount_float_dust():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    events = dry_run_events(start)
+    order = next(event for event in events if event["event"] == "order_attempt_accepted")
+    order["amount"] = 0.010000000000000002  # freqtrade stake/rate float dust
+
+    report = build_dry_run_quality_report(
+        events, gate_report=gate_report(start), max_order_amount_units=0.01, max_order_notional_usdc=25.0
+    )
+
+    assert "order_amount_too_large:1" not in report["reasons"]
+
+    order["amount"] = 0.02  # a real violation still fails
+    report = build_dry_run_quality_report(
+        events, gate_report=gate_report(start), max_order_amount_units=0.01, max_order_notional_usdc=25.0
+    )
+    assert "order_amount_too_large:1" in report["reasons"]
+
+
+def test_dry_run_quality_tolerates_rare_collector_read_races():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    events = dry_run_events(start)
+    events.append({"event": "collector_data_read_error", "ts": iso(start + timedelta(seconds=80)), "path": "x.parquet"})
+
+    report = build_dry_run_quality_report(events, gate_report=gate_report(start))
+
+    assert report["ok"] is True
+    assert report["tolerated_error_events"] == {"collector_data_read_error": 1}
+    assert "collector_data_read_error:1" not in report["reasons"]
+
+    # Persistent read errors still fail (above the tolerance).
+    for i in (3, 4, 5):
+        events.append({"event": "collector_data_read_error", "ts": iso(start + timedelta(seconds=80 + i)), "path": "x.parquet"})
+    report = build_dry_run_quality_report(events, gate_report=gate_report(start))
+    assert report["ok"] is False
+    assert "collector_data_read_error:4" in report["reasons"]
+
+
+def test_dry_run_quality_collector_read_error_fails_when_collector_went_stale():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    events = dry_run_events(start)
+    events.append({"event": "collector_data_read_error", "ts": iso(start + timedelta(seconds=80)), "path": "x.parquet"})
+    health = next(event for event in events if event["event"] == "health")
+    health["collector_fresh"] = False
+
+    report = build_dry_run_quality_report(events, gate_report=gate_report(start))
+
+    assert report["ok"] is False
+    assert "collector_data_read_error:1" in report["reasons"]
+
+
+def test_dry_run_quality_reports_clamp_and_calibration_diagnostics_informational():
+    start = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    events = dry_run_events(start)
+    quote = next(event for event in events if event["event"] == "quote_decision")
+    quote["clamped"] = "floor"
+    quote["quote_outside_calibrated_range"] = True
+
+    report = build_dry_run_quality_report(events, gate_report=gate_report(start))
+
+    quality = report["quote_quality"]
+    assert quality["clamp_counts"]["floor"] == 1
+    assert quality["outside_calibrated_range_count"] == 1
+    assert quality["outside_calibrated_range_fraction"] == 1.0
+    # Diagnostics never produce failure reasons by themselves.
+    assert not any("calibrated" in reason or "clamp" in reason for reason in report["reasons"])
 
 
 def test_dry_run_quality_rejects_large_order_and_bad_pnl():

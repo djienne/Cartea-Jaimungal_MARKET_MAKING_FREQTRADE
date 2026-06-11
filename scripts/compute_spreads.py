@@ -10,10 +10,11 @@ Inputs:
 - Inventory level q (optional, default 0)
 
 The script:
-1. Loads κ, ε, and baseline λ₀ for the symbol.
+1. Loads κ, ε, and per-side MO arrival rates λ for the symbol.
 2. Runs the HJB solver (symmetric closed-form by default, optional asymmetric-κ backward Euler) to get δ* with inventory skew.
-3. Adds maker-fee cushion identical to the strategy (0.015% maker fee → fee * mid * 2).
-4. Prints bid/ask prices and spreads in bps from mid.
+3. Assembles the final half-spread identically to the strategy:
+   delta_total = clamp(δ* × spread_multiplier + fee × mid, min/max half-spread bps).
+4. Prints bid/ask prices and spreads in bps from mid, with (floor)/(cap) markers when clamped.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import sys
 import numpy as np
 
 from hjb import compute_h_symmetric, compute_h_asymmetric
+from replay_market_maker import MAX_HALF_SPREAD_BPS, MIN_HALF_SPREAD_BPS, assemble_half_spread
 
 
 MAKER_FEE = 0.0150 / 100.0  # 1.5 bps as fraction
@@ -119,6 +121,10 @@ def main():
     parser.add_argument("--steps", type=int, default=200, help="Time steps for asymmetric solver (ignored for symmetric)")
     parser.add_argument("--minutes", "-t", type=int, default=30, help="Minutes of data to use when refreshing κ/ε/λ")
     parser.add_argument("--skip-refresh", action="store_true", help="Use existing JSON params without running estimator scripts first")
+    parser.add_argument("--spread-multiplier", type=float, default=1.0,
+                        help="Scales the HJB model depth only (fee added separately); pass 3.0 to mirror the production config")
+    parser.add_argument("--min-half-spread-bps", type=float, default=MIN_HALF_SPREAD_BPS)
+    parser.add_argument("--max-half-spread-bps", type=float, default=MAX_HALF_SPREAD_BPS)
     args = parser.parse_args()
 
     start_dir = Path(__file__).resolve().parent
@@ -190,12 +196,14 @@ def main():
     if mid is None:
         mid = 1.0
 
-    fee_cushion = MAKER_FEE * mid * 2.0
-
     print(f"Symbol: {sym}")
     print(f"Mid: {mid:.8f}")
     print(f"Inventory grid: q in [-{args.qmax}, {args.qmax}]")
     print(f"Parameters: kappa+={kappa_p}, kappa-={kappa_m}, epsilon+={eps_p}, epsilon-={eps_m}, lambda+={lam_p}, lambda-={lam_m}")
+    print(
+        f"Assembly: multiplier={args.spread_multiplier}, fee={MAKER_FEE} per side, "
+        f"clamps=[{args.min_half_spread_bps}, {args.max_half_spread_bps}] bps"
+    )
     metadata = param_metadata_lines(sym, kappa, epsilon, lambdas)
     if metadata:
         print("Parameter metadata:")
@@ -203,25 +211,33 @@ def main():
             print(f"  {line}")
     print("\nq\tbid_px\t\task_px\t\tbid_bps\t\task_bps")
 
+    def render_side(delta_model: float, side_sign: float) -> tuple[str, str]:
+        delta_total = assemble_half_spread(
+            delta_model,
+            mid,
+            spread_multiplier=args.spread_multiplier,
+            maker_fee=MAKER_FEE,
+            min_half_spread_bps=args.min_half_spread_bps,
+            max_half_spread_bps=args.max_half_spread_bps,
+        )
+        if delta_total is None:
+            return "DISABLED", "DISABLED"
+        pre_clamp = delta_model * args.spread_multiplier + MAKER_FEE * mid
+        marker = ""
+        if pre_clamp < delta_total:
+            marker = " (floor)"
+        elif pre_clamp > delta_total:
+            marker = " (cap)"
+        px = f"{mid + side_sign * delta_total:.8f}"
+        bps = f"{(delta_total / mid) * 1e4:.4f}{marker}"
+        return px, bps
+
     for q in range(-args.qmax, args.qmax + 1):
         delta_bid_model = select_delta_from_hjb(hjb_res, "bid", q, args.qmax)
         delta_ask_model = select_delta_from_hjb(hjb_res, "ask", q, args.qmax)
 
-        if np.isfinite(delta_bid_model):
-            delta_bid = delta_bid_model + fee_cushion
-            bid_px = f"{mid - delta_bid:.8f}"
-            bid_bps = f"{(delta_bid / mid) * 1e4:.4f}"
-        else:
-            bid_px = "DISABLED"
-            bid_bps = "DISABLED"
-
-        if np.isfinite(delta_ask_model):
-            delta_ask = delta_ask_model + fee_cushion
-            ask_px = f"{mid + delta_ask:.8f}"
-            ask_bps = f"{(delta_ask / mid) * 1e4:.4f}"
-        else:
-            ask_px = "DISABLED"
-            ask_bps = "DISABLED"
+        bid_px, bid_bps = render_side(delta_bid_model, -1.0)
+        ask_px, ask_bps = render_side(delta_ask_model, +1.0)
 
         print(f"{q:+d}\t{bid_px}\t{ask_px}\t{bid_bps}\t\t{ask_bps}")
 

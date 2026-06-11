@@ -26,7 +26,15 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from replay_market_maker import MAKER_FEE, TAKER_FEE, ReplayConfig, ReplayMetrics, run_replay  # noqa: E402
+from replay_market_maker import (  # noqa: E402
+    MAKER_FEE,
+    MAX_HALF_SPREAD_BPS,
+    MIN_HALF_SPREAD_BPS,
+    TAKER_FEE,
+    ReplayConfig,
+    ReplayMetrics,
+    run_replay,
+)
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,9 @@ def variant_config(base: ReplayConfig, variant: ReplayVariant) -> ReplayConfig:
         mid_fallback=base.mid_fallback,
         inventory_unit_base=base.inventory_unit_base,
         q_max=base.q_max,
+        spread_multiplier=base.spread_multiplier,
+        min_half_spread_bps=base.min_half_spread_bps,
+        max_half_spread_bps=base.max_half_spread_bps,
         decision_latency_ms=int(round(base.decision_latency_ms * multiplier)),
         order_ack_latency_ms=int(round(base.order_ack_latency_ms * multiplier)),
         cancel_latency_ms=int(round(base.cancel_latency_ms * multiplier)),
@@ -888,6 +899,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
     parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
+    parser.add_argument(
+        "--spread-multiplier",
+        type=float,
+        default=1.0,
+        help="Scales the HJB model depth only (fee cushion added separately); pass 3.0 to mirror the production config.",
+    )
+    parser.add_argument("--min-half-spread-bps", type=float, default=MIN_HALF_SPREAD_BPS)
+    parser.add_argument("--max-half-spread-bps", type=float, default=MAX_HALF_SPREAD_BPS)
     parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
     parser.add_argument("--starting-equity-usdc", type=float, default=1000.0)
     parser.add_argument("--leverage", type=float, default=1.0)
@@ -927,6 +946,9 @@ def main() -> int:
         mid_fallback=args.mid,
         maker_fee=args.maker_fee,
         taker_fee=args.taker_fee,
+        spread_multiplier=args.spread_multiplier,
+        min_half_spread_bps=args.min_half_spread_bps,
+        max_half_spread_bps=args.max_half_spread_bps,
         funding_rate_per_hour=args.funding_rate_per_hour,
         starting_equity_usdc=args.starting_equity_usdc,
         leverage=args.leverage,

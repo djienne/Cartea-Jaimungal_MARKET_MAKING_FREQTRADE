@@ -193,13 +193,15 @@ def build_dry_run_quality_report(
     min_accepted_quotes: int = 1,
     min_order_attempts: int = 1,
     max_quote_distance_ratio: float = 0.01,
-    max_quote_depth_bps: float = 50.0,
+    max_quote_depth_bps: float = 80.0,
+    min_quote_depth_bps: float = 3.0,
     max_order_notional_usdc: float = 25.0,
     max_order_amount_units: float = 1.0,
     max_loss_usdc: float = 1.0,
     max_loss_rate_usdc_per_hour: float = 6.0,
     min_final_total_pnl_usdc: float = -1.0,
     event_span_tolerance_seconds: float = 1.0,
+    max_collector_read_errors: int = 2,
 ) -> dict[str, Any]:
     reasons: list[str] = []
 
@@ -238,6 +240,9 @@ def build_dry_run_quality_report(
     quote_failures: dict[str, int] = {}
     quote_depths: list[float] = []
     quote_distances: list[float] = []
+    clamp_counts: dict[str, int] = {"floor": 0, "cap": 0}
+    outside_calibrated_range_count = 0
+    calibration_flag_samples = 0
     for quote in accepted_quotes:
         for key, reason in (
             ("params_fresh", "accepted_quote_stale_params"),
@@ -259,6 +264,20 @@ def build_dry_run_quality_report(
             quote_depths.append(abs(depth_bps))
             if abs(depth_bps) > float(max_quote_depth_bps):
                 quote_failures["accepted_quote_depth_too_wide"] = quote_failures.get("accepted_quote_depth_too_wide", 0) + 1
+            # Tighter than the configured floor means the strategy clamps are
+            # not being applied (or were misconfigured): fee-losing quotes.
+            if float(min_quote_depth_bps) > 0 and abs(depth_bps) < float(min_quote_depth_bps) - 1e-9:
+                quote_failures["accepted_quote_depth_too_tight"] = quote_failures.get("accepted_quote_depth_too_tight", 0) + 1
+
+        # Informational (non-failing) diagnostics from the quote assembly.
+        clamped = quote.get("clamped")
+        if clamped in ("floor", "cap"):
+            clamp_counts[str(clamped)] += 1
+        calibration_flag = quote.get("quote_outside_calibrated_range")
+        if calibration_flag is not None:
+            calibration_flag_samples += 1
+            if bool_value(calibration_flag) is True:
+                outside_calibrated_range_count += 1
 
         distance_ratio = finite_float(quote.get("custom_price_distance_ratio"))
         if distance_ratio is None:
@@ -326,9 +345,13 @@ def build_dry_run_quality_report(
         amounts.append(amount)
         notional = amount * rate
         notionals.append(notional)
-        if float(max_order_amount_units) > 0 and amount > float(max_order_amount_units):
+        # Relative epsilon: freqtrade's stake/rate round trips leave float
+        # dust (0.01 -> 0.010000000000000002) that must not fail the gate.
+        amount_limit = float(max_order_amount_units) * (1.0 + 1e-9)
+        notional_limit = float(max_order_notional_usdc) * (1.0 + 1e-9)
+        if float(max_order_amount_units) > 0 and amount > amount_limit:
             order_failures["order_amount_too_large"] = order_failures.get("order_amount_too_large", 0) + 1
-        if float(max_order_notional_usdc) > 0 and notional > float(max_order_notional_usdc):
+        if float(max_order_notional_usdc) > 0 and notional > notional_limit:
             order_failures["order_notional_too_large"] = order_failures.get("order_notional_too_large", 0) + 1
 
     reasons.extend(f"{key}:{value}" for key, value in sorted(order_failures.items()) if value)
@@ -371,6 +394,18 @@ def build_dry_run_quality_report(
         name = str(event.get("event") or "")
         if name in ERROR_EVENTS:
             error_counts[name] = error_counts.get(name, 0) + 1
+    # collector_data_read_error is a benign read race (retention pruning can
+    # delete a parquet shard between glob and read; the strategy falls back to
+    # the remaining shards). Tolerate a couple of occurrences as long as
+    # collector freshness never actually broke during the window; persistent
+    # errors or stale health still fail.
+    tolerated_error_events: dict[str, int] = {}
+    collector_read_errors = error_counts.get("collector_data_read_error", 0)
+    if (
+        0 < collector_read_errors <= int(max_collector_read_errors)
+        and health_bad.get("health_collector_stale", 0) == 0
+    ):
+        tolerated_error_events["collector_data_read_error"] = error_counts.pop("collector_data_read_error")
     reasons.extend(f"{key}:{value}" for key, value in sorted(error_counts.items()))
 
     break_even_or_profitable = final_total is not None and float(final_total) >= 0.0
@@ -396,12 +431,14 @@ def build_dry_run_quality_report(
             "min_order_attempts": int(min_order_attempts),
             "max_quote_distance_ratio": float(max_quote_distance_ratio),
             "max_quote_depth_bps": float(max_quote_depth_bps),
+            "min_quote_depth_bps": float(min_quote_depth_bps),
             "max_order_notional_usdc": float(max_order_notional_usdc),
             "max_order_amount_units": float(max_order_amount_units),
             "max_loss_usdc": float(max_loss_usdc),
             "max_loss_rate_usdc_per_hour": float(max_loss_rate_usdc_per_hour),
             "min_final_total_pnl_usdc": float(min_final_total_pnl_usdc),
             "event_span_tolerance_seconds": float(event_span_tolerance_seconds),
+            "max_collector_read_errors": int(max_collector_read_errors),
         },
         "gate_report": {
             "path": gate_report.get("path"),
@@ -437,8 +474,16 @@ def build_dry_run_quality_report(
             "failures": quote_failures,
             "max_depth_bps": max(quote_depths) if quote_depths else None,
             "avg_depth_bps": sum(quote_depths) / len(quote_depths) if quote_depths else None,
+            "min_depth_bps": min(quote_depths) if quote_depths else None,
             "max_distance_ratio": max(quote_distances) if quote_distances else None,
             "avg_distance_ratio": sum(quote_distances) / len(quote_distances) if quote_distances else None,
+            # Informational: clamp activity and calibration-range coverage of
+            # the quote assembly (never pass/fail on their own).
+            "clamp_counts": clamp_counts,
+            "outside_calibrated_range_count": outside_calibrated_range_count,
+            "outside_calibrated_range_fraction": (
+                outside_calibrated_range_count / calibration_flag_samples if calibration_flag_samples else None
+            ),
         },
         "order_sizing": {
             "failures": order_failures,
@@ -450,6 +495,7 @@ def build_dry_run_quality_report(
         "pnl": pnl,
         "loss_velocity_usdc_per_hour": loss_velocity_usdc_per_hour,
         "error_events": error_counts,
+        "tolerated_error_events": tolerated_error_events,
     }
 
 
@@ -463,7 +509,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-accepted-quotes", type=int, default=1)
     parser.add_argument("--min-order-attempts", type=int, default=1)
     parser.add_argument("--max-quote-distance-ratio", type=float, default=0.01)
-    parser.add_argument("--max-quote-depth-bps", type=float, default=50.0)
+    parser.add_argument("--max-quote-depth-bps", type=float, default=80.0)
+    parser.add_argument("--min-quote-depth-bps", type=float, default=3.0)
     parser.add_argument("--max-order-notional-usdc", type=float, default=25.0)
     parser.add_argument("--max-order-amount-units", type=float, default=1.0)
     parser.add_argument("--max-loss-usdc", type=float, default=1.0)
@@ -486,6 +533,7 @@ def main() -> int:
         min_order_attempts=int(args.min_order_attempts),
         max_quote_distance_ratio=float(args.max_quote_distance_ratio),
         max_quote_depth_bps=float(args.max_quote_depth_bps),
+        min_quote_depth_bps=float(args.min_quote_depth_bps),
         max_order_notional_usdc=float(args.max_order_notional_usdc),
         max_order_amount_units=float(args.max_order_amount_units),
         max_loss_usdc=float(args.max_loss_usdc),

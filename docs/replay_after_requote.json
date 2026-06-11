@@ -1,0 +1,267 @@
+{
+  "amount_rounding_rejects": 0,
+  "amount_step_size": 0.0001,
+  "calibration_attempts_by_key": {},
+  "calibration_fills_by_key": {},
+  "calibration_rejected_fills": 0,
+  "cash_usdc": -49.7774655,
+  "consumed_trade_events": 3,
+  "data_end": "2026-06-11T06:34:49.068366051+00:00",
+  "data_span_seconds": 3647.907629,
+  "data_start": "2026-06-11T05:34:01.160737038+00:00",
+  "equity_usdc": 999.9790345,
+  "fees_usdc": 0.0074655,
+  "fill_calibration": {
+    "applied": false,
+    "bucket_bps": null,
+    "fill_probability_by_depth": {},
+    "fill_probability_by_side": {},
+    "path": null,
+    "provided": false,
+    "reasons": [
+      "not_supplied"
+    ],
+    "usable": false
+  },
+  "fill_ratio_by_depth": {
+    "ask:7.83bps": 0.0,
+    "ask:7.84bps": 0.0,
+    "ask:8.13bps": 0.0,
+    "ask:8.14bps": 0.0,
+    "ask:8.15bps": 0.0,
+    "ask:8.43bps": 0.0,
+    "ask:9.04bps": 0.0,
+    "ask:9.94bps": 0.0,
+    "ask:9.95bps": 0.0,
+    "bid:3.01bps": 0.3333333333333333,
+    "bid:3.02bps": 0.0,
+    "bid:3.03bps": 0.0,
+    "bid:3.04bps": 0.0,
+    "bid:3.31bps": 0.041666666666666664,
+    "bid:3.32bps": 0.0,
+    "bid:3.33bps": 0.0,
+    "bid:3.34bps": 0.0
+  },
+  "fills_by_depth": {
+    "bid:3.01bps": 1,
+    "bid:3.31bps": 2
+  },
+  "final_mid": 1658.55,
+  "funding_usdc": 0.0,
+  "input_files": {
+    "orderbooks": 364,
+    "prices": 364,
+    "trades": 360
+  },
+  "input_rows": {
+    "orderbooks": 6762,
+    "prices": 25865,
+    "trades": 5568
+  },
+  "inventory_base": 0.03,
+  "inventory_histogram": {
+    "0": 16693,
+    "1": 482,
+    "2": 18,
+    "3": 8672
+  },
+  "liquidation_breach_events": 0,
+  "maintenance_margin_usdc": 2.487825,
+  "maker_fills": 3,
+  "maker_ratio": 1.0,
+  "margin_used_usdc": 49.756499999999996,
+  "mark_to_market_pnl_usdc": -0.020965500000002635,
+  "markout_samples": [
+    {
+      "fill_price": 1659.4,
+      "fill_ts": "2026-06-11T06:15:46.521535158+00:00",
+      "future_mid": 1659.05,
+      "horizon_ms": 100,
+      "markout_usdc": -0.0035000000000013644,
+      "markout_usdc_per_base": -0.3500000000001364,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.4,
+      "fill_ts": "2026-06-11T06:15:46.521535158+00:00",
+      "future_mid": 1659.05,
+      "horizon_ms": 1000,
+      "markout_usdc": -0.0035000000000013644,
+      "markout_usdc_per_base": -0.3500000000001364,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.4,
+      "fill_ts": "2026-06-11T06:15:46.521535158+00:00",
+      "future_mid": 1658.65,
+      "horizon_ms": 5000,
+      "markout_usdc": -0.0075,
+      "markout_usdc_per_base": -0.75,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.4,
+      "fill_ts": "2026-06-11T06:15:46.521535158+00:00",
+      "future_mid": 1659.65,
+      "horizon_ms": 30000,
+      "markout_usdc": 0.0025,
+      "markout_usdc_per_base": 0.25,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:40.226479530+00:00",
+      "future_mid": 1658.9,
+      "horizon_ms": 100,
+      "markout_usdc": -0.002999999999999545,
+      "markout_usdc_per_base": -0.2999999999999545,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:40.226479530+00:00",
+      "future_mid": 1658.45,
+      "horizon_ms": 1000,
+      "markout_usdc": -0.0075,
+      "markout_usdc_per_base": -0.75,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:40.226479530+00:00",
+      "future_mid": 1659.45,
+      "horizon_ms": 5000,
+      "markout_usdc": 0.0025,
+      "markout_usdc_per_base": 0.25,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1659.2,
+      "fill_ts": "2026-06-11T06:16:40.226479530+00:00",
+      "future_mid": 1658.45,
+      "horizon_ms": 30000,
+      "markout_usdc": -0.0075,
+      "markout_usdc_per_base": -0.75,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1658.4,
+      "fill_ts": "2026-06-11T06:16:41.286112309+00:00",
+      "future_mid": 1658.45,
+      "horizon_ms": 100,
+      "markout_usdc": 0.0004999999999995453,
+      "markout_usdc_per_base": 0.049999999999954525,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1658.4,
+      "fill_ts": "2026-06-11T06:16:41.286112309+00:00",
+      "future_mid": 1658.3000000000002,
+      "horizon_ms": 1000,
+      "markout_usdc": -0.0009999999999990906,
+      "markout_usdc_per_base": -0.09999999999990905,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1658.4,
+      "fill_ts": "2026-06-11T06:16:41.286112309+00:00",
+      "future_mid": 1659.65,
+      "horizon_ms": 5000,
+      "markout_usdc": 0.0125,
+      "markout_usdc_per_base": 1.25,
+      "side": "bid"
+    },
+    {
+      "fill_price": 1658.4,
+      "fill_ts": "2026-06-11T06:16:41.286112309+00:00",
+      "future_mid": 1658.45,
+      "horizon_ms": 30000,
+      "markout_usdc": 0.0004999999999995453,
+      "markout_usdc_per_base": 0.049999999999954525,
+      "side": "bid"
+    }
+  ],
+  "max_margin_used_usdc": 49.845,
+  "max_price_gap_seconds": 5.869894505,
+  "min_equity_usdc": 999.9190345000001,
+  "min_liquidation_buffer_usdc": 997.4342095000001,
+  "notional_exposure_usdc": 49.756499999999996,
+  "p95_price_gap_seconds": 0.51433780205,
+  "parameter_series": [
+    {
+      "data_end": "2026-06-11T06:34:49.068366051+00:00",
+      "data_start": "2026-06-11T05:34:01.160737038+00:00",
+      "epsilon_minus": 0.01058292760694532,
+      "epsilon_plus": 0.10744741250133147,
+      "kappa_minus": 12.836914401881486,
+      "kappa_plus": 9.06148865489715,
+      "lambda_minus": 0.34506698550582104,
+      "lambda_plus": 0.4711030378975025,
+      "schema_version": 1,
+      "source": "static_replay_params",
+      "symbol": "ETH",
+      "ts": "2026-06-11T05:34:01.160737038+00:00",
+      "unit": {
+        "epsilon": "USDC",
+        "kappa": "1/USDC",
+        "lambda": "events/second"
+      }
+    }
+  ],
+  "pnl_by_side": {
+    "ask": 0.0,
+    "bid": 0.008534499999999091
+  },
+  "post_only_reject_ratio": 0.0,
+  "post_only_rejects": 0,
+  "price_event_count": 25865,
+  "price_events_per_day": 612607.617099287,
+  "price_rounding_adjustments": 2975,
+  "price_tick_size": 0.1,
+  "queue_decay_base": 0.0,
+  "quote_attempts": 2975,
+  "quote_attempts_by_depth": {
+    "ask:7.83bps": 6,
+    "ask:7.84bps": 12,
+    "ask:8.13bps": 154,
+    "ask:8.14bps": 563,
+    "ask:8.15bps": 185,
+    "ask:8.43bps": 4,
+    "ask:9.04bps": 1,
+    "ask:9.94bps": 35,
+    "ask:9.95bps": 8,
+    "bid:3.01bps": 3,
+    "bid:3.02bps": 9,
+    "bid:3.03bps": 22,
+    "bid:3.04bps": 9,
+    "bid:3.31bps": 48,
+    "bid:3.32bps": 123,
+    "bid:3.33bps": 704,
+    "bid:3.34bps": 1089
+  },
+  "quote_decision_events": 2931,
+  "quote_refresh_interval_ms": 1000,
+  "realized_spread_usdc": 0.01599999999999909,
+  "stale_quote_cancel_ratio": 0.9989915966386554,
+  "stale_quote_cancels": 2972,
+  "starting_equity_usdc": 1000.0,
+  "taker_fills": 0,
+  "time_at_q_boundary": {
+    "q_max": 8672,
+    "q_min": 16693
+  },
+  "toxicity_series": [
+    {
+      "data_end": "2026-06-11T06:34:49.068366051+00:00",
+      "data_start": "2026-06-11T05:34:01.160737038+00:00",
+      "formula": "kappa * epsilon",
+      "schema_version": 1,
+      "source": "static_replay_params",
+      "symbol": "ETH",
+      "toxicity_minus": 0.13585213581166555,
+      "toxicity_plus": 0.9736335093788694,
+      "ts": "2026-06-11T05:34:01.160737038+00:00",
+      "unit": "kappa_times_epsilon"
+    }
+  ]
+}

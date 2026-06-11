@@ -31,6 +31,11 @@ from importlib import import_module
 
 logger = logging.getLogger(__name__)
 
+# Parameter snapshot schema this strategy consumes (see scripts/param_utils.py).
+# v3: survival-based lambda (mo_survival_fit), mid-relative kappa, EMA-smoothed
+# primaries with *_raw companions, depth_p95 calibration diagnostics, sigma2.
+SUPPORTED_PARAM_SCHEMA_VERSION = 3
+
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', None)
@@ -215,12 +220,26 @@ class Market_Making(IStrategy):
     hjb_horizon_seconds = 60.0  # horizon in seconds for matrix exponential (λ is trades/sec)
     use_asymmetric_kappa = True  # always use backward-Euler asymmetric-κ solver (kappa+ != kappa-)
 
+    # One inventory unit must match the actual order amount: the HJB assumes
+    # one fill moves q by exactly 1. With ETH ~1650 USDC the unit is one
+    # 16.5-USDC order (capped by stake_amount=25, above the 10-USDC exchange
+    # minimum). custom_stake_amount emits inventory_unit_mismatch when the
+    # rounded amount drifts >25% from the unit (e.g. after large mid moves).
     inventory_unit_base = 0.01
-    # Widen (or tighten) quotes uniformly around mid: the final half-spread is
-    # (HJB depth + fee cushion) * spread_multiplier. 1.0 = model optimum;
-    # 2.0 ~ doubles the distance from mid. Overridable via
-    # market_making.spread_multiplier.
+    # Final half-spread assembly (see _assemble_half_spread):
+    #   delta_total = clamp(HJB depth * spread_multiplier + fee*mid,
+    #                       min_half_spread_bps, max_half_spread_bps)
+    # The multiplier scales only the MODEL term; the fee cushion is one maker
+    # fee per side (a round trip costs two fees and collects the cushion
+    # twice). All three knobs overridable via market_making.*.
     spread_multiplier = 1.0
+    min_half_spread_bps = 3.0
+    max_half_spread_bps = 80.0
+    # Volatility-aware inventory penalty: phi_effective =
+    # hjb_phi + gamma_inventory_risk * sigma2_per_sec * inventory_unit_base
+    # (sigma2 published by get_kappa from the BBO mid stream; falls back to
+    # hjb_phi when absent). See docs/UNITS.md for the unit derivation.
+    gamma_inventory_risk = 0.05
     max_abs_inventory_units = 3
     max_param_age_seconds = 90
     max_collector_age_seconds = 30
@@ -251,9 +270,11 @@ class Market_Making(IStrategy):
     fee_snapshot_cache_seconds = 300
     require_exchange_fee_match_live = True
     max_deployment_report_age_seconds = 86_400
-    min_kappa_fit_points = 2
-    min_kappa_r2 = 0.0
-    min_epsilon_events = 1
+    # Floors for the estimator fit diagnostics (mirrored by the estimators'
+    # own status gating in scripts/estimator_common.py).
+    min_kappa_fit_points = 6
+    min_kappa_r2 = 0.30
+    min_epsilon_events = 50
     param_update_status_path: str | None = None
     param_snapshot_reload_interval_seconds = 60
     param_update_lock_stale_seconds = 300
@@ -530,6 +551,34 @@ class Market_Making(IStrategy):
                     "runtime_config_rejected",
                     {"key": "spread_multiplier", "value": mm_config.get("spread_multiplier"), "reason": "invalid"},
                 )
+        prior_min_bps = float(self.min_half_spread_bps)
+        prior_max_bps = float(self.max_half_spread_bps)
+        for bps_key in ("min_half_spread_bps", "max_half_spread_bps"):
+            if bps_key in mm_config:
+                try:
+                    value = float(mm_config[bps_key])
+                    if not np.isfinite(value) or value <= 0:
+                        raise ValueError(f"{bps_key} must be a positive finite number")
+                    setattr(self, bps_key, value)
+                except Exception:
+                    self._debug_log_event(
+                        "runtime_config_rejected",
+                        {"key": bps_key, "value": mm_config.get(bps_key), "reason": "invalid"},
+                    )
+        if float(self.min_half_spread_bps) >= float(self.max_half_spread_bps):
+            self._debug_log_event(
+                "runtime_config_rejected",
+                {
+                    "key": "half_spread_bps_bounds",
+                    "value": {
+                        "min_half_spread_bps": float(self.min_half_spread_bps),
+                        "max_half_spread_bps": float(self.max_half_spread_bps),
+                    },
+                    "reason": "min_not_below_max",
+                },
+            )
+            self.min_half_spread_bps = prior_min_bps
+            self.max_half_spread_bps = prior_max_bps
         for numeric_key in (
             "max_param_age_seconds",
             "max_collector_age_seconds",
@@ -540,6 +589,10 @@ class Market_Making(IStrategy):
             "max_deployment_report_age_seconds",
             "param_snapshot_reload_interval_seconds",
             "param_update_lock_stale_seconds",
+            "gamma_inventory_risk",
+            "min_kappa_fit_points",
+            "min_kappa_r2",
+            "min_epsilon_events",
         ):
             if numeric_key in mm_config:
                 try:
@@ -974,6 +1027,24 @@ class Market_Making(IStrategy):
             )
             return
 
+        # Volatility-aware inventory penalty: scale phi with the realized mid
+        # variance published by the estimator. Missing/invalid sigma2 falls
+        # back to the static base phi — it must never stop quoting.
+        phi_base = float(self.hjb_phi)
+        phi_effective = phi_base
+        phi_source = "phi_base_fallback"
+        sigma2_per_sec = None
+        try:
+            sigma2_raw = self.kappas[symbol].get("sigma2_per_sec")
+            if sigma2_raw is not None:
+                sigma2_candidate = float(sigma2_raw)
+                if np.isfinite(sigma2_candidate) and sigma2_candidate >= 0:
+                    sigma2_per_sec = sigma2_candidate
+                    phi_effective = phi_base + float(self.gamma_inventory_risk) * sigma2_per_sec * float(self.inventory_unit_base)
+                    phi_source = "sigma2_channel"
+        except Exception:
+            sigma2_per_sec = None
+
         try:
             hjb_res = solver(
                 lambda_plus=lambda_p,
@@ -983,7 +1054,7 @@ class Market_Making(IStrategy):
                 kappa_plus=kappa_p,
                 kappa_minus=kappa_m,
                 alpha=self.hjb_alpha,
-                phi=self.hjb_phi,
+                phi=phi_effective,
                 T_seconds=self.hjb_horizon_seconds,
                 q_max=self.hjb_q_max,
             )
@@ -1007,7 +1078,12 @@ class Market_Making(IStrategy):
                         "epsilon_plus": epsilon_p,
                         "epsilon_minus": epsilon_m,
                         "alpha": float(self.hjb_alpha),
-                        "phi": float(self.hjb_phi),
+                        "phi": float(phi_effective),
+                        "phi_base": float(phi_base),
+                        "phi_effective": float(phi_effective),
+                        "phi_source": phi_source,
+                        "sigma2_per_sec": sigma2_per_sec,
+                        "gamma_inventory_risk": float(self.gamma_inventory_risk),
                         "T_seconds": float(self.hjb_horizon_seconds),
                         "q_max": int(self.hjb_q_max),
                     },
@@ -1317,6 +1393,64 @@ class Market_Making(IStrategy):
 
         return None
 
+    def _assemble_half_spread(self, pair: str, quote_side: str, delta_model: float,
+                              mid_price: float) -> tuple[float, dict[str, Any]]:
+        """Assemble the final half-spread from the HJB model depth.
+
+            delta_total = clamp(delta_model * spread_multiplier + fee*mid,
+                                min_half_spread_bps, max_half_spread_bps)
+
+        The fee cushion is ONE maker fee per side: a round trip costs two fees
+        and collects the cushion twice (once per side). The multiplier scales
+        only the model term, so widening quotes defensively never inflates the
+        fee compensation. The bps clamps are the hard guarantee that quotes
+        stay inside the operator-approved band.
+
+        Returns (delta_total, info) where info carries the quote_decision
+        diagnostics: clamped ("floor"/"cap"/None), delta_pre_clamp,
+        fee_cushion, bps, and the calibration-range flag
+        (delta_total beyond the kappa fit's depth_p95 for this side means the
+        fill model is extrapolating past its data).
+        """
+        mid = float(mid_price)
+        fee_cushion = float(self.fees_maker_HL) * mid
+        delta_pre_clamp = float(delta_model) * float(self.spread_multiplier) + fee_cushion
+        floor = float(self.min_half_spread_bps) / 10_000.0 * mid
+        cap = float(self.max_half_spread_bps) / 10_000.0 * mid
+        delta_total = min(max(delta_pre_clamp, floor), cap)
+        clamped = None
+        if delta_pre_clamp < floor:
+            clamped = "floor"
+        elif delta_pre_clamp > cap:
+            clamped = "cap"
+
+        depth_p95 = None
+        outside_calibrated_range = None
+        try:
+            symbol = self._symbol_from_pair(pair)
+            entry = self.kappas.get(symbol) if isinstance(self.kappas, dict) else None
+            if isinstance(entry, dict):
+                key = "depth_p95_plus" if quote_side == "ask" else "depth_p95_minus"
+                raw = entry.get(key)
+                if raw is not None:
+                    candidate = float(raw)
+                    if np.isfinite(candidate) and candidate > 0:
+                        depth_p95 = candidate
+                        outside_calibrated_range = bool(delta_total > candidate)
+        except Exception:
+            depth_p95 = None
+            outside_calibrated_range = None
+
+        info = {
+            "clamped": clamped,
+            "delta_pre_clamp": float(delta_pre_clamp),
+            "fee_cushion": float(fee_cushion),
+            "bps": (delta_total / mid) * 10_000.0 if mid > 0 else None,
+            "quote_outside_calibrated_range": outside_calibrated_range,
+            "depth_p95": depth_p95,
+        }
+        return float(delta_total), info
+
     def _hjb_is_stale(self, current_time: datetime) -> bool:
         refreshed_at = self._as_utc(self._hjb_last_refresh_dt)
         now = self._as_utc(current_time) or self._now_utc()
@@ -1412,12 +1546,12 @@ class Market_Making(IStrategy):
                     schema_versions.append(int(version))
                 except Exception:
                     return False, "param_schema_unsupported"
-        if len(schema_versions) < 3 or any(version != 2 for version in schema_versions):
+        if len(schema_versions) < 3 or any(version != SUPPORTED_PARAM_SCHEMA_VERSION for version in schema_versions):
             return False, "param_schema_unsupported"
         if len(source_entries) < 3:
             return False, "param_schema_unsupported"
         lambda_entry = self.lambdas.get(symbol) if isinstance(self.lambdas, dict) else None
-        if not isinstance(lambda_entry, dict) or lambda_entry.get("lambda_source") != "lambda0_fit":
+        if not isinstance(lambda_entry, dict) or lambda_entry.get("lambda_source") != "mo_survival_fit":
             return False, "invalid_lambda_source"
 
         for entry in source_entries:
@@ -3220,10 +3354,9 @@ class Market_Making(IStrategy):
             return proposed_rate
         delta_source = "hjb_grid"
 
-        # Add maker fee cushion (price units)
         delta_model = float(delta_m)
-        fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
-        delta_total = float((delta_model + fee_cushion) * self.spread_multiplier)
+        delta_total, spread_info = self._assemble_half_spread(pair, "bid", delta_model, mid_price)
+        fee_cushion = float(spread_info["fee_cushion"])
         raw_rate = mid_price - delta_total
         returned_rate = self._round_quote_price(pair, "bid", raw_rate)
         self._log_spread("bid", mid_price, delta_total, delta_source)
@@ -3252,7 +3385,7 @@ class Market_Making(IStrategy):
                 delta_model=delta_model,
                 fee_cushion=fee_cushion,
                 delta_total=delta_total,
-                extra={"bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None},
+                extra=dict(spread_info),
             )
             return proposed_rate
 
@@ -3280,7 +3413,7 @@ class Market_Making(IStrategy):
                 fee_cushion=fee_cushion,
                 delta_total=delta_total,
                 extra={
-                    "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                    **spread_info,
                     **distance_payload,
                 },
             )
@@ -3312,7 +3445,7 @@ class Market_Making(IStrategy):
             fee_cushion=fee_cushion,
             delta_total=delta_total,
             extra={
-                "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                **spread_info,
                 **distance_payload,
             },
         )
@@ -3391,6 +3524,23 @@ class Market_Making(IStrategy):
                 },
             )
             return 0.0
+
+        unit = float(self.inventory_unit_base)
+        if unit > 0 and abs(float(rounded_amount) - unit) / unit > 0.25:
+            # The HJB treats one fill as exactly one inventory unit; a real
+            # order amount drifting from inventory_unit_base degrades the
+            # q-grid mapping. Diagnostic only (no hard fail in dry-run).
+            self._debug_log_event(
+                "inventory_unit_mismatch",
+                {
+                    "pair": pair,
+                    "side": side,
+                    "current_rate": rate,
+                    "rounded_amount": float(rounded_amount),
+                    "inventory_unit_base": unit,
+                    "deviation": abs(float(rounded_amount) - unit) / unit,
+                },
+            )
 
         rounded_stake = min(float(rounded_amount) * rate, maximum, proposed)
         if min_stake_value is not None and rounded_stake < min_stake_value:
@@ -3492,8 +3642,8 @@ class Market_Making(IStrategy):
         delta_source = "hjb_grid"
 
         delta_model = float(delta_p)
-        fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
-        delta_total = float((delta_model + fee_cushion) * self.spread_multiplier)
+        delta_total, spread_info = self._assemble_half_spread(pair, "ask", delta_model, mid_price)
+        fee_cushion = float(spread_info["fee_cushion"])
         raw_rate = mid_price + delta_total
         returned_rate = self._round_quote_price(pair, "ask", raw_rate)
 
@@ -3528,7 +3678,7 @@ class Market_Making(IStrategy):
                     "open_rate": float(trade.open_rate) if getattr(trade, "open_rate", None) is not None else None,
                     "current_profit": float(current_profit) if current_profit is not None else None,
                     "exit_tag": exit_tag,
-                    "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                    **spread_info,
                 },
             )
             return proposed_rate
@@ -3561,7 +3711,7 @@ class Market_Making(IStrategy):
                     "open_rate": float(trade.open_rate) if getattr(trade, "open_rate", None) is not None else None,
                     "current_profit": float(current_profit) if current_profit is not None else None,
                     "exit_tag": exit_tag,
-                    "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                    **spread_info,
                     **distance_payload,
                 },
             )
@@ -3597,7 +3747,7 @@ class Market_Making(IStrategy):
                 "open_rate": float(trade.open_rate) if getattr(trade, "open_rate", None) is not None else None,
                 "current_profit": float(current_profit) if current_profit is not None else None,
                 "exit_tag": exit_tag,
-                "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                **spread_info,
                 **distance_payload,
             },
         )
@@ -4101,8 +4251,8 @@ class Market_Making(IStrategy):
             return None
         delta_source = "hjb_grid"
         delta_model = float(delta_m)
-        fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
-        delta_total = float((delta_model + fee_cushion) * self.spread_multiplier)
+        delta_total, spread_info = self._assemble_half_spread(pair, "bid", delta_model, mid_price)
+        fee_cushion = float(spread_info["fee_cushion"])
         raw_rate = mid_price - delta_total
         returned_rate = self._round_quote_price(pair, "bid", raw_rate)
 
@@ -4131,7 +4281,7 @@ class Market_Making(IStrategy):
                 "trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None,
                 "current_order_rate": float(current_order_rate),
                 "cancel_open_order": not ok,
-                "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                **spread_info,
                 **distance_payload,
             },
         )
@@ -4204,8 +4354,8 @@ class Market_Making(IStrategy):
 
         delta_source = "hjb_grid"
         delta_model = float(delta_p)
-        fee_cushion = float(self.fees_maker_HL * mid_price * 2.0)
-        delta_total = float((delta_model + fee_cushion) * self.spread_multiplier)
+        delta_total, spread_info = self._assemble_half_spread(pair, "ask", delta_model, mid_price)
+        fee_cushion = float(spread_info["fee_cushion"])
         raw_rate = mid_price + delta_total
         returned_rate = self._round_quote_price(pair, "ask", raw_rate)
 
@@ -4235,7 +4385,7 @@ class Market_Making(IStrategy):
                 "current_order_rate": float(current_order_rate),
                 "exit_tag": entry_tag,
                 "cancel_open_order": not ok,
-                "bps": (delta_total / float(mid_price)) * 10_000.0 if mid_price > 0 else None,
+                **spread_info,
                 **distance_payload,
             },
         )

@@ -455,11 +455,28 @@ write `docs/plan_status_audit.json`. To run that audit directly:
 python scripts/verify_plan_status.py --status docs/PLAN_IMPLEMENTATION_STATUS.md --gates docs/last_safety_gates.json --output docs/plan_status_audit.json
 ```
 
+## Quote-quality bounds (dry_run_quality_report gate)
+
+The enabled-dry-run quality gate enforces that every accepted quote's
+half-spread (including fees) lands inside the strategy's clamp band:
+
+- `--max-quote-depth-bps 80`: accepted quotes wider than 80 bps fail
+  (`accepted_quote_depth_too_wide`).
+- `--min-quote-depth-bps 3`: accepted quotes tighter than 3 bps fail
+  (`accepted_quote_depth_too_tight`) — tighter than the floor means the
+  strategy clamps are not being applied and quotes may not cover fees.
+- Informational (never pass/fail on their own): `quote_quality.clamp_counts`
+  (how often the floor/cap bound, from the per-quote `clamped` field) and
+  `quote_quality.outside_calibrated_range_*` (how often the final depth
+  exceeds the κ fit's `depth_p95` for that side — the fill model
+  extrapolating past its calibration data).
+
 ## Current Safety Posture
 
 - The strategy default is `trading_enabled = False`.
-- Checked-in parameter snapshots are schema v2 but have
-  `status = "seeded_unverified"`, so the strategy rejects them.
+- Parameter snapshots must be schema v3 (`lambda_source = "mo_survival_fit"`,
+  EMA-smoothed primaries with `*_raw` companions); v2 snapshots are rejected
+  fail-closed by both the estimator runner and the strategy.
 - A real estimator run must atomically replace the snapshots with
   `status = "ok"`, current timestamps, and sufficient diagnostics before any
   quote can pass the guards.

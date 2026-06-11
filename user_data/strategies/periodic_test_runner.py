@@ -349,6 +349,14 @@ def _validate_symbol_snapshot(config_paths: Dict[str, Optional[Path]], crypto: s
             "kappa-",
             "lambda+",
             "lambda-",
+            "kappa+_raw",
+            "kappa-_raw",
+            "lambda+_raw",
+            "lambda-_raw",
+            "depth_p95_plus",
+            "depth_p95_minus",
+            "depth_max_fitted_plus",
+            "depth_max_fitted_minus",
             "window_start",
             "window_end",
             "n_quotes",
@@ -362,6 +370,8 @@ def _validate_symbol_snapshot(config_paths: Dict[str, Optional[Path]], crypto: s
         "epsilon.json": (
             "epsilon+",
             "epsilon-",
+            "epsilon+_raw",
+            "epsilon-_raw",
             "window_start",
             "window_end",
             "window_ms",
@@ -386,7 +396,7 @@ def _validate_symbol_snapshot(config_paths: Dict[str, Optional[Path]], crypto: s
         entry = payload.get(crypto)
         if not isinstance(entry, dict):
             return False, f"missing_symbol_{crypto}_in_{name}"
-        if int(entry.get("schema_version", 0) or 0) != 2:
+        if int(entry.get("schema_version", 0) or 0) != 3:
             return False, f"unsupported_schema_{name}"
         if str(entry.get("status", "")).lower() != "ok":
             return False, f"status_not_ok_{name}:{entry.get('status')}"
@@ -394,12 +404,21 @@ def _validate_symbol_snapshot(config_paths: Dict[str, Optional[Path]], crypto: s
             return False, f"missing_generated_at_{name}"
         if not _valid_timestamp(entry.get("generated_at")):
             return False, f"invalid_generated_at_{name}"
+        # sigma2_per_sec is optional (null on gappy data) but must be a finite
+        # non-negative number when present.
+        if name == "kappa.json" and entry.get("sigma2_per_sec") is not None:
+            try:
+                sigma2 = float(entry["sigma2_per_sec"])
+            except Exception:
+                return False, "invalid_sigma2_per_sec_in_kappa.json"
+            if sigma2 != sigma2 or sigma2 in (float("inf"), float("-inf")) or sigma2 < 0:
+                return False, "invalid_sigma2_per_sec_in_kappa.json"
         for key in required_keys[name]:
             if key not in entry:
                 return False, f"missing_{key}_in_{name}"
             if key == "lambda_source":
-                if name == "lambda.json" and entry[key] != "lambda0_fit":
-                    return False, "lambda_json_must_be_lambda0_fit"
+                if name == "lambda.json" and entry[key] != "mo_survival_fit":
+                    return False, "lambda_json_must_be_mo_survival_fit"
                 continue
             if key in timestamp_keys:
                 if not _valid_timestamp(entry.get(key)):

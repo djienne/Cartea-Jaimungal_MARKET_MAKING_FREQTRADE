@@ -46,7 +46,7 @@ def test_atomic_write_json_round_trip(tmp_path):
     assert not path.with_suffix(".json.tmp").exists()
 
 
-def test_kappa_lambda_writer_uses_schema_v2_and_lambda0_fit(tmp_path):
+def test_kappa_lambda_writer_uses_schema_v3_and_mo_survival_fit(tmp_path):
     kappa_path = tmp_path / "kappa.json"
     lambda_path = tmp_path / "lambda.json"
 
@@ -59,6 +59,7 @@ def test_kappa_lambda_writer_uses_schema_v2_and_lambda0_fit(tmp_path):
         kappa_file=str(kappa_path),
         lambda_file=str(lambda_path),
         metadata={"generated_at": "2026-05-25T10:00:00Z", "n_quotes": 10, "n_trades": 5},
+        raw_values={"kappa+_raw": 2.5, "kappa-_raw": 3.5, "lambda+_raw": 0.15, "lambda-_raw": 0.25},
     )
 
     kappa = json.loads(kappa_path.read_text(encoding="utf-8"))["ETH"]
@@ -66,11 +67,37 @@ def test_kappa_lambda_writer_uses_schema_v2_and_lambda0_fit(tmp_path):
 
     assert kappa["schema_version"] == PARAM_SCHEMA_VERSION
     assert kappa["status"] == "ok"
-    assert kappa["lambda_source"] == "lambda0_fit"
+    assert kappa["lambda_source"] == "mo_survival_fit"
     assert kappa["unit"]["kappa"] == "1/USDC"
+    assert kappa["kappa+"] == 2.0
+    assert kappa["kappa+_raw"] == 2.5
+    assert kappa["lambda+_raw"] == 0.15
     assert lambdas["schema_version"] == PARAM_SCHEMA_VERSION
     assert lambdas["status"] == "ok"
-    assert lambdas["lambda_source"] == "lambda0_fit"
+    assert lambdas["lambda_source"] == "mo_survival_fit"
+    assert lambdas["lambda-_raw"] == 0.25
+
+
+def test_kappa_lambda_writer_defaults_raw_to_primary(tmp_path):
+    kappa_path = tmp_path / "kappa.json"
+    lambda_path = tmp_path / "lambda.json"
+
+    save_kappa_lambda_to_json(
+        2.0,
+        3.0,
+        0.1,
+        0.2,
+        "ETH",
+        kappa_file=str(kappa_path),
+        lambda_file=str(lambda_path),
+        metadata={"generated_at": "2026-05-25T10:00:00Z"},
+    )
+
+    kappa = json.loads(kappa_path.read_text(encoding="utf-8"))["ETH"]
+    assert kappa["kappa+_raw"] == 2.0
+    assert kappa["kappa-_raw"] == 3.0
+    assert kappa["lambda+_raw"] == 0.1
+    assert kappa["lambda-_raw"] == 0.2
 
 
 def test_epsilon_writer_includes_diagnostics(tmp_path):
@@ -81,6 +108,7 @@ def test_epsilon_writer_includes_diagnostics(tmp_path):
         "ETH",
         filename=str(path),
         metadata={"generated_at": "2026-05-25T10:00:00Z", "n_buy_events": 4, "n_sell_events": 5},
+        raw_values={"epsilon+_raw": 0.015, "epsilon-_raw": 0.025},
     )
 
     data = json.loads(path.read_text(encoding="utf-8"))["ETH"]
@@ -89,6 +117,16 @@ def test_epsilon_writer_includes_diagnostics(tmp_path):
     assert data["estimator"] == "trimmed_mean"
     assert data["unit"] == "USDC"
     assert data["n_buy_events"] == 4
+    assert data["epsilon+_raw"] == 0.015
+    assert data["epsilon-_raw"] == 0.025
+
+
+def test_epsilon_writer_defaults_raw_to_primary(tmp_path):
+    path = tmp_path / "epsilon.json"
+    save_epsilon_to_json(0.01, 0.02, "ETH", filename=str(path), metadata={"generated_at": "2026-05-25T10:00:00Z"})
+    data = json.loads(path.read_text(encoding="utf-8"))["ETH"]
+    assert data["epsilon+_raw"] == 0.01
+    assert data["epsilon-_raw"] == 0.02
 
 
 def test_raw_lambda_writer_is_monitoring_only(tmp_path):
@@ -451,7 +489,7 @@ def test_dry_run_enabled_gate_writes_safe_temp_config_and_params(tmp_path):
     assert kappa["schema_version"] == PARAM_SCHEMA_VERSION
     assert kappa["status"] == "ok"
     assert epsilon["n_buy_events"] >= 1
-    assert lambdas["lambda_source"] == "lambda0_fit"
+    assert lambdas["lambda_source"] == "mo_survival_fit"
 
 
 def test_dry_run_enabled_gate_can_extend_param_freshness_for_long_windows(tmp_path):

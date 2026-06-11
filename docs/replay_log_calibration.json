@@ -1,97 +1,51 @@
 {
   "accepted_quotes_by_depth": {
-    "ask:10.00-11.00bps": 7,
-    "ask:11.00-12.00bps": 10,
-    "ask:12.00-13.00bps": 6,
-    "ask:13.00-14.00bps": 7,
-    "ask:14.00-15.00bps": 7,
-    "ask:16.00-17.00bps": 9,
-    "ask:17.00-18.00bps": 6,
-    "ask:18.00-19.00bps": 2,
-    "ask:20.00-21.00bps": 29,
-    "ask:21.00-22.00bps": 25,
-    "ask:22.00-23.00bps": 6,
-    "ask:5.00-6.00bps": 4,
-    "ask:6.00-7.00bps": 21,
-    "ask:7.00-8.00bps": 16,
-    "ask:8.00-9.00bps": 4,
-    "bid:10.00-11.00bps": 6,
-    "bid:11.00-12.00bps": 2,
-    "bid:12.00-13.00bps": 8,
-    "bid:13.00-14.00bps": 3,
-    "bid:14.00-15.00bps": 2,
-    "bid:16.00-17.00bps": 3,
-    "bid:17.00-18.00bps": 5,
-    "bid:18.00-19.00bps": 3,
-    "bid:2.00-3.00bps": 5,
-    "bid:4.00-5.00bps": 6,
-    "bid:5.00-6.00bps": 7,
-    "bid:7.00-8.00bps": 7,
-    "bid:8.00-9.00bps": 5,
-    "bid:9.00-10.00bps": 6
+    "ask:2.00-3.00bps": 18,
+    "ask:7.00-8.00bps": 5,
+    "ask:8.00-9.00bps": 6,
+    "bid:2.00-3.00bps": 3,
+    "bid:3.00-4.00bps": 6,
+    "bid:4.00-5.00bps": 8
   },
   "accepted_quotes_by_side": {
-    "ask": 159,
-    "bid": 68
+    "ask": 29,
+    "bid": 17
   },
   "actual_fee_rate": {
     "count": 0,
     "max": null,
     "mean": null,
     "min": null,
-    "outlier_count": 8,
+    "outlier_count": 12,
     "outlier_threshold": 0.01
   },
   "fill_probability_by_depth": {
-    "ask:10.00-11.00bps": 0.0,
-    "ask:11.00-12.00bps": 0.0,
-    "ask:12.00-13.00bps": 0.0,
-    "ask:13.00-14.00bps": 0.0,
-    "ask:14.00-15.00bps": 0.14285714285714285,
-    "ask:16.00-17.00bps": 0.0,
-    "ask:17.00-18.00bps": 0.0,
-    "ask:18.00-19.00bps": 0.0,
-    "ask:20.00-21.00bps": 0.0,
-    "ask:21.00-22.00bps": 0.0,
-    "ask:22.00-23.00bps": 0.0,
-    "ask:5.00-6.00bps": 0.25,
-    "ask:6.00-7.00bps": 0.0,
-    "ask:7.00-8.00bps": 0.0625,
+    "ask:2.00-3.00bps": 0.2777777777777778,
+    "ask:7.00-8.00bps": 0.0,
     "ask:8.00-9.00bps": 0.0,
-    "bid:10.00-11.00bps": 0.0,
-    "bid:11.00-12.00bps": 0.0,
-    "bid:12.00-13.00bps": 0.125,
-    "bid:13.00-14.00bps": 0.0,
-    "bid:14.00-15.00bps": 0.0,
-    "bid:16.00-17.00bps": 0.0,
-    "bid:17.00-18.00bps": 0.0,
-    "bid:18.00-19.00bps": 0.0,
-    "bid:2.00-3.00bps": 0.2,
-    "bid:4.00-5.00bps": 0.16666666666666666,
-    "bid:5.00-6.00bps": 0.0,
-    "bid:7.00-8.00bps": 0.2857142857142857,
-    "bid:8.00-9.00bps": 0.0,
-    "bid:9.00-10.00bps": 0.0
+    "bid:2.00-3.00bps": 0.0,
+    "bid:3.00-4.00bps": 0.5,
+    "bid:4.00-5.00bps": 0.5
   },
   "fill_probability_by_side": {
-    "ask": 0.018867924528301886,
-    "bid": 0.07352941176470588
+    "ask": 0.1724137931034483,
+    "bid": 0.4117647058823529
   },
   "fills_by_side": {
-    "ask": 3,
-    "bid": 5
+    "ask": 5,
+    "bid": 7
   },
-  "generated_at": "2026-06-11T06:34:58Z",
+  "generated_at": "2026-06-11T12:54:12Z",
   "input_paths": [
     "user_data\\logs\\mm_debug.jsonl"
   ],
   "inputs": {
-    "accepted_quotes": 227,
-    "accepted_quotes_with_quote_id": 227,
+    "accepted_quotes": 46,
+    "accepted_quotes_with_quote_id": 46,
     "bucket_bps": 1.0,
-    "events": 916,
-    "fills": 8,
-    "fills_with_quote_id": 8,
+    "events": 1096,
+    "fills": 12,
+    "fills_with_quote_id": 12,
     "match_window_seconds": 300.0,
     "max_fee_rate": 0.01,
     "min_fills": 10,
@@ -102,55 +56,55 @@
   "maker_ratio": 0.0,
   "markout_summary": {
     "100": {
-      "count": 8.0,
-      "max_usdc": 0.0075,
-      "mean_usdc": -0.010250000000000627,
-      "min_usdc": -0.04850000000000137
+      "count": 11.0,
+      "max_usdc": -0.0025,
+      "mean_usdc": -0.011863636363636531,
+      "min_usdc": -0.05149999999999864
     },
     "1000": {
-      "count": 8.0,
-      "max_usdc": 0.0075,
-      "mean_usdc": -0.01000000000000057,
-      "min_usdc": -0.04850000000000137
+      "count": 11.0,
+      "max_usdc": -0.0025,
+      "mean_usdc": -0.012045454545454753,
+      "min_usdc": -0.05149999999999864
     },
     "30000": {
-      "count": 8.0,
-      "max_usdc": 0.02050000000000182,
-      "mean_usdc": -0.010125000000000172,
-      "min_usdc": -0.03950000000000046
+      "count": 11.0,
+      "max_usdc": 0.01150000000000091,
+      "mean_usdc": -0.007727272727272933,
+      "min_usdc": -0.02650000000000091
     },
     "5000": {
-      "count": 8.0,
-      "max_usdc": 0.0075,
-      "mean_usdc": -0.009500000000000456,
-      "min_usdc": -0.044500000000000456
+      "count": 11.0,
+      "max_usdc": 0.0034999999999990906,
+      "mean_usdc": -0.011227272727272851,
+      "min_usdc": -0.05149999999999864
     }
   },
   "matched_fills_by_depth": {
-    "ask:14.00-15.00bps": 1,
-    "ask:5.00-6.00bps": 1,
-    "ask:7.00-8.00bps": 1,
-    "bid:12.00-13.00bps": 1,
-    "bid:2.00-3.00bps": 1,
-    "bid:4.00-5.00bps": 1,
-    "bid:7.00-8.00bps": 2
+    "ask:2.00-3.00bps": 5,
+    "bid:3.00-4.00bps": 3,
+    "bid:4.00-5.00bps": 4
   },
   "matched_fills_by_quote_id": {
+    "quote-000000000001": 1,
+    "quote-000000000002": 1,
+    "quote-000000000004": 2,
     "quote-000000000005": 1,
+    "quote-000000000009": 1,
     "quote-000000000010": 1,
-    "quote-000000001572": 1,
-    "quote-000000001601": 1,
-    "quote-000000001616": 1,
-    "quote-000000001710": 1,
-    "quote-000000001713": 1,
-    "quote-000000001728": 1
+    "quote-000000000012": 1,
+    "quote-000000000013": 1,
+    "quote-000000000014": 1,
+    "quote-000000000015": 1,
+    "quote-000000000018": 1
   },
   "reasons": [
+    "insufficient_accepted_quotes:46<min_100",
     "insufficient_maker_fills:0<min_10",
-    "unknown_liquidity_fills:8"
+    "unknown_liquidity_fills:12"
   ],
   "taker_fills": 0,
-  "unknown_liquidity_fills": 8,
+  "unknown_liquidity_fills": 12,
   "unmatched_fills": 0,
   "usable_for_calibration": false
 }

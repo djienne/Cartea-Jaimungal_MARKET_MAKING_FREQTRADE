@@ -128,8 +128,8 @@ class DummyExchange:
     def __init__(self):
         self.markets = {
             "ETH/USDC:USDC": {
-                "precision": {"amount": 2, "price": 2},
-                "limits": {"amount": {"min": 0.01}, "cost": {"min": 1.0}},
+                "precision": {"amount": 3, "price": 2},
+                "limits": {"amount": {"min": 0.001}, "cost": {"min": 1.0}},
                 "maker": 0.00015,
                 "taker": 0.00045,
             }
@@ -139,7 +139,7 @@ class DummyExchange:
         self.cancelled_pair = None
 
     def amount_to_precision(self, pair, amount):
-        return f"{float(amount):.2f}"
+        return f"{float(amount):.3f}"
 
     def price_to_precision(self, pair, price):
         return f"{float(price):.2f}"
@@ -173,35 +173,48 @@ def make_bot() -> Market_Making:
     bot._hjb_last_refresh_dt = datetime.now(timezone.utc)
     bot.kappas = {
         "ETH": {
-            "schema_version": 2,
+            "schema_version": 3,
             "status": "ok",
             "kappa+": 2.0,
             "kappa-": 2.0,
-            "n_points_plus": 3,
-            "n_points_minus": 3,
+            "kappa+_raw": 2.0,
+            "kappa-_raw": 2.0,
+            "lambda+_raw": 0.1,
+            "lambda-_raw": 0.1,
+            "n_points_plus": 8,
+            "n_points_minus": 8,
             "r2_plus": 0.5,
             "r2_minus": 0.5,
+            "depth_p95_plus": 0.9,
+            "depth_p95_minus": 0.9,
+            "depth_max_fitted_plus": 1.2,
+            "depth_max_fitted_minus": 1.2,
+            "sigma2_per_sec": 0.02,
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     }
     bot.epsilons = {
         "ETH": {
-            "schema_version": 2,
+            "schema_version": 3,
             "status": "ok",
             "epsilon+": 0.0,
             "epsilon-": 0.0,
-            "n_buy_events": 3,
-            "n_sell_events": 3,
+            "epsilon+_raw": 0.0,
+            "epsilon-_raw": 0.0,
+            "n_buy_events": 60,
+            "n_sell_events": 60,
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     }
     bot.lambdas = {
         "ETH": {
-            "schema_version": 2,
+            "schema_version": 3,
             "status": "ok",
             "lambda+": 0.1,
             "lambda-": 0.1,
-            "lambda_source": "lambda0_fit",
+            "lambda+_raw": 0.1,
+            "lambda-_raw": 0.1,
+            "lambda_source": "mo_survival_fit",
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     }
@@ -249,25 +262,162 @@ def test_trading_disabled_clears_entry_signal():
     assert out["enter_long"].sum() == 0
 
 
-def test_spread_multiplier_scales_half_spread():
-    pair = "ETH/USDC:USDC"
-    now = datetime.now(timezone.utc)
+def _entry_quote_decision(bot, pair="ETH/USDC:USDC", proposed_rate=99.5):
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot.custom_entry_price(pair, None, datetime.now(timezone.utc), proposed_rate=proposed_rate, entry_tag="mm_bid", side="long")
+    decisions = [p for e, p in events if e == "quote_decision" and p.get("delta_total") is not None]
+    assert decisions, "expected a quote_decision with delta_total"
+    return decisions[-1]
 
+
+def test_spread_multiplier_scales_model_term_only():
+    # delta_total = delta_model * multiplier + fee_cushion (affine, NOT linear):
+    # the fee cushion must not be inflated by the defensive multiplier.
     def delta_total_for(mult):
         bot = make_bot()
         bot.trading_enabled = True
         bot.spread_multiplier = mult
-        events = []
-        bot._debug_log_event = lambda event, payload: events.append((event, payload))
-        bot.custom_entry_price(pair, None, now, proposed_rate=99.5, entry_tag="mm_bid", side="long")
-        decisions = [p for e, p in events if e == "quote_decision" and p.get("delta_total") is not None]
-        assert decisions, "expected a quote_decision with delta_total"
-        return float(decisions[-1]["delta_total"])
+        bot.max_half_spread_bps = 500.0  # keep the cap out of the linearity check
+        return _entry_quote_decision(bot)
 
     base = delta_total_for(1.0)
     doubled = delta_total_for(2.0)
-    assert base > 0
-    assert abs(doubled - 2.0 * base) < 1e-9
+    delta_model = 0.5  # bid delta at q=0 from the stub HJB grid
+    fee_cushion = 0.00015 * 100.0  # one maker fee per side at mid=100
+    assert abs(float(base["delta_total"]) - (delta_model + fee_cushion)) < 1e-9
+    assert abs(float(base["fee_cushion"]) - fee_cushion) < 1e-12
+    assert abs(float(doubled["delta_total"]) - float(base["delta_total"]) - delta_model) < 1e-9
+
+
+def test_half_spread_floor_clamp_applies_and_is_logged():
+    bot = make_bot()
+    bot.trading_enabled = True
+    # Tiny model delta: pre-clamp ~= 0.01*1 + 0.015 = 0.025 -> 2.5 bps < 3 bps floor.
+    bot.hjb_cache = {
+        "q_grid": np.array([-1, 0, 1]),
+        "delta_plus": np.array([np.inf, 0.02, 0.01]),
+        "delta_minus": np.array([0.01, 0.01, np.inf]),
+    }
+    decision = _entry_quote_decision(bot)
+    assert decision["clamped"] == "floor"
+    assert abs(float(decision["bps"]) - 3.0) < 1e-9
+    assert abs(float(decision["delta_total"]) - 0.03) < 1e-12  # 3 bps of mid 100
+    assert float(decision["delta_pre_clamp"]) < 0.03
+
+
+def test_half_spread_cap_clamp_applies_and_is_logged():
+    bot = make_bot()
+    bot.trading_enabled = True
+    # Huge model delta: pre-clamp ~= 2.0 + 0.015 -> ~201 bps > 80 bps cap.
+    bot.hjb_cache = {
+        "q_grid": np.array([-1, 0, 1]),
+        "delta_plus": np.array([np.inf, 2.0, 2.0]),
+        "delta_minus": np.array([2.0, 2.0, np.inf]),
+    }
+    decision = _entry_quote_decision(bot, proposed_rate=99.0)
+    assert decision["clamped"] == "cap"
+    assert abs(float(decision["bps"]) - 80.0) < 1e-9
+    assert abs(float(decision["delta_total"]) - 0.8) < 1e-12
+
+
+def test_unclamped_quote_logs_clamped_none_and_calibration_flag():
+    bot = make_bot()
+    bot.trading_enabled = True
+    decision = _entry_quote_decision(bot)
+    assert decision["clamped"] is None
+    # delta_total 0.515 <= depth_p95_minus 0.9 from the stub kappa snapshot.
+    assert decision["quote_outside_calibrated_range"] is False
+    assert decision["depth_p95"] == 0.9
+
+    bot2 = make_bot()
+    bot2.trading_enabled = True
+    bot2.kappas["ETH"]["depth_p95_minus"] = 0.2  # fit only covers 0.2 USDC of depth
+    decision2 = _entry_quote_decision(bot2)
+    assert decision2["quote_outside_calibrated_range"] is True
+
+    bot3 = make_bot()
+    bot3.trading_enabled = True
+    del bot3.kappas["ETH"]["depth_p95_minus"]
+    bot3.kappas["ETH"]["depth_p95_plus"] = None
+    decision3 = _entry_quote_decision(bot3)
+    assert decision3["quote_outside_calibrated_range"] is None
+    assert decision3["depth_p95"] is None
+
+
+def test_half_spread_bounds_config_override_and_pair_validation():
+    bot = make_bot()
+    bot.config = {
+        "dry_run": True,
+        "fee": 0.00015,
+        "market_making": {"min_half_spread_bps": 5.0, "max_half_spread_bps": 60.0},
+    }
+    bot._apply_runtime_safety_config()
+    assert bot.min_half_spread_bps == 5.0
+    assert bot.max_half_spread_bps == 60.0
+
+    # min >= max is rejected as a pair; prior values are kept.
+    bot.config = {
+        "dry_run": True,
+        "fee": 0.00015,
+        "market_making": {"min_half_spread_bps": 90.0, "max_half_spread_bps": 60.0},
+    }
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot._apply_runtime_safety_config()
+    assert bot.min_half_spread_bps == 5.0
+    assert bot.max_half_spread_bps == 60.0
+    assert any(p.get("key") == "half_spread_bps_bounds" for e, p in events if e == "runtime_config_rejected")
+
+    # Non-positive values are rejected individually.
+    bot.config = {"dry_run": True, "fee": 0.00015, "market_making": {"min_half_spread_bps": -1.0}}
+    bot._apply_runtime_safety_config()
+    assert bot.min_half_spread_bps == 5.0
+
+
+def test_diagnostic_floors_config_overridable():
+    bot = make_bot()
+    bot.config = {
+        "dry_run": True,
+        "fee": 0.00015,
+        "market_making": {"min_kappa_fit_points": 10, "min_kappa_r2": 0.5, "min_epsilon_events": 100},
+    }
+    bot._apply_runtime_safety_config()
+    assert bot.min_kappa_fit_points == 10
+    assert bot.min_kappa_r2 == 0.5
+    assert bot.min_epsilon_events == 100
+
+    # The stub snapshot (8 points, r2 0.5, 60 events) now fails the raised floors.
+    ok, reason = bot._params_are_valid("ETH/USDC:USDC")
+    assert not ok
+    assert reason == "insufficient_kappa_diagnostics"
+
+
+def test_hjb_refresh_uses_sigma2_volatility_channel():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot._refresh_hjb("ETH/USDC:USDC")
+    refreshes = [p for e, p in events if e == "hjb_refresh"]
+    assert refreshes, "expected an hjb_refresh event"
+    inputs = refreshes[-1]["inputs"]
+    expected_phi = 0.0001 + bot.gamma_inventory_risk * 0.02 * bot.inventory_unit_base
+    assert inputs["phi_source"] == "sigma2_channel"
+    assert abs(inputs["phi_effective"] - expected_phi) < 1e-15
+    assert inputs["sigma2_per_sec"] == 0.02
+
+
+def test_hjb_refresh_falls_back_to_base_phi_without_sigma2():
+    bot = make_bot()
+    bot.kappas["ETH"]["sigma2_per_sec"] = None
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+    bot._refresh_hjb("ETH/USDC:USDC")
+    refreshes = [p for e, p in events if e == "hjb_refresh"]
+    assert refreshes, "expected an hjb_refresh event (missing sigma2 must not block)"
+    inputs = refreshes[-1]["inputs"]
+    assert inputs["phi_source"] == "phi_base_fallback"
+    assert inputs["phi_effective"] == 0.0001
 
 
 def test_spread_multiplier_config_override_rejects_invalid():
@@ -690,7 +840,7 @@ def test_custom_stake_amount_caps_to_one_inventory_unit():
         max_stake=1000.0,
         entry_tag="mm_bid",
         side="long",
-    ) == 40.0
+    ) == 40.0  # one unit = 0.01 * 4000
     assert bot.custom_stake_amount(
         "ETH/USDC:USDC",
         datetime.now(timezone.utc),
@@ -700,7 +850,7 @@ def test_custom_stake_amount_caps_to_one_inventory_unit():
         max_stake=1000.0,
         entry_tag="mm_bid",
         side="long",
-    ) == 0.0
+    ) == 24.0  # 25/4000 = 0.00625 floors to the 0.001 lot step -> 0.006 * 4000
 
 
 def test_custom_stake_amount_returns_zero_when_min_stake_exceeds_inventory_unit():
@@ -723,7 +873,7 @@ def test_custom_stake_amount_returns_zero_when_min_stake_exceeds_inventory_unit(
     assert stake == 0.0
     assert events[0][0] == "stake_rejected"
     assert events[0][1]["reason"] == "min_stake_exceeds_inventory_unit"
-    assert events[0][1]["risk_cap"] == 1.0
+    assert events[0][1]["risk_cap"] == 1.0  # 0.01 units * rate 100
 
 
 def test_strategy_leverage_stays_one_until_margin_model_is_live_ready():
@@ -742,7 +892,7 @@ def test_strategy_leverage_stays_one_until_margin_model_is_live_ready():
 
 def test_custom_stake_amount_rounds_base_amount_down_to_lot_step():
     bot = make_bot()
-    bot.inventory_unit_base = 0.019
+    bot.inventory_unit_base = 0.0194
     events = []
     bot._debug_log_event = lambda event, payload: events.append((event, payload))
 
@@ -757,11 +907,49 @@ def test_custom_stake_amount_rounds_base_amount_down_to_lot_step():
         side="long",
     )
 
-    assert stake == 1.0
+    assert stake == 1.9
     assert events[0][0] == "stake_sized"
-    assert round(events[0][1]["raw_amount"], 6) == 0.019
-    assert events[0][1]["rounded_amount"] == 0.01
+    assert round(events[0][1]["raw_amount"], 6) == 0.0194
+    assert events[0][1]["rounded_amount"] == 0.019
     assert events[0][1]["amount_rounding_applied"] is True
+
+
+def test_custom_stake_amount_emits_inventory_unit_mismatch_when_amount_drifts():
+    bot = make_bot()
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    # rate 4000: stake cap 25 -> amount 0.006 after lot rounding, 40% below the
+    # 0.01 unit -> diagnostic fires (no hard fail).
+    stake = bot.custom_stake_amount(
+        "ETH/USDC:USDC",
+        datetime.now(timezone.utc),
+        4000.0,
+        proposed_stake=25.0,
+        min_stake=None,
+        max_stake=1000.0,
+        entry_tag="mm_bid",
+        side="long",
+    )
+    assert stake == 24.0
+    mismatches = [p for e, p in events if e == "inventory_unit_mismatch"]
+    assert len(mismatches) == 1
+    assert mismatches[0]["rounded_amount"] == 0.006
+    assert mismatches[0]["deviation"] > 0.25
+
+    # rate 100: one unit = 1.0 USDC, amount == unit -> no event.
+    events.clear()
+    bot.custom_stake_amount(
+        "ETH/USDC:USDC",
+        datetime.now(timezone.utc),
+        100.0,
+        proposed_stake=25.0,
+        min_stake=None,
+        max_stake=1000.0,
+        entry_tag="mm_bid",
+        side="long",
+    )
+    assert not [p for e, p in events if e == "inventory_unit_mismatch"]
 
 
 def test_confirm_entry_rejects_missing_hjb_cache():
@@ -1007,10 +1195,15 @@ def test_param_snapshot_status_must_be_ok():
     assert bot._params_are_valid("ETH/USDC:USDC") == (False, "param_status_not_ok")
 
 
-def test_lambda_snapshot_must_be_hjb_lambda0_fit():
+def test_lambda_snapshot_must_be_mo_survival_fit():
     bot = make_bot()
     bot.lambdas["ETH"]["lambda_source"] = "lambda_raw"
 
+    assert bot._params_are_valid("ETH/USDC:USDC") == (False, "invalid_lambda_source")
+
+    # The legacy v2 source value (binned-density intercept) is rejected too:
+    # its lambda is bin-width dependent and ~3x too small.
+    bot.lambdas["ETH"]["lambda_source"] = "lambda0_fit"
     assert bot._params_are_valid("ETH/USDC:USDC") == (False, "invalid_lambda_source")
 
 
@@ -1819,7 +2012,7 @@ def test_load_params_uses_redis_blob_when_available():
     blob = {
         "kappa": {"kappa+": 3.0, "status": "ok"},
         "epsilon": {"epsilon+": 0.0, "status": "ok"},
-        "lambda": {"lambda+": 0.2, "lambda_source": "lambda0_fit"},
+        "lambda": {"lambda+": 0.2, "lambda_source": "mo_survival_fit"},
     }
     bot._param_store = _FakeParamStore(blob)
     bot._param_store_loaded = True
@@ -1922,7 +2115,7 @@ def test_exchange_position_takes_priority_over_open_trade_count():
     bot.exchange.positions = [{"symbol": "ETH/USDC:USDC", "side": "long", "contracts": "0.02"}]
     DummyTrade._open_trades = [DummyTrade(amount=0.01)]
 
-    assert bot._inventory_level("ETH/USDC:USDC") == 2
+    assert bot._inventory_level("ETH/USDC:USDC") == 2  # 0.02 / unit 0.01, not the open trade's 0.01
 
 
 def test_unexpected_short_position_rejects_entry_and_kills_strategy():
@@ -2396,10 +2589,10 @@ def test_quote_decision_logs_freshness_age_fields():
     assert payload["trading_enabled"] is False
     assert payload["dry_run"] is True
     assert payload["hjb_param_fingerprint"] == bot._hjb_param_fingerprint
-    assert payload["hjb_params"]["sources"]["kappa"]["schema_version"] == 2
+    assert payload["hjb_params"]["sources"]["kappa"]["schema_version"] == 3
     assert payload["hjb_params"]["sources"]["kappa"]["generated_at"] == bot.kappas["ETH"]["generated_at"]
-    assert payload["hjb_params"]["sources"]["lambda"]["lambda_source"] == "lambda0_fit"
-    assert payload["params"]["sources"]["epsilon"]["n_buy_events"] == 3
+    assert payload["hjb_params"]["sources"]["lambda"]["lambda_source"] == "mo_survival_fit"
+    assert payload["params"]["sources"]["epsilon"]["n_buy_events"] == 60
     assert payload["fee_snapshot"]["config_fee_matches_strategy"] is True
     assert payload["fee_snapshot"]["exchange_maker_fee_matches_strategy"] is True
 
@@ -2448,8 +2641,8 @@ def test_hjb_refresh_logs_parameter_fingerprint():
 
     refresh = [payload for event, payload in events if event == "hjb_refresh"][0]
     assert refresh["param_fingerprint"] == bot._hjb_param_fingerprint
-    assert refresh["params"]["sources"]["kappa"]["schema_version"] == 2
-    assert refresh["params"]["sources"]["epsilon"]["n_sell_events"] == 3
+    assert refresh["params"]["sources"]["kappa"]["schema_version"] == 3
+    assert refresh["params"]["sources"]["epsilon"]["n_sell_events"] == 60
     assert bot._hjb_params_snapshot == refresh["params"]
 
 

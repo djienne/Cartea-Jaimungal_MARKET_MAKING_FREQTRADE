@@ -48,28 +48,68 @@ def test_long_only_inventory_q_is_clipped_nonnegative():
     assert inventory_q(0.08, 0.01, 3) == 3
 
 
-def test_compute_quotes_uses_configurable_maker_fee_cushion():
-    hjb = {
+_QUOTE_TEST_HJB = {
+    "q_grid": np.array([-1, 0, 1]),
+    "delta_plus": np.array([np.inf, 0.5, 0.4]),
+    "delta_minus": np.array([0.4, 0.5, np.inf]),
+}
+_QUOTE_TEST_PARAMS = {
+    "kappa+": 2.0,
+    "kappa-": 2.0,
+    "lambda+": 0.1,
+    "lambda-": 0.1,
+    "epsilon+": 0.0,
+    "epsilon-": 0.0,
+}
+
+
+def test_compute_quotes_adds_one_maker_fee_per_side():
+    # delta_total = delta_model * multiplier + maker_fee * mid (NOT fee*mid*2):
+    # each side carries one fee; the round trip costs two and collects two.
+    bid_base, ask_base, _ = compute_quotes(100.0, 0, _QUOTE_TEST_PARAMS, 1, _QUOTE_TEST_HJB, maker_fee=0.001)
+    bid_wide, ask_wide, _ = compute_quotes(100.0, 0, _QUOTE_TEST_PARAMS, 1, _QUOTE_TEST_HJB, maker_fee=0.002)
+
+    assert round(float(bid_base), 6) == 99.4  # 100 - (0.5 + 0.1)
+    assert round(float(ask_base), 6) == 100.6
+    assert round(float(bid_wide), 6) == 99.3  # 100 - (0.5 + 0.2)
+    assert round(float(ask_wide), 6) == 100.7
+
+
+def test_compute_quotes_multiplier_scales_model_term_only():
+    bid, ask, _ = compute_quotes(
+        100.0, 0, _QUOTE_TEST_PARAMS, 1, _QUOTE_TEST_HJB, maker_fee=0.001, spread_multiplier=2.0,
+        max_half_spread_bps=500.0,
+    )
+    assert round(float(bid), 6) == 98.9  # 100 - (0.5*2 + 0.1)
+    assert round(float(ask), 6) == 101.1  # 100 + (0.5*2 + 0.1)
+
+
+def test_compute_quotes_clamps_to_half_spread_bounds():
+    tight_hjb = {
         "q_grid": np.array([-1, 0, 1]),
-        "delta_plus": np.array([np.inf, 0.5, 0.4]),
-        "delta_minus": np.array([0.4, 0.5, np.inf]),
+        "delta_plus": np.array([np.inf, 0.005, 0.005]),
+        "delta_minus": np.array([0.005, 0.005, np.inf]),
     }
-    params = {
-        "kappa+": 2.0,
-        "kappa-": 2.0,
-        "lambda+": 0.1,
-        "lambda-": 0.1,
-        "epsilon+": 0.0,
-        "epsilon-": 0.0,
+    bid, ask, _ = compute_quotes(100.0, 0, _QUOTE_TEST_PARAMS, 1, tight_hjb, maker_fee=0.0001)
+    # pre-clamp 0.005 + 0.01 = 0.015 -> 1.5 bps -> floored at 3 bps = 0.03
+    assert round(float(bid), 6) == 99.97
+    assert round(float(ask), 6) == 100.03
+
+    wide_hjb = {
+        "q_grid": np.array([-1, 0, 1]),
+        "delta_plus": np.array([np.inf, 2.0, 2.0]),
+        "delta_minus": np.array([2.0, 2.0, np.inf]),
     }
+    bid, ask, _ = compute_quotes(100.0, 0, _QUOTE_TEST_PARAMS, 1, wide_hjb, maker_fee=0.0001)
+    # pre-clamp ~2.01 -> 201 bps -> capped at 80 bps = 0.8
+    assert round(float(bid), 6) == 99.2
+    assert round(float(ask), 6) == 100.8
 
-    bid_base, ask_base, _ = compute_quotes(100.0, 0, params, 1, hjb, maker_fee=0.001)
-    bid_wide, ask_wide, _ = compute_quotes(100.0, 0, params, 1, hjb, maker_fee=0.002)
 
-    assert round(float(bid_base), 6) == 99.3
-    assert round(float(ask_base), 6) == 100.7
-    assert round(float(bid_wide), 6) == 99.1
-    assert round(float(ask_wide), 6) == 100.9
+def test_compute_quotes_disabled_side_returns_none():
+    bid, ask, _ = compute_quotes(100.0, 1, _QUOTE_TEST_PARAMS, 1, _QUOTE_TEST_HJB, maker_fee=0.001)
+    assert bid is None  # q == q_max boundary disables the bid
+    assert ask is not None
 
 
 def test_replay_rounds_prices_in_maker_safe_direction():

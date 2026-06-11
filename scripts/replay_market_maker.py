@@ -22,6 +22,10 @@ from hjb import compute_h_asymmetric
 
 MAKER_FEE = 0.00015
 TAKER_FEE = 0.00045
+# Quote-assembly defaults mirroring user_data/strategies/Market_Making.py
+# (_assemble_half_spread); tests/test_quote_assembly.py asserts parity.
+MIN_HALF_SPREAD_BPS = 3.0
+MAX_HALF_SPREAD_BPS = 80.0
 MARKOUT_HORIZONS_MS = (100, 1_000, 5_000, 30_000)
 PARAMETER_SERIES_UNIT = {
     "kappa": "1/USDC",
@@ -37,6 +41,9 @@ class ReplayConfig:
     mid_fallback: float
     inventory_unit_base: float = 0.01
     q_max: int = 3
+    spread_multiplier: float = 1.0
+    min_half_spread_bps: float = MIN_HALF_SPREAD_BPS
+    max_half_spread_bps: float = MAX_HALF_SPREAD_BPS
     decision_latency_ms: int = 250
     order_ack_latency_ms: int = 250
     cancel_latency_ms: int = 250
@@ -370,6 +377,32 @@ def replay_toxicity_snapshot(
     }
 
 
+def assemble_half_spread(
+    delta_model: float,
+    mid: float,
+    *,
+    spread_multiplier: float = 1.0,
+    maker_fee: float = MAKER_FEE,
+    min_half_spread_bps: float = MIN_HALF_SPREAD_BPS,
+    max_half_spread_bps: float = MAX_HALF_SPREAD_BPS,
+) -> float | None:
+    """Strategy-identical final half-spread (see Market_Making._assemble_half_spread):
+
+        delta_total = clamp(delta_model * spread_multiplier + maker_fee*mid,
+                            min_half_spread_bps, max_half_spread_bps)
+
+    Returns None for a disabled side (non-finite model delta).
+    """
+    if not np.isfinite(float(delta_model)):
+        return None
+    mid = float(mid)
+    fee_cushion = float(maker_fee) * mid
+    delta_pre_clamp = float(delta_model) * float(spread_multiplier) + fee_cushion
+    floor = float(min_half_spread_bps) / 10_000.0 * mid
+    cap = float(max_half_spread_bps) / 10_000.0 * mid
+    return float(min(max(delta_pre_clamp, floor), cap))
+
+
 def compute_quotes(
     mid: float,
     q: int,
@@ -378,16 +411,32 @@ def compute_quotes(
     hjb: dict | None = None,
     *,
     maker_fee: float = MAKER_FEE,
+    spread_multiplier: float = 1.0,
+    min_half_spread_bps: float = MIN_HALF_SPREAD_BPS,
+    max_half_spread_bps: float = MAX_HALF_SPREAD_BPS,
 ) -> tuple[float | None, float | None, dict]:
     if hjb is None:
         hjb = compute_hjb_cache(params, q_max)
     q_grid = hjb["q_grid"]
     idx = int(np.argmin(np.abs(q_grid - q)))
-    bid_delta = hjb["delta_minus"][idx]
-    ask_delta = hjb["delta_plus"][idx]
-    fee_cushion = float(maker_fee) * mid * 2.0
-    bid = None if not np.isfinite(bid_delta) else mid - float(bid_delta + fee_cushion)
-    ask = None if not np.isfinite(ask_delta) else mid + float(ask_delta + fee_cushion)
+    bid_total = assemble_half_spread(
+        hjb["delta_minus"][idx],
+        mid,
+        spread_multiplier=spread_multiplier,
+        maker_fee=maker_fee,
+        min_half_spread_bps=min_half_spread_bps,
+        max_half_spread_bps=max_half_spread_bps,
+    )
+    ask_total = assemble_half_spread(
+        hjb["delta_plus"][idx],
+        mid,
+        spread_multiplier=spread_multiplier,
+        maker_fee=maker_fee,
+        min_half_spread_bps=min_half_spread_bps,
+        max_half_spread_bps=max_half_spread_bps,
+    )
+    bid = None if bid_total is None else mid - bid_total
+    ask = None if ask_total is None else mid + ask_total
     return bid, ask, hjb
 
 
@@ -781,7 +830,17 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             continue
 
         metrics.quote_decision_events += 1
-        bid, ask, _ = compute_quotes(mid, q, params, config.q_max, hjb_cache, maker_fee=config.maker_fee)
+        bid, ask, _ = compute_quotes(
+            mid,
+            q,
+            params,
+            config.q_max,
+            hjb_cache,
+            maker_fee=config.maker_fee,
+            spread_multiplier=config.spread_multiplier,
+            min_half_spread_bps=config.min_half_spread_bps,
+            max_half_spread_bps=config.max_half_spread_bps,
+        )
         inventory_at_decision = metrics.inventory_base
         active_at = row_ts + pd.Timedelta(milliseconds=total_quote_latency_ms)
         refresh_due_at = row_ts + pd.Timedelta(milliseconds=quote_refresh_interval_ms)
@@ -948,6 +1007,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon-minus", type=float, default=0.0)
     parser.add_argument("--maker-fee", type=float, default=MAKER_FEE)
     parser.add_argument("--taker-fee", type=float, default=TAKER_FEE)
+    parser.add_argument(
+        "--spread-multiplier",
+        type=float,
+        default=1.0,
+        help="Scales the HJB model depth only (fee cushion added separately); pass 3.0 to mirror the production config.",
+    )
+    parser.add_argument("--min-half-spread-bps", type=float, default=MIN_HALF_SPREAD_BPS)
+    parser.add_argument("--max-half-spread-bps", type=float, default=MAX_HALF_SPREAD_BPS)
     parser.add_argument("--funding-rate-per-hour", type=float, default=0.0)
     parser.add_argument("--starting-equity-usdc", type=float, default=1000.0)
     parser.add_argument("--leverage", type=float, default=1.0)
@@ -993,6 +1060,9 @@ def main() -> int:
         mid_fallback=args.mid,
         maker_fee=args.maker_fee,
         taker_fee=args.taker_fee,
+        spread_multiplier=args.spread_multiplier,
+        min_half_spread_bps=args.min_half_spread_bps,
+        max_half_spread_bps=args.max_half_spread_bps,
         funding_rate_per_hour=args.funding_rate_per_hour,
         starting_equity_usdc=args.starting_equity_usdc,
         leverage=args.leverage,

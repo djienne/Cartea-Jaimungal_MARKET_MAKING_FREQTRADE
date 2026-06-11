@@ -27,7 +27,7 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
             tmp_path / "kappa.json",
             {
                 "ETH": {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
                     "window_start": "2026-05-25T09:30:00Z",
@@ -36,10 +36,19 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
                     "kappa-": 2.5,
                     "lambda+": 0.1,
                     "lambda-": 0.2,
+                    "kappa+_raw": 2.1,
+                    "kappa-_raw": 2.6,
+                    "lambda+_raw": 0.11,
+                    "lambda-_raw": 0.21,
+                    "depth_p95_plus": 0.4,
+                    "depth_p95_minus": 0.3,
+                    "depth_max_fitted_plus": 0.6,
+                    "depth_max_fitted_minus": 0.5,
+                    "sigma2_per_sec": 0.02,
                     "n_quotes": 100,
                     "n_trades": 50,
-                    "n_points_plus": 3,
-                    "n_points_minus": 3,
+                    "n_points_plus": 8,
+                    "n_points_minus": 8,
                     "r2_plus": 0.5,
                     "r2_minus": 0.6,
                 }
@@ -49,14 +58,16 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
             tmp_path / "lambda.json",
             {
                 "ETH": {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
                     "window_start": "2026-05-25T09:30:00Z",
                     "window_end": "2026-05-25T10:00:00Z",
                     "lambda+": 0.1,
                     "lambda-": 0.2,
-                    "lambda_source": "lambda0_fit",
+                    "lambda+_raw": 0.11,
+                    "lambda-_raw": 0.21,
+                    "lambda_source": "mo_survival_fit",
                     "n_trades": 50,
                 }
             },
@@ -65,18 +76,20 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
             tmp_path / "epsilon.json",
             {
                 "ETH": {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
                     "window_start": "2026-05-25T09:30:00Z",
                     "window_end": "2026-05-25T10:00:00Z",
                     "epsilon+": 0.01,
                     "epsilon-": 0.02,
-                    "window_ms": 200,
+                    "epsilon+_raw": 0.011,
+                    "epsilon-_raw": 0.021,
+                    "window_ms": 5000,
                     "estimator": "trimmed_mean",
                     "unit": "USDC",
-                    "n_buy_events": 3,
-                    "n_sell_events": 3,
+                    "n_buy_events": 60,
+                    "n_sell_events": 60,
                     "toxicity_plus": 0.02,
                     "toxicity_minus": 0.05,
                 }
@@ -85,8 +98,46 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
     }
 
 
-def test_runner_accepts_valid_schema_v2_snapshots(tmp_path):
+def test_runner_accepts_valid_schema_v3_snapshots(tmp_path):
     assert _validate_symbol_snapshot(valid_snapshots(tmp_path), "ETH") == (True, "ok")
+
+
+def test_runner_rejects_schema_v2_snapshots(tmp_path):
+    snapshots = valid_snapshots(tmp_path)
+    payload = json.loads(snapshots["kappa.json"].read_text(encoding="utf-8"))
+    payload["ETH"]["schema_version"] = 2
+    snapshots["kappa.json"].write_text(json.dumps(payload), encoding="utf-8")
+
+    ok, reason = _validate_symbol_snapshot(snapshots, "ETH")
+
+    assert not ok
+    assert reason == "unsupported_schema_kappa.json"
+
+
+def test_runner_rejects_missing_raw_keys(tmp_path):
+    snapshots = valid_snapshots(tmp_path)
+    payload = json.loads(snapshots["kappa.json"].read_text(encoding="utf-8"))
+    del payload["ETH"]["kappa+_raw"]
+    snapshots["kappa.json"].write_text(json.dumps(payload), encoding="utf-8")
+
+    ok, reason = _validate_symbol_snapshot(snapshots, "ETH")
+
+    assert not ok
+    assert reason == "missing_kappa+_raw_in_kappa.json"
+
+
+def test_runner_accepts_null_sigma2_but_rejects_negative(tmp_path):
+    snapshots = valid_snapshots(tmp_path)
+    payload = json.loads(snapshots["kappa.json"].read_text(encoding="utf-8"))
+    payload["ETH"]["sigma2_per_sec"] = None
+    snapshots["kappa.json"].write_text(json.dumps(payload), encoding="utf-8")
+    assert _validate_symbol_snapshot(snapshots, "ETH") == (True, "ok")
+
+    payload["ETH"]["sigma2_per_sec"] = -0.5
+    snapshots["kappa.json"].write_text(json.dumps(payload), encoding="utf-8")
+    ok, reason = _validate_symbol_snapshot(snapshots, "ETH")
+    assert not ok
+    assert reason == "invalid_sigma2_per_sec_in_kappa.json"
 
 
 def test_runner_rejects_non_ok_snapshot_status(tmp_path):
@@ -122,7 +173,7 @@ def test_runner_rejects_raw_lambda_as_hjb_input(tmp_path):
     ok, reason = _validate_symbol_snapshot(snapshots, "ETH")
 
     assert not ok
-    assert reason == "lambda_json_must_be_lambda0_fit"
+    assert reason == "lambda_json_must_be_mo_survival_fit"
 
 
 def test_runner_executes_estimators_in_dependency_order(monkeypatch, tmp_path):

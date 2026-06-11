@@ -17,14 +17,17 @@ A comprehensive Python suite for collecting real-time tick data from Hyperliquid
 - **Asynchronous data writing** to minimize performance impact
 - **Graceful shutdown** with data preservation
 
-### Parameter Estimation (aligned with Cartea-Jaimungal model)
-- **κ± (Kappa)**: Order book depth sensitivity estimated from λ(δ)=λ₀·exp(−κδ); saved to `kappa.json`
-- **λ₀± (Lambda)**: Base arrival intensity at δ=0 (trades/sec) from the κ regression; saved to `lambda.json`
-- **λ_trades± (Lambda trades)**: Unconditional trade arrival rates (trades/sec) from raw counts; saved to `lambda_trades.json` (sanity check)
-- **ε± (Epsilon)**: Event-level permanent impact per trade from immediate mid jumps (~200 ms); saved to `epsilon.json`
-- **Automatic data loading** with configurable time ranges
+### Parameter Estimation (aligned with Cartea-Jaimungal model, snapshot schema v3)
+- **Market-order aggregation**: trade prints sharing side + exchange timestamp are ONE market order; depths and impacts are measured per MO, not per print
+- **Mid-relative coordinates**: depths are measured from the prevailing mid (last BBO update strictly before the MO, exchange-timestamp aligned via merge_asof) — the same coordinate the strategy quotes in; negative depths are truncated to 0, not dropped
+- **κ± (Kappa)**: survival-function fit — weighted log-linear regression of P(depth ≥ δ); saved to `kappa.json` with `depth_p95`/`depth_max_fitted` calibration diagnostics
+- **λ± (Lambda)**: raw per-side MO arrival rate (count / covered window seconds) — the survival-consistent fill rate the HJB needs (`lambda_source: mo_survival_fit`); the old binned-density intercept was bin-width dependent and ~3× too small (kept as `lambda0_intercept_±` diagnostic)
+- **ε± (Epsilon)**: per-MO mid impact at a 5 s primary horizon (permanent impact), with 200 ms and 1 s trimmed means recorded as diagnostics (`epsilon_200ms_±`, `epsilon_1s_±`); floor at 0 (C-J defines ε ≥ 0); saved to `epsilon.json`
+- **σ² (`sigma2_per_sec`)**: realized mid variance (USDC²/s from 1 s increments, gap-tolerant), feeding the strategy's volatility-aware inventory penalty
+- **EMA smoothing**: primary κ/ε/λ values are time-aware EMA-smoothed across cycles (`--ema-tau` / `PARAM_EMA_TAU_SECONDS`, default 300 s; 0 disables); per-window raw values live in the `*_raw` keys; the EMA never blends across schema versions or non-ok snapshots
+- **λ_trades± (Lambda trades)**: unconditional trade-print rates from raw counts; saved to `lambda_trades.json` (monitoring only)
+- **Status gating**: snapshots ship `status: ok` only when fit points ≥ 6, R² ≥ 0.30 and ε events ≥ 50 per side (mirrored by the strategy's validation floors)
 - **Market toxicity assessment** based on ε×κ product
-- **HJB-ready outputs** for the strategy (λ, κ, ε feed optimal δ* computation)
 
 ---
 
@@ -49,17 +52,19 @@ python hyperliquid_data_collector.py
 ### 2. Estimate Parameters
 
 ```bash
-# Joint κ/λ fit (λ(δ)=λ0·exp(-κδ)), saves kappa.json & lambda.json (trades/sec)
+# Survival-fit κ + per-side MO arrival rate λ + σ², saves kappa.json & lambda.json
 python get_kappa.py --crypto ETH --minutes 30
 
-# Event-level ε from immediate post-trade jumps, saves epsilon.json
-python get_epsilon.py --crypto ETH --minutes 30
+# Event-level ε per MO at the 5s permanent-impact horizon, saves epsilon.json
+python get_epsilon.py --crypto ETH --minutes 30 [--post-horizon-ms 5000] [--ema-tau 300]
 
 # Optional raw trades/sec sanity check (writes lambda_trades.json)
 python get_lambda.py --crypto ETH --minutes 30
 
-# Inspect spreads across inventory (refreshes κ/ε/λ, then shows bid/ask and bps by q)
-python compute_spreads.py --crypto ETH --mid 4322.05 --qmax 3
+# Inspect spreads across inventory (refreshes κ/ε/λ, then shows bid/ask and bps by q;
+# pass --spread-multiplier 3.0 to mirror the production config)
+# --mid defaults to the freshly collected BBO mid via mid_price.json when omitted
+python compute_spreads.py --crypto ETH --qmax 3 --spread-multiplier 3.0
 ```
 
 ---
@@ -186,14 +191,15 @@ HL_data/
 
 ### Parameters Estimated
 
-| Parameter         | Symbol | Description                               | Estimation Method                                |
-| ----------------- | ------ | ----------------------------------------- | ------------------------------------------------ |
-| **Lambda Plus**   | λ+     | Buy order arrival intensity (trades/sec)  | Base λ₀ from λ(δ)=λ₀·exp(−κδ) fit                |
-| **Lambda Minus**  | λ-     | Sell order arrival intensity (trades/sec) | Base λ₀ from λ(δ)=λ₀·exp(−κδ) fit                |
-| **Epsilon Plus**  | ε+     | Instant permanent jump from buy MOs       | Immediate mid change after trade (~200 ms)       |
-| **Epsilon Minus** | ε-     | Instant permanent jump from sell MOs      | Immediate mid change after trade (~200 ms)       |
-| **Kappa Plus**    | κ+     | Ask side order book depth sensitivity     | λ(δ) exponential decay regression                |
-| **Kappa Minus**   | κ-     | Bid side order book depth sensitivity     | λ(δ) exponential decay regression                |
+| Parameter         | Symbol | Description                                  | Estimation Method                                      |
+| ----------------- | ------ | -------------------------------------------- | ------------------------------------------------------ |
+| **Lambda Plus**   | λ+     | Buy MO arrival rate (MOs/sec)                | Raw per-side MO count / covered window seconds         |
+| **Lambda Minus**  | λ-     | Sell MO arrival rate (MOs/sec)               | Raw per-side MO count / covered window seconds         |
+| **Epsilon Plus**  | ε+     | Permanent mid jump from buy MOs (USDC)       | Per-MO mid change at 5 s horizon (trimmed mean, ≥0)    |
+| **Epsilon Minus** | ε-     | Permanent mid jump from sell MOs (USDC)      | Per-MO mid change at 5 s horizon (trimmed mean, ≥0)    |
+| **Kappa Plus**    | κ+     | Ask side depth sensitivity (1/USDC)          | Survival fit: log P(depth ≥ δ) vs δ, mid-relative      |
+| **Kappa Minus**   | κ-     | Bid side depth sensitivity (1/USDC)          | Survival fit: log P(depth ≥ δ) vs δ, mid-relative      |
+| **Sigma²**        | σ²     | Realized mid variance (USDC²/s)              | Variance of 1 s mid increments (gap-tolerant)          |
 
 ### Market Assessment
 

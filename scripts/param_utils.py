@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Any
 
 
-PARAM_SCHEMA_VERSION = 2
+# v3: lambda± is the raw per-side market-order arrival rate (survival-based, not
+# the binned-density intercept), kappa± is fitted on mid-relative depths from the
+# BBO stream, and primary kappa/epsilon/lambda keys are EMA-smoothed (raw values
+# in *_raw). v3 snapshots are not comparable to v2 — consumers fail-closed on
+# mismatch and the EMA never seeds across versions.
+PARAM_SCHEMA_VERSION = 3
 
 
 def utc_now_iso() -> str:
