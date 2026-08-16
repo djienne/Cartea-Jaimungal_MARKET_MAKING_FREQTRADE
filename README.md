@@ -32,10 +32,10 @@ This project implements an advanced market making strategy that:
 - **Exponential decay models** for lambda estimation
 - **Statistical analysis** of trade patterns and volatility
 
-### 🏗️ Modular Architecture (four Docker Compose services)
+### 🏗️ Modular Architecture (three services here, plus a shared collector)
 - **`freqtrade` (MM_ADV)**: `Market_Making.py` - Main Freqtrade strategy (consumes parameter snapshots, quotes)
-- **`hl-collector2`**: `hyperliquid_data_collector.py` - Streams live Hyperliquid order book / trade / price data to Parquet shards
-- **`param-estimator`**: `periodic_test_runner.py --loop` - Sidecar that runs `get_kappa.py` / `get_epsilon.py` / `get_lambda.py` each cycle, validates the snapshot, copies it for the strategy, and publishes it to Redis
+- **`hl-collector`** *(not in this compose file)*: `hyperliquid_data_collector.py` - Streams live Hyperliquid order book / trade / price data to Parquet shards. It is operated from `HYPERLIQUID_DATA/docker-compose.yml` alongside the other three Hyperliquid collectors; `scripts/HL_data` is a junction into `HYPERLIQUID_DATA/data/eth_mm`, so every reader here still finds its data where it always did. **Do not add a collector to this project's compose** — two collectors sharing one output directory write every tick twice under different shard names, which silently doubled `n_trades` and `λ±` on 2026-08-16.
+- **`param-estimator`**: `periodic_test_runner.py --loop` - Sidecar that runs `estimate_all.py` each cycle, validates the snapshot, copies it for the strategy, and publishes it to Redis. `estimate_all.py` loads the market window **once** and drives κ, ε and λ from it; running the three scripts separately made each re-scan the same parquet shards, which is how a cycle could outrun its own interval and stall parameter updates for 87 minutes on 2026-08-16. Cycle duration is recorded in `param_update_status.json`, and `--cycle-timeout-seconds` bounds a wedged cycle so it cannot hold the lock and starve every later one.
 - **`redis` (mm-redis)**: Atomic transport for the κ/ε/λ snapshot (`scripts/param_store.py`). The strategy prefers the single Redis blob (no torn multi-file reads, no estimator-lock stalls) and falls back to the JSON files when Redis is unavailable.
 
 ## Project Structure
@@ -54,20 +54,25 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │       ├── lambda.json
 │       └── lambda_trades.json
 ├── scripts/
-│   ├── docker-compose.yml                 # Hyperliquid data collector (standalone)
-│   ├── Dockerfile                         # Collector image (includes pyarrow)
+│   ├── Dockerfile                         # Collector image (built from HYPERLIQUID_DATA's compose)
 │   ├── hyperliquid_data_collector.py      # Writes Parquet shards to HL_data/<SYMBOL>/<dtype>/
 │   ├── run_collector.py
+│   ├── mm_core.py                         # Shared quoting core (engine + replay import this)
+│   ├── verify_market_viability.py         # Can a passive maker profit here at all?
+│   ├── estimate_all.py                    # One market-window load per estimator cycle
 │   ├── param_store.py                     # Redis transport for the κ/ε/λ snapshot
 │   ├── get_kappa.py
 │   ├── get_epsilon.py
 │   ├── get_lambda.py
 │   ├── hjb.py
+│   ├── replay_market_maker.py             # Event replay harness (queue, latency, markouts)
+│   ├── hyperliquid_alo_executor.py        # Guarded post-only (Alo) order primitives
+│   ├── hyperliquid_risk_executor.py       # Reduce-only IOC flatten
 │   ├── compute_spreads.py
 │   ├── mid_price.py
-│   └── HL_data/
+│   └── HL_data/                           # junction -> HYPERLIQUID_DATA/data/eth_mm
 ├── tests/                                 # pytest suite (strategy guards, runner, gates, replay)
-├── docker-compose.yml                     # Full stack: freqtrade + collector + estimator + redis
+├── docker-compose.yml                     # freqtrade + estimator + redis (collector lives elsewhere)
 ├── Dockerfile.technical                   # Freqtrade image (adds deps + pinned ccxt)
 ├── analyze_trades.py
 └── README.md
@@ -143,15 +148,60 @@ Where:
 
 ### Market Regimes and Profitability
 
-**Profitable Conditions:**
-- **High λ**: Many market orders → frequent spread capture
-- **Low κ**: Deep order book → ability to charge wider spreads  
-- **Low ε**: Limited informed trading → minimal adverse selection
+**⚠️ The fee comes first. `κ × ε` says nothing about whether you can pay it.**
 
-**Toxicity Thresholds:**
+The toxicity thresholds below are a *relative* measure of adverse selection.
+They contain no fee term, so a market can score beautifully on them and still be
+guaranteed to lose money. That is not hypothetical — it is what this project did
+for months on ETH:
+
+| | |
+|---|---|
+| ETH perp quoted spread | **0.53 bps** (exactly one tick) |
+| Round trip at the touch earns | 0.53 bps |
+| Two maker fees cost | **3.00 bps** |
+| Net per round trip | **−2.47 bps** |
+| `κ × ε` verdict | 0.02 — "low toxicity, potentially profitable" |
+
+Every quote was floor-clamped at `min_half_spread_bps` and sat ~11× past the
+depth 95% of market orders ever reach, and the replay recorded **no maker fills
+in any variant**. The model was working correctly; it was being asked a question
+that cannot detect an unpayable fee.
+
+**Check viability before calibrating anything:**
+
+```bash
+python scripts/verify_market_viability.py --crypto ALL
+```
+
+It answers the prior question — *can a passive maker profit here at all?* — from
+an empirical profit curve rather than the fitted model, so a degenerate κ cannot
+hide the answer:
+
+```
+edge(δ)   = δ − maker_fee·mid − E[markout | depth ≥ δ]
+volume(δ) = traded size of market orders reaching δ, per hour
+pnl(δ)    = volume(δ) · edge(δ)
+```
+
+maximised over every observed depth, on both sides, summing the losing side too.
+A screen of all 60 Hyperliquid perps above $0.5M daily volume found **28 pinned
+at exactly one tick like ETH** — a maker cannot even improve the quote there —
+and only 9 that clear the 3 bps round-trip fee *and* are wider than one tick.
+
+**Necessary condition, in plain terms:** the quoted spread must exceed
+`2 × maker_fee + adverse selection`. On Hyperliquid's 1.5 bps base maker tier
+that means a spread wider than ~3 bps before any edge exists at all.
+
+**Then, and only then, the toxicity thresholds apply:**
 - `κ × ε < 1`: Low toxicity, potentially profitable with good latency
 - `1 ≤ κ × ε ≤ 2`: Competitive but manageable with superior models
 - `κ × ε ≥ 2`: Highly toxic market, avoid unless exceptional edge
+
+**Other conditions:**
+- **High λ**: Many market orders → frequent spread capture
+- **Low κ**: Deep order book → ability to charge wider spreads
+- **Low ε**: Limited informed trading → minimal adverse selection
 
 ## Setup and Installation
 
@@ -174,7 +224,9 @@ Where:
    # from the root directory of this project
    docker compose up -d
    ```
-   - `hl-collector2` writes order book / price / trade Parquet shards to `scripts/HL_data` (flushed every `FLUSH_INTERVAL_SEC`, pruned after `RETENTION_MINUTES` — disable pruning when capturing replay datasets).
+   - `hl-collector` (started separately from `HYPERLIQUID_DATA`) writes order book / price / trade Parquet shards to `scripts/HL_data`, flushed every `FLUSH_INTERVAL_SEC`, merged into one file per hour after `COMPACT_AFTER_MINUTES`, and pruned after `RETENTION_MINUTES` (default 3 days).
+     Compaction is what makes a long retention affordable: a 10 s flush writes ~360 shards/hour/stream, and for the 83-column orderbook schema parquet spends 27,343 bytes per row on 664 bytes of data. Merging an hour of ETH orderbooks takes 18.4 MB → 0.27 MB and the estimator's read of that directory from 2199 ms → 6 ms.
+     **Do not disable pruning to capture a replay dataset** — raise `RETENTION_MINUTES` instead. Reads select shards by the timestamp in the filename, so cost tracks the window you ask for rather than everything on disk.
    - `param-estimator` recomputes κ/ε/λ each cycle and publishes the snapshot to Redis (plus the JSON files as fallback).
    - `freqtrade` (MM_ADV) quotes only when params, collector data, and order book are all fresh.
 
@@ -249,6 +301,19 @@ python scripts/get_epsilon.py --crypto ETH
 # Quick spread check (refreshes κ/ε/λ first, then prints table of spreads vs inventory)
 python scripts/compute_spreads.py --crypto ETH --spread-multiplier 3.0
 ```
+
+### Market viability (run this first)
+
+```bash
+# Can a passive maker profit on this instrument at all, before any calibration?
+python scripts/verify_market_viability.py --crypto ALL --minutes 4320
+```
+
+Writes `docs/market_viability_report.json`. Exits non-zero when no symbol clears
+the bar. It refuses to issue a verdict on less than 6 hours of collector data —
+a short window describes whichever regime it landed in, not the instrument
+(CASHCAT was measured running 19.3× its own daily average volume for 15 minutes,
+and over that burst the profit curve read +$4,117/h).
 
 ### Safety gates
 
