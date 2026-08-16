@@ -153,6 +153,22 @@ def normalize_trades(trades: pd.DataFrame, ts_source: str) -> pd.DataFrame:
     if trades.empty or not needed.issubset(trades.columns):
         return pd.DataFrame(columns=["ts_ms", "side", "price", "size"])
     frame = trades.copy()
+    # De-duplicate on the exchange's own trade id before anything counts rows.
+    # _load_parquet_dir() concatenates every shard in the directory blindly, so
+    # if a second collector is ever pointed at the same output dir both record
+    # the same public feed under different shard names and every trade is
+    # counted twice — silently doubling n_trades and lambda+/-. That happened on
+    # 2026-08-16 (hl-collector + hl-collector2 sharing scripts/HL_data). tid is
+    # unique per trade, so this is exact, and a no-op for a correct single-writer
+    # directory. Only local receive `timestamp` differs between the two copies,
+    # which is why nothing upstream catches it.
+    if "trade_id" in frame.columns:
+        tid = frame["trade_id"].astype(str)
+        # The collector stores str(trade.get("tid")), so a feed message with no
+        # id lands as the literal "None". Those rows are distinct trades and
+        # must never be collapsed into one, so only de-duplicate real ids.
+        has_id = ~tid.isin({"", "None", "nan", "NaT", "<NA>"})
+        frame = frame[~(has_id & tid.duplicated(keep="first"))]
     frame["ts_ms"] = _ts_ms_from(frame, ts_source)
     frame["side"] = frame["side"].astype(str).str.lower()
     frame = frame[frame["side"].isin({"buy", "sell"})]

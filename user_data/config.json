@@ -59,6 +59,8 @@
         "key": "",
         "secret": "",
         "ccxt_config": {
+            "enableRateLimit": true,
+            "rateLimit": 150,
             "options": {
                 "fetchMarkets": {
                     "types": [
@@ -67,7 +69,10 @@
                 }
             }
         },
-        "ccxt_async_config": {},
+        "ccxt_async_config": {
+            "enableRateLimit": true,
+            "rateLimit": 150
+        },
         "pair_whitelist": [
             "ETH/USDC:USDC"
         ],

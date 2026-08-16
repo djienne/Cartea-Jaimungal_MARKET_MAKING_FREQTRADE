@@ -1,12 +1,6 @@
-networks:
-  default:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 10.250.0.0/24
 services:
   freqtrade:
-    image: freqtradeorg/freqtrade:2025.4
+    image: ft-cartea-jaimungal_market_making_freqtrade:2025.10
     # image: freqtradeorg/freqtrade:develop
     # Use plotting image
     # image: freqtradeorg/freqtrade:develop_plot
@@ -19,7 +13,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          cpus: '0.25'
           memory: '1024M'
     volumes:
       - "./user_data:/freqtrade/user_data"
@@ -44,41 +38,24 @@ services:
       --db-url sqlite:////freqtrade/user_data/tradesv3.sqlite
       --config /freqtrade/user_data/config.json
       --strategy Market_Making
-  hl-collector2:
-    build:
-      context: ./scripts
-      dockerfile: Dockerfile
-    container_name: hl-collector2
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: '1024M'
-    environment:
-      SYMBOLS: ${SYMBOLS:-ETH}
-      OUTPUT_DIR: ${OUTPUT_DIR:-HL_data}
-      ORDERBOOK_DEPTH: ${ORDERBOOK_DEPTH:-20}
-      # Restart/reconnect if no data arrives for this many seconds
-      INACTIVITY_TIMEOUT_SEC: ${INACTIVITY_TIMEOUT_SEC:-180}
-      MAX_RECONNECT_ATTEMPTS: ${MAX_RECONNECT_ATTEMPTS:-3}
-      RECONNECT_BACKOFF_SEC: ${RECONNECT_BACKOFF_SEC:-5}
-      # Flush often enough to stay inside the strategy's collector freshness
-      # window (max_collector_age_seconds=30); prune old shards to bound disk
-      # and keep estimator cycles fast.
-      FLUSH_INTERVAL_SEC: ${FLUSH_INTERVAL_SEC:-10}
-      RETENTION_MINUTES: ${RETENTION_MINUTES:-60}
-      TZ: ${TZ:-UTC}
-    volumes:
-      - ./scripts/HL_data:/app/HL_data
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    command: ["python", "run_collector.py"]
+  # hl-collector2 REMOVED 2026-08-16. It was a byte-for-byte duplicate of the
+  # hl-collector defined in ./scripts/docker-compose.yml: same build context
+  # (./scripts), same run_collector.py, same SYMBOLS, and — the part that did
+  # real damage — the same host directory (./scripts/HL_data). Two collectors
+  # subscribed to the same public Hyperliquid feed and each wrote its own
+  # timestamped shard, so every trade landed on disk twice under two different
+  # filenames. estimator_common._load_parquet_dir() concatenates every
+  # *.parquet in the directory and normalize_trades() does not de-duplicate, so
+  # n_trades and lambda± were inflated ~2x (measured 2104 rows / 1055 unique
+  # trade_id = 1.994). The prices/orderbook streams survived only because
+  # build_bbo_mid()/build_orderbook_mid() collapse on ts_ms.
+  #
+  # The collector now comes solely from ./scripts/docker-compose.yml, which
+  # folder_list.txt starts under the "Data collectors" section. Do NOT
+  # reintroduce a collector here; if this stack is ever revived, it consumes
+  # ./scripts/HL_data that the scripts project fills.
   param-estimator:
-    image: freqtradeorg/freqtrade:2025.4
+    image: ft-cartea-jaimungal_market_making_freqtrade:2025.10
     build:
       context: .
       dockerfile: "./Dockerfile.technical"
@@ -86,7 +63,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          cpus: '0.25'
           memory: '1024M'
     environment:
       CRYPTO_NAME: ${PARAM_ESTIMATOR_SYMBOL:-ETH}
@@ -101,9 +78,11 @@ services:
       - "./user_data:/freqtrade/user_data"
       - "./scripts:/freqtrade/scripts"
       - "./docs:/freqtrade/docs"
+    # No depends_on for the collector: it lives in a separate compose project
+    # (./scripts), so compose cannot order against it. The estimator already
+    # tolerates a cold HL_data directory — it reports insufficient_data and
+    # retries after --interval seconds.
     depends_on:
-      hl-collector2:
-        condition: service_started
       redis:
         condition: service_healthy
     restart: unless-stopped

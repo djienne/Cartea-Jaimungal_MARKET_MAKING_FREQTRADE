@@ -59,7 +59,9 @@ def load_trades_only(crypto: str = 'ETH', time_range_minutes: int = 15) -> pd.Da
         raise FileNotFoundError(f"Trades directory not found: {trades_dir}")
 
     # Load all parquet files in the directory
-    files = [os.path.join(trades_dir, f) for f in os.listdir(trades_dir) if f.endswith('.parquet')]
+    # Sorted so that keep='first' below is deterministic (shard names carry the
+    # flush timestamp, so sorted order is chronological); os.listdir is not.
+    files = sorted(os.path.join(trades_dir, f) for f in os.listdir(trades_dir) if f.endswith('.parquet'))
     if not files:
         raise ValueError(f"No parquet files found in {trades_dir}")
 
@@ -68,6 +70,19 @@ def load_trades_only(crypto: str = 'ETH', time_range_minutes: int = 15) -> pd.Da
 
     if 'timestamp' not in df_trades.columns or 'side' not in df_trades.columns:
         raise ValueError('Expected columns: timestamp, side in trades data')
+
+    # lambda here is literally a row count over a time window, so a duplicated
+    # shard set doubles it. Two collectors sharing one output dir write the same
+    # trade under different shard names (only the local receive `timestamp`
+    # differs), which is exactly what happened on 2026-08-16 with hl-collector +
+    # hl-collector2 both writing scripts/HL_data. De-duplicate on the exchange's
+    # own trade id so the estimate is correct regardless of what is writing.
+    if 'trade_id' in df_trades.columns:
+        tid = df_trades['trade_id'].astype(str)
+        # str(trade.get("tid")) yields the literal "None" when the feed omits an
+        # id; those are distinct trades, so never collapse them together.
+        has_id = ~tid.isin({'', 'None', 'nan', 'NaT', '<NA>'})
+        df_trades = df_trades[~(has_id & tid.duplicated(keep='first'))]
 
     df_trades['timestamp'] = pd.to_datetime(df_trades['timestamp'], unit='s')
     most_recent = df_trades['timestamp'].max()

@@ -1,4 +1,4 @@
-FROM freqtradeorg/freqtrade:2025.4
+FROM freqtradeorg/freqtrade:2025.10
 
 # ccxt is pinned above the image's 4.4.77: that version's hyperliquid spot-market
 # parser crashes on current exchange metadata (None base token -> TypeError in

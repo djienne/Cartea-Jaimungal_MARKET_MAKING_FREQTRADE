@@ -187,11 +187,39 @@ def selected_parquet_files(path: Path, newest_per_stream: int | None = None) -> 
     return files
 
 
+def drop_duplicate_trades(frame: pd.DataFrame) -> pd.DataFrame:
+    """Collapse trades recorded twice by two collectors sharing one output dir.
+
+    Shards are concatenated blindly, so a second collector pointed at the same
+    directory produces two rows per trade that differ only in the local receive
+    `timestamp` — which would hand the replay twice the fill opportunities and
+    flatter the result. That happened on 2026-08-16 (hl-collector +
+    hl-collector2 both writing scripts/HL_data). tid is the exchange's own
+    per-trade id, so this is exact and a no-op for a correct single-writer
+    directory. The prices/orderbooks streams carry no trade_id and pass through
+    untouched — they have no comparably reliable unique key, and collapsing them
+    on their exchange fields would risk merging genuinely distinct events
+    whenever exchange_timestamp is sparse.
+    """
+    if frame.empty or "trade_id" not in frame.columns:
+        return frame
+    tid = frame["trade_id"].astype(str)
+    # The collector stores str(trade.get("tid")), so a feed message with no id
+    # lands as the literal "None". Those rows are distinct trades and must never
+    # be collapsed into one, so only de-duplicate genuine ids.
+    has_id = ~tid.isin({"", "None", "nan", "NaT", "<NA>"})
+    return frame[~(has_id & tid.duplicated(keep="first"))].reset_index(drop=True)
+
+
 def load_parquet_dir(path: Path, newest_per_stream: int | None = None) -> tuple[pd.DataFrame, int]:
     files = selected_parquet_files(path, newest_per_stream)
     if not files:
         return pd.DataFrame(), 0
-    return pd.concat((pd.read_parquet(file) for file in files), ignore_index=True), len(files)
+    # selected_parquet_files() returns shard names sorted, and the name carries
+    # the flush timestamp, so keep="first" deterministically keeps the earliest
+    # copy of a duplicated trade.
+    frame = pd.concat((pd.read_parquet(file) for file in files), ignore_index=True)
+    return drop_duplicate_trades(frame), len(files)
 
 
 def normalize_timestamp_column(frame: pd.DataFrame) -> pd.DataFrame:
