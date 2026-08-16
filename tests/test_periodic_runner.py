@@ -176,7 +176,15 @@ def test_runner_rejects_raw_lambda_as_hjb_input(tmp_path):
     assert reason == "lambda_json_must_be_mo_survival_fit"
 
 
-def test_runner_executes_estimators_in_dependency_order(monkeypatch, tmp_path):
+def test_runner_drives_a_single_estimator_process_per_cycle(monkeypatch, tmp_path):
+    """One process per cycle, not three.
+
+    The three estimators each re-read the same parquet shards, so a cycle paid
+    for the same directory scan three times and could outrun its own interval.
+    estimate_all.py loads the window once and drives all three from it; the
+    kappa-before-epsilon ordering that used to live here is now asserted in
+    test_estimate_all.py, where it actually lives.
+    """
     calls = []
 
     async def fake_stream_process(name, cmd, cwd):
@@ -193,7 +201,7 @@ def test_runner_executes_estimators_in_dependency_order(monkeypatch, tmp_path):
 
     asyncio.run(periodic_test_runner._run_once(found, "ETH"))
 
-    assert [name for name, _cmd_tail, _cwd in calls] == ["get_kappa.py", "get_epsilon.py", "get_lambda.py"]
+    assert [name for name, _cmd_tail, _cwd in calls] == ["estimate_all.py"]
     assert all(cmd_tail == ["--crypto", "ETH"] for _name, cmd_tail, _cwd in calls)
 
 

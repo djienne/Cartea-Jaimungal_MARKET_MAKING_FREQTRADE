@@ -179,10 +179,31 @@ class HyperliquidDataCollector:
             timestamp = int(time.time() * 1000)
             filename = f"{dtype}_{timestamp}.parquet"
             file_path = os.path.join(self.output_dir, symbol, dtype, filename)
-            
-            # Write to parquet
-            df.to_parquet(file_path, engine='pyarrow', index=False, compression='zstd')
-            
+
+            # Write to a temporary name and rename into place. Readers glob
+            # "*.parquet", which never matches the ".parquet.tmp" suffix, and
+            # os.replace is atomic within a filesystem -- so a reader either sees
+            # a complete shard or no shard, never a half-written one.
+            #
+            # Writing straight to the final path used to hand every reader a
+            # window in which the file existed but its footer did not:
+            # estimator_common._load_parquet_dir swallowed the failure and
+            # silently DROPPED the shard (losing the newest data and biasing
+            # n_trades / lambda down), and the strategy logged
+            # collector_data_read_error with "Parquet magic bytes not found in
+            # footer".
+            tmp_path = file_path + ".tmp"
+            try:
+                df.to_parquet(tmp_path, engine='pyarrow', index=False, compression='zstd')
+                os.replace(tmp_path, file_path)
+            except Exception:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
+                raise
+
         except Exception as e:
             print(f"Error writing to Parquet {symbol}/{dtype}: {e}")
 
@@ -604,6 +625,18 @@ class HyperliquidDataCollector:
                 except OSError:
                     continue
                 for name in entries:
+                    # Sweep up .tmp files abandoned by a write that died between
+                    # to_parquet and os.replace (SIGKILL, disk full). Readers
+                    # ignore them, but nothing else would ever remove them.
+                    if name.endswith('.parquet.tmp'):
+                        try:
+                            tmp_path = os.path.join(directory, name)
+                            if os.path.getmtime(tmp_path) * 1000.0 < cutoff_ms:
+                                os.remove(tmp_path)
+                                removed += 1
+                        except OSError:
+                            pass
+                        continue
                     if not name.endswith('.parquet'):
                         continue
                     stem = name[:-len('.parquet')]

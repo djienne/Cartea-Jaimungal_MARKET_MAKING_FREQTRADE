@@ -45,6 +45,16 @@ EMA_TAU_ENV_VAR = "PARAM_EMA_TAU_SECONDS"
 # is trusted to be on exchange time.
 _EXCHANGE_TS_MIN_COVERAGE = 0.99
 
+# Extra slack when selecting shards for a window: a shard flushed at time T holds
+# rows from roughly T-FLUSH_INTERVAL_SEC to T, and clocks between the collector
+# and the estimator need not agree exactly. Two minutes covers both with room to
+# spare while still bounding the work per cycle.
+SHARD_WINDOW_MARGIN_MS = 120_000.0
+
+# Above this share of unreadable shards in one stream, fail the cycle instead of
+# returning short data. Post-atomic-write any failure means real corruption.
+MAX_SHARD_READ_FAILURE_RATE = 0.05
+
 
 def resolve_ema_tau(cli_value: float | None = None) -> float:
     """CLI flag > PARAM_EMA_TAU_SECONDS env > default. tau <= 0 disables."""
@@ -62,21 +72,97 @@ def resolve_ema_tau(cli_value: float | None = None) -> float:
     return DEFAULT_EMA_TAU_SECONDS
 
 
-def _load_parquet_dir(directory: Path) -> pd.DataFrame:
+class ShardReadError(RuntimeError):
+    """Too large a share of a stream's shards failed to read.
+
+    Raised instead of silently returning short data: a dropped shard biases
+    n_trades and lambda downward with no signal that anything went missing.
+    """
+
+
+def shard_timestamp_ms(path: Path) -> float | None:
+    """Flush timestamp embedded in a shard name ("<dtype>_<ms>.parquet")."""
+    stem = path.stem
+    if "_" not in stem:
+        return None
+    try:
+        return float(stem.rsplit("_", 1)[1])
+    except ValueError:
+        return None
+
+
+def select_shards_for_window(
+    files: list[Path],
+    window_minutes: float | None,
+    *,
+    margin_ms: float = SHARD_WINDOW_MARGIN_MS,
+) -> list[Path]:
+    """Drop shards that cannot contain data inside the trailing window.
+
+    Cost used to scale with RETENTION_MINUTES rather than with the window the
+    estimator actually needs: at 60 min retention and a 10 s flush that is ~360
+    shards per stream re-read every cycle, and README advises disabling pruning
+    entirely to capture replay datasets, which makes it unbounded.
+
+    The cutoff is relative to the newest shard rather than wall-clock time, so
+    this behaves identically on a live directory and on a frozen historical one.
+    Shards whose name cannot be parsed are kept -- fail open, never drop data
+    because of a naming surprise.
+    """
+    if window_minutes is None or window_minutes <= 0 or not files:
+        return files
+    stamped = [(path, shard_timestamp_ms(path)) for path in files]
+    known = [ts for _, ts in stamped if ts is not None]
+    if not known:
+        return files
+    cutoff = max(known) - (float(window_minutes) * 60_000.0 + float(margin_ms))
+    return [path for path, ts in stamped if ts is None or ts >= cutoff]
+
+
+def _load_parquet_dir(
+    directory: Path,
+    window_minutes: float | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Concatenate a stream's shards, reporting what was skipped or unreadable."""
+    stats: dict[str, Any] = {
+        "files_present": 0,
+        "files_considered": 0,
+        "files_read": 0,
+        "files_failed": 0,
+        "errors": [],
+    }
     if not directory.is_dir():
-        return pd.DataFrame()
+        return pd.DataFrame(), stats
     files = sorted(directory.glob("*.parquet"))
+    stats["files_present"] = len(files)
     if not files:
-        return pd.DataFrame()
+        return pd.DataFrame(), stats
+
+    files = select_shards_for_window(files, window_minutes)
+    stats["files_considered"] = len(files)
+
     frames = []
     for file in files:
         try:
             frames.append(pd.read_parquet(file))
-        except Exception:
+        except Exception as exc:
+            stats["files_failed"] += 1
+            if len(stats["errors"]) < 5:
+                stats["errors"].append(f"{file.name}: {exc}")
             continue
+    stats["files_read"] = len(frames)
+
+    considered = max(stats["files_considered"], 1)
+    failure_rate = stats["files_failed"] / considered
+    if stats["files_failed"] and failure_rate > MAX_SHARD_READ_FAILURE_RATE:
+        raise ShardReadError(
+            f"{stats['files_failed']}/{stats['files_considered']} shards unreadable in "
+            f"{directory} (>{MAX_SHARD_READ_FAILURE_RATE:.0%}): {'; '.join(stats['errors'])}"
+        )
+
     if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+        return pd.DataFrame(), stats
+    return pd.concat(frames, ignore_index=True), stats
 
 
 def _exchange_ts_coverage(frame: pd.DataFrame) -> float:
@@ -222,13 +308,14 @@ def load_market_window(crypto: str, minutes: int, data_dir: str | Path | None = 
         data_dir = Path(__file__).resolve().parent / "HL_data"
     base = Path(data_dir) / crypto
 
-    prices_raw = _load_parquet_dir(base / "prices")
-    trades_raw = _load_parquet_dir(base / "trades")
+    shard_stats: dict[str, Any] = {}
+    prices_raw, shard_stats["prices"] = _load_parquet_dir(base / "prices", minutes)
+    trades_raw, shard_stats["trades"] = _load_parquet_dir(base / "trades", minutes)
     orderbooks_raw = pd.DataFrame()
 
     mid_source = "prices"
     if prices_raw.empty:
-        orderbooks_raw = _load_parquet_dir(base / "orderbooks")
+        orderbooks_raw, shard_stats["orderbooks"] = _load_parquet_dir(base / "orderbooks", minutes)
         mid_source = "orderbooks_fallback"
         if orderbooks_raw.empty:
             raise FileNotFoundError(f"No prices or orderbooks data under {base}")
@@ -237,7 +324,9 @@ def load_market_window(crypto: str, minutes: int, data_dir: str | Path | None = 
         ts_source = choose_time_source(prices_raw, trades_raw) if not trades_raw.empty else choose_time_source(prices_raw)
         mids = build_bbo_mid(prices_raw, ts_source)
         if mids.empty:
-            orderbooks_raw = _load_parquet_dir(base / "orderbooks")
+            orderbooks_raw, shard_stats["orderbooks"] = _load_parquet_dir(
+                base / "orderbooks", minutes
+            )
             if not orderbooks_raw.empty:
                 mid_source = "orderbooks_fallback"
     if mid_source == "orderbooks_fallback":
@@ -270,6 +359,13 @@ def load_market_window(crypto: str, minutes: int, data_dir: str | Path | None = 
         meta={
             "n_mid_updates": int(len(mids)),
             "n_trade_prints": int(len(trades)),
+            "shard_stats": shard_stats,
+            "shards_read": sum(int(s.get("files_read", 0)) for s in shard_stats.values()),
+            "shards_failed": sum(int(s.get("files_failed", 0)) for s in shard_stats.values()),
+            "shards_skipped_outside_window": sum(
+                int(s.get("files_present", 0)) - int(s.get("files_considered", 0))
+                for s in shard_stats.values()
+            ),
         },
     )
 

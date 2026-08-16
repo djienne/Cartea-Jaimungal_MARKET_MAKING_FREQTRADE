@@ -3051,7 +3051,10 @@ class Market_Making(IStrategy):
         if not getattr(self, "debug_json_log", False):
             return
         record = {
-            "ts": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+            # datetime.utcnow() is deprecated from Python 3.12 (the image runs
+            # 3.13) and returns a naive datetime that only looks like UTC. Use
+            # the same aware-UTC helper every other timestamp in this file uses.
+            "ts": self._now_utc().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "event": event,
             **payload,
         }

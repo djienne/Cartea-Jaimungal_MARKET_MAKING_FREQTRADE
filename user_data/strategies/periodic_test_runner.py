@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,7 +31,12 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
-TEST_FILES = ("get_kappa.py", "get_epsilon.py", "get_lambda.py")
+# One process per cycle, not three. estimate_all.py loads the market window once
+# and drives get_kappa / get_epsilon / the lambda monitor from it; running the
+# three scripts separately made each re-scan the same parquet shards, which is
+# what let a cycle outrun its own interval and stall parameter updates for 87
+# minutes on 2026-08-16. The individual CLIs still work for manual runs.
+TEST_FILES = ("estimate_all.py",)
 # lambda.json holds baseline λ₀ from get_kappa.py; lambda_trades.json is optional monitoring output.
 CONFIG_FILES = ("epsilon.json", "kappa.json", "lambda.json", "lambda_trades.json")
 RUNNER_STATUS_FILE = "param_update_status.json"
@@ -528,6 +534,7 @@ async def _periodic_worker(
     lock_path: Path,
     lock_stale_seconds: float,
     lock_holder: dict,
+    cycle_timeout_seconds: float = 0.0,
 ) -> None:
     """Run estimator cycles, holding the process lock only for the duration of
     each cycle.
@@ -547,15 +554,61 @@ async def _periodic_worker(
             print(f"{_ts()} [runner] Skipping cycle; process lock exists at {lock_path}.")
         else:
             lock_holder["token"] = token
-            _write_status("running", {"crypto": crypto, "lock_path": str(lock_path)})
+            started = time.monotonic()
+            _write_status(
+                "running",
+                {"crypto": crypto, "lock_path": str(lock_path), "started_at": _utc_now_iso()},
+            )
             try:
-                await _run_cycle_body(start_dir, max_up, copy_configs, crypto)
-                _write_status("success", {"crypto": crypto})
-            except Exception as exc:
-                _write_status("failed", {"crypto": crypto, "error": str(exc)})
+                # A cycle that never returns holds the lock and starves every
+                # later cycle, which reads downstream as "params went stale" with
+                # nothing in the status file to say why. Bound it explicitly.
+                if cycle_timeout_seconds and cycle_timeout_seconds > 0:
+                    await asyncio.wait_for(
+                        _run_cycle_body(start_dir, max_up, copy_configs, crypto),
+                        timeout=float(cycle_timeout_seconds),
+                    )
+                else:
+                    await _run_cycle_body(start_dir, max_up, copy_configs, crypto)
+                duration = time.monotonic() - started
+                _write_status(
+                    "success",
+                    {"crypto": crypto, "cycle_seconds": round(duration, 3)},
+                )
+                print(f"{_ts()} [runner] Cycle completed in {duration:.2f}s.")
+                if duration > interval_seconds:
+                    print(
+                        f"{_ts()} [runner] WARNING: cycle took {duration:.1f}s, longer than the "
+                        f"{interval_seconds:.0f}s interval; parameter freshness will degrade."
+                    )
+            except asyncio.TimeoutError:
+                duration = time.monotonic() - started
+                _write_status(
+                    "failed",
+                    {
+                        "crypto": crypto,
+                        "error": f"cycle_timeout after {cycle_timeout_seconds:.0f}s",
+                        "cycle_seconds": round(duration, 3),
+                    },
+                )
+                print(
+                    f"{_ts()} [runner] Cycle TIMED OUT after {duration:.1f}s "
+                    f"(limit {cycle_timeout_seconds:.0f}s); retrying after {interval_seconds:.0f}s."
+                )
                 if run_once:
                     raise
-                print(f"{_ts()} [runner] Cycle failed: {exc}; retrying after {interval_seconds:.0f}s.")
+            except Exception as exc:
+                duration = time.monotonic() - started
+                _write_status(
+                    "failed",
+                    {"crypto": crypto, "error": str(exc), "cycle_seconds": round(duration, 3)},
+                )
+                if run_once:
+                    raise
+                print(
+                    f"{_ts()} [runner] Cycle failed after {duration:.1f}s: {exc}; "
+                    f"retrying after {interval_seconds:.0f}s."
+                )
             finally:
                 _release_process_lock(lock_path, token)
                 lock_holder["token"] = None
@@ -573,6 +626,7 @@ def schedule_tests(
     run_once: bool = True,
     crypto: str = "ETH",
     lock_stale_seconds: float = 3600.0,
+    cycle_timeout_seconds: float = 0.0,
 ) -> None:
     """Run get_kappa.py, get_epsilon.py, and get_lambda.py.
 
@@ -607,6 +661,7 @@ def schedule_tests(
                 lock_path,
                 lock_stale_seconds,
                 lock_holder,
+                cycle_timeout_seconds,
             )
         )
     except KeyboardInterrupt:
@@ -669,6 +724,15 @@ def _parse_args(argv: list[str]):
         default=float(os.getenv("PARAM_UPDATE_LOCK_STALE_SECONDS", "3600")),
         help="Replace param_update.lock after this age in seconds (default: 3600)",
     )
+    p.add_argument(
+        "--cycle-timeout-seconds",
+        type=float,
+        default=float(os.getenv("PARAM_CYCLE_TIMEOUT_SECONDS", "0")),
+        help=(
+            "Abandon a cycle that runs longer than this, so a wedged estimator "
+            "cannot hold the lock and starve every later cycle (0 disables)"
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -710,4 +774,5 @@ if __name__ == "__main__":
         run_once=run_once,
         crypto=args.crypto,
         lock_stale_seconds=float(args.lock_stale_seconds),
+        cycle_timeout_seconds=float(args.cycle_timeout_seconds),
     )

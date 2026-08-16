@@ -1,8 +1,17 @@
 HL_data/
 
-# Generated parameter/output JSON files
+# Generated parameter/output JSON files.
+# The user_data/strategies copies are written every estimator cycle (~30s) by
+# periodic_test_runner; tracking them turned every commit into calibration churn
+# and made real changes hard to see in a diff.
 scripts/*.json
+user_data/strategies/kappa.json
+user_data/strategies/epsilon.json
+user_data/strategies/lambda.json
 user_data/strategies/lambda_trades.json
+
+# Local secrets for docker-compose (API-server credentials).
+.env
 
 # Logs and debug output
 user_data/logs/

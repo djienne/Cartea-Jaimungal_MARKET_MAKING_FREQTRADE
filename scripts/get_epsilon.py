@@ -287,15 +287,20 @@ def load_mid_price_from_json(crypto: str, filename: str = 'mid_price.json') -> f
 
 def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int | None = None,
                            ema_tau: float | None = None, epsilon_file: str = "epsilon.json",
-                           data_dir=None):
-    """Run the full epsilon analysis and persistence for a single crypto symbol."""
+                           data_dir=None, window=None):
+    """Run the full epsilon analysis and persistence for a single crypto symbol.
+
+    ``window`` lets a caller that already loaded the market window (estimate_all.py)
+    hand it over instead of paying for a second full parquet scan of the same data.
+    """
     horizon_ms = resolve_post_horizon_ms(post_horizon_ms)
     log_section(f"EPSILON FROM MARKET DATA - {crypto} (last {minutes} min, horizon {horizon_ms} ms)")
-    try:
-        window = load_market_window(crypto, minutes, data_dir=data_dir)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"Error: {e}")
-        return
+    if window is None:
+        try:
+            window = load_market_window(crypto, minutes, data_dir=data_dir)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"Error: {e}")
+            return
 
     vprint(f"Mid source: {window.mid_source} ({window.ts_source} time)")
     vprint(f"Loaded {len(window.mids):,} mid updates and {len(window.trades):,} trade prints")

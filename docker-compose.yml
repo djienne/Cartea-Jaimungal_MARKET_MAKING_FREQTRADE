@@ -23,6 +23,14 @@ services:
       # Read the κ/ε/λ snapshot from Redis (atomic, no torn reads); falls back
       # to the JSON files under user_data/strategies if Redis is unavailable.
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # API-server credentials come from the environment, not from the tracked
+      # config.json, which used to carry the username, password and JWT secret
+      # in plaintext. Set these in a local .env (gitignored) beside this file.
+      # NOTE: the previous values are still in git history and should be treated
+      # as compromised -- pick new ones rather than re-entering the old.
+      FREQTRADE__API_SERVER__USERNAME: ${MM_API_USERNAME:?set MM_API_USERNAME in .env}
+      FREQTRADE__API_SERVER__PASSWORD: ${MM_API_PASSWORD:?set MM_API_PASSWORD in .env}
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${MM_API_JWT_SECRET:?set MM_API_JWT_SECRET in .env}
     depends_on:
       redis:
         condition: service_healthy

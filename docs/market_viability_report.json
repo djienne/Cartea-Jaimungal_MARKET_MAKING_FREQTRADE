@@ -1,0 +1,192 @@
+{
+    "criteria": {
+        "maker_fee_rate": 0.00015,
+        "markout_horizon_ms": 5000,
+        "min_fills_per_hour": 1.0,
+        "min_net_edge_bps": 0.5,
+        "window_minutes": 30
+    },
+    "generated_at": "2026-08-16T21:49:10Z",
+    "ok": false,
+    "symbols": {
+        "ETH": {
+            "at_touch": {
+                "maker_fee_bps": 1.4999999999999998,
+                "maker_fee_rate": 0.00015,
+                "max_capture_bps": 0.5334044539267051,
+                "net_edge_bps": -2.4665955460732945,
+                "note": "Upper bound on resting at both touches: assumes both sides fill and ignores queue priority. The verdict comes from the profit curve, which also considers quoting deeper than the touch.",
+                "round_trip_fee_bps": 2.9999999999999996
+            },
+            "book": {
+                "mid_median": 1874.75,
+                "quoted_spread_median_bps": 0.5334044539267051,
+                "quoted_spread_median_ticks": 0.9999999999990905,
+                "quoted_spread_p95_bps": 0.5347164665943183,
+                "tick_size": 0.1,
+                "touch_half_spread_median_bps": 0.26670222696335255
+            },
+            "generated_at": "2026-08-16T21:49:10Z",
+            "kappa_identifiability": {
+                "identifiable": false,
+                "minus": {
+                    "depth_atom_share": 0.7381546134663342,
+                    "identifiable": false,
+                    "kappa": 11.651811116395765,
+                    "n_points": 16,
+                    "n_unique_depths": 22,
+                    "r_squared": 0.7977287308925927,
+                    "survival_intercept": 1.0019985866043823
+                },
+                "plus": {
+                    "depth_atom_share": 0.662962962962963,
+                    "identifiable": false,
+                    "kappa": 8.125648473120576,
+                    "n_points": 17,
+                    "n_unique_depths": 18,
+                    "r_squared": 0.7236076876687023,
+                    "survival_intercept": 0.8493052358113743
+                }
+            },
+            "ok": false,
+            "profit_curve": {
+                "blended_edge_bps": -4.955533201528578,
+                "curve_minus": [
+                    {
+                        "conditional_markout": 1.9999999999999727,
+                        "depth": 0.29999999999972715,
+                        "depth_bps": 1.6002133617801155,
+                        "edge_bps": -10.567875716763545,
+                        "edge_per_fill": -1.9812125000002454,
+                        "fills_per_hour": 50.027348283728436,
+                        "n_market_orders": 25,
+                        "pnl_per_second": -0.027531891044885723,
+                        "survival": 0.03117206982543641
+                    },
+                    {
+                        "conditional_markout": 2.0895833333333087,
+                        "depth": 0.34999999999990905,
+                        "depth_bps": 1.8669155887446809,
+                        "edge_bps": -10.779014979775436,
+                        "edge_per_fill": -2.0207958333333997,
+                        "fills_per_hour": 48.026254352379304,
+                        "n_market_orders": 24,
+                        "pnl_per_second": -0.02695868185719393,
+                        "survival": 0.029925187032418952
+                    }
+                ],
+                "curve_plus": [
+                    {
+                        "conditional_markout": 0.19615384615384265,
+                        "depth": 0.2999999999999545,
+                        "depth_bps": 1.6002133617813281,
+                        "edge_bps": -0.9460799901527569,
+                        "edge_per_fill": -0.1773663461538881,
+                        "fills_per_hour": 78.04266332261636,
+                        "n_market_orders": 39,
+                        "pnl_per_second": -0.0038450394549029224,
+                        "survival": 0.04814814814814815
+                    },
+                    {
+                        "conditional_markout": 0.18513513513512653,
+                        "depth": 0.34999999999990905,
+                        "depth_bps": 1.8669155887446809,
+                        "edge_bps": -0.6206034678502065,
+                        "edge_per_fill": -0.11634763513521745,
+                        "fills_per_hour": 74.04047545991808,
+                        "n_market_orders": 37,
+                        "pnl_per_second": -0.0023928983955690476,
+                        "survival": 0.04567901234567901
+                    },
+                    {
+                        "conditional_markout": 0.12166666666666212,
+                        "depth": 0.3500000000001364,
+                        "depth_bps": 1.8669155887458937,
+                        "edge_bps": -0.28205983019883013,
+                        "edge_per_fill": -0.05287916666652567,
+                        "fills_per_hour": 60.032817940474125,
+                        "n_market_orders": 30,
+                        "pnl_per_second": -0.0008818014959265343,
+                        "survival": 0.037037037037037035
+                    },
+                    {
+                        "conditional_markout": 0.09464285714285227,
+                        "depth": 0.4500000000000455,
+                        "depth_bps": 2.400320042672599,
+                        "edge_bps": 0.3954908273486771,
+                        "edge_per_fill": 0.07414464285719323,
+                        "fills_per_hour": 56.03063007777585,
+                        "n_market_orders": 28,
+                        "pnl_per_second": 0.0011539919600500553,
+                        "survival": 0.0345679012345679
+                    },
+                    {
+                        "conditional_markout": 0.006818181818165282,
+                        "depth": 0.5499999999999545,
+                        "depth_bps": 2.933724496599304,
+                        "edge_bps": 1.3973560111043566,
+                        "edge_per_fill": 0.26196931818178926,
+                        "fills_per_hour": 44.024066489681026,
+                        "n_market_orders": 22,
+                        "pnl_per_second": 0.0032035985227476375,
+                        "survival": 0.027160493827160494
+                    }
+                ],
+                "min_fills_per_hour": 1.0,
+                "min_net_edge_bps": 0.5,
+                "min_samples_at_optimum": 50,
+                "n_candidate_depths_minus": 2,
+                "n_candidate_depths_plus": 5,
+                "note": "total sums BOTH sides' best achievable P&L, including a negative side: a two-sided maker cannot decline to be filled on the side that loses.",
+                "optimum_minus": {
+                    "conditional_markout": 2.0895833333333087,
+                    "depth": 0.34999999999990905,
+                    "depth_bps": 1.8669155887446809,
+                    "edge_bps": -10.779014979775436,
+                    "edge_per_fill": -2.0207958333333997,
+                    "fills_per_hour": 48.026254352379304,
+                    "n_market_orders": 24,
+                    "pnl_per_second": -0.02695868185719393,
+                    "survival": 0.029925187032418952
+                },
+                "optimum_plus": {
+                    "conditional_markout": 0.006818181818165282,
+                    "depth": 0.5499999999999545,
+                    "depth_bps": 2.933724496599304,
+                    "edge_bps": 1.3973560111043566,
+                    "edge_per_fill": 0.26196931818178926,
+                    "fills_per_hour": 44.024066489681026,
+                    "n_market_orders": 22,
+                    "pnl_per_second": 0.0032035985227476375,
+                    "survival": 0.027160493827160494
+                },
+                "total_fills_per_hour": 92.05032084206033,
+                "total_pnl_per_second_per_base": -0.02375508333444629
+            },
+            "reasons": [
+                "two_sided_pnl_not_positive:-0.023755_usdc_per_second_per_base (plus +0.003204, minus -0.026959)",
+                "blended_edge_below_threshold:-4.956bps<min_0.5bps",
+                "optimum_sample_too_thin:plus=22<50,minus=24<50 (collect a longer window before trusting this verdict)"
+            ],
+            "symbol": "ETH",
+            "viable": false,
+            "warnings": [
+                "kappa_plus_depth_is_single_atom:0.66>0.6",
+                "kappa_minus_depth_is_single_atom:0.74>0.6",
+                "kappa_not_identifiable_hjb_output_is_unreliable"
+            ],
+            "window": {
+                "covered_seconds": 1799.016,
+                "end": "2026-08-16T21:49:05Z",
+                "markout_horizon_ms": 5000,
+                "mid_source": "prices",
+                "n_market_orders": 1612,
+                "n_mid_updates": 7372,
+                "n_trade_prints": 3799,
+                "start": "2026-08-16T21:19:05Z",
+                "ts_source": "exchange"
+            }
+        }
+    },
+    "viable_symbols": []
+}
