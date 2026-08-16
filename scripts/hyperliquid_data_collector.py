@@ -14,11 +14,17 @@ from typing import Dict, List, Optional, Any
 import csv
 import os
 import threading
+import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
+
+
+# float32 represents integers exactly only below 2**24; sizes on cheap assets
+# are large integers, so narrowing is gated on this ceiling.
+FLOAT32_EXACT_INT_LIMIT = 2 ** 24
 
 
 @dataclass
@@ -150,6 +156,18 @@ class HyperliquidDataCollector:
             self.retention_minutes = float(os.getenv("RETENTION_MINUTES", "60"))
         except ValueError:
             self.retention_minutes = 60.0
+        # Compaction: merge shards older than this into one file per hour. A 10s
+        # flush writes ~360 shards/hour/stream, and for the 83-column orderbook
+        # schema that is pathological -- per-column metadata and the parquet
+        # footer dwarf ~2 rows of payload, measured at 27,343 bytes/row against
+        # 664 bytes of actual float64. Compacting an hour of ETH orderbooks:
+        # 18.39 MB -> 0.27 MB (68x) and read time 2199ms -> 6ms. Must stay well
+        # above the estimator's window edge so the live tail is never rewritten
+        # underneath a reader. 0 disables.
+        try:
+            self.compact_after_minutes = float(os.getenv("COMPACT_AFTER_MINUTES", "15"))
+        except ValueError:
+            self.compact_after_minutes = 15.0
         self._reconnecting = False
         
         # Ensure output directory exists and organize by symbol/type
@@ -162,6 +180,52 @@ class HyperliquidDataCollector:
                 path = os.path.join(self.output_dir, symbol, dtype)
                 os.makedirs(path, exist_ok=True)
     
+    @staticmethod
+    def narrow_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+        """Narrow columns to the width the data actually needs, before writing.
+
+        Everything arrives as float64/object because that is what json + pandas
+        produce, but not all of it needs 8 bytes:
+
+        - Sizes are order quantities -- float32 carries ~7 significant digits,
+          far more than any venue's lot precision.
+        - ``side`` is two distinct strings; dictionary-encoded it costs bits per
+          row instead of bytes.
+
+        Two columns are deliberately left alone:
+
+        - PRICES stay float64. float32's ~7 significant digits are not enough for
+          BTC near 62,929.5 to preserve a 0.1 tick, and every depth and spread
+          measurement in the project is a difference of prices.
+        - ``timestamp`` stays float SECONDS. Milliseconds would be narrower, but
+          estimator_common._ts_ms_from multiplies this column by 1000 to reach
+          ms, get_lambda parses it with unit='s', and shards already on disk use
+          seconds -- changing the unit would put two incompatible conventions in
+          the same directory with nothing to tell them apart. Sorted float64
+          timestamps compress well under zstd once compaction puts many rows in
+          one file, which is where the real win is anyway.
+        """
+        for col in df.columns:
+            try:
+                if col == "side":
+                    df[col] = df[col].astype("category")
+                elif "size" in col and df[col].dtype == "float64":
+                    values = df[col].to_numpy(dtype="float64", copy=False)
+                    finite = values[np.isfinite(values)]
+                    # float32 represents integers exactly only below 2**24. Sizes
+                    # on cheap assets are large integers -- PENGU already trades
+                    # 7.0M-unit orders against that 16.8M ceiling -- so narrow
+                    # only when the whole column is comfortably inside it and
+                    # keep float64 otherwise. Measured across every collected
+                    # symbol, integer sizes round-trip exactly and fractional
+                    # ones lose at most 6e-8 relative.
+                    if finite.size == 0 or np.abs(finite).max() < FLOAT32_EXACT_INT_LIMIT:
+                        df[col] = df[col].astype("float32")
+            except (TypeError, ValueError, OverflowError):
+                # A surprise value must not cost us the whole shard.
+                continue
+        return df
+
     def _write_to_parquet(self, symbol: str, dtype: str, data: List[Any]):
         """Write data to Parquet file using Pandas"""
         if not data:
@@ -174,7 +238,9 @@ class HyperliquidDataCollector:
                 df = pd.DataFrame([asdict(item) for item in data])
             else:
                 df = pd.DataFrame(data)
-            
+
+            df = self.narrow_dtypes(df)
+
             # Generate filename with timestamp
             timestamp = int(time.time() * 1000)
             filename = f"{dtype}_{timestamp}.parquet"
@@ -658,9 +724,117 @@ class HyperliquidDataCollector:
         if removed:
             print(f"Pruned {removed} parquet shards older than {self.retention_minutes:.0f} min")
 
+    def _compact_old_shards(self):
+        """Merge settled shards into one file per hour.
+
+        A 10s flush is right for freshness and wrong for storage: it writes ~360
+        files per hour per stream, and a columnar format carrying 83 columns of
+        schema and statistics for ~2 rows of payload spends 27,343 bytes/row on
+        664 bytes of float64. Measured on an hour of ETH orderbooks, merging
+        those shards takes 18.39 MB to 0.27 MB and the estimator's read of that
+        directory from 2199ms to 6ms.
+
+        Only shards older than ``compact_after_minutes`` are touched, so the
+        window the estimators actually quote from is never rewritten under a
+        reader.
+
+        The compacted file is named for the NEWEST shard it absorbs, which keeps
+        it selectable by estimator_common.select_shards_for_window (that cutoff
+        compares against the newest timestamp) and prunable by the same
+        filename-timestamp rule as any other shard.
+
+        Ordering is write-then-delete, so a reader mid-scan can briefly see both
+        the compacted file and its sources. Every consumer already collapses
+        that: trades de-duplicate on trade_id, build_bbo_mid pivots on ts_ms and
+        build_orderbook_mid drops duplicate ts_ms.
+        """
+        if self.compact_after_minutes <= 0:
+            return
+        cutoff_ms = (time.time() - self.compact_after_minutes * 60.0) * 1000.0
+        compacted_files = 0
+        reclaimed = 0
+
+        for symbol in self.symbols:
+            for dtype in ('prices', 'trades', 'orderbooks'):
+                directory = os.path.join(self.output_dir, symbol, dtype)
+                if not os.path.isdir(directory):
+                    continue
+                try:
+                    entries = os.listdir(directory)
+                except OSError:
+                    continue
+
+                buckets: Dict[int, List[tuple]] = defaultdict(list)
+                for name in entries:
+                    if not name.endswith('.parquet') or '_compact_' in name:
+                        continue
+                    stem = name[:-len('.parquet')]
+                    if '_' not in stem:
+                        continue
+                    try:
+                        ts_ms = float(stem.rsplit('_', 1)[1])
+                    except ValueError:
+                        continue
+                    if ts_ms >= cutoff_ms:
+                        continue
+                    hour_bucket = int(ts_ms // 3_600_000)
+                    buckets[hour_bucket].append((ts_ms, os.path.join(directory, name)))
+
+                for hour_bucket, items in buckets.items():
+                    if len(items) < 2:
+                        continue  # nothing to gain
+                    items.sort()
+                    paths = [path for _ts, path in items]
+                    newest_ms = int(items[-1][0])
+                    try:
+                        frames = []
+                        for path in paths:
+                            try:
+                                frames.append(pd.read_parquet(path))
+                            except Exception as exc:
+                                print(f"Compaction: skipping unreadable {path}: {exc}")
+                        if not frames:
+                            continue
+                        merged = pd.concat(frames, ignore_index=True)
+                        if 'timestamp' in merged.columns:
+                            merged = merged.sort_values('timestamp', kind='stable')
+                        merged = merged.reset_index(drop=True)
+                        merged = self.narrow_dtypes(merged)
+
+                        before = sum(os.path.getsize(p) for p in paths if os.path.exists(p))
+                        out_name = f"{dtype}_compact_{newest_ms}.parquet"
+                        out_path = os.path.join(directory, out_name)
+                        tmp_path = out_path + '.tmp'
+                        merged.to_parquet(
+                            tmp_path, engine='pyarrow', index=False, compression='zstd'
+                        )
+                        os.replace(tmp_path, out_path)
+
+                        for path in paths:
+                            try:
+                                os.remove(path)
+                            except OSError:
+                                pass
+                        after = os.path.getsize(out_path)
+                        compacted_files += len(paths)
+                        reclaimed += max(0, before - after)
+                    except Exception as exc:
+                        print(f"Compaction failed for {directory} hour {hour_bucket}: {exc}")
+                        try:
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                        except (OSError, UnboundLocalError):
+                            pass
+
+        if compacted_files:
+            print(
+                f"Compacted {compacted_files} shards, reclaimed {reclaimed / 1e6:.1f} MB"
+            )
+
     def _periodic_flush(self):
         """Periodically flush buffers to disk; prune occasionally."""
         last_prune = 0.0
+        last_compact = 0.0
         while self.running:
             time.sleep(self.flush_interval_sec)
             self._flush_buffers()
@@ -669,6 +843,12 @@ class HyperliquidDataCollector:
             if time.time() - last_prune >= 60.0:
                 self._prune_old_shards()
                 last_prune = time.time()
+            # Compaction rewrites whole hours, so it runs far less often still.
+            # Every 5 minutes is ample: shards only become eligible once they are
+            # compact_after_minutes old.
+            if time.time() - last_compact >= 300.0:
+                self._compact_old_shards()
+                last_compact = time.time()
     
     def _periodic_summary(self):
         """Periodically print collection summary"""

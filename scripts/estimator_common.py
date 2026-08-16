@@ -129,6 +129,7 @@ def _load_parquet_dir(
         "files_considered": 0,
         "files_read": 0,
         "files_failed": 0,
+        "files_vanished": 0,
         "errors": [],
     }
     if not directory.is_dir():
@@ -145,6 +146,20 @@ def _load_parquet_dir(
     for file in files:
         try:
             frames.append(pd.read_parquet(file))
+        except (FileNotFoundError, OSError) as exc:
+            # The collector compacts settled shards into one file per hour and
+            # deletes the sources once the merged file is in place, so a shard
+            # listed a moment ago can be gone by the time we open it. That is
+            # normal housekeeping, not corruption: the same rows are in the
+            # compacted file this same scan picked up. Counted separately so it
+            # never trips the corruption threshold.
+            if isinstance(exc, FileNotFoundError) or not file.exists():
+                stats["files_vanished"] += 1
+                continue
+            stats["files_failed"] += 1
+            if len(stats["errors"]) < 5:
+                stats["errors"].append(f"{file.name}: {exc}")
+            continue
         except Exception as exc:
             stats["files_failed"] += 1
             if len(stats["errors"]) < 5:
