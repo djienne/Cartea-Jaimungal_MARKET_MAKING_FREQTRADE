@@ -151,6 +151,40 @@ class DummyExchange:
         self.cancelled_pair = pair
 
 
+def write_param_snapshot_files(directory: Path) -> Path:
+    """Write a minimal kappa/epsilon/lambda snapshot trio into ``directory``.
+
+    These files are produced by the estimator every ~30s and are no longer
+    tracked (they turned every commit into calibration churn), so a test that
+    needs them must create them. Relying on the repo shipping a generated file
+    made the suite pass or fail depending on whether an estimator had ever run.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "kappa.json").write_text(
+        json.dumps({"ETH": {"schema_version": 3, "status": "ok", "kappa+": 2.0, "kappa-": 2.0}}),
+        encoding="utf-8",
+    )
+    (directory / "epsilon.json").write_text(
+        json.dumps({"ETH": {"schema_version": 3, "status": "ok", "epsilon+": 0.0, "epsilon-": 0.0}}),
+        encoding="utf-8",
+    )
+    (directory / "lambda.json").write_text(
+        json.dumps(
+            {
+                "ETH": {
+                    "schema_version": 3,
+                    "status": "ok",
+                    "lambda+": 0.2,
+                    "lambda-": 0.2,
+                    "lambda_source": "mo_survival_fit",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return directory
+
+
 def make_bot() -> Market_Making:
     DummyTrade._open_trades = []
     DummyTrade._open_order_trades = []
@@ -1999,11 +2033,18 @@ class _FakeParamStore:
 
 def test_load_params_falls_back_to_files_without_redis(tmp_path):
     bot = make_bot()
-    # No redis_url anywhere -> file path.
+    # No redis_url anywhere -> file path. The snapshot files are generated at
+    # runtime and untracked, so the test supplies its own and points the
+    # strategy at them via market_making.param_dir.
+    param_dir = write_param_snapshot_files(tmp_path / "params")
+    bot.config["market_making"] = {"param_dir": str(param_dir)}
+
     kappas, epsilons, lambdas = bot._load_params()
+
     assert bot._param_source == "file"
-    # make_bot's repo ships kappa/epsilon/lambda.json, so we get a dict back.
-    assert isinstance(kappas, dict) and isinstance(epsilons, dict) and isinstance(lambdas, dict)
+    assert kappas["ETH"]["kappa+"] == 2.0
+    assert epsilons["ETH"]["epsilon+"] == 0.0
+    assert lambdas["ETH"]["lambda_source"] == "mo_survival_fit"
 
 
 def test_load_params_uses_redis_blob_when_available():
@@ -2053,7 +2094,11 @@ def test_file_fallback_gate_blocks_reload_when_redis_down_and_estimator_running(
     from Market_Making import ParamReloadBlocked
 
     bot = make_bot()
-    bot.config["market_making"] = {"redis_url": "redis://fake:6379/0"}
+    param_dir = write_param_snapshot_files(tmp_path / "params")
+    bot.config["market_making"] = {
+        "redis_url": "redis://fake:6379/0",
+        "param_dir": str(param_dir),
+    }
     bot._param_store = _FakeParamStore(None)  # configured but serving nothing
     bot._param_store_loaded = True
     status_path = tmp_path / "param_update_status.json"
