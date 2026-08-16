@@ -103,6 +103,11 @@ MAX_SURVIVAL_INTERCEPT = 2.0
 # distribution, and the fitted kappa is measuring tick granularity.
 MAX_DEPTH_ATOM_SHARE = 0.60
 
+# Cap on curve points written to the report. The curve has one point per distinct
+# observed depth, so it grows with the dataset; the verdict only needs the
+# optimum and the shape survives subsampling.
+CURVE_POINTS_IN_REPORT = 25
+
 
 def _percentile_or_none(values: np.ndarray, q: float) -> float | None:
     if values.size == 0:
@@ -306,6 +311,29 @@ def best_depth(curve: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not curve:
         return None
     return max(curve, key=lambda point: point["pnl_per_hour_upper_bound"])
+
+
+def subsample_curve(
+    curve: list[dict[str, Any]],
+    limit: int = CURVE_POINTS_IN_REPORT,
+) -> list[dict[str, Any]]:
+    """Thin a curve for the persisted report, preserving shape and the optimum.
+
+    One candidate depth per distinct observed depth means the curve grows with
+    the dataset: three days of an active instrument produced hundreds of points
+    per side and a 472 KB tracked evidence file. The verdict only needs the
+    optimum; the rest is there to show the shape, which survives subsampling.
+    """
+    if len(curve) <= limit:
+        return curve
+    step = (len(curve) - 1) / float(limit - 1)
+    keep_indices = {int(round(i * step)) for i in range(limit)}
+    keep_indices.add(0)
+    keep_indices.add(len(curve) - 1)
+    best = best_depth(curve)
+    if best is not None:
+        keep_indices.add(curve.index(best))
+    return [curve[i] for i in sorted(keep_indices)]
 
 
 def build_market_viability_report(
@@ -556,8 +584,9 @@ def build_market_viability_report(
             "min_fills_per_hour": float(min_fills_per_hour),
             "n_candidate_depths_plus": len(curves["plus"]),
             "n_candidate_depths_minus": len(curves["minus"]),
-            "curve_plus": curves["plus"],
-            "curve_minus": curves["minus"],
+            "curve_plus": subsample_curve(curves["plus"]),
+            "curve_minus": subsample_curve(curves["minus"]),
+            "curve_subsampled_to": CURVE_POINTS_IN_REPORT,
         },
         "kappa_identifiability": {"identifiable": kappa_identifiable, **kappa_diagnostics},
     }

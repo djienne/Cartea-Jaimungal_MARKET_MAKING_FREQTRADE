@@ -344,3 +344,20 @@ def test_report_exposes_observed_flow_rate():
     )
     # 100 prints x 2.0 size x 1000.0 price over exactly one hour.
     assert report["window"]["observed_notional_per_hour"] == pytest.approx(200_000.0)
+
+
+def test_subsample_curve_bounds_the_report_and_keeps_the_optimum():
+    """The curve grows with the dataset; the tracked report must not."""
+    from verify_market_viability import CURVE_POINTS_IN_REPORT, subsample_curve
+
+    curve = [
+        {"depth": float(i), "pnl_per_hour_upper_bound": 1.0 if i != 137 else 999.0}
+        for i in range(400)
+    ]
+    thinned = subsample_curve(curve)
+    assert len(thinned) <= CURVE_POINTS_IN_REPORT + 2
+    assert curve[0] in thinned and curve[-1] in thinned
+    # The winning depth must survive, or the report contradicts its own verdict.
+    assert curve[137] in thinned
+    # A short curve is returned untouched.
+    assert subsample_curve(curve[:5]) == curve[:5]
