@@ -12,12 +12,12 @@ The verdict comes from an EMPIRICAL PROFIT CURVE, not from the fitted model, so 
 degenerate kappa cannot hide the answer. For each side and each candidate quote
 depth delta, using only measured market orders:
 
-    edge(delta)     = delta - maker_fee*mid - E[markout | depth >= delta]
-    fill_rate(delta) = count(depth >= delta) / covered_seconds
-    pnl_rate(delta)  = fill_rate(delta) * edge(delta)          [USDC/s per 1 base]
+    edge(delta)   = delta - maker_fee*mid - E[markout | depth >= delta]
+    volume(delta) = sum of sizes of market orders reaching delta, per hour
+    pnl(delta)    = volume(delta) * edge(delta)                    [USDC/hour]
 
-and the instrument is viable when max over delta of the two-sided pnl_rate is
-positive at a non-trivial fill rate. Three things make this the honest test:
+and the instrument is viable when max over delta of the two-sided pnl is
+positive on a non-trivial amount of flow. Four things make this the honest test:
 
 - It searches ALL depths, not just the touch. Quoting deeper to cover the fee is
   allowed, and the search finds the best such depth if one exists.
@@ -28,6 +28,10 @@ positive at a non-trivial fill rate. Three things make this the honest test:
   nothing and reads ~0; but a market order that sweeps deep enough to fill a
   resting quote is exactly the informed one. Conditioning is what stops the curve
   from looking profitable purely because the tail was averaged away.
+- Fill opportunity is measured in TRADED VOLUME, not arrivals. It is still an
+  upper bound -- 100% participation, no queue ahead of the quote -- but one
+  tethered to flow that actually exists, so compare the reported reachable
+  notional against the instrument's real volume before believing the P&L.
 
 A separate KAPPA IDENTIFIABILITY block reports whether the fill model the strategy
 actually uses is estimable here: the survival fit needs enough distinct depth
@@ -73,6 +77,14 @@ DEFAULT_MARKOUT_HORIZON_MS = 5000
 DEFAULT_MIN_NET_EDGE_BPS = 0.5
 # Fewer fills than this at the optimum means the quote is decorative.
 DEFAULT_MIN_FILLS_PER_HOUR = 1.0
+# A verdict may not be issued on a window shorter than this. Spreads and flow on
+# thin instruments are wildly regime-dependent: CASHCAT was measured on
+# 2026-08-17 running 19.3x its own daily average volume with a 200-tick spread,
+# and over that 15-minute burst the profit curve reported +$3,279/h. The other
+# candidates were simultaneously at 0.18-0.68x their daily rate. Any window short
+# enough to sit inside one regime will confidently describe that regime and
+# nothing else.
+DEFAULT_MIN_WINDOW_HOURS = 6.0
 # A conditional markout estimated on fewer market orders than this is noise, so
 # the depth is not offered as a candidate optimum.
 MIN_SAMPLES_PER_DEPTH = 20
@@ -206,6 +218,10 @@ def mo_depth_impact_frame(
             "side": post["side"].to_numpy(),
             "depth": np.maximum(depth.astype(float), 0.0),
             "markout": markout.astype(float),
+            # Base size of the aggregated market order. Fill opportunity scales
+            # with traded volume, not with the number of events: 600 one-lot
+            # prints an hour is not the same opportunity as 600 large sweeps.
+            "size": post["size"].astype(float).to_numpy(),
         }
     )
 
@@ -217,17 +233,30 @@ def profit_curve(
     covered_seconds: float,
     fee_cost: float,
     mid: float,
+    sizes: np.ndarray | None = None,
     min_samples: int = MIN_SAMPLES_PER_DEPTH,
 ) -> list[dict[str, Any]]:
     """Expected P&L rate for a resting quote at each candidate depth.
 
     Only depths above the fee cost are considered -- below it the edge is
     negative by construction whatever the fill rate.
+
+    Everything here is an UPPER BOUND on what a real maker earns: it credits the
+    quote with the entire size of every market order that reaches its depth,
+    i.e. 100% participation with no queue ahead of it. Counting events alone was
+    worse still -- it implied filling a fixed size on every arrival, which for an
+    illiquid coin works out to a multiple of the instrument's whole daily volume.
+    Sizing by traded volume keeps the bound tethered to reality. The replay
+    harness, which models queue position and latency, is what turns this into an
+    achievable number; this function only decides what is worth replaying.
     """
     depths = np.asarray(depths, dtype=float)
     markouts = np.asarray(markouts, dtype=float)
-    finite = np.isfinite(depths) & np.isfinite(markouts)
-    depths, markouts = depths[finite], markouts[finite]
+    if sizes is None:
+        sizes = np.ones_like(depths)
+    sizes = np.asarray(sizes, dtype=float)
+    finite = np.isfinite(depths) & np.isfinite(markouts) & np.isfinite(sizes)
+    depths, markouts, sizes = depths[finite], markouts[finite], sizes[finite]
     if depths.size == 0:
         return []
 
@@ -252,6 +281,8 @@ def profit_curve(
             continue
         edge = float(delta) - float(fee_cost) - float(markout)
         fill_rate = float(n) / covered_seconds
+        reachable_base = float(np.sum(sizes[reached]))
+        base_per_hour = reachable_base / covered_seconds * 3600.0
         curve.append(
             {
                 "depth": float(delta),
@@ -262,7 +293,10 @@ def profit_curve(
                 "edge_per_fill": edge,
                 "edge_bps": edge / mid * 10_000.0 if mid > 0 else None,
                 "fills_per_hour": fill_rate * 3600.0,
-                "pnl_per_second": fill_rate * edge,
+                "reachable_base_per_hour": base_per_hour,
+                "reachable_notional_per_hour": base_per_hour * mid,
+                # USDC/hour at 100% participation -- see the docstring.
+                "pnl_per_hour_upper_bound": base_per_hour * edge,
             }
         )
     return curve
@@ -271,7 +305,7 @@ def profit_curve(
 def best_depth(curve: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not curve:
         return None
-    return max(curve, key=lambda point: point["pnl_per_second"])
+    return max(curve, key=lambda point: point["pnl_per_hour_upper_bound"])
 
 
 def build_market_viability_report(
@@ -285,6 +319,7 @@ def build_market_viability_report(
     markout_horizon_ms: int = DEFAULT_MARKOUT_HORIZON_MS,
     min_net_edge_bps: float = DEFAULT_MIN_NET_EDGE_BPS,
     min_fills_per_hour: float = DEFAULT_MIN_FILLS_PER_HOUR,
+    min_window_hours: float = DEFAULT_MIN_WINDOW_HOURS,
     window_start: str | None = None,
     window_end: str | None = None,
     mid_source: str | None = None,
@@ -323,6 +358,15 @@ def build_market_viability_report(
     maker_fee_bps = float(maker_fee_rate) * 10_000.0
     fee_cost = float(maker_fee_rate) * mid_median  # one maker fee per side, price units
     covered_seconds = max(float(covered_seconds), 1e-6)
+    window_hours = covered_seconds / 3600.0
+
+    # Traded notional per hour over this window. Compare it against the
+    # instrument's usual daily volume / 24 before believing anything below: a
+    # ratio far from 1 means the window caught a burst or a lull, not normality.
+    observed_notional_per_hour = None
+    if not trades.empty and {"price", "size"}.issubset(trades.columns):
+        traded = float((trades["price"] * trades["size"]).sum())
+        observed_notional_per_hour = traded / covered_seconds * 3600.0
 
     # --- headline diagnostic: resting at the touch -----------------------
     # Captures the whole quoted spread, pays two maker fees. Intuitive, and an
@@ -341,6 +385,7 @@ def build_market_viability_report(
         curve = profit_curve(
             side_events["depth"].to_numpy(dtype=float) if not side_events.empty else np.array([]),
             side_events["markout"].to_numpy(dtype=float) if not side_events.empty else np.array([]),
+            sizes=side_events["size"].to_numpy(dtype=float) if not side_events.empty else np.array([]),
             covered_seconds=covered_seconds,
             fee_cost=fee_cost,
             mid=mid_median,
@@ -353,12 +398,13 @@ def build_market_viability_report(
     # would describe a directional trader, not a market maker, and on a noisy
     # window it reliably reports a dead instrument as viable.
     present = [point for point in optima.values() if point]
-    total_pnl_per_second = sum(point["pnl_per_second"] for point in present)
+    total_pnl_per_hour = sum(point["pnl_per_hour_upper_bound"] for point in present)
     total_fills_per_hour = sum(point["fills_per_hour"] for point in present)
-    total_fill_rate = total_fills_per_hour / 3600.0
+    total_base_per_hour = sum(point["reachable_base_per_hour"] for point in present)
+    total_notional_per_hour = sum(point["reachable_notional_per_hour"] for point in present)
     blended_edge_bps = None
-    if total_fill_rate > 0 and mid_median > 0:
-        blended_edge_bps = (total_pnl_per_second / total_fill_rate) / mid_median * 10_000.0
+    if total_base_per_hour > 0 and mid_median > 0:
+        blended_edge_bps = (total_pnl_per_hour / total_base_per_hour) / mid_median * 10_000.0
 
     if events.empty:
         reasons.append("no_market_orders_measured")
@@ -366,11 +412,11 @@ def build_market_viability_report(
         missing = [label for label, point in optima.items() if not point]
         reasons.append(f"no_profitable_depth_on_side:{','.join(missing)}")
     else:
-        if total_pnl_per_second <= 0:
+        if total_pnl_per_hour <= 0:
             reasons.append(
-                f"two_sided_pnl_not_positive:{total_pnl_per_second:+.6f}_usdc_per_second_per_base "
-                f"(plus {optima['plus']['pnl_per_second']:+.6f}, "
-                f"minus {optima['minus']['pnl_per_second']:+.6f})"
+                f"two_sided_pnl_not_positive:{total_pnl_per_hour:+.4f}_usdc_per_hour_upper_bound "
+                f"(plus {optima['plus']['pnl_per_hour_upper_bound']:+.4f}, "
+                f"minus {optima['minus']['pnl_per_hour_upper_bound']:+.4f})"
             )
         if blended_edge_bps is not None and blended_edge_bps < float(min_net_edge_bps):
             reasons.append(
@@ -381,6 +427,12 @@ def build_market_viability_report(
             reasons.append(
                 f"optimum_unreachable:{total_fills_per_hour:.4f}_fills_per_hour"
                 f"<min_{float(min_fills_per_hour):g}"
+            )
+        if window_hours < float(min_window_hours):
+            reasons.append(
+                f"window_too_short_for_a_verdict:{window_hours:.2f}h"
+                f"<min_{float(min_window_hours):g}h (a short window describes one "
+                f"regime, not the instrument)"
             )
         thin = {
             label: point["n_market_orders"]
@@ -450,6 +502,11 @@ def build_market_viability_report(
             "start": window_start,
             "end": window_end,
             "covered_seconds": covered_seconds,
+            "hours": window_hours,
+            "min_window_hours": float(min_window_hours),
+            "observed_notional_per_hour": finite_or_none(observed_notional_per_hour)
+            if observed_notional_per_hour is not None
+            else None,
             "mid_source": mid_source,
             "ts_source": ts_source,
             "n_mid_updates": int(len(mids)),
@@ -480,8 +537,10 @@ def build_market_viability_report(
         "profit_curve": {
             "optimum_plus": optima["plus"],
             "optimum_minus": optima["minus"],
-            "total_pnl_per_second_per_base": finite_or_none(total_pnl_per_second),
+            "total_pnl_per_hour_upper_bound": finite_or_none(total_pnl_per_hour),
             "total_fills_per_hour": finite_or_none(total_fills_per_hour),
+            "total_reachable_base_per_hour": finite_or_none(total_base_per_hour),
+            "total_reachable_notional_per_hour": finite_or_none(total_notional_per_hour),
             "blended_edge_bps": finite_or_none(blended_edge_bps)
             if blended_edge_bps is not None
             else None,
@@ -490,7 +549,9 @@ def build_market_viability_report(
             "note": (
                 "total sums BOTH sides' best achievable P&L, including a negative "
                 "side: a two-sided maker cannot decline to be filled on the side "
-                "that loses."
+                "that loses. P&L is an UPPER BOUND at 100% participation with no "
+                "queue ahead of the quote -- compare total_reachable_notional_per_hour "
+                "against the instrument's real volume before believing it."
             ),
             "min_fills_per_hour": float(min_fills_per_hour),
             "n_candidate_depths_plus": len(curves["plus"]),
@@ -510,6 +571,7 @@ def evaluate_symbol(
     markout_horizon_ms: int = DEFAULT_MARKOUT_HORIZON_MS,
     min_net_edge_bps: float = DEFAULT_MIN_NET_EDGE_BPS,
     min_fills_per_hour: float = DEFAULT_MIN_FILLS_PER_HOUR,
+    min_window_hours: float = DEFAULT_MIN_WINDOW_HOURS,
     data_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     try:
@@ -542,6 +604,7 @@ def evaluate_symbol(
         markout_horizon_ms=markout_horizon_ms,
         min_net_edge_bps=min_net_edge_bps,
         min_fills_per_hour=min_fills_per_hour,
+        min_window_hours=min_window_hours,
         window_start=window.window_start_iso(),
         window_end=window.window_end_iso(),
         mid_source=window.mid_source,
@@ -571,6 +634,7 @@ def print_summary(report: dict[str, Any]) -> None:
     book = report["book"]
     touch = report["at_touch"]
     curve = report["profit_curve"]
+    window = report.get("window", {})
     ticks = book["quoted_spread_median_ticks"]
     print(
         f"  {symbol:<10} {'VIABLE' if report.get('viable') else 'NOT VIABLE':<10} "
@@ -587,15 +651,22 @@ def print_summary(report: dict[str, Any]) -> None:
             continue
         print(
             f"       {label:<5}: depth={point['depth_bps']:.2f}bps "
-            f"edge={point['edge_bps']:+.2f}bps  markout={point['conditional_markout']:+.4f}  "
+            f"edge={point['edge_bps']:+.2f}bps  markout={point['conditional_markout']:+.6g}  "
             f"n={point['n_market_orders']}  fills/h={point['fills_per_hour']:.1f}  "
-            f"pnl/s={point['pnl_per_second']:+.6f}"
+            f"reach=${point['reachable_notional_per_hour']:,.0f}/h  "
+            f"pnl<=${point['pnl_per_hour_upper_bound']:+,.2f}/h"
         )
     print(
-        f"       two-sided: pnl={curve['total_pnl_per_second_per_base']:+.6f} USDC/s per 1 base"
+        f"       two-sided: pnl<=${curve['total_pnl_per_hour_upper_bound']:+,.2f}/h "
+        f"on ${curve['total_reachable_notional_per_hour']:,.0f}/h of reachable flow"
         + (f"  blended_edge={blended:+.2f}bps" if blended is not None else "")
     )
-    print(f"       kappa identifiable: {report['kappa_identifiability']['identifiable']}")
+    flow = window.get("observed_notional_per_hour")
+    print(
+        f"       window={window.get('hours', 0):.2f}h"
+        + (f"  observed_flow=${flow:,.0f}/h" if flow else "")
+        + f"  kappa_identifiable={report['kappa_identifiability']['identifiable']}"
+    )
     for reason in report.get("reasons") or []:
         print(f"       - {reason}")
 
@@ -615,6 +686,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--markout-horizon-ms", type=int, default=DEFAULT_MARKOUT_HORIZON_MS)
     parser.add_argument("--min-net-edge-bps", type=float, default=DEFAULT_MIN_NET_EDGE_BPS)
     parser.add_argument("--min-fills-per-hour", type=float, default=DEFAULT_MIN_FILLS_PER_HOUR)
+    parser.add_argument(
+        "--min-window-hours",
+        type=float,
+        default=DEFAULT_MIN_WINDOW_HOURS,
+        help="Refuse a verdict on a window shorter than this (0 disables)",
+    )
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     return parser.parse_args()
@@ -638,6 +715,7 @@ def main() -> int:
             markout_horizon_ms=int(args.markout_horizon_ms),
             min_net_edge_bps=float(args.min_net_edge_bps),
             min_fills_per_hour=float(args.min_fills_per_hour),
+            min_window_hours=float(args.min_window_hours),
             data_dir=args.data_dir,
         )
         for symbol in symbols
@@ -659,6 +737,7 @@ def main() -> int:
             "markout_horizon_ms": int(args.markout_horizon_ms),
             "min_net_edge_bps": float(args.min_net_edge_bps),
             "min_fills_per_hour": float(args.min_fills_per_hour),
+            "min_window_hours": float(args.min_window_hours),
             "window_minutes": int(args.minutes),
         },
         "symbols": {r["symbol"]: r for r in reports},

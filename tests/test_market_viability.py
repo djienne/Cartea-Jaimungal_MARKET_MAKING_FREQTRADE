@@ -68,8 +68,34 @@ def test_profit_curve_edge_nets_fee_and_conditional_markout():
     point = curve[0]
     assert point["edge_per_fill"] == pytest.approx(1.0 - 0.3 - 0.2)
     assert point["n_market_orders"] == 100
-    assert point["pnl_per_second"] == pytest.approx((100 / 100.0) * 0.5)
+    # Default sizes of 1.0: 100 base over 100s == 3600 base/hour at 0.5 edge.
+    assert point["reachable_base_per_hour"] == pytest.approx(3600.0)
+    assert point["pnl_per_hour_upper_bound"] == pytest.approx(3600.0 * 0.5)
     assert best_depth(curve) is point
+
+
+def test_profit_curve_scales_with_traded_size_not_event_count():
+    """Fill opportunity is volume, not arrivals.
+
+    Counting events alone credited the quote with a fixed size on every arrival,
+    which on an illiquid coin implied filling a large multiple of the whole
+    instrument's daily volume.
+    """
+    depths = np.array([1.0] * 100)
+    markouts = np.zeros(100)
+    small = profit_curve(
+        depths, markouts, sizes=np.full(100, 0.5),
+        covered_seconds=100.0, fee_cost=0.3, mid=1000.0,
+    )[0]
+    large = profit_curve(
+        depths, markouts, sizes=np.full(100, 5.0),
+        covered_seconds=100.0, fee_cost=0.3, mid=1000.0,
+    )[0]
+    assert large["pnl_per_hour_upper_bound"] == pytest.approx(
+        10.0 * small["pnl_per_hour_upper_bound"]
+    )
+    # Same number of arrivals either way.
+    assert small["fills_per_hour"] == large["fills_per_hour"]
 
 
 def test_mo_depth_impact_frame_signs_both_sides_against_the_maker():
@@ -202,9 +228,9 @@ def test_losing_side_is_not_discarded_from_the_two_sided_total():
     plus = report["profit_curve"]["optimum_plus"]
     minus = report["profit_curve"]["optimum_minus"]
     assert plus is not None and minus is not None
-    assert plus["pnl_per_second"] > 0, "buy side should look profitable on its own"
-    assert minus["pnl_per_second"] < 0, "informed sells should make the bid side lose"
-    assert report["profit_curve"]["total_pnl_per_second_per_base"] < 0
+    assert plus["pnl_per_hour_upper_bound"] > 0, "buy side should look profitable on its own"
+    assert minus["pnl_per_hour_upper_bound"] < 0, "informed sells should make the bid side lose"
+    assert report["profit_curve"]["total_pnl_per_hour_upper_bound"] < 0
 
     assert report["viable"] is False
     assert any("two_sided_pnl_not_positive" in reason for reason in report["reasons"])
@@ -231,7 +257,11 @@ def test_thin_optimum_sample_blocks_a_viable_verdict():
 
 
 def test_wide_book_with_deep_sample_is_viable():
-    """The gate must be able to say yes, or it is not a gate."""
+    """The gate must be able to say yes, or it is not a gate.
+
+    min_window_hours is disabled here: this exercises the economics, and the
+    window-length guard has its own test below.
+    """
     mids = _mids(spread=4.0)
     rows = []
     for index in range(400):
@@ -245,9 +275,11 @@ def test_wide_book_with_deep_sample_is_viable():
         covered_seconds=1800.0,
         window_end_ms=400_000.0,
         maker_fee_rate=0.00015,
+        min_window_hours=0.0,
     )
     assert report["viable"] is True, report["reasons"]
-    assert report["profit_curve"]["total_pnl_per_second_per_base"] > 0
+    assert report["profit_curve"]["total_pnl_per_hour_upper_bound"] > 0
+    assert report["profit_curve"]["total_reachable_notional_per_hour"] > 0
     assert report["at_touch"]["net_edge_bps"] > 0
 
 
@@ -261,3 +293,54 @@ def test_no_mid_data_fails_closed():
     )
     assert report["viable"] is False
     assert report["reasons"] == ["no_mid_data"]
+
+
+def test_short_window_cannot_issue_a_viable_verdict():
+    """Regression: a 15-minute burst must not be allowed to declare viability.
+
+    CASHCAT on 2026-08-17 ran 19.3x its own daily average volume with a 200-tick
+    spread; over that burst the profit curve reported +$3,279/h off ~20 samples,
+    while every other candidate sat at 0.18-0.68x its daily rate. A window short
+    enough to sit inside one regime describes that regime, not the instrument.
+    """
+    mids = _mids(spread=4.0)
+    rows = []
+    for index in range(400):
+        ts = 1000.0 + index * 100.0
+        rows.append({"ts_ms": ts, "side": "buy", "price": 1002.0, "size": 1.0})
+        rows.append({"ts_ms": ts, "side": "sell", "price": 998.0, "size": 1.0})
+    trades = pd.DataFrame(rows)
+
+    common = dict(
+        crypto="TEST",
+        mids=mids,
+        trades=trades,
+        covered_seconds=1800.0,  # half an hour
+        window_end_ms=400_000.0,
+        maker_fee_rate=0.00015,
+    )
+    # Identical economics; only the required window length differs.
+    assert build_market_viability_report(**common, min_window_hours=0.0)["viable"] is True
+    short = build_market_viability_report(**common, min_window_hours=6.0)
+    assert short["viable"] is False
+    assert any("window_too_short_for_a_verdict" in r for r in short["reasons"])
+    assert short["window"]["hours"] == pytest.approx(0.5)
+
+
+def test_report_exposes_observed_flow_rate():
+    """The report must show the window's own flow so a burst is visible."""
+    mids = _mids(spread=4.0)
+    rows = [
+        {"ts_ms": 1000.0 + i * 100.0, "side": "buy", "price": 1000.0, "size": 2.0}
+        for i in range(100)
+    ]
+    report = build_market_viability_report(
+        crypto="TEST",
+        mids=mids,
+        trades=pd.DataFrame(rows),
+        covered_seconds=3600.0,
+        window_end_ms=400_000.0,
+        maker_fee_rate=0.00015,
+    )
+    # 100 prints x 2.0 size x 1000.0 price over exactly one hour.
+    assert report["window"]["observed_notional_per_hour"] == pytest.approx(200_000.0)

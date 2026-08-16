@@ -852,7 +852,26 @@ class Market_Making(IStrategy):
                 continue
             newest: datetime | None = None
             shards = list(target_dir.glob("*.parquet"))
-            shards = sorted(shards, key=lambda path: path.stat().st_mtime, reverse=True)
+            # Order by the flush timestamp in the filename ("<dtype>_<ms>.parquet")
+            # rather than by os.stat(). Sorting by mtime stats EVERY shard on
+            # every freshness check: at a 5s cache and 3-day retention that is
+            # ~26k stat calls per stream per check on a bind mount, so the cost
+            # of this scan grew with RETENTION_MINUTES even though only the
+            # newest few shards are ever read. Names that cannot be parsed sort
+            # last and fall back to mtime, so nothing is silently skipped.
+            def _shard_sort_key(path: Path) -> float:
+                stem = path.stem
+                if "_" in stem:
+                    try:
+                        return float(stem.rsplit("_", 1)[1])
+                    except ValueError:
+                        pass
+                try:
+                    return path.stat().st_mtime * 1000.0
+                except OSError:
+                    return float("-inf")
+
+            shards = sorted(shards, key=_shard_sort_key, reverse=True)
             try:
                 scan_limit = int(self.collector_timestamp_newest_files_per_stream)
             except Exception:
