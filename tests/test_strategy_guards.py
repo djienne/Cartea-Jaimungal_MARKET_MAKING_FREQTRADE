@@ -124,6 +124,32 @@ class EmptyWhitelistDP(DummyDP):
         return []
 
 
+# Methods the strategy probes on its exchange handle that freqtrade's Exchange
+# does NOT define. Verified by introspecting freqtrade 2025.10 (Python 3.13.8)
+# inside the ft-*:2025.10 image:
+#
+#     cancel_all_orders   False        cancel_order     True
+#     fetch_open_orders   False        fetch_positions  True
+#     get_open_orders     False        fetch_trading_fee False
+#
+# A fixture that defines any of these makes the suite assert against an API that
+# does not exist. That is exactly how the kill switch shipped believing it
+# cancelled resting orders: _cancel_open_orders_for_kill_switch probes
+# cancel_all_orders, then fetch_open_orders, then get_open_orders, and against
+# real freqtrade every probe misses and it returns no_open_order_source having
+# cancelled nothing.
+ABSENT_FROM_REAL_FREQTRADE_EXCHANGE = (
+    "cancel_all_orders",
+    "fetch_open_orders",
+    "get_open_orders",
+    "fetch_trading_fee",
+)
+
+# Trade.get_open_order_trades does not exist on 2025.10 either; the strategy's
+# getattr() probe for it is dead but harmless.
+ABSENT_FROM_REAL_FREQTRADE_TRADE = ("get_open_order_trades",)
+
+
 class DummyExchange:
     def __init__(self):
         self.markets = {
@@ -135,8 +161,7 @@ class DummyExchange:
             }
         }
         self.positions = []
-        self.open_orders = []
-        self.cancelled_pair = None
+        self.cancel_calls = []
 
     def amount_to_precision(self, pair, amount):
         return f"{float(amount):.3f}"
@@ -147,8 +172,17 @@ class DummyExchange:
     def fetch_positions(self, pairs=None):
         return list(self.positions)
 
-    def cancel_all_orders(self, pair):
-        self.cancelled_pair = pair
+    def cancel_order(self, order_id, pair=None):
+        # Real freqtrade DOES provide this one, so the fixture must too -- without
+        # it the cancel path bails a step earlier than production and reports
+        # "unavailable" instead of the truthful "no_open_order_source".
+        self.cancel_calls.append((order_id, pair))
+
+    # NOTE: no cancel_all_orders / fetch_open_orders / get_open_orders /
+    # open_orders here, on purpose. See ABSENT_FROM_REAL_FREQTRADE_EXCHANGE --
+    # this fixture used to invent cancel_all_orders, which made the kill switch
+    # look like it cancelled resting orders when against real freqtrade it
+    # cancels nothing.
 
 
 def write_param_snapshot_files(directory: Path) -> Path:
@@ -2253,7 +2287,6 @@ def test_unexpected_short_position_rejects_entry_and_kills_strategy():
 
     assert not bot.trading_enabled
     assert bot.fail_closed_reason == "unexpected_short_position"
-    assert bot.exchange.cancelled_pair == "ETH/USDC:USDC"
     assert [event for event, _ in events] == ["kill_switch", "risk_flatten_requested", "entry_rejected"]
     assert events[0][1] == {
         "reason": "unexpected_short_position",
@@ -2262,8 +2295,11 @@ def test_unexpected_short_position_rejects_entry_and_kills_strategy():
         # Which leg of the pair died: with two instances running, the reason
         # alone no longer identifies the instance.
         "role": "long",
+        # no_open_order_source is what real freqtrade produces: none of the three
+        # methods the cancel path probes exist on its Exchange. The fixture used
+        # to define cancel_all_orders and hide that.
         "cancel_open_orders_requested": 0,
-        "cancel_method": "cancel_all_orders",
+        "cancel_method": "no_open_order_source",
         "risk_flatten_request_emitted": True,
         "risk_action_id": "risk-000000000001",
     }
@@ -2283,6 +2319,10 @@ def test_unexpected_short_position_rejects_entry_and_kills_strategy():
 
 
 def test_kill_switch_cancels_open_orders_with_cancel_order_fallback():
+    """Exercises the cancel_order fallback for an exchange that DOES expose open
+    orders. Real freqtrade does not (see ABSENT_FROM_REAL_FREQTRADE_EXCHANGE), so
+    this covers the code path, not the shipped configuration.
+    """
     bot = make_bot()
     bot.trading_enabled = True
     events = []
@@ -2401,7 +2441,6 @@ def test_consecutive_losses_trigger_kill_switch():
 
     assert not bot.trading_enabled
     assert bot.fail_closed_reason == "consecutive_losses_limit_reached"
-    assert bot.exchange.cancelled_pair == "ETH/USDC:USDC"
     risk_updates = [payload for event, payload in events if event == "risk_update"]
     assert [payload["consecutive_losses"] for payload in risk_updates] == [1, 2]
     assert risk_updates[-1]["max_consecutive_losses"] == 2
@@ -2812,7 +2851,7 @@ def test_health_log_counts_open_orders_and_logs_position():
 
 def test_health_log_counts_open_orders_from_trades_when_exchange_unavailable():
     bot = make_bot()
-    delattr(bot.exchange, "open_orders")
+    # open_orders is absent by default now, matching real freqtrade.
     now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
     events = []
     DummyTrade._open_trades = [
@@ -2836,7 +2875,7 @@ def test_health_log_counts_open_orders_from_trades_when_exchange_unavailable():
 
 def test_health_log_counts_freqtrade_open_order_trades():
     bot = make_bot()
-    delattr(bot.exchange, "open_orders")
+    # open_orders is absent by default now, matching real freqtrade.
     now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
     events = []
     DummyTrade._open_order_trades = [
@@ -2861,7 +2900,7 @@ def test_health_log_counts_freqtrade_open_order_trades():
 
 def test_health_log_uses_accepted_order_estimate_when_runtime_sources_are_hidden():
     bot = make_bot()
-    delattr(bot.exchange, "open_orders")
+    # open_orders is absent by default now, matching real freqtrade.
     now = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
     events = []
     DummyTrade._open_trades = [DummyTrade(amount=0.01)]
@@ -3059,3 +3098,68 @@ def test_role_and_can_short_must_agree():
     bot._apply_runtime_safety_config()
     assert bot.trading_enabled is False
     assert bot.fail_closed_reason == "role_and_can_short_disagree"
+def test_fixtures_do_not_invent_exchange_methods_freqtrade_lacks():
+    """Guard against the fiction that hid the kill-switch bug.
+
+    A fixture defining cancel_all_orders made every kill-switch test pass while
+    the production path cancelled nothing. Any fixture standing in for the
+    freqtrade exchange handle must expose only methods the real class has.
+    """
+    exchange = DummyExchange()
+    for name in ABSENT_FROM_REAL_FREQTRADE_EXCHANGE:
+        assert not hasattr(exchange, name), (
+            f"DummyExchange defines {name}(), which freqtrade.exchange.Exchange "
+            f"does not. Tests built on it assert against an API that does not exist."
+        )
+    # The strategy reads open orders off this attribute too; real freqtrade has
+    # no such attribute either.
+    assert not hasattr(exchange, "open_orders")
+
+
+def test_kill_switch_cannot_cancel_resting_orders_on_real_freqtrade():
+    """Documents a real limitation of the retiring strategy, rather than hiding it.
+
+    With an exchange handle that has only the methods freqtrade actually
+    provides, the cancel path finds no way to enumerate or cancel open orders and
+    reports no_open_order_source. The trading flag still flips and the flatten
+    request is still emitted, so the bot stops quoting -- but any order already
+    resting on the book stays there until it fills or times out.
+
+    The two-sided engine tracks its own resting order ids and cancels them
+    through the Hyperliquid SDK, which is why it does not inherit this.
+    """
+    bot = make_bot()
+    bot.trading_enabled = True
+    events = []
+    bot._debug_log_event = lambda event, payload: events.append((event, payload))
+
+    bot._trigger_kill_switch("manual_test", {"pair": "ETH/USDC:USDC"})
+
+    assert not bot.trading_enabled
+    payload = events[0][1]
+    assert payload["cancel_method"] == "no_open_order_source"
+    assert payload["cancel_open_orders_requested"] == 0
+    assert bot._cancel_open_order_requests == 0
+
+
+def test_kill_switch_suppresses_the_exit_signal_that_would_unwind_inventory():
+    """The other half of the stranding problem, pinned so the engine must fix it.
+
+    _trigger_kill_switch sets trading_enabled = False, and populate_exit_trend
+    returns no signal while trading is disabled -- so a position open at the
+    moment of a kill switch cannot be unwound by the bot at all. Only the -75%
+    stoploss or a manual force-exit closes it.
+    """
+    import pandas as pd
+
+    bot = make_bot()
+    bot.trading_enabled = True
+    DummyTrade._open_trades = [DummyTrade(amount=0.01, is_short=False)]
+    frame = pd.DataFrame({"close": [100.0, 100.0], "date": [1, 2]})
+
+    enabled = bot.populate_exit_trend(frame.copy(), {"pair": "ETH/USDC:USDC"})
+    assert int(enabled["exit_long"].iloc[-1]) == 1, "quotes the ask while holding"
+
+    bot._trigger_kill_switch("manual_test", {"pair": "ETH/USDC:USDC"})
+    disabled = bot.populate_exit_trend(frame.copy(), {"pair": "ETH/USDC:USDC"})
+    assert int(disabled["exit_long"].iloc[-1]) == 0, "inventory is stranded"
