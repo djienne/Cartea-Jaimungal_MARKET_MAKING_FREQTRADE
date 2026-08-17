@@ -113,6 +113,12 @@ notional at 25 USDC by default through
 `--max-notional-usdc`; raise that only when the exchange minimum requires it and
 record the reason with the retained evidence.
 
+The `--symbol ETH/USDC:USDC` in the commands below is the pair the original
+probes were run against, not a fixed choice. Substitute whatever pair is in
+`pair_whitelist` when you run them (currently `CASHCAT/USDC:USDC`) — the
+post-only semantics being probed are exchange-wide, but the size, price and
+notional arguments are per-symbol and must be re-derived.
+
 ```bash
 $env:HYPERLIQUID_DIRECT_ALO_ALLOW = "1"
 python scripts/hyperliquid_alo_executor.py --mode submit-alo --testnet --symbol ETH/USDC:USDC --side bid --size <min_size> --price <passive_bid> --best-bid <best_bid> --best-ask <best_ask> --acknowledge-real-orders --output docs/direct_alo_submit_result.json

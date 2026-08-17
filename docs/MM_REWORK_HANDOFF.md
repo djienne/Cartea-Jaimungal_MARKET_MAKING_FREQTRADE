@@ -2,6 +2,16 @@
 
 **Date:** 2026-08-17 · **Branch:** `main` · **Tests:** 522 passing · **Tree:** clean
 
+> **Superseded — historical record.** This is a point-in-time snapshot of one
+> proposed direction (a standalone quoting engine, phases 1–4). That is *not*
+> what was built. The shipped design is two Freqtrade instances on separate
+> Hyperliquid sub-accounts sharing net inventory over Redis — see `README.md`
+> and `docs/PLAN_IMPLEMENTATION_STATUS.md` for current state. Its diagnosis of
+> *why* the rework was needed (ETH's one-tick book, the missing fee term, the
+> absent viability gate) is still accurate and is why
+> `scripts/verify_market_viability.py` exists. Its prescriptions are not
+> current. Test count and gate evidence in this file are stale by design.
+
 ---
 
 ## Why this happened

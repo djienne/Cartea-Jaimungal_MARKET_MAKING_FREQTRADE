@@ -1,7 +1,51 @@
 # Advanced Market Making with Freqtrade and Hyperliquid
 
-A sophisticated market making system built on Freqtrade, implementing dynamic spread optimization using Cartea-Jaimungal models and real-time parameter calculation for optimal bid-ask pricing.
-**Works ONLY for Hyperliquid**.
+A market making system built on Freqtrade, implementing the Cartea–Jaimungal–Penalva
+model (Chapter 10 of *Algorithmic and High-Frequency Trading*, 2015) with real-time
+parameter estimation. **Works ONLY for Hyperliquid**.
+
+---
+
+## ⚠️ Read this before running it with real money
+
+**The goal of this project is a faithful implementation of the Cartea–Jaimungal
+method, not a competitive trading strategy. It is not expected to be profitable
+as deployed, and measurement says it is not.**
+
+**Latency is the binding constraint, and this stack does not have it.** A market
+maker earns the spread and pays for being slow: every millisecond your quote sits
+stale is time an informed trader can pick it off. The model assumes you requote
+*continuously*. This stack does not come close:
+
+| | measured |
+|---|---|
+| median requote interval | **~30 s** |
+| p90 | ~50 s |
+| worst observed | ~100 s |
+
+That is Freqtrade's loop cadence plus Python plus ccxt plus your home
+connection — three to five orders of magnitude slower than the venue moves.
+
+What that costs, measured rather than assumed: adverse selection roughly
+**doubles** between a 200 ms and a 5 s markout (ε went 1.98→3.98 bps on the ask
+and 3.53→6.14 bps on the bid). Your quotes are exposed for *thirty seconds*.
+
+A live dry run on CASHCAT lost **64 USDC over 16 trades** while the price ran
++10%, and a replay sweep over the inventory-penalty parameter found **every
+setting loses money** — the best of them −23 USDC over 10 hours. Shrinking the
+order size 7.5× only cut the loss 2.6×, which is the signature of negative
+expected value rather than a mis-set risk limit.
+
+**If you intend to trade this seriously you need a co-located VPS** — an AWS
+instance in the region nearest the exchange (Tokyo is the usual choice for
+Hyperliquid), on a low-latency link, with the quoting loop rewritten to requote
+in milliseconds rather than on a candle cadence. **And even that may not be
+enough.** Competitive market making on a 20 bps spread is a latency race against
+firms with dedicated infrastructure; nothing here has been shown to win it.
+
+Use this to understand and verify the model. Treat any profit as unproven.
+
+---
 
 ## Overview
 
@@ -20,7 +64,7 @@ This project implements an advanced market making strategy that:
 ### 🎯 Dynamic Spread Calculation
 - **Kappa parameters** (`kappa+`, `kappa-`): Control order book depth and steepness
 - **Epsilon parameters** (`epsilon+`, `epsilon-`): Adjust for market volatility and adverse selection
-- **Real-time recalibration** by the `param-estimator` sidecar (default every ~30s, over a 30-minute window); the strategy reloads the snapshot every 20s
+- **Real-time recalibration** by the `param-estimator` sidecar (default every ~30s, over a **120-minute** window via `PARAM_ESTIMATOR_WINDOW_MINUTES`); the strategy reloads the snapshot every 20s. The window was widened from 30 min because a short window often contains too few distinct market-order depths for the kappa survival fit to clear its gate, so cycles passed or failed on luck
 
 ### 📊 Market Data Integration
 - **Order book analysis** for bid-ask spread calculation
@@ -28,12 +72,21 @@ This project implements an advanced market making strategy that:
 - **Mid-price tracking** for relative spread calculation
 
 ### 🔄 Automated Parameter Optimization
-- **Continuous parameter estimation** using recent market data (30-minutes window by default)
+- **Continuous parameter estimation** using recent market data (120-minute window by default)
 - **Exponential decay models** for lambda estimation
 - **Statistical analysis** of trade patterns and volatility
 
-### 🏗️ Modular Architecture (three services here, plus a shared collector)
-- **`freqtrade` (MM_ADV)**: `Market_Making.py` - Main Freqtrade strategy (consumes parameter snapshots, quotes)
+### 🏗️ Modular Architecture (four services here, plus a shared collector)
+- **`mm-long` (MM_ADV_LONG) and `mm-short` (MM_ADV_SHORT)**: two instances of
+  `Market_Making.py`, on separate Hyperliquid sub-accounts, that together present a
+  two-sided quote. Freqtrade rests at most one order per pair and suppresses an exit
+  signal whenever an entry is on the same candle, so one instance cannot quote both
+  sides; Hyperliquid perps also net one-way per coin, so the two legs need separate
+  sub-accounts to hold an independent long and short. Roles come from
+  `config.long.json` / `config.short.json`. Net inventory `q = q_long + q_short` is
+  shared over Redis and is what prices both legs; `mm_core.route_sides` decides which
+  leg owns which side each cycle, preferring the assignment that unwinds gross
+  inventory. Each leg fails closed if its peer's heartbeat goes stale.
 - **`hl-collector`** *(not in this compose file)*: `hyperliquid_data_collector.py` - Streams live Hyperliquid order book / trade / price data to Parquet shards. It is operated from `HYPERLIQUID_DATA/docker-compose.yml` alongside the other three Hyperliquid collectors; `scripts/HL_data` is a junction into `HYPERLIQUID_DATA/data/eth_mm`, so every reader here still finds its data where it always did. **Do not add a collector to this project's compose** — two collectors sharing one output directory write every tick twice under different shard names, which silently doubled `n_trades` and `λ±` on 2026-08-16.
 - **`param-estimator`**: `periodic_test_runner.py --loop` - Sidecar that runs `estimate_all.py` each cycle, validates the snapshot, copies it for the strategy, and publishes it to Redis. `estimate_all.py` loads the market window **once** and drives κ, ε and λ from it; running the three scripts separately made each re-scan the same parquet shards, which is how a cycle could outrun its own interval and stall parameter updates for 87 minutes on 2026-08-16. Cycle duration is recorded in `param_update_status.json`, and `--cycle-timeout-seconds` bounds a wedged cycle so it cannot hold the lock and starve every later one.
 - **`redis` (mm-redis)**: Atomic transport for the κ/ε/λ snapshot (`scripts/param_store.py`). The strategy prefers the single Redis blob (no torn multi-file reads, no estimator-lock stalls) and falls back to the JSON files when Redis is unavailable.
@@ -45,7 +98,8 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 ├── user_data/
 │   ├── config.json
 │   ├── logs/
-│   │   └── mm_debug.jsonl                 # Strategy debug JSONL (quotes/HJB/params)
+│   │   └── mm_debug.jsonl                 # Debug JSONL, shared by both legs; each
+│                                      # record carries a "role" field
 │   └── strategies/
 │       ├── Market_Making.py               # Main market making strategy
 │       ├── periodic_test_runner.py        # Estimator sidecar (per-cycle lock, Redis publish)
@@ -232,7 +286,7 @@ that means a spread wider than ~3 bps before any edge exists at all.
 
    Only use in dry-run (paper trading).
    Monitor from the Freqtrade web client, or set up the Telegram interface.
-   **WARNING: let the data collector run ~30 minutes before expecting valid parameters** (the estimators need a full window).
+   **WARNING: let the data collector run at least as long as the estimation window (120 minutes by default) before expecting valid parameters** — the estimators need a full window.
 
 ## Configuration
 
@@ -245,7 +299,7 @@ Uses ETH by default now.
     "trading_mode": "futures",
     "exchange": {
         "name": "hyperliquid",
-        "pair_whitelist": ["ETH/USDC:USDC"]
+        "pair_whitelist": ["CASHCAT/USDC:USDC"]
     },
     "unfilledtimeout": {
         "entry": 15,
@@ -270,7 +324,7 @@ These are regenerated by the `param-estimator` sidecar each cycle (default every
 The final half-spread per side is assembled as:
 
 ```text
-delta_total = clamp(HJB_depth * spread_multiplier + maker_fee * mid,
+delta_total = clamp(HJB_depth * spread_multiplier + maker_fee * mid + extra_cushion_bps/1e4 * mid,
                     min_half_spread_bps, max_half_spread_bps)
 ```
 
@@ -280,7 +334,7 @@ widening quotes defensively never inflates the fee compensation.
 
 - `trading_enabled`: master switch for quoting (safe with `dry_run: true`; live use additionally requires post-only evidence and stage gates — fail-closed).
 - `maker_fee_rate`: the maker fee the quotes assume. Must match what ccxt reports for the exchange or the fee gate fail-closes (pinned ccxt 4.5.22 reports Hyperliquid's documented 0.00015).
-- `spread_multiplier`: scales the HJB model depth (1.0 = model optimum; production default 3.0).
+- `spread_multiplier`: scales the HJB model depth. **Kept at 1.0**: nothing in the book supports scaling delta*, least of all the 1/kappa term which *is* the optimum, and a multiplier scales the inventory skew along with it. Use the additive `extra_cushion_bps` (default 0) for defensive widening — additive shifts both sides equally and leaves the skew intact.
 - `min_half_spread_bps` / `max_half_spread_bps` (defaults 3 / 80): hard clamps on the final half-spread including fees. The floor guarantees every round trip collects at least ~2x the round-trip fee; the cap bounds how far quotes can drift from mid. Clamp activity is logged per quote (`clamped: "floor"|"cap"`).
 - `gamma_inventory_risk` (default 0.05): volatility-aware inventory penalty. The HJB running penalty becomes `phi_effective = hjb_phi + gamma * sigma2_per_sec * inventory_unit_base` using the realized mid variance published by the estimator; missing sigma2 falls back to the static `hjb_phi`.
 - `min_kappa_fit_points` / `min_kappa_r2` / `min_epsilon_events` (defaults 6 / 0.30 / 50): validation floors on the estimator fit diagnostics; snapshots below them are rejected (fail-closed).

@@ -11,14 +11,14 @@ The strategy and replay code must use these units consistently.
 | Lambda | market orders / second (per side; prints sharing side + exchange timestamp are one MO) |
 | HJB horizon `T` | seconds |
 | Inventory `q` | `inventory_unit_base` units of base asset |
-| `inventory_unit_base` | base asset amount represented by one inventory step (0.01 ETH; must track the actual order amount = min(stake, unit×mid)/mid, and must stay above the exchange's 10-USDC minimum notional — the strategy emits `inventory_unit_mismatch` when the rounded order amount drifts >25% from the unit) |
+| `inventory_unit_base` | base asset amount represented by one inventory step. **Auto-derived** from `available_capital * target_capital_utilisation * target_leverage / (q_max * mid)`, recomputed only while flat, so it carries across symbols (~2430 CASHCAT ~ 247 USDC at the shipped settings). Must track the actual order amount = min(stake, unit×mid)/mid, and must stay above the exchange's 10-USDC minimum notional — the strategy emits `inventory_unit_mismatch` when the rounded order amount drifts >25% from the unit) |
 | `sigma2_per_sec` | USDC² / second (variance of 1 s mid increments, per base asset) |
 | `min_half_spread_bps` / `max_half_spread_bps` | basis points of mid (1e-4), clamps on the final half-spread including the fee cushion |
 
 ## Quote assembly
 
 ```text
-delta_total = clamp(delta_model * spread_multiplier + maker_fee * mid,
+delta_total = clamp(delta_model * spread_multiplier + maker_fee * mid + extra_cushion_bps/1e4 * mid,
                     min_half_spread_bps/1e4 * mid, max_half_spread_bps/1e4 * mid)
 ```
 
