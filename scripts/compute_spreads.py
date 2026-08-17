@@ -115,7 +115,20 @@ def main():
     parser.add_argument("--inventory", "-q", type=int, default=0, help="Inventory level q (clipped to HJB grid)")
     parser.add_argument("--alpha", type=float, default=0.0, help="Terminal inventory penalty (alpha)")
     parser.add_argument("--phi", type=float, default=0.0, help="Running inventory penalty (phi)")
-    parser.add_argument("--qmax", type=int, default=3, help="Inventory grid radius (q_max)")
+    # Bounded deliberately. compute_h_symmetric reconstructs omega densely and
+    # floors it at 1e-300 before the log; on a very wide grid the smallest
+    # entries are pure roundoff (possibly negative), get floored to log ~ -690,
+    # and the corner depths come back wrong by ~0.1 with no error raised. The
+    # live path cannot reach this (it forces the asymmetric solver at q_max=6),
+    # so this flag is the only way in -- cap it rather than silently mislead.
+    parser.add_argument(
+        "--qmax",
+        type=int,
+        default=3,
+        choices=range(1, 21),
+        metavar="{1..20}",
+        help="Inventory grid radius (q_max), 1-20",
+    )
     parser.add_argument("--horizon", type=float, default=60.0, help="Horizon in seconds for HJB (default 60s, tuned for λ in trades/sec)")
     parser.add_argument("--asym-kappa", action="store_true", help="Use asymmetric-κ backward-Euler solver instead of symmetric closed form")
     parser.add_argument("--steps", type=int, default=200, help="Time steps for asymmetric solver (ignored for symmetric)")

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
+import pytest
 import pandas as pd
 
 
@@ -483,9 +484,16 @@ def test_hjb_refresh_uses_sigma2_volatility_channel():
     refreshes = [p for e, p in events if e == "hjb_refresh"]
     assert refreshes, "expected an hjb_refresh event"
     inputs = refreshes[-1]["inputs"]
-    expected_phi = 0.0001 + bot.gamma_inventory_risk * 0.02 * bot.inventory_unit_base
-    assert inputs["phi_source"] == "sigma2_channel"
-    assert abs(inputs["phi_effective"] - expected_phi) < 1e-15
+    # phi's BASE is now derived from live kappa (hjb_phi_kappa_t / (kappa*T)),
+    # so the expectation is that base plus the volatility channel -- not the old
+    # hardcoded 0.0001.
+    kappa_avg = 2.0
+    base_phi = bot.hjb_phi_kappa_t / (kappa_avg * bot.hjb_horizon_seconds)
+    expected_phi = base_phi + bot.gamma_inventory_risk * 0.02 * bot.inventory_unit_base
+    # phi now comes from the kappa-relative target with the volatility channel
+    # added on top; what matters is that sigma2 is still being consumed.
+    assert inputs["phi_source"] == "kappa_relative+sigma2"
+    assert abs(inputs["phi_effective"] - expected_phi) < 1e-12
     assert inputs["sigma2_per_sec"] == 0.02
 
 
@@ -498,8 +506,14 @@ def test_hjb_refresh_falls_back_to_base_phi_without_sigma2():
     refreshes = [p for e, p in events if e == "hjb_refresh"]
     assert refreshes, "expected an hjb_refresh event (missing sigma2 must not block)"
     inputs = refreshes[-1]["inputs"]
-    assert inputs["phi_source"] == "phi_base_fallback"
-    assert inputs["phi_effective"] == 0.0001
+    # Without sigma2 the volatility channel is absent, leaving the plain
+    # kappa-relative phi -- and crucially the refresh still happens.
+    assert inputs["phi_source"] == "kappa_relative"
+    # Derived from live kappa rather than the raw constant, and independent of
+    # the missing sigma2.
+    assert inputs["phi_effective"] == pytest.approx(
+        bot.hjb_phi_kappa_t / (2.0 * bot.hjb_horizon_seconds)
+    )
 
 
 def test_spread_multiplier_config_override_rejects_invalid():
@@ -1006,24 +1020,28 @@ def test_production_sizing_defaults_match_the_capital_plan():
     pins the legacy values so guard tests stay about mechanics).
 
     unit = available_capital * utilisation * leverage / (q_max * mid)
-         = 1000 * 0.74 * 2 / (6 * 1650) = 0.1495 -> 0.15 ETH
-    giving 0.9 ETH at q_max, ~1485 USDC notional, ~742 USDC margin at 2x.
+         = 1000 * 0.74 * 2 / (6 * 0.1015) = 2430 CASHCAT
+    giving ~14578 tokens at q_max, ~1480 USDC notional, ~740 USDC margin at 2x.
+
+    The shipped symbol is CASHCAT: it is the only instrument the viability gate
+    passes (blended edge +6.23 bps on an 11h window; ETH scores -2.46 bps because
+    its whole spread is one tick, a fifth of the round-trip fee).
     """
     bot = Market_Making()
 
     assert bot.hjb_q_max == 6
     assert bot.max_abs_inventory_units == bot.hjb_q_max  # must not drift apart
-    assert bot.inventory_unit_base == 0.15
+    assert bot.inventory_unit_base == 2430.0
     assert bot.target_leverage == 2.0
     assert bot.spread_multiplier == 1.0  # book optimum, no scaling
     assert bot.extra_cushion_bps == 0.0  # widening is opt-in and additive
 
     derived = (1000.0 * bot.target_capital_utilisation * bot.target_leverage) / (
-        bot.hjb_q_max * 1650.0
+        bot.hjb_q_max * 0.1015
     )
     assert abs(derived - bot.inventory_unit_base) / bot.inventory_unit_base < 0.01
 
-    notional = bot.inventory_unit_base * bot.hjb_q_max * 1650.0
+    notional = bot.inventory_unit_base * bot.hjb_q_max * 0.1015
     assert notional < bot.max_notional_exposure_usdc
     assert notional / bot.target_leverage < bot.max_margin_used_usdc
 
@@ -3163,3 +3181,143 @@ def test_kill_switch_suppresses_the_exit_signal_that_would_unwind_inventory():
     bot._trigger_kill_switch("manual_test", {"pair": "ETH/USDC:USDC"})
     disabled = bot.populate_exit_trend(frame.copy(), {"pair": "ETH/USDC:USDC"})
     assert int(disabled["exit_long"].iloc[-1]) == 0, "inventory is stranded"
+
+
+# ---------------------------------------------------------------------------
+# Cold start: absent params must not be fatal
+# ---------------------------------------------------------------------------
+
+
+def test_load_configs_tolerates_a_completely_cold_start(tmp_path):
+    """A cold start before the estimator's first cycle must not kill the process.
+
+    kappa.json and epsilon.json used to be unguarded, so bot_start raised
+    FileNotFoundError -- and since it raises before the reload loop begins, the
+    bot could never recover without a restart. The Redis path does not save you
+    either: on a missing blob _load_params falls through to these same files.
+    """
+    from Market_Making import load_configs
+
+    kappa, epsilon, lambdas = load_configs(start_dir=tmp_path, max_up=0)
+
+    assert kappa == {}
+    assert epsilon == {}
+    assert lambdas == {}
+
+
+def test_load_configs_still_reads_params_when_present(tmp_path):
+    """Tolerating absence must not mean ignoring what is there."""
+    import json as _json
+    from Market_Making import load_configs
+
+    (tmp_path / "kappa.json").write_text(_json.dumps({"CASHCAT": {"kappa+": 2.0}}), encoding="utf-8")
+    (tmp_path / "epsilon.json").write_text(_json.dumps({"CASHCAT": {"epsilon+": 0.5}}), encoding="utf-8")
+    (tmp_path / "lambda.json").write_text(_json.dumps({"CASHCAT": {"lambda+": 0.1}}), encoding="utf-8")
+
+    kappa, epsilon, lambdas = load_configs(start_dir=tmp_path, max_up=0)
+
+    assert kappa["CASHCAT"]["kappa+"] == 2.0
+    assert epsilon["CASHCAT"]["epsilon+"] == 0.5
+    assert lambdas["CASHCAT"]["lambda+"] == 0.1
+
+
+def test_corrupt_param_file_is_treated_as_absent(tmp_path):
+    """Half-written JSON is the estimator mid-copy, which is 'not ready', not fatal."""
+    from Market_Making import load_configs
+
+    (tmp_path / "kappa.json").write_text('{"CASHCAT": {"kappa+"', encoding="utf-8")
+
+    kappa, epsilon, lambdas = load_configs(start_dir=tmp_path, max_up=0)
+
+    assert kappa == {}
+
+
+def test_empty_params_produce_a_non_quoting_bot_not_a_crash():
+    """The whole point of tolerating absence: quoting stays gated."""
+    bot = make_bot()
+    bot.kappas, bot.epsilons, bot.lambdas = {}, {}, {}
+    bot.hjb_cache = None
+
+    ok, reason = bot._params_are_valid("CASHCAT/USDC:USDC")
+    assert ok is False
+    assert reason == "param_schema_unsupported"
+    assert bot._model_ready("CASHCAT/USDC:USDC") is False
+
+
+def test_quote_side_and_sign_flips_with_the_role():
+    """Depth side and price sign must flip TOGETHER.
+
+    The short leg shipped priced at mid MINUS the half-spread -- a bid price on
+    an ask order -- so every short entry was denied by maker safety. Nothing
+    covered this, which is why it reached a live dry run.
+    """
+    long_bot = make_bot()
+    long_bot.can_short = False
+    assert long_bot._quote_side_and_sign("entry") == ("bid", -1.0)
+    assert long_bot._quote_side_and_sign("exit") == ("ask", 1.0)
+
+    short_bot = make_bot()
+    short_bot.can_short = True
+    assert short_bot._quote_side_and_sign("entry") == ("ask", 1.0)
+    assert short_bot._quote_side_and_sign("exit") == ("bid", -1.0)
+
+
+def test_quoted_price_lands_on_the_correct_side_of_mid():
+    """A bid must sit below the mid and an ask above it, for either role."""
+    mid, delta = 100.0, 0.5
+    cases = [
+        (False, "entry", False),  # long entry  = bid, below mid
+        (False, "exit", True),    # long exit   = ask, above mid
+        (True, "entry", True),    # short entry = ask, above mid
+        (True, "exit", False),    # short exit  = bid, below mid
+    ]
+    for can_short, action, expect_above_mid in cases:
+        bot = make_bot()
+        bot.can_short = can_short
+        quote_side, side_sign = bot._quote_side_and_sign(action)
+        price = mid + side_sign * delta
+        assert (price > mid) is expect_above_mid, (can_short, action)
+        assert quote_side == ("ask" if expect_above_mid else "bid"), (can_short, action)
+
+
+def test_inventory_guard_asks_the_right_question_for_each_role():
+    """The bid/ask guards are mirror images, so asking the wrong one is not
+    conservative -- it is wrong. The short leg was asked 'do you have a short to
+    cover?' while OPENING one, got False at q=0, and every entry was rejected as
+    position_limit_reached."""
+    short_bot = make_bot()
+    short_bot.can_short = True
+    short_bot._reject_unexpected_short_position = lambda p, s=None: False
+    short_bot._inventory_level = lambda p: 0
+
+    # Flat short leg: may open (ask), may not cover (nothing to cover).
+    assert short_bot._inventory_allows_quote("X", "entry") is True
+    assert short_bot._inventory_allows_quote("X", "exit") is False
+
+    short_bot._inventory_level = lambda p: -2
+    assert short_bot._inventory_allows_quote("X", "entry") is True   # room to add
+    assert short_bot._inventory_allows_quote("X", "exit") is True    # can cover
+
+    long_bot = make_bot()
+    long_bot.can_short = False
+    long_bot._reject_unexpected_short_position = lambda p, s=None: False
+    long_bot._inventory_level = lambda p: 0
+    assert long_bot._inventory_allows_quote("X", "entry") is True    # may buy
+    assert long_bot._inventory_allows_quote("X", "exit") is False    # nothing to sell
+
+
+def test_debug_log_path_is_per_role():
+    """Both instances share the user_data mount. One filename means two writers
+    on one stream, rotating underneath each other, with nothing in the records
+    to say which leg emitted them."""
+    long_bot, short_bot = make_bot(), make_bot()
+    long_bot.role, short_bot.role = "long", "short"
+
+    assert long_bot._debug_log_path().name == "mm_debug_long.jsonl"
+    assert short_bot._debug_log_path().name == "mm_debug_short.jsonl"
+    assert long_bot._debug_log_path() != short_bot._debug_log_path()
+
+    # A roleless strategy (single-instance use) keeps the original name.
+    plain = make_bot()
+    plain.role = ""
+    assert plain._debug_log_path().name == "mm_debug.jsonl"

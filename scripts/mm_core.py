@@ -10,9 +10,9 @@ hand and asserted in one test (tests/test_quote_assembly.py). That is the wrong
 place for the guarantee: a backtest whose quoting differs from the live path
 tells you nothing, and the drift is silent until it costs money.
 
-This module is the single implementation. The replay imports it so that what it
-simulates is literally the code that will quote, and the engine will import it in
-turn.
+This module is the single implementation. Both the replay harness and the live
+strategy import it, so what a backtest simulates is literally the code that
+quotes.
 
 Conventions worth knowing before reading further:
 
@@ -21,9 +21,14 @@ Conventions worth knowing before reading further:
   -q_max), and that must never be clamped into a real quote.
 - Depths are measured from the MID, in price units, on the same coordinate the
   estimators calibrate in.
-- ``q`` is signed. The retired freqtrade strategy was long-only and clamped
-  inventory to [0, q_max], which quietly discarded half of the HJB's own grid;
-  the engine quotes both sides and uses the full [-q_max, +q_max].
+- ``q`` is signed and spans the full [-q_max, +q_max]. Freqtrade rests one order
+  per pair, so the two sides are run as two cooperating instances (a long leg
+  and a short leg on separate sub-accounts); ``route_sides`` decides which leg
+  owns which side, and ``allow_short=False`` reproduces a single long-only leg.
+- ``phi`` and ``alpha`` are NOT kappa-invariant -- eq. 10.28 uses -phi*kappa*q^2
+  -- so ``solve_hjb`` derives them from live kappa via the dimensionless targets
+  ``hjb_phi_kappa_t`` / ``hjb_alpha_kappa``. Tuning the raw values per symbol is
+  how the quotes ended up pinned to the floor and the cap.
 - Tick and lot rounding delegate to hyperliquid_alo_executor, which does it in
   Decimal. The float floor/ceil copies elsewhere are subject to binary
   representation error at exactly the wrong moment -- a bid rounded one ULP up
@@ -96,8 +101,9 @@ def parse_utc_timestamp(value: Any) -> datetime | None:
 class QuoteConfig:
     """Everything that shapes a quote, in one place.
 
-    Defaults mirror the values the freqtrade strategy shipped with, so replay
-    results stay comparable across the migration.
+    The strategy builds one of these from its own attributes, and the replay
+    constructs one directly, so a backtest and the live path are configured by
+    the same object rather than by two lists of constants kept in step by hand.
     """
 
     maker_fee_rate: float = 0.00015
@@ -119,6 +125,18 @@ class QuoteConfig:
     # False to reproduce the long-only strategy's [0, q_max] clamp.
     allow_short: bool = True
 
+    # phi and alpha are NOT kappa-invariant: eq. 10.28 puts them in the
+    # transition matrix as -phi*kappa*q^2 and exp(-alpha*kappa*q^2), so a value
+    # tuned at one kappa is meaningless at another. Moving from ETH (kappa~2)
+    # to CASHCAT (kappa~10000) took phi*kappa*T from 0.03 to 153 and drove every
+    # quote onto the floor or the cap.
+    #
+    # So express the risk preference in the DIMENSIONLESS products the model
+    # actually responds to and derive phi/alpha from live kappa. These carry
+    # across symbols; the raw values below are only the fallback when the
+    # targets are disabled (set to 0).
+    hjb_phi_kappa_t: float = 0.05
+    hjb_alpha_kappa: float = 0.05
     hjb_alpha: float = 0.001
     hjb_phi: float = 0.0001
     hjb_horizon_seconds: float = 60.0
@@ -305,6 +323,21 @@ def solve_hjb(
     surface rather than quoting off a failed solve.
     """
     phi, phi_source = effective_phi(config, sigma2_per_sec)
+    # The volatility channel is an additive risk term, independent of how the
+    # base phi is chosen, so separate it once here rather than recomputing it.
+    vol_delta = phi - float(config.hjb_phi) if phi_source == "sigma2_channel" else 0.0
+
+    kappa_avg = 0.5 * (float(params["kappa+"]) + float(params["kappa-"]))
+    horizon = float(config.hjb_horizon_seconds)
+    alpha = float(config.hjb_alpha)
+    if kappa_avg > 0:
+        # Derive from the dimensionless targets so the same config expresses the
+        # same risk trade-off at any kappa.
+        if float(config.hjb_phi_kappa_t) > 0 and horizon > 0:
+            phi = float(config.hjb_phi_kappa_t) / (kappa_avg * horizon) + vol_delta
+            phi_source = "kappa_relative+sigma2" if vol_delta else "kappa_relative"
+        if float(config.hjb_alpha_kappa) > 0:
+            alpha = float(config.hjb_alpha_kappa) / kappa_avg
     solver = compute_h_asymmetric if config.use_asymmetric_kappa else compute_h_symmetric
     result = solver(
         lambda_plus=float(params["lambda+"]),
@@ -313,7 +346,7 @@ def solve_hjb(
         epsilon_minus=float(params["epsilon-"]),
         kappa_plus=float(params["kappa+"]),
         kappa_minus=float(params["kappa-"]),
-        alpha=float(config.hjb_alpha),
+        alpha=alpha,
         phi=phi,
         T_seconds=float(config.hjb_horizon_seconds),
         q_max=int(config.q_max),
@@ -322,6 +355,8 @@ def solve_hjb(
     result["phi_effective"] = phi
     result["phi_source"] = phi_source
     result["phi_base"] = float(config.hjb_phi)
+    result["alpha_effective"] = alpha
+    result["kappa_avg"] = kappa_avg
     result["sigma2_per_sec"] = finite_float_or_none(sigma2_per_sec)
     return result
 

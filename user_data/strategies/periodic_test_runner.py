@@ -275,7 +275,9 @@ async def _stream_process(name: str, cmd: list[str], cwd: Path) -> int:
     return await proc.wait()
 
 
-async def _run_once(found: Dict[str, Optional[Path]], crypto: str) -> None:
+async def _run_once(
+    found: Dict[str, Optional[Path]], crypto: str, window_minutes: int | None = None
+) -> None:
     ran_any = False
     for name in TEST_FILES:
         path = found.get(name)
@@ -283,6 +285,13 @@ async def _run_once(found: Dict[str, Optional[Path]], crypto: str) -> None:
             print(f"{_ts()} [finder] WARNING: Could not find {name}; skipping this cycle.")
             continue
         cmd = [sys.executable, str(path), "--crypto", crypto]
+        # The estimation WINDOW is separate from the loop INTERVAL. It was
+        # previously pinned to estimate_all.py's 30-minute default, which is
+        # what made the kappa survival fit intermittent: a short window often
+        # contains too few distinct market-order walk-depths to clear
+        # MIN_KAPPA_FIT_POINTS, so a cycle would pass or fail on luck.
+        if window_minutes:
+            cmd += ["--minutes", str(int(window_minutes))]
         ran_any = True
         try:
             res = await _stream_process(name, cmd, cwd=path.parent)
@@ -505,6 +514,7 @@ async def _run_cycle_body(
     max_up: int,
     copy_configs: bool,
     crypto: str,
+    window_minutes: int | None = None,
 ) -> None:
     """Run estimators once and (optionally) validate+publish the snapshots."""
     found = locate_all(start_dir=start_dir, max_up=max_up)
@@ -514,7 +524,7 @@ async def _run_cycle_body(
             f"{_ts()} [finder] Searching... missing: {', '.join(missing)}. "
             f"Start dir: {(start_dir or Path(__file__).resolve().parent)}"
         )
-    await _run_once(found, crypto)
+    await _run_once(found, crypto, window_minutes)
     if copy_configs:
         configs = locate_configs(start_dir=start_dir, max_up=max_up)
         ok, reason = _validate_symbol_snapshot(configs, crypto)
@@ -535,6 +545,7 @@ async def _periodic_worker(
     lock_stale_seconds: float,
     lock_holder: dict,
     cycle_timeout_seconds: float = 0.0,
+    window_minutes: int | None = None,
 ) -> None:
     """Run estimator cycles, holding the process lock only for the duration of
     each cycle.
@@ -565,11 +576,11 @@ async def _periodic_worker(
                 # nothing in the status file to say why. Bound it explicitly.
                 if cycle_timeout_seconds and cycle_timeout_seconds > 0:
                     await asyncio.wait_for(
-                        _run_cycle_body(start_dir, max_up, copy_configs, crypto),
+                        _run_cycle_body(start_dir, max_up, copy_configs, crypto, window_minutes),
                         timeout=float(cycle_timeout_seconds),
                     )
                 else:
-                    await _run_cycle_body(start_dir, max_up, copy_configs, crypto)
+                    await _run_cycle_body(start_dir, max_up, copy_configs, crypto, window_minutes)
                 duration = time.monotonic() - started
                 _write_status(
                     "success",
@@ -627,6 +638,7 @@ def schedule_tests(
     crypto: str = "ETH",
     lock_stale_seconds: float = 3600.0,
     cycle_timeout_seconds: float = 0.0,
+    window_minutes: int | None = None,
 ) -> None:
     """Run get_kappa.py, get_epsilon.py, and get_lambda.py.
 
@@ -662,6 +674,7 @@ def schedule_tests(
                 lock_stale_seconds,
                 lock_holder,
                 cycle_timeout_seconds,
+                window_minutes,
             )
         )
     except KeyboardInterrupt:
@@ -733,6 +746,18 @@ def _parse_args(argv: list[str]):
             "cannot hold the lock and starve every later cycle (0 disables)"
         ),
     )
+    p.add_argument(
+        "--minutes",
+        type=int,
+        default=int(os.getenv("PARAM_ESTIMATOR_WINDOW_MINUTES", "0")),
+        help=(
+            "Estimation window in minutes passed to estimate_all.py. This is "
+            "NOT the loop interval: it is how much market history each cycle "
+            "fits kappa/epsilon/lambda over. Too short and the kappa survival "
+            "fit sees too few distinct depths to clear its gate (0 = leave "
+            "estimate_all.py's own default)"
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -775,4 +800,5 @@ if __name__ == "__main__":
         crypto=args.crypto,
         lock_stale_seconds=float(args.lock_stale_seconds),
         cycle_timeout_seconds=float(args.cycle_timeout_seconds),
+        window_minutes=int(args.minutes) or None,
     )

@@ -104,7 +104,7 @@ services:
           cpus: '0.25'
           memory: '1024M'
     environment:
-      CRYPTO_NAME: ${PARAM_ESTIMATOR_SYMBOL:-ETH}
+      CRYPTO_NAME: ${PARAM_ESTIMATOR_SYMBOL:-CASHCAT}
       # Headless matplotlib backend so the estimator scripts import cleanly.
       MPLBACKEND: Agg
       # Unbuffered stdout so `docker logs` shows runner output as it happens.
@@ -131,8 +131,9 @@ services:
       /freqtrade/user_data/strategies/periodic_test_runner.py
       --loop
       --interval ${PARAM_ESTIMATOR_INTERVAL:-30}
-      --crypto ${PARAM_ESTIMATOR_SYMBOL:-ETH}
+      --crypto ${PARAM_ESTIMATOR_SYMBOL:-CASHCAT}
       --lock-stale-seconds ${PARAM_UPDATE_LOCK_STALE_SECONDS:-3600}
+      --minutes ${PARAM_ESTIMATOR_WINDOW_MINUTES:-120}
   redis:
     image: redis:7-alpine
     container_name: mm-redis

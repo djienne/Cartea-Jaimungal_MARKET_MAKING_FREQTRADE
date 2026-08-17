@@ -354,13 +354,19 @@ def test_select_delta_without_a_surface_is_none():
 
 
 def test_solve_hjb_reports_the_phi_channel():
+    """With the kappa-relative default, phi comes from the dimensionless target;
+    the volatility channel is then additive on top of it."""
     config = QuoteConfig()
     quiet = solve_hjb(LIVE_PARAMS, config, sigma2_per_sec=None)
     loud = solve_hjb(LIVE_PARAMS, config, sigma2_per_sec=4.0)
-    assert quiet["phi_source"] == "phi_base_fallback"
-    assert quiet["phi_effective"] == pytest.approx(config.hjb_phi)
-    assert loud["phi_source"] == "sigma2_channel"
-    assert loud["phi_effective"] > config.hjb_phi
+    assert quiet["phi_source"] == "kappa_relative"
+    assert loud["phi_source"] == "kappa_relative+sigma2"
+    assert loud["phi_effective"] > quiet["phi_effective"]
+
+    # With the target disabled the raw phi and the old channel names return.
+    raw = QuoteConfig(hjb_phi_kappa_t=0.0, hjb_alpha_kappa=0.0)
+    assert solve_hjb(LIVE_PARAMS, raw, sigma2_per_sec=None)["phi_source"] == "phi_base_fallback"
+    assert solve_hjb(LIVE_PARAMS, raw, sigma2_per_sec=4.0)["phi_source"] == "sigma2_channel"
 
 
 def test_effective_phi_falls_back_rather_than_stopping_the_quoter():
@@ -607,3 +613,62 @@ def test_malformed_peer_payloads_fail_closed():
     bad_q = {"q_own": "x", "param_fingerprint": "abc",
              "published_at": datetime.now(timezone.utc).isoformat()}
     assert resolve_net_inventory(0, bad_q, "abc")[1] == "peer_inventory_invalid"
+
+
+# --------------------------------------------------------------------------
+# phi / alpha must be kappa-relative
+# --------------------------------------------------------------------------
+
+
+def _params(kappa):
+    return {
+        "kappa+": kappa, "kappa-": kappa,
+        "epsilon+": 1.0 / kappa, "epsilon-": 1.0 / kappa,
+        "lambda+": 0.1, "lambda-": 0.1,
+    }
+
+
+def test_phi_and_alpha_are_derived_from_live_kappa():
+    """eq. 10.28 uses -phi*kappa*q^2, so phi is NOT kappa-invariant: a value
+    tuned at one kappa is meaningless at another. The dimensionless targets are
+    what stay constant."""
+    config = QuoteConfig(hjb_phi_kappa_t=0.05, hjb_alpha_kappa=0.05, hjb_horizon_seconds=150.0)
+
+    small = solve_hjb(_params(2.0), config)
+    large = solve_hjb(_params(10000.0), config)
+
+    assert small["phi_source"] == "kappa_relative"
+    # phi scales as 1/kappa, so a 5000x kappa gives a 5000x smaller phi.
+    assert small["phi_effective"] / large["phi_effective"] == pytest.approx(5000.0, rel=1e-6)
+    assert small["alpha_effective"] / large["alpha_effective"] == pytest.approx(5000.0, rel=1e-6)
+    # The dimensionless products -- what the model actually responds to -- match.
+    for r in (small, large):
+        assert r["phi_effective"] * r["kappa_avg"] * 150.0 == pytest.approx(0.05, rel=1e-6)
+        assert r["alpha_effective"] * r["kappa_avg"] == pytest.approx(0.05, rel=1e-6)
+
+
+def test_one_config_gives_unclamped_skew_at_wildly_different_kappa():
+    """The regression this prevents: moving ETH -> CASHCAT drove phi*kappa*T from
+    0.03 to 153 and pinned every quote onto the floor or the cap."""
+    config = QuoteConfig(
+        hjb_phi_kappa_t=0.05, hjb_alpha_kappa=0.05,
+        hjb_horizon_seconds=150.0, q_max=6, allow_short=True,
+    )
+    for kappa, mid in ((2.0, 1875.0), (10000.0, 0.0998)):
+        hjb = solve_hjb(_params(kappa), config)
+        depths = []
+        for q in range(-config.q_max, config.q_max + 1):
+            pair = compute_quotes(mid, q, hjb, config)
+            for side in (pair.bid, pair.ask):
+                if side is not None:
+                    assert side.clamped is None, f"clamped at kappa={kappa}, q={q}"
+                    depths.append(side.bps)
+        # And the skew is real, not flat.
+        assert max(depths) - min(depths) > 1.0
+
+
+def test_raw_phi_is_used_when_the_target_is_disabled():
+    config = QuoteConfig(hjb_phi_kappa_t=0.0, hjb_alpha_kappa=0.0, hjb_phi=0.0001)
+    result = solve_hjb(_params(2.0), config)
+    assert result["phi_source"] == "phi_base_fallback"
+    assert result["phi_effective"] == pytest.approx(0.0001)

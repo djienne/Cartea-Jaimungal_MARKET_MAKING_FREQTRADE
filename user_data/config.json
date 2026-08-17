@@ -74,7 +74,7 @@
             "rateLimit": 150
         },
         "pair_whitelist": [
-            "ETH/USDC:USDC"
+            "CASHCAT/USDC:USDC"
         ],
         "pair_blacklist": []
     },

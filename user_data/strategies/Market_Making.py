@@ -60,13 +60,29 @@ def load_configs(start_dir: Path | None = None, max_up: int = 10):
         except NameError:  # e.g., interactive
             start_dir = Path(sys.argv[0]).resolve().parent if sys.argv and sys.argv[0] else Path.cwd()
 
-    kappa = json.loads((find_upwards("kappa.json", start_dir, max_up)).read_text(encoding="utf-8"))
-    epsilon = json.loads((find_upwards("epsilon.json", start_dir, max_up)).read_text(encoding="utf-8"))
-    lambda_params = {}
-    try:
-        lambda_params = json.loads((find_upwards("lambda.json", start_dir, max_up)).read_text(encoding="utf-8"))
-    except Exception:
-        lambda_params = {}
+    def _load_optional(filename: str) -> dict:
+        """A missing snapshot means 'not ready yet', not a fatal error.
+
+        kappa.json and epsilon.json used to be unguarded here, so a cold start
+        before the estimator's first successful cycle killed the process with
+        FileNotFoundError. Because bot_start raises before the reload loop ever
+        begins, that could never recover without a restart. Absent params must
+        behave exactly like stale ones: come up, do not quote, retry on cadence.
+
+        Returning {} is already safe downstream -- _refresh_hjb leaves hjb_cache
+        as None, _params_are_valid returns param_schema_unsupported, and both
+        _model_ready and _quote_state_valid gate quoting on precisely that.
+        """
+        try:
+            return json.loads(
+                (find_upwards(filename, start_dir, max_up)).read_text(encoding="utf-8")
+            )
+        except Exception:
+            return {}
+
+    kappa = _load_optional("kappa.json")
+    epsilon = _load_optional("epsilon.json")
+    lambda_params = _load_optional("lambda.json")
     return kappa, epsilon, lambda_params
 
 
@@ -263,7 +279,15 @@ class Market_Making(IStrategy):
     startup_candle_count: int = 0
 
     # HJB risk settings (aligned with fq_market_making_introduction.ipynb)
-    hjb_alpha = 0.001   # terminal inventory penalty
+    # Risk preference expressed in the DIMENSIONLESS products the model responds
+    # to, so it carries across symbols. eq. 10.28 uses -phi*kappa*q^2 and
+    # exp(-alpha*kappa*q^2), so a phi tuned at one kappa is meaningless at
+    # another: ETH (kappa~2) -> CASHCAT (kappa~10000) took phi*kappa*T from 0.03
+    # to 153 and pinned every quote to the floor or the cap. Set either to 0 to
+    # fall back to the raw hjb_phi / hjb_alpha below.
+    hjb_phi_kappa_t = 0.05
+    hjb_alpha_kappa = 0.05
+    hjb_alpha = 0.001   # raw fallback, only used when hjb_alpha_kappa == 0
     # Running inventory penalty. NOTE: eq. 10.28 puts this in the transition
     # matrix as -phi*kappa*q^2, so phi is NOT kappa-invariant and must be
     # re-tuned whenever kappa or the inventory unit moves. (The book's own
@@ -277,12 +301,13 @@ class Market_Making(IStrategy):
     hjb_horizon_seconds = 150.0
     use_asymmetric_kappa = True  # always use backward-Euler asymmetric-κ solver (kappa+ != kappa-)
 
-    # One inventory unit must match the actual order amount: the HJB assumes
-    # one fill moves q by exactly 1. With ETH ~1650 USDC the unit is one
-    # 16.5-USDC order (capped by stake_amount=25, above the 10-USDC exchange
-    # minimum). custom_stake_amount emits inventory_unit_mismatch when the
-    # rounded amount drifts >25% from the unit (e.g. after large mid moves).
-    inventory_unit_base = 0.15
+    # One inventory unit must match the actual order amount: the HJB assumes one
+    # fill moves q by exactly 1 (eq. 10.2 is a unit-jump process). On CASHCAT at
+    # ~0.1015 USDC the unit is ~247 USDC of notional, comfortably above the
+    # exchange minimum and below stake_amount so the one-unit cap is what binds.
+    # custom_stake_amount emits inventory_unit_mismatch when the rounded amount
+    # drifts >25% from the unit (e.g. after large mid moves).
+    inventory_unit_base = 2430.0
     # Leverage is a financing choice, not a model input -- see leverage().
     target_leverage = 2.0
     # Auto-size the inventory unit from capital instead of pinning it to a value
@@ -290,9 +315,10 @@ class Market_Making(IStrategy):
     #
     #   unit = available_capital * target_utilisation * leverage / (q_max * mid)
     #
-    # At 1000 USDC, 74% utilisation, 2x, q_max=6 and ETH~1650 this reproduces
-    # 0.15 ETH -- so the constant above is the formula's answer today, not a
-    # magic number. Recomputed ONLY when flat: changing the unit while holding
+    # At 1000 USDC, 74% utilisation, 2x, q_max=6 and CASHCAT~0.1015 this gives
+    # 2430 tokens -- so the constant above is the formula's answer today, not a
+    # magic number, and it re-derives itself if the symbol or price moves.
+    # Recomputed ONLY when flat: changing the unit while holding
     # inventory would shift the q-mapping under the open position, and the unit
     # also feeds phi_effective, so it must not move mid-position.
     auto_size_inventory_unit = True
@@ -335,8 +361,8 @@ class Market_Making(IStrategy):
     collector_required_streams = ("orderbooks", "prices", "trades")
     book_snapshot_cache_ms = 500
     max_toxicity = 1.5
-    # Sized for q_max=6 at inventory_unit_base=0.15 ETH: 0.9 ETH is ~1485 USDC
-    # notional at ETH~1650, ~742 USDC of margin at 2x. The ~2x headroom above
+    # Sized for q_max=6 at the auto-derived unit: ~1480 USDC of notional and
+    # ~740 USDC of margin at 2x, on either symbol. The ~2x headroom above
     # that absorbs an in-flight fill landing while q is already at the cap, plus
     # mid drift revaluing existing inventory; a cap sized exactly to the target
     # would trip on ordinary noise and dead-stop the quoter.
@@ -707,6 +733,8 @@ class Market_Making(IStrategy):
             "param_update_lock_stale_seconds",
             "gamma_inventory_risk",
             "extra_cushion_bps",
+            "hjb_phi_kappa_t",
+            "hjb_alpha_kappa",
             "min_kappa_fit_points",
             "min_kappa_r2",
             "min_epsilon_events",
@@ -1182,9 +1210,10 @@ class Market_Making(IStrategy):
                 )
                 self._hjb_import_error_logged = True
             return
+        # mm_core picks and calls the solver; this only checks the module the
+        # operator expects is actually present, and names it for telemetry.
         solver_name = "compute_h_asymmetric" if self.use_asymmetric_kappa else "compute_h_symmetric"
-        solver = getattr(hjb_mod, solver_name, None)
-        if solver is None:
+        if getattr(hjb_mod, solver_name, None) is None:
             logger.error(f"HJB solver function not found: {solver_name}")
             self._debug_log_event(
                 "hjb_unavailable",
@@ -1192,12 +1221,10 @@ class Market_Making(IStrategy):
             )
             return
 
-        # Volatility-aware inventory penalty: scale phi with the realized mid
-        # variance published by the estimator. Missing/invalid sigma2 falls
-        # back to the static base phi — it must never stop quoting.
+        # sigma2 feeds mm_core's volatility channel, which is additive on top of
+        # the kappa-derived base phi. A missing or invalid value simply omits that
+        # term -- it must never stop quoting.
         phi_base = float(self.hjb_phi)
-        phi_effective = phi_base
-        phi_source = "phi_base_fallback"
         sigma2_per_sec = None
         try:
             sigma2_raw = self.kappas[symbol].get("sigma2_per_sec")
@@ -1205,24 +1232,27 @@ class Market_Making(IStrategy):
                 sigma2_candidate = float(sigma2_raw)
                 if np.isfinite(sigma2_candidate) and sigma2_candidate >= 0:
                     sigma2_per_sec = sigma2_candidate
-                    phi_effective = phi_base + float(self.gamma_inventory_risk) * sigma2_per_sec * float(self.inventory_unit_base)
-                    phi_source = "sigma2_channel"
         except Exception:
             sigma2_per_sec = None
 
         try:
-            hjb_res = solver(
-                lambda_plus=lambda_p,
-                lambda_minus=lambda_m,
-                epsilon_plus=epsilon_p,
-                epsilon_minus=epsilon_m,
-                kappa_plus=kappa_p,
-                kappa_minus=kappa_m,
-                alpha=self.hjb_alpha,
-                phi=phi_effective,
-                T_seconds=self.hjb_horizon_seconds,
-                q_max=self.hjb_q_max,
+            # Delegate to mm_core rather than calling the solver directly: it is
+            # what derives phi/alpha from live kappa (they are NOT kappa-invariant,
+            # see eq. 10.28), and duplicating that here is how the two paths drift.
+            hjb_res = self._mm_core.solve_hjb(
+                {
+                    "kappa+": kappa_p,
+                    "kappa-": kappa_m,
+                    "epsilon+": epsilon_p,
+                    "epsilon-": epsilon_m,
+                    "lambda+": lambda_p,
+                    "lambda-": lambda_m,
+                },
+                self._quote_config(),
+                sigma2_per_sec=sigma2_per_sec,
             )
+            phi_effective = float(hjb_res.get("phi_effective", phi_base))
+            phi_source = str(hjb_res.get("phi_source", "phi_base_fallback"))
             self.hjb_cache = hjb_res
             self._hjb_generation += 1
             self._hjb_params_snapshot = params_snapshot
@@ -1650,6 +1680,8 @@ class Market_Making(IStrategy):
             q_max=int(self.hjb_q_max),
             allow_short=bool(self.can_short),
             hjb_alpha=float(self.hjb_alpha),
+            hjb_phi_kappa_t=float(self.hjb_phi_kappa_t),
+            hjb_alpha_kappa=float(self.hjb_alpha_kappa),
             hjb_phi=float(self.hjb_phi),
             hjb_horizon_seconds=float(self.hjb_horizon_seconds),
             gamma_inventory_risk=float(self.gamma_inventory_risk),
@@ -2005,6 +2037,34 @@ class Market_Making(IStrategy):
         if self.can_short:
             return "ask" if is_entry else "bid"
         return "bid" if is_entry else "ask"
+
+    def _inventory_allows_quote(self, pair: str, freqtrade_action: str) -> bool:
+        """May this role rest the book side that a freqtrade entry/exit implies?
+
+        The bid/ask guards are mirror images (a bid ADDS for the long leg but
+        COVERS for the short leg), so asking the wrong one is not conservative,
+        it is simply wrong: the short leg was asked "do you have a short to
+        cover?" when opening one, got False at q=0, and every entry was rejected
+        as position_limit_reached.
+        """
+        side = self._physical_quote_side(freqtrade_action)
+        if side == "ask":
+            return self._inventory_allows_ask(pair)
+        return self._inventory_allows_bid(pair)
+
+    def _quote_side_and_sign(self, freqtrade_action: str) -> tuple[str, float]:
+        """Book side and price direction for a freqtrade entry/exit on this role.
+
+            long leg :  entry = bid (mid - delta),  exit = ask (mid + delta)
+            short leg:  entry = ask (mid + delta),  exit = bid (mid - delta)
+
+        Both halves have to flip together. Taking the depth from one side of the
+        HJB and the sign from the other quotes a price on the wrong side of the
+        book, which the maker-safety check then rejects -- the short leg was
+        priced at mid MINUS the half-spread and every entry was denied.
+        """
+        side = self._physical_quote_side(freqtrade_action)
+        return side, (-1.0 if side == "bid" else 1.0)
 
     def _quote_state_valid(self, pair: str, side: str, rate: float, current_time: datetime) -> tuple[bool, str]:
         if not self.trading_enabled:
@@ -3336,11 +3396,24 @@ class Market_Making(IStrategy):
         return float(pnl)
 
     def _debug_log_path(self) -> Path:
+        """Per-role JSONL path.
+
+        The two instances share the user_data mount, so one filename means two
+        processes appending to the same stream and rotating it underneath each
+        other. The records interleave with nothing to say which leg emitted
+        them -- exactly the wrong thing when the two legs are doing opposite
+        things and you are trying to work out which one rejected a quote.
+        """
         try:
             base = Path(__file__).resolve().parent.parent  # user_data
         except Exception:
             base = Path.cwd()
-        return base / "logs" / self.debug_json_log_filename
+        name = self.debug_json_log_filename
+        role = str(getattr(self, "role", "") or "").strip().lower()
+        if role:
+            stem, dot, suffix = name.rpartition(".")
+            name = f"{stem}_{role}{dot}{suffix}" if dot else f"{name}_{role}"
+        return base / "logs" / name
 
     def _rotate_debug_log_if_needed(self, path: Path) -> None:
         max_bytes = int(getattr(self, "debug_json_log_max_bytes", 0) or 0)
@@ -3640,7 +3713,7 @@ class Market_Making(IStrategy):
             self._refresh_hjb(pair)
 
         q_level = self._inventory_level(pair)
-        delta_m = self._select_delta('bid', q_level)
+        delta_m = self._select_delta(self._physical_quote_side('entry'), q_level)
         if delta_m is None or not np.isfinite(float(delta_m)):
             logger.warning("No HJB delta available for bid; skipping entry pricing.")
             self._log_quote_decision(
@@ -3654,11 +3727,11 @@ class Market_Making(IStrategy):
                 proposed_rate=proposed_rate,
             )
             return proposed_rate
-        if not self._inventory_allows_bid(pair):
+        if not self._inventory_allows_quote(pair, "entry"):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="bid",
+                side=self._physical_quote_side("entry"),
                 action="entry",
                 decision="reject",
                 reason="position_limit_reached",
@@ -3669,14 +3742,15 @@ class Market_Making(IStrategy):
         delta_source = "hjb_grid"
 
         delta_model = float(delta_m)
-        delta_total, spread_info = self._assemble_half_spread(pair, "bid", delta_model, mid_price)
+        quote_side, side_sign = self._quote_side_and_sign("entry")
+        delta_total, spread_info = self._assemble_half_spread(pair, quote_side, delta_model, mid_price)
         fee_cushion = float(spread_info["fee_cushion"])
-        raw_rate = mid_price - delta_total
-        returned_rate = self._round_quote_price(pair, "bid", raw_rate)
+        raw_rate = mid_price + side_sign * delta_total
+        returned_rate = self._round_quote_price(pair, quote_side, raw_rate)
         self._log_spread("bid", mid_price, delta_total, delta_source)
         logger.info(f"Calculated bid: {returned_rate:.5f}")
 
-        ok, reason = self._quote_state_valid(pair, "bid", returned_rate, current_time)
+        ok, reason = self._quote_state_valid(pair, self._physical_quote_side("entry"), returned_rate, current_time)
         if not ok:
             self._remember_custom_price_rejection(
                 pair=pair,
@@ -4096,7 +4170,7 @@ class Market_Making(IStrategy):
             self._refresh_hjb(pair)
 
         q_level = self._inventory_level(pair)
-        delta_p = self._select_delta('ask', q_level)
+        delta_p = self._select_delta(self._physical_quote_side('exit'), q_level)
         if delta_p is None or not np.isfinite(float(delta_p)):
             logger.error("No HJB delta available for ask; using proposed_rate for exit pricing.")
             self._log_quote_decision(
@@ -4111,11 +4185,11 @@ class Market_Making(IStrategy):
                 extra={"trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None},
             )
             return proposed_rate
-        if not self._inventory_allows_ask(pair):
+        if not self._inventory_allows_quote(pair, "exit"):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="ask",
+                side=self._physical_quote_side("exit"),
                 action="exit",
                 decision="reject",
                 reason="position_limit_reached",
@@ -4127,15 +4201,16 @@ class Market_Making(IStrategy):
         delta_source = "hjb_grid"
 
         delta_model = float(delta_p)
-        delta_total, spread_info = self._assemble_half_spread(pair, "ask", delta_model, mid_price)
+        quote_side, side_sign = self._quote_side_and_sign("exit")
+        delta_total, spread_info = self._assemble_half_spread(pair, quote_side, delta_model, mid_price)
         fee_cushion = float(spread_info["fee_cushion"])
-        raw_rate = mid_price + delta_total
-        returned_rate = self._round_quote_price(pair, "ask", raw_rate)
+        raw_rate = mid_price + side_sign * delta_total
+        returned_rate = self._round_quote_price(pair, quote_side, raw_rate)
 
         self._log_spread("ask", mid_price, delta_total, delta_source)
         logger.info(f"Calculated ask: {returned_rate:.5f}")
 
-        ok, reason = self._quote_state_valid(pair, "ask", returned_rate, current_time)
+        ok, reason = self._quote_state_valid(pair, self._physical_quote_side("exit"), returned_rate, current_time)
         if not ok:
             self._remember_custom_price_rejection(
                 pair=pair,
@@ -4313,7 +4388,7 @@ class Market_Making(IStrategy):
             )
             return False
 
-        ok, reason = self._quote_state_valid(pair, "bid", rate, current_time)
+        ok, reason = self._quote_state_valid(pair, self._physical_quote_side("entry"), rate, current_time)
         if not ok:
             self._debug_log_event(
                 "entry_rejected",
@@ -4470,7 +4545,7 @@ class Market_Making(IStrategy):
             )
             return False
 
-        ok, reason = self._quote_state_valid(pair, "ask", rate, current_time)
+        ok, reason = self._quote_state_valid(pair, self._physical_quote_side("exit"), rate, current_time)
         if not ok:
             self._debug_log_event(
                 "exit_rejected",
@@ -4693,7 +4768,7 @@ class Market_Making(IStrategy):
         if self.hjb_cache is None:
             self._refresh_hjb(pair)
 
-        ok, reason = self._quote_state_valid(pair, "bid", current_order_rate, current_time)
+        ok, reason = self._quote_state_valid(pair, self._physical_quote_side("entry"), current_order_rate, current_time)
         if not ok:
             self._log_quote_decision(
                 pair=pair,
@@ -4715,7 +4790,7 @@ class Market_Making(IStrategy):
             return None
 
         q_level = self._inventory_level(pair)
-        delta_m = self._select_delta('bid', q_level)
+        delta_m = self._select_delta(self._physical_quote_side('entry'), q_level)
         if delta_m is None or not np.isfinite(float(delta_m)):
             logger.warning("No HJB delta available for bid adjust; cancelling open order.")
             self._log_quote_decision(
@@ -4738,10 +4813,11 @@ class Market_Making(IStrategy):
             return None
         delta_source = "hjb_grid"
         delta_model = float(delta_m)
-        delta_total, spread_info = self._assemble_half_spread(pair, "bid", delta_model, mid_price)
+        quote_side, side_sign = self._quote_side_and_sign("entry")
+        delta_total, spread_info = self._assemble_half_spread(pair, quote_side, delta_model, mid_price)
         fee_cushion = float(spread_info["fee_cushion"])
-        raw_rate = mid_price - delta_total
-        returned_rate = self._round_quote_price(pair, "bid", raw_rate)
+        raw_rate = mid_price + side_sign * delta_total
+        returned_rate = self._round_quote_price(pair, quote_side, raw_rate)
 
         self._log_spread("bid_adjust", mid_price, delta_total, delta_source)
 
@@ -4795,7 +4871,7 @@ class Market_Making(IStrategy):
         if self.hjb_cache is None:
             self._refresh_hjb(pair)
 
-        ok, reason = self._quote_state_valid(pair, "ask", current_order_rate, current_time)
+        ok, reason = self._quote_state_valid(pair, self._physical_quote_side("exit"), current_order_rate, current_time)
         if not ok:
             self._log_quote_decision(
                 pair=pair,
@@ -4818,7 +4894,7 @@ class Market_Making(IStrategy):
             return None
 
         q_level = self._inventory_level(pair)
-        delta_p = self._select_delta('ask', q_level)
+        delta_p = self._select_delta(self._physical_quote_side('exit'), q_level)
         if delta_p is None or not np.isfinite(float(delta_p)):
             logger.warning("No HJB delta available for ask adjust; cancelling open order.")
             self._log_quote_decision(
@@ -4843,10 +4919,11 @@ class Market_Making(IStrategy):
 
         delta_source = "hjb_grid"
         delta_model = float(delta_p)
-        delta_total, spread_info = self._assemble_half_spread(pair, "ask", delta_model, mid_price)
+        quote_side, side_sign = self._quote_side_and_sign("exit")
+        delta_total, spread_info = self._assemble_half_spread(pair, quote_side, delta_model, mid_price)
         fee_cushion = float(spread_info["fee_cushion"])
-        raw_rate = mid_price + delta_total
-        returned_rate = self._round_quote_price(pair, "ask", raw_rate)
+        raw_rate = mid_price + side_sign * delta_total
+        returned_rate = self._round_quote_price(pair, quote_side, raw_rate)
 
         self._log_spread("ask_adjust", mid_price, delta_total, delta_source)
 
