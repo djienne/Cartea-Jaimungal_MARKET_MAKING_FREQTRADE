@@ -199,6 +199,16 @@ def make_bot() -> Market_Making:
     bot._accepted_quote_decisions = []
     bot._accepted_order_attempt_links = []
     bot.param_update_status_path = ""
+    # These tests exercise guard MECHANICS, not the shipped sizing. Pin the
+    # values they were written against so a deliberate change to the production
+    # defaults cannot masquerade as a behavioural regression -- the defaults
+    # themselves are asserted directly in test_production_sizing_defaults.
+    bot.auto_size_inventory_unit = False
+    bot.inventory_unit_base = 0.01
+    bot.hjb_q_max = 3
+    bot.max_abs_inventory_units = 3
+    bot.max_notional_exposure_usdc = 150.0
+    bot.max_margin_used_usdc = 150.0
     bot.hjb_cache = {
         "q_grid": np.array([-1, 0, 1]),
         "delta_plus": np.array([np.inf, 0.5, 0.4]),
@@ -910,8 +920,15 @@ def test_custom_stake_amount_returns_zero_when_min_stake_exceeds_inventory_unit(
     assert events[0][1]["risk_cap"] == 1.0  # 0.01 units * rate 100
 
 
-def test_strategy_leverage_stays_one_until_margin_model_is_live_ready():
+def test_strategy_leverage_is_the_configured_target_capped_by_the_venue():
+    """Leverage is a fixed financing choice, not a solver output.
+
+    It does not appear in the Cartea-Jaimungal model at all: it changes how much
+    margin backs a notional, not inventory risk, adverse selection or funding,
+    which are all set by q * inventory_unit_base * mid.
+    """
     bot = make_bot()
+    bot.target_leverage = 2.0
 
     assert bot.leverage(
         "ETH/USDC:USDC",
@@ -921,7 +938,56 @@ def test_strategy_leverage_stays_one_until_margin_model_is_live_ready():
         max_leverage=20.0,
         entry_tag="mm_bid",
         side="long",
-    ) == 1.0
+    ) == 2.0
+
+    # Never exceed what the venue permits, whatever the target says.
+    assert bot.leverage(
+        "ETH/USDC:USDC",
+        datetime.now(timezone.utc),
+        current_rate=100.0,
+        proposed_leverage=5.0,
+        max_leverage=1.5,
+        entry_tag="mm_bid",
+        side="long",
+    ) == 1.5
+
+    # A nonsense ceiling must not silently disable leverage.
+    assert bot.leverage(
+        "ETH/USDC:USDC",
+        datetime.now(timezone.utc),
+        current_rate=100.0,
+        proposed_leverage=5.0,
+        max_leverage=float("nan"),
+        entry_tag="mm_bid",
+        side="long",
+    ) == 2.0
+
+
+def test_production_sizing_defaults_match_the_capital_plan():
+    """The shipped defaults, asserted directly rather than via make_bot (which
+    pins the legacy values so guard tests stay about mechanics).
+
+    unit = available_capital * utilisation * leverage / (q_max * mid)
+         = 1000 * 0.74 * 2 / (6 * 1650) = 0.1495 -> 0.15 ETH
+    giving 0.9 ETH at q_max, ~1485 USDC notional, ~742 USDC margin at 2x.
+    """
+    bot = Market_Making()
+
+    assert bot.hjb_q_max == 6
+    assert bot.max_abs_inventory_units == bot.hjb_q_max  # must not drift apart
+    assert bot.inventory_unit_base == 0.15
+    assert bot.target_leverage == 2.0
+    assert bot.spread_multiplier == 1.0  # book optimum, no scaling
+    assert bot.extra_cushion_bps == 0.0  # widening is opt-in and additive
+
+    derived = (1000.0 * bot.target_capital_utilisation * bot.target_leverage) / (
+        bot.hjb_q_max * 1650.0
+    )
+    assert abs(derived - bot.inventory_unit_base) / bot.inventory_unit_base < 0.01
+
+    notional = bot.inventory_unit_base * bot.hjb_q_max * 1650.0
+    assert notional < bot.max_notional_exposure_usdc
+    assert notional / bot.target_leverage < bot.max_margin_used_usdc
 
 
 def test_custom_stake_amount_rounds_base_amount_down_to_lot_step():
@@ -2189,6 +2255,9 @@ def test_unexpected_short_position_rejects_entry_and_kills_strategy():
         "reason": "unexpected_short_position",
         "pair": "ETH/USDC:USDC",
         "signed_base_position": -0.02,
+        # Which leg of the pair died: with two instances running, the reason
+        # alone no longer identifies the instance.
+        "role": "long",
         "cancel_open_orders_requested": 0,
         "cancel_method": "cancel_all_orders",
         "risk_flatten_request_emitted": True,
@@ -2820,3 +2889,169 @@ def test_health_log_marks_open_trade_to_mid_price():
     assert payload["signed_base_position"] == 0.02
     assert payload["q"] == 2
     assert payload["unrealized_pnl"] == 0.2
+
+
+# ---------------------------------------------------------------------------
+# Role-aware guards (two-instance market maker)
+# ---------------------------------------------------------------------------
+
+
+def test_long_role_rejects_short_entries():
+    bot = make_bot()
+    bot.can_short = False
+
+    assert bot._entry_side_rejection_reason("short") == "short_entries_disabled"
+    assert bot._entry_side_rejection_reason("sell") == "short_entries_disabled"
+    assert bot._entry_side_rejection_reason("long") is None
+    assert bot._entry_side_rejection_reason("buy") is None
+
+
+def test_short_role_accepts_shorts_and_rejects_longs():
+    """can_short=True means SHORT ONLY, not 'either direction'.
+
+    Before this, line 1900 rejected any side outside the long set regardless of
+    can_short, so the short instance could never place an order at all.
+    """
+    bot = make_bot()
+    bot.can_short = True
+
+    assert bot._entry_side_rejection_reason("short") is None
+    assert bot._entry_side_rejection_reason("sell") is None
+    assert bot._entry_side_rejection_reason("long") == "long_entries_disabled"
+    assert bot._entry_side_rejection_reason("buy") == "long_entries_disabled"
+    # An unspecified side is freqtrade not telling us, not a role violation.
+    assert bot._entry_side_rejection_reason("") is None
+
+
+def test_unsupported_sides_are_still_rejected_for_both_roles():
+    for can_short in (False, True):
+        bot = make_bot()
+        bot.can_short = can_short
+        assert bot._entry_side_rejection_reason("sideways") == "unsupported_entry_side"
+
+
+def test_wrong_way_exposure_kills_each_role_independently():
+    """The guard is mirrored, not removed: each leg dies on exposure pointing
+    the wrong way for its own role."""
+    long_bot = make_bot()
+    long_bot.can_short = False
+    assert long_bot._reject_unexpected_short_position("ETH/USDC:USDC", -0.5) is True
+    assert long_bot.fail_closed_reason == "unexpected_short_position"
+    assert long_bot._reject_unexpected_short_position("ETH/USDC:USDC", 0.5) is False
+
+    short_bot = make_bot()
+    short_bot.can_short = True
+    assert short_bot._reject_unexpected_short_position("ETH/USDC:USDC", 0.5) is True
+    assert short_bot.fail_closed_reason == "unexpected_long_position"
+    assert short_bot._reject_unexpected_short_position("ETH/USDC:USDC", -0.5) is False
+
+
+def test_flat_is_never_a_role_violation():
+    for can_short in (False, True):
+        bot = make_bot()
+        bot.can_short = can_short
+        assert bot._reject_unexpected_short_position("ETH/USDC:USDC", 0.0) is False
+        assert bot.trading_enabled is not False or bot.fail_closed_reason != "unexpected_long_position"
+
+
+def test_physical_quote_side_is_mirrored_for_the_short_leg():
+    """Freqtrade speaks entries/exits; the book speaks bids/asks, and the map
+    between them flips with the role. Getting this backwards would price the
+    short leg's cover off the ask depth."""
+    long_bot = make_bot()
+    long_bot.can_short = False
+    assert long_bot._physical_quote_side("long") == "bid"
+    assert long_bot._physical_quote_side("exit") == "ask"
+
+    short_bot = make_bot()
+    short_bot.can_short = True
+    assert short_bot._physical_quote_side("short") == "ask"
+    assert short_bot._physical_quote_side("exit") == "bid"
+
+    # An explicit book side is always taken literally, whatever the role.
+    for bot in (long_bot, short_bot):
+        assert bot._physical_quote_side("bid") == "bid"
+        assert bot._physical_quote_side("ask") == "ask"
+
+
+def test_short_leg_inventory_gates_are_mirrored():
+    """For the short leg an ask ADDS (capped by q_max) and a bid COVERS (needs
+    an existing short) -- the mirror of the long leg."""
+    bot = make_bot()
+    bot.can_short = True
+    bot._reject_unexpected_short_position = lambda pair, signed_base=None: False
+
+    bot._inventory_level = lambda pair: 0
+    assert bot._inventory_allows_ask("ETH/USDC:USDC") is True   # can open a short
+    assert bot._inventory_allows_bid("ETH/USDC:USDC") is False  # nothing to cover
+
+    bot._inventory_level = lambda pair: -2
+    assert bot._inventory_allows_ask("ETH/USDC:USDC") is True   # room to add
+    assert bot._inventory_allows_bid("ETH/USDC:USDC") is True   # can cover
+
+    bot._inventory_level = lambda pair: -3
+    assert bot._inventory_allows_ask("ETH/USDC:USDC") is False  # at the cap
+    assert bot._inventory_allows_bid("ETH/USDC:USDC") is True
+
+
+def test_short_leg_emits_short_signals():
+    """Instance S was dead on arrival while populate_*_trend only ever wrote
+    enter_long / exit_long."""
+    import pandas as pd
+
+    bot = make_bot()
+    bot.can_short = True
+    bot.trading_enabled = True
+    bot._model_ready = lambda pair: True
+    bot._reject_unexpected_short_position = lambda pair, signed_base=None: False
+    bot._inventory_level = lambda pair: 0
+
+    df = pd.DataFrame({"close": [100.0, 101.0]})
+    out = bot.populate_entry_trend(df.copy(), {"pair": "ETH/USDC:USDC"})
+    assert out.iloc[-1]["enter_short"] == 1
+    assert out.iloc[-1]["enter_long"] == 0
+    assert out.iloc[-1]["enter_tag"] == "mm_ask"
+
+    bot._inventory_level = lambda pair: -2
+    out = bot.populate_exit_trend(df.copy(), {"pair": "ETH/USDC:USDC"})
+    assert out.iloc[-1]["exit_short"] == 1
+    assert out.iloc[-1]["exit_long"] == 0
+    assert out.iloc[-1]["exit_tag"] == "mm_bid"
+
+
+def test_target_inventory_steps_one_unit_toward_the_owned_side():
+    """adjust_trade_position moves inventory one unit at a time in the direction
+    of whichever side this leg is resting -- unit jumps, as eq. 10.2 assumes."""
+    bot = make_bot()
+    bot.role = "long"
+    bot.can_short = False
+    bot._inventory_level = lambda pair: 2
+
+    bot._my_quote_side = lambda pair: "bid"
+    assert bot._target_inventory_units("ETH/USDC:USDC") == 3
+    bot._my_quote_side = lambda pair: "ask"
+    assert bot._target_inventory_units("ETH/USDC:USDC") == 1
+    # No side owned this cycle (e.g. the peer holds the only live side).
+    bot._my_quote_side = lambda pair: None
+    assert bot._target_inventory_units("ETH/USDC:USDC") is None
+
+
+def test_no_peer_heartbeat_means_no_owned_side():
+    """Fail closed: without a peer we cannot know net inventory, and 'assume
+    flat' would silently mis-price every quote."""
+    bot = make_bot()
+    bot.role = "long"
+    bot._net_inventory = lambda pair: (None, "peer_inventory_missing")
+    assert bot._my_quote_side("ETH/USDC:USDC") is None
+    assert bot._target_inventory_units("ETH/USDC:USDC") is None
+
+
+def test_role_and_can_short_must_agree():
+    """The role picks which side is quoted, can_short picks which exposure is a
+    fault. If they disagree the guards contradict each other, so fail closed."""
+    bot = make_bot()
+    bot.trading_enabled = True
+    bot._mm_config = lambda: {"role": "short", "can_short": False}
+    bot._apply_runtime_safety_config()
+    assert bot.trading_enabled is False
+    assert bot.fail_closed_reason == "role_and_can_short_disagree"

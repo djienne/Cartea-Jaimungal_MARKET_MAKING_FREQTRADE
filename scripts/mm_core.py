@@ -101,7 +101,15 @@ class QuoteConfig:
     """
 
     maker_fee_rate: float = 0.00015
+    # The book's optimum is delta* itself; a multiplier scales 1/kappa, which IS
+    # the optimum, and scales the inventory skew along with it. Kept at 1.0 and
+    # retained only so an operator can reproduce a historical run.
     spread_multiplier: float = 1.0
+    # Defensive widening, in bps of mid, added AFTER the model term. Additive
+    # rather than multiplicative so it shifts both sides equally and leaves the
+    # HJB's inventory skew intact. Preferred over raising min_half_spread_bps,
+    # which is a clamp and therefore flattens skew for every q beneath it.
+    extra_cushion_bps: float = 0.0
     min_half_spread_bps: float = 3.0
     max_half_spread_bps: float = 80.0
 
@@ -171,7 +179,8 @@ def assemble_half_spread(
 ) -> HalfSpread | None:
     """Final half-spread for one side:
 
-        delta_total = clamp(delta_model * spread_multiplier + maker_fee*mid,
+        delta_total = clamp(delta_model * spread_multiplier
+                              + maker_fee*mid + extra_cushion_bps/1e4*mid,
                             min_half_spread_bps, max_half_spread_bps)
 
     The fee cushion is ONE maker fee per side: a round trip pays two fees and
@@ -195,7 +204,8 @@ def assemble_half_spread(
         return None
 
     fee_cushion = float(config.maker_fee_rate) * mid
-    delta_pre_clamp = model * float(config.spread_multiplier) + fee_cushion
+    extra_cushion = float(config.extra_cushion_bps) / 10_000.0 * mid
+    delta_pre_clamp = model * float(config.spread_multiplier) + fee_cushion + extra_cushion
     floor = float(config.min_half_spread_bps) / 10_000.0 * mid
     cap = float(config.max_half_spread_bps) / 10_000.0 * mid
     delta_total = min(max(delta_pre_clamp, floor), cap)
@@ -407,6 +417,110 @@ def compute_quotes(
             side="ask", price=price, price_tick_size=price_tick_size
         )
     return pair
+
+
+def route_sides(q_long: int, q_short: int, q_max: int) -> dict[str, str | None]:
+    """Decide which leg of the two-instance pair rests which side this cycle.
+
+    Freqtrade rests one order per trade, so each instance can hold only ONE
+    side. The naive split -- long always bids, short always asks -- deadlocks:
+    the long leg ratchets to +q_max and the short leg to -q_max and both stop.
+
+    Each leg has two possible actions:
+        long leg   bid = add long,    ask = reduce long
+        short leg  ask = add short,   bid = cover short
+
+    So exactly two assignments keep both sides live: (long ask, short bid),
+    which reduces gross inventory, and (long bid, short ask), which adds. We
+    prefer reducing whenever both legs hold something, which is what keeps gross
+    inventory from drifting while net stays near zero.
+
+    At the net boundary both legs want the same side. That is correct rather
+    than exceptional -- the model itself disables the other side there (delta
+    = inf at +/-q_max) -- so the side is posted once, by whichever leg is
+    reducing its own position.
+
+    This is a pure function of (q_long, q_short, q_max), so both instances
+    derive the same answer from the shared heartbeat with no negotiation.
+
+    Returns {"long": "bid"|"ask"|None, "short": "bid"|"ask"|None}.
+    """
+    q_long = int(q_long)
+    q_short = int(q_short)
+    q_max = int(q_max)
+    q_net = q_long + q_short
+
+    # What the model permits at this net inventory.
+    allows_bid = q_net < q_max
+    allows_ask = q_net > -q_max
+
+    if q_long > 0 and q_short < 0:
+        # Both legs hold something: unwind gross.
+        long_side = "ask" if allows_ask else None
+        short_side = "bid" if allows_bid else None
+    else:
+        long_side = "bid" if (allows_bid and q_long < q_max) else None
+        short_side = "ask" if (allows_ask and -q_short < q_max) else None
+        # A leg that cannot add may still be able to reduce.
+        if long_side is None and allows_ask and q_long > 0:
+            long_side = "ask"
+        if short_side is None and allows_bid and q_short < 0:
+            short_side = "bid"
+
+    if long_side is not None and long_side == short_side:
+        # Both legs converged on the same side; the reducing leg posts it.
+        # ask reduces for the long leg, bid reduces for the short leg.
+        if long_side == "ask":
+            short_side = None if q_long > 0 else short_side
+            long_side = long_side if q_long > 0 else None
+        else:
+            long_side = None if q_short < 0 else long_side
+            short_side = short_side if q_short < 0 else None
+
+    return {"long": long_side, "short": short_side}
+
+
+def resolve_net_inventory(
+    q_own: int,
+    peer: dict[str, Any] | None,
+    own_fingerprint: str | None,
+    *,
+    now: datetime | None = None,
+    max_peer_age_seconds: float = 30.0,
+) -> tuple[int | None, str]:
+    """Net inventory across both legs, or None with a reason to stop quoting.
+
+    Fail closed rather than assuming a missing peer is flat: "flat" is a
+    perfectly plausible value that would silently mis-price every quote.
+
+    Callers must keep publishing their own heartbeat and keep quoting EXITS
+    even when this returns None -- otherwise a peer outage strands both books
+    with no way to unwind, and a mutual stall never recovers.
+    """
+    if peer is None:
+        return None, "peer_inventory_missing"
+
+    published = parse_utc_timestamp(peer.get("published_at"))
+    if published is None:
+        return None, "peer_inventory_timestamp_invalid"
+    reference = as_utc(now) or utc_now()
+    age = (reference - published).total_seconds()
+    if age > float(max_peer_age_seconds):
+        return None, "peer_inventory_stale"
+
+    peer_fingerprint = peer.get("param_fingerprint")
+    if own_fingerprint is not None and peer_fingerprint is not None:
+        if str(peer_fingerprint) != str(own_fingerprint):
+            # Content-addressed, so a mismatch means the two legs are genuinely
+            # pricing off different parameter snapshots.
+            return None, "peer_param_fingerprint_mismatch"
+
+    try:
+        peer_q = int(peer["q_own"])
+    except (KeyError, TypeError, ValueError):
+        return None, "peer_inventory_invalid"
+
+    return int(q_own) + peer_q, "ok"
 
 
 def merged_params(

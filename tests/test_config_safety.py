@@ -117,7 +117,11 @@ def test_config_safety_fee_follows_maker_fee_rate_override():
 def test_config_safety_rejects_oversized_testing_exposure():
     config = safe_config()
     config["dry_run"] = False
-    config["stake_amount"] = 100
+    # The stake ceiling rose to 600 because stake_amount must now EXCEED one
+    # inventory unit (0.15 ETH ~ 250-450 USDC): if the proposed-stake term binds
+    # first, a "one unit" fill is quietly smaller than one unit of q and the
+    # HJB's unit-jump mapping drifts. Use a value above the new ceiling.
+    config["stake_amount"] = 1000
     config["tradable_balance_ratio"] = 0.99
     config["custom_price_max_distance_ratio"] = 0.10
     config["max_open_trades"] = 5
@@ -126,7 +130,7 @@ def test_config_safety_rejects_oversized_testing_exposure():
 
     assert report["ok"] is False
     assert "dry_run_not_true" in report["reasons"]
-    assert "stake_amount_above_limit:100>max_25" in report["reasons"]
+    assert "stake_amount_above_limit:1000>max_600" in report["reasons"]
     assert "tradable_balance_ratio_above_limit:0.99>max_0.1" in report["reasons"]
     assert "custom_price_max_distance_ratio_above_limit:0.1>max_0.05" in report["reasons"]
     assert "max_open_trades_above_one" in report["reasons"]

@@ -114,7 +114,7 @@ def test_epsilon_writer_includes_diagnostics(tmp_path):
     data = json.loads(path.read_text(encoding="utf-8"))["ETH"]
     assert data["schema_version"] == PARAM_SCHEMA_VERSION
     assert data["status"] == "ok"
-    assert data["estimator"] == "trimmed_mean"
+    assert data["estimator"] == "mean_at_arrival"
     assert data["unit"] == "USDC"
     assert data["n_buy_events"] == 4
     assert data["epsilon+_raw"] == 0.015

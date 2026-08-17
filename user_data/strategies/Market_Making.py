@@ -108,6 +108,40 @@ def load_hjb_solver():
     return None
 
 
+def load_mm_core():
+    """Import the shared quoting core (scripts/mm_core.py).
+
+    Unlike hjb and param_store, mm_core has transitive imports of its own
+    (``hjb``, ``hyperliquid_alo_executor``), so loading it by file path is not
+    enough -- the sibling modules have to be importable too. We therefore put
+    the containing ``scripts`` directory on sys.path and then import normally.
+
+    Returns None if unavailable; callers keep their local arithmetic in that
+    case rather than refusing to quote.
+    """
+    try:
+        return import_module("mm_core")
+    except Exception:
+        pass
+    try:
+        start_dir = Path(__file__).resolve().parent
+    except NameError:
+        start_dir = Path.cwd()
+    for rel in ("scripts/mm_core.py", "mm_core.py"):
+        try:
+            core_path = find_upwards(rel, start_dir, max_up=10)
+        except Exception:
+            continue
+        scripts_dir = str(core_path.parent)
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        try:
+            return import_module("mm_core")
+        except Exception:
+            continue
+    return None
+
+
 def load_param_store():
     """Import the optional Redis param_store helper (scripts/param_store.py).
 
@@ -167,11 +201,23 @@ class Market_Making(IStrategy):
 
     # Strategy configuration
     can_short: bool = False
+    # "long" or "short" -- which leg of the two-instance pair this is. Supplied
+    # by config.{long,short}.json; must agree with can_short or the guards
+    # contradict each other and the strategy fails closed.
+    role: str = "long"
+    # Stop quoting if the peer's heartbeat is older than this. Exits and the
+    # heartbeat itself are NEVER gated on it: a peer outage must not strand both
+    # books with no unwind path, nor make staleness mutual and permanent.
+    max_peer_inventory_age_seconds: float = 30.0
     use_exit_signal: bool = True
     use_custom_stoploss: bool = False
     process_only_new_candles: bool = False
-    position_adjustment_enable: bool = False
-    max_entry_position_adjustment = 0
+    # Inventory is the SIZE of one trade, not a count of trades: freqtrade rests
+    # one order per pair, so |q| > 1 is only reachable through adjust_trade_position.
+    position_adjustment_enable: bool = True
+    # 0 would block every increase. -1 is unlimited; the real bound is q_max,
+    # enforced in adjust_trade_position and by the HJB's own boundary.
+    max_entry_position_adjustment = -1
 
     # Disable time-based ROI exits; passive exits are controlled explicitly.
     minimal_roi = {
@@ -184,6 +230,9 @@ class Market_Making(IStrategy):
     lambdas = None
     hjb_cache = None
     hjb_solver = load_hjb_solver()
+    # Shared quote arithmetic (scripts/mm_core.py). The replay harness imports
+    # the same module, so a backtest simulates literally the code that quotes.
+    _mm_core = load_mm_core()
     # Optional Redis transport for the param snapshot (estimator -> strategy).
     _param_store = None
     _param_store_loaded: bool = False
@@ -215,9 +264,17 @@ class Market_Making(IStrategy):
 
     # HJB risk settings (aligned with fq_market_making_introduction.ipynb)
     hjb_alpha = 0.001   # terminal inventory penalty
-    hjb_phi = 0.0001    # running inventory penalty
-    hjb_q_max = 3     # inventory grid radius
-    hjb_horizon_seconds = 60.0  # horizon in seconds for matrix exponential (λ is trades/sec)
+    # Running inventory penalty. NOTE: eq. 10.28 puts this in the transition
+    # matrix as -phi*kappa*q^2, so phi is NOT kappa-invariant and must be
+    # re-tuned whenever kappa or the inventory unit moves. (The book's own
+    # Fig 10.8/10.9 captions are inconsistent with its eq. 10.28 by a factor of
+    # kappa -- do not read phi off those figures.)
+    hjb_phi = 0.0001
+    hjb_q_max = 6     # inventory grid radius; q_max ~ 20% of expected trades over the horizon
+    # Horizon in seconds (lambda is trades/sec). Paired with q_max above so that
+    # q_max is ~20% of the expected trade count over T, which is the book's own
+    # sizing heuristic (section 10.4.2).
+    hjb_horizon_seconds = 150.0
     use_asymmetric_kappa = True  # always use backward-Euler asymmetric-κ solver (kappa+ != kappa-)
 
     # One inventory unit must match the actual order amount: the HJB assumes
@@ -225,14 +282,32 @@ class Market_Making(IStrategy):
     # 16.5-USDC order (capped by stake_amount=25, above the 10-USDC exchange
     # minimum). custom_stake_amount emits inventory_unit_mismatch when the
     # rounded amount drifts >25% from the unit (e.g. after large mid moves).
-    inventory_unit_base = 0.01
+    inventory_unit_base = 0.15
+    # Leverage is a financing choice, not a model input -- see leverage().
+    target_leverage = 2.0
+    # Auto-size the inventory unit from capital instead of pinning it to a value
+    # that silently goes stale as price moves:
+    #
+    #   unit = available_capital * target_utilisation * leverage / (q_max * mid)
+    #
+    # At 1000 USDC, 74% utilisation, 2x, q_max=6 and ETH~1650 this reproduces
+    # 0.15 ETH -- so the constant above is the formula's answer today, not a
+    # magic number. Recomputed ONLY when flat: changing the unit while holding
+    # inventory would shift the q-mapping under the open position, and the unit
+    # also feeds phi_effective, so it must not move mid-position.
+    auto_size_inventory_unit = True
+    target_capital_utilisation = 0.74
     # Final half-spread assembly (see _assemble_half_spread):
     #   delta_total = clamp(HJB depth * spread_multiplier + fee*mid,
     #                       min_half_spread_bps, max_half_spread_bps)
     # The multiplier scales only the MODEL term; the fee cushion is one maker
     # fee per side (a round trip costs two fees and collects the cushion
     # twice). All three knobs overridable via market_making.*.
+    # The book's optimum IS delta*; a multiplier scales 1/kappa and the
+    # inventory skew with it, so it stays at 1.0. Defensive widening goes in
+    # extra_cushion_bps below, which is additive and therefore skew-preserving.
     spread_multiplier = 1.0
+    extra_cushion_bps = 0.0
     min_half_spread_bps = 3.0
     max_half_spread_bps = 80.0
     # Volatility-aware inventory penalty: phi_effective =
@@ -240,7 +315,9 @@ class Market_Making(IStrategy):
     # (sigma2 published by get_kappa from the BBO mid stream; falls back to
     # hjb_phi when absent). See docs/UNITS.md for the unit derivation.
     gamma_inventory_risk = 0.05
-    max_abs_inventory_units = 3
+    # Must track hjb_q_max: if the risk cap and the solver grid drift apart you
+    # either quote past the model's boundary or go dark inside it.
+    max_abs_inventory_units = 6
     max_param_age_seconds = 90
     max_collector_age_seconds = 30
     max_book_age_seconds = 5
@@ -252,8 +329,13 @@ class Market_Making(IStrategy):
     collector_required_streams = ("orderbooks", "prices", "trades")
     book_snapshot_cache_ms = 500
     max_toxicity = 1.5
-    max_notional_exposure_usdc = 150.0
-    max_margin_used_usdc = 150.0
+    # Sized for q_max=6 at inventory_unit_base=0.15 ETH: 0.9 ETH is ~1485 USDC
+    # notional at ETH~1650, ~742 USDC of margin at 2x. The ~2x headroom above
+    # that absorbs an in-flight fill landing while q is already at the cap, plus
+    # mid drift revaluing existing inventory; a cap sized exactly to the target
+    # would trip on ordinary noise and dead-stop the quoter.
+    max_notional_exposure_usdc = 3200.0
+    max_margin_used_usdc = 1600.0
     min_liquidation_buffer_usdc = 100.0
     maintenance_margin_rate = 0.05
     max_daily_loss_usdc = 20
@@ -519,6 +601,34 @@ class Market_Making(IStrategy):
         if not mm_config:
             return
 
+        # Role comes from config.long.json / config.short.json, layered over the
+        # shared config.json. The class default stays long-only so an instance
+        # started without a role config cannot short by accident.
+        if "role" in mm_config:
+            role = str(mm_config.get("role") or "").strip().lower()
+            if role in ("long", "short"):
+                self.role = role
+            else:
+                self._debug_log_event(
+                    "runtime_config_rejected",
+                    {"key": "role", "value": mm_config.get("role"), "reason": "unknown_role"},
+                )
+        if "can_short" in mm_config:
+            self.can_short = bool(mm_config.get("can_short"))
+        if self.can_short != (self.role == "short"):
+            # These two must agree or the guards contradict each other: the role
+            # decides which side is quoted, can_short decides which exposure is a
+            # fault. Fail closed rather than guess which one the operator meant.
+            self._debug_log_event(
+                "runtime_config_rejected",
+                {
+                    "key": "role",
+                    "role": self.role,
+                    "can_short": bool(self.can_short),
+                    "reason": "role_and_can_short_disagree",
+                },
+            )
+            self._trigger_kill_switch("role_and_can_short_disagree", {"role": self.role})
         if "post_only_verified" in mm_config:
             self.post_only_verified = bool(mm_config.get("post_only_verified"))
         if "param_update_status_path" in mm_config:
@@ -590,6 +700,7 @@ class Market_Making(IStrategy):
             "param_snapshot_reload_interval_seconds",
             "param_update_lock_stale_seconds",
             "gamma_inventory_risk",
+            "extra_cushion_bps",
             "min_kappa_fit_points",
             "min_kappa_r2",
             "min_epsilon_events",
@@ -701,6 +812,11 @@ class Market_Making(IStrategy):
         now = self._as_utc(current_time) or self._now_utc()
         if pair:
             self._process_pending_fill_markouts(pair, now)
+            # Published before anything can return early, and never gated on
+            # this instance's own willingness to quote -- a leg that stops
+            # publishing makes staleness mutual and the pair never recovers.
+            self._publish_inventory_heartbeat(pair)
+            self._resize_inventory_unit(pair, self.get_mid_price(pair, 0.0))
             self._log_health(pair, now)
         else:
             self._debug_log_event("param_update_skipped", {"reason": "no_pair"})
@@ -943,6 +1059,7 @@ class Market_Making(IStrategy):
         Emit a one-candle passive bid signal only when the model is ready.
         """
         dataframe.loc[:, 'enter_long'] = 0
+        dataframe.loc[:, 'enter_short'] = 0
         if dataframe.empty:
             return dataframe
         pair = metadata.get("pair", "")
@@ -950,13 +1067,25 @@ class Market_Making(IStrategy):
             return dataframe
         if not self._model_ready(pair):
             return dataframe
+
+        # The short leg OPENS with an ask (adding short exposure); the long leg
+        # opens with a bid. Each leg rests one side per cycle, and which side
+        # that is comes from the pair's routing rule, not from here.
+        if self.can_short:
+            if not self._inventory_allows_ask(pair):
+                return dataframe
+            if self._inventory_level(pair) != 0:
+                return dataframe
+            dataframe.loc[dataframe.index[-1], 'enter_short'] = 1
+            dataframe.loc[dataframe.index[-1], 'enter_tag'] = "mm_ask"
+            return dataframe
+
         if not self._inventory_allows_bid(pair):
             return dataframe
         # freqtrade suppresses an exit signal whenever an entry signal is on the
-        # same candle (interface.py: `exit_ and not enter`). With one position
-        # (max_open_trades=1, no position adjustment) we can't add anyway, so
-        # only quote the bid when flat; once we hold inventory we quote the ask
-        # (exit) and must not emit an entry that would cancel that exit.
+        # same candle (interface.py: `exit_ and not enter`), so an instance may
+        # not emit an entry while it needs the exit side. Inventory beyond the
+        # first unit is added through adjust_trade_position instead.
         if self._inventory_level(pair) != 0:
             return dataframe
         dataframe.loc[dataframe.index[-1], 'enter_long'] = 1
@@ -968,6 +1097,7 @@ class Market_Making(IStrategy):
         Emit a one-candle passive ask signal only when inventory can be unwound.
         """
         dataframe.loc[:, 'exit_long'] = 0
+        dataframe.loc[:, 'exit_short'] = 0
         if dataframe.empty:
             return dataframe
         pair = metadata.get("pair", "")
@@ -975,6 +1105,16 @@ class Market_Making(IStrategy):
             return dataframe
         if not self._model_ready(pair):
             return dataframe
+
+        # Mirror image of the entry side: the short leg CLOSES with a bid
+        # (covering), the long leg closes with an ask.
+        if self.can_short:
+            if not self._inventory_allows_bid(pair):
+                return dataframe
+            dataframe.loc[dataframe.index[-1], 'exit_short'] = 1
+            dataframe.loc[dataframe.index[-1], 'exit_tag'] = "mm_bid"
+            return dataframe
+
         if not self._inventory_allows_ask(pair):
             return dataframe
         dataframe.loc[dataframe.index[-1], 'exit_long'] = 1
@@ -1127,21 +1267,47 @@ class Market_Making(IStrategy):
         Long-only inventory unit, based on signed base exposure.
         """
         signed_base = self._signed_base_position(pair)
+        # The kill switch stays here, on the strategy's OWN exposure: it is a
+        # safety check about this account, not a pricing input.
         if self._reject_unexpected_short_position(pair, signed_base):
             return 0
-        unit = max(float(self.inventory_unit_base), 1e-12)
-        q = int(round(max(0.0, signed_base) / unit))
-        q = max(0, min(int(self.hjb_q_max), q))
-        return q
+        # The mapping itself is shared with the replay via mm_core. allow_short
+        # follows can_short, so a long-only instance still clamps to [0, q_max].
+        return self._mm_core.inventory_to_q(signed_base, self._quote_config())
 
     def _reject_unexpected_short_position(self, pair: str, signed_base: float | None = None) -> bool:
+        """Kill-switch on exposure pointing the wrong way for this role.
+
+        Mirrored, not removed: the long leg still dies on a short position, and
+        the short leg dies on a LONG one. Removing the check for the short leg
+        would leave it with no wrong-way guard at all, which is the failure this
+        function exists to prevent.
+
+        Deliberately evaluated on this instance's OWN exposure, never on net
+        inventory across the pair: net going short is the normal state of a
+        working two-sided maker, and killing the long leg for it would take the
+        pair down every time the short leg did its job.
+        """
         if signed_base is None:
             signed_base = self._signed_base_position(pair)
-        if float(signed_base) >= 0 or self.can_short:
-            return False
-        payload = {"pair": pair, "signed_base_position": float(signed_base)}
-        if self.fail_closed_reason != "unexpected_short_position":
-            self._trigger_kill_switch("unexpected_short_position", payload)
+        signed_base = float(signed_base)
+
+        if self.can_short:
+            if signed_base <= 0:
+                return False
+            reason = "unexpected_long_position"
+        else:
+            if signed_base >= 0:
+                return False
+            reason = "unexpected_short_position"
+
+        payload = {
+            "pair": pair,
+            "signed_base_position": signed_base,
+            "role": "short" if self.can_short else "long",
+        }
+        if self.fail_closed_reason != reason:
+            self._trigger_kill_switch(reason, payload)
         return True
 
     def _signed_base_position(self, pair: str) -> float:
@@ -1412,6 +1578,80 @@ class Market_Making(IStrategy):
 
         return None
 
+    def _resize_inventory_unit(self, pair: str, mid_price: float) -> None:
+        """Re-derive inventory_unit_base from available capital, when flat.
+
+        Only when flat: the unit is the denominator of the q-mapping and an
+        input to phi_effective, so moving it while a position is open would
+        reprice existing inventory onto a different grid.
+        """
+        if not self.auto_size_inventory_unit:
+            return
+        mid = self._finite_float_or_none(mid_price)
+        if mid is None or mid <= 0:
+            return
+        if self._inventory_level(pair) != 0:
+            return
+        capital = self._finite_float_or_none(
+            self.config.get("available_capital") if isinstance(self.config, dict) else None
+        )
+        if capital is None or capital <= 0:
+            return
+        denominator = float(self.hjb_q_max) * mid
+        if denominator <= 0:
+            return
+        unit = (
+            capital
+            * float(self.target_capital_utilisation)
+            * float(self.target_leverage)
+        ) / denominator
+        if not np.isfinite(unit) or unit <= 0:
+            return
+        previous = float(self.inventory_unit_base)
+        # Ignore sub-1% drift so the unit is not rewritten on every tick.
+        if previous > 0 and abs(unit - previous) / previous < 0.01:
+            return
+        self.inventory_unit_base = float(unit)
+        self._debug_log_event(
+            "inventory_unit_resized",
+            {
+                "pair": pair,
+                "mid": mid,
+                "available_capital": capital,
+                "target_capital_utilisation": float(self.target_capital_utilisation),
+                "target_leverage": float(self.target_leverage),
+                "q_max": int(self.hjb_q_max),
+                "previous_unit_base": previous,
+                "new_unit_base": float(unit),
+                "max_notional_at_q_max": float(unit) * float(self.hjb_q_max) * mid,
+            },
+        )
+
+    def _quote_config(self):
+        """mm_core.QuoteConfig mirroring this strategy's live attributes.
+
+        Rebuilt per call rather than cached: _apply_runtime_safety_config can
+        change the multiplier and the bps clamps at runtime, and a stale config
+        would quote off the operator's previous band.
+        """
+        return self._mm_core.QuoteConfig(
+            maker_fee_rate=float(self.fees_maker_HL),
+            spread_multiplier=float(self.spread_multiplier),
+            extra_cushion_bps=float(self.extra_cushion_bps),
+            min_half_spread_bps=float(self.min_half_spread_bps),
+            max_half_spread_bps=float(self.max_half_spread_bps),
+            inventory_unit_base=float(self.inventory_unit_base),
+            q_max=int(self.hjb_q_max),
+            allow_short=bool(self.can_short),
+            hjb_alpha=float(self.hjb_alpha),
+            hjb_phi=float(self.hjb_phi),
+            hjb_horizon_seconds=float(self.hjb_horizon_seconds),
+            gamma_inventory_risk=float(self.gamma_inventory_risk),
+            use_asymmetric_kappa=bool(self.use_asymmetric_kappa),
+            max_toxicity=float(self.max_toxicity),
+            max_param_age_seconds=float(self.max_param_age_seconds),
+        )
+
     def _assemble_half_spread(self, pair: str, quote_side: str, delta_model: float,
                               mid_price: float) -> tuple[float, dict[str, Any]]:
         """Assemble the final half-spread from the HJB model depth.
@@ -1432,19 +1672,8 @@ class Market_Making(IStrategy):
         fill model is extrapolating past its data).
         """
         mid = float(mid_price)
-        fee_cushion = float(self.fees_maker_HL) * mid
-        delta_pre_clamp = float(delta_model) * float(self.spread_multiplier) + fee_cushion
-        floor = float(self.min_half_spread_bps) / 10_000.0 * mid
-        cap = float(self.max_half_spread_bps) / 10_000.0 * mid
-        delta_total = min(max(delta_pre_clamp, floor), cap)
-        clamped = None
-        if delta_pre_clamp < floor:
-            clamped = "floor"
-        elif delta_pre_clamp > cap:
-            clamped = "cap"
 
         depth_p95 = None
-        outside_calibrated_range = None
         try:
             symbol = self._symbol_from_pair(pair)
             entry = self.kappas.get(symbol) if isinstance(self.kappas, dict) else None
@@ -1455,20 +1684,31 @@ class Market_Making(IStrategy):
                     candidate = float(raw)
                     if np.isfinite(candidate) and candidate > 0:
                         depth_p95 = candidate
-                        outside_calibrated_range = bool(delta_total > candidate)
         except Exception:
             depth_p95 = None
-            outside_calibrated_range = None
 
-        info = {
-            "clamped": clamped,
-            "delta_pre_clamp": float(delta_pre_clamp),
-            "fee_cushion": float(fee_cushion),
-            "bps": (delta_total / mid) * 10_000.0 if mid > 0 else None,
-            "quote_outside_calibrated_range": outside_calibrated_range,
-            "depth_p95": depth_p95,
-        }
-        return float(delta_total), info
+        spread = self._mm_core.assemble_half_spread(
+            delta_model,
+            mid,
+            self._quote_config(),
+            depth_p95=depth_p95,
+        )
+        if spread is None:
+            # Disabled side, or an unusable mid. Callers already check finiteness
+            # of the model delta before getting here, so this is belt-and-braces.
+            return float("inf"), {
+                "clamped": None,
+                "delta_pre_clamp": None,
+                "fee_cushion": None,
+                "bps": None,
+                "quote_outside_calibrated_range": None,
+                "depth_p95": depth_p95,
+            }
+
+        info = spread.as_dict()
+        info.pop("delta_total", None)
+        info.pop("delta_model", None)
+        return float(spread.delta), info
 
     def _hjb_is_stale(self, current_time: datetime) -> bool:
         refreshed_at = self._as_utc(self._hjb_last_refresh_dt)
@@ -1704,13 +1944,9 @@ class Market_Making(IStrategy):
         snapshot, reason = self._book_snapshot(pair)
         if snapshot is None:
             return False, reason
-        if not np.isfinite(float(rate)) or float(rate) <= 0:
-            return False, "invalid_rate"
-        if quote_side == "bid" and float(rate) >= snapshot["best_ask"]:
-            return False, "bid_crosses_ask"
-        if quote_side == "ask" and float(rate) <= snapshot["best_bid"]:
-            return False, "ask_crosses_bid"
-        return True, "ok"
+        return self._mm_core.maker_safe(
+            quote_side, rate, snapshot["best_bid"], snapshot["best_ask"]
+        )
 
     def _model_ready(self, pair: str) -> bool:
         ok, _ = self._params_are_valid(pair)
@@ -1720,15 +1956,49 @@ class Market_Making(IStrategy):
         return ok
 
     def _inventory_allows_bid(self, pair: str) -> bool:
+        """Can this instance rest a bid?
+
+        For the long leg a bid ADDS inventory, so it is capped by q_max. For the
+        short leg a bid COVERS, so it needs an existing short to cover -- the
+        mirror image, and the reason this cannot be one shared rule.
+        """
         if self._reject_unexpected_short_position(pair):
             return False
         q = self._inventory_level(pair)
+        if self.can_short:
+            return q < 0
         return q < min(int(self.hjb_q_max), int(self.max_abs_inventory_units))
 
     def _inventory_allows_ask(self, pair: str) -> bool:
+        """Can this instance rest an ask?
+
+        For the long leg an ask REDUCES, so it needs inventory to sell. For the
+        short leg an ask ADDS short exposure, so it is capped by q_max.
+        """
         if self._reject_unexpected_short_position(pair):
             return False
-        return self._inventory_level(pair) > 0
+        q = self._inventory_level(pair)
+        if self.can_short:
+            return abs(q) < min(int(self.hjb_q_max), int(self.max_abs_inventory_units))
+        return q > 0
+
+    def _physical_quote_side(self, side: str | None) -> str:
+        """Which side of the BOOK a freqtrade entry/exit corresponds to.
+
+        Freqtrade speaks in entries and exits; the book only knows bids and
+        asks, and the mapping between them is role-dependent. For the long leg
+        an entry is a bid and an exit an ask. For the short leg it is mirrored:
+        an entry is an ask (adding short) and an exit is a bid (covering).
+        Getting this backwards would price the short leg's cover off the ask
+        depth, i.e. off the wrong side of the model.
+        """
+        side_text = str(side or "").strip().lower()
+        if side_text in {"bid", "ask"}:
+            return side_text
+        is_entry = side_text in {"long", "short", "buy", "sell", "entry", ""}
+        if self.can_short:
+            return "ask" if is_entry else "bid"
+        return "bid" if is_entry else "ask"
 
     def _quote_state_valid(self, pair: str, side: str, rate: float, current_time: datetime) -> tuple[bool, str]:
         if not self.trading_enabled:
@@ -1764,13 +2034,14 @@ class Market_Making(IStrategy):
             return False, "unexpected_short_position"
 
         q = self._inventory_level(pair)
-        delta = self._select_delta("bid" if side in {"long", "bid"} else "ask", q)
+        quote_side = self._physical_quote_side(side)
+        delta = self._select_delta(quote_side, q)
         if delta is None or not np.isfinite(float(delta)):
             return False, "boundary_side_disabled"
 
-        if side in {"long", "bid"} and not self._inventory_allows_bid(pair):
+        if quote_side == "bid" and not self._inventory_allows_bid(pair):
             return False, "position_limit_reached"
-        if side in {"ask", "exit"} and not self._inventory_allows_ask(pair):
+        if quote_side == "ask" and not self._inventory_allows_ask(pair):
             return False, "position_limit_reached"
 
         is_dry_run = bool(getattr(self, "config", {}).get("dry_run", True))
@@ -1801,13 +2072,13 @@ class Market_Making(IStrategy):
 
     def _round_quote_price(self, pair: str, quote_side: str, raw_rate: float) -> float:
         tick = self._price_tick(pair)
-        if tick and tick > 0:
-            if quote_side == "bid":
-                rounded = math.floor(float(raw_rate) / tick) * tick
-            else:
-                rounded = math.ceil(float(raw_rate) / tick) * tick
-        else:
-            rounded = float(raw_rate)
+        # Decimal rounding via mm_core/hyperliquid_alo_executor rather than
+        # binary float floor/ceil: a bid rounded one ULP up can cross the ask and
+        # turn a post-only order into a reject. Direction is unchanged -- bids
+        # down, asks up, never toward the touch.
+        rounded = self._mm_core.round_price_for_side(
+            side=quote_side, price=float(raw_rate), price_tick_size=tick
+        )
         try:
             if getattr(self, "exchange", None) and hasattr(self.exchange, "price_to_precision"):
                 rounded = float(self.exchange.price_to_precision(pair, rounded))
@@ -1894,12 +2165,27 @@ class Market_Making(IStrategy):
         return str(order_type or "").strip().lower() == "limit"
 
     def _entry_side_rejection_reason(self, side: str | None) -> str | None:
+        """Which entry sides this ROLE may open.
+
+        Role-aware rather than long-only: the short leg of the pair must be able
+        to open shorts, and -- just as importantly -- must NOT be able to open
+        longs. can_short=True means "short only", not "either direction"; a
+        short instance drifting long is the same class of fault as a long
+        instance drifting short.
+        """
         side_text = str(side or "").strip().lower()
-        if side_text in {"short", "sell", "ask", "open_short"} and not self.can_short:
-            return "short_entries_disabled"
-        if side_text not in {"long", "buy", "bid", "entry", ""}:
-            return "unsupported_entry_side"
-        return None
+        long_sides = {"long", "buy", "bid", "entry", ""}
+        short_sides = {"short", "sell", "ask", "open_short"}
+
+        if side_text in short_sides:
+            return None if self.can_short else "short_entries_disabled"
+        if side_text in long_sides:
+            # An explicit long on the short leg is a role violation. The empty
+            # string is freqtrade not telling us a side, so it stays permitted.
+            if self.can_short and side_text != "":
+                return "long_entries_disabled"
+            return None
+        return "unsupported_entry_side"
 
     def _trigger_kill_switch(self, reason: str, payload: dict[str, Any] | None = None) -> None:
         self.trading_enabled = False
@@ -3486,7 +3772,7 @@ class Market_Making(IStrategy):
         side: str = "long",
         **kwargs,
     ) -> float:
-        if side == "short":
+        if side == "short" and not self.can_short:
             return proposed_stake
         try:
             rate = float(current_rate)
@@ -3607,6 +3893,160 @@ class Market_Making(IStrategy):
         )
         return float(stake)
 
+    def adjust_trade_position(
+        self,
+        trade,
+        current_time: datetime,
+        current_rate: float,
+        current_profit: float,
+        min_stake: float | None,
+        max_stake: float,
+        current_entry_rate: float,
+        current_exit_rate: float,
+        current_entry_profit: float,
+        current_exit_profit: float,
+        **kwargs,
+    ):
+        """Scale the single open position by one inventory unit.
+
+        This is what makes |q| > 1 reachable at all. Freqtrade allows one trade
+        per pair, so inventory cannot be carried as a COUNT of trades -- it is
+        carried as the SIZE of one trade, moved a unit at a time from here.
+        Positive stake adds, negative reduces.
+
+        Freqtrade calls this on every iteration and cancel-and-replaces any open
+        order whose amount or price differs. For a quoter that IS the requote
+        path, so unlike the documented example we deliberately do not bail out on
+        ``trade.has_open_orders``; the refresh cadence is governed instead by
+        _should_refresh_quote so we do not churn the book every few seconds.
+
+        Sizing is re-derived here rather than inherited: custom_stake_amount is
+        NOT called for position adjustments, so its one-unit cap would otherwise
+        be silently bypassed.
+        """
+        pair = getattr(trade, "pair", "") or ""
+        if not self.trading_enabled or self._kill_switch_active:
+            return None
+        if not self._model_ready(pair):
+            return None
+
+        rate = self._finite_float_or_none(current_rate)
+        if rate is None or rate <= 0:
+            return None
+
+        target_q = self._target_inventory_units(pair)
+        if target_q is None:
+            return None
+        current_q = self._inventory_level(pair)
+        if target_q == current_q:
+            return None
+
+        # One unit at a time: the HJB's arrival process is unit-jump (eq. 10.2),
+        # so a multi-unit step would be priced by a control that never
+        # contemplated it.
+        step = 1 if target_q > current_q else -1
+        unit_stake = float(self.inventory_unit_base) * rate / max(float(self.target_leverage), 1e-9)
+
+        if step > 0:
+            if not self._inventory_allows_bid(pair):
+                return None
+            if min_stake is not None and unit_stake < float(min_stake):
+                self._debug_log_event(
+                    "position_adjustment_rejected",
+                    {
+                        "pair": pair,
+                        "reason": "unit_stake_below_min_stake",
+                        "unit_stake": unit_stake,
+                        "min_stake": float(min_stake),
+                    },
+                )
+                return None
+            capped = min(unit_stake, float(max_stake)) if max_stake else unit_stake
+            return float(capped)
+
+        # Reducing: never hand back more than the position actually holds.
+        held = abs(float(getattr(trade, "stake_amount", 0.0) or 0.0))
+        if held <= 0:
+            return None
+        return -float(min(unit_stake, held))
+
+    def _param_store_module(self):
+        """The Redis transport module, loaded once. None if unavailable."""
+        if not self._param_store_loaded:
+            self._param_store = load_param_store()
+            self._param_store_loaded = True
+        return self._param_store
+
+    def _publish_inventory_heartbeat(self, pair: str) -> None:
+        """Tell the peer what this leg is holding.
+
+        Unconditional by design. If a stalled instance stopped publishing, its
+        peer would see staleness, stop quoting, stop publishing in turn, and the
+        pair would never recover.
+        """
+        store = self._param_store_module()
+        if store is None or not hasattr(store, "publish_inventory"):
+            return
+        try:
+            store.publish_inventory(
+                self._redis_url(),
+                self._symbol_from_pair(pair),
+                self.role,
+                q_own=self._inventory_level(pair),
+                param_fingerprint=getattr(self, "_hjb_param_fingerprint", None),
+                published_at=self._now_utc().isoformat(),
+                ttl_seconds=int(max(self.max_peer_inventory_age_seconds * 2, 10)),
+            )
+        except Exception as exc:
+            self._debug_log_event("inventory_heartbeat_failed", {"pair": pair, "error": str(exc)})
+
+    def _net_inventory(self, pair: str) -> tuple[int | None, str]:
+        """Net inventory across both legs, or None with a reason to stop quoting."""
+        store = self._param_store_module()
+        if store is None or not hasattr(store, "fetch_inventory"):
+            return None, "peer_transport_unavailable"
+        symbol = self._symbol_from_pair(pair)
+        try:
+            peer = store.fetch_inventory(self._redis_url(), symbol, store.peer_role(self.role))
+        except Exception:
+            peer = None
+        return self._mm_core.resolve_net_inventory(
+            self._inventory_level(pair),
+            peer,
+            getattr(self, "_hjb_param_fingerprint", None),
+            now=self._now_utc(),
+            max_peer_age_seconds=float(self.max_peer_inventory_age_seconds),
+        )
+
+    def _my_quote_side(self, pair: str) -> str | None:
+        """Which side of the book this leg owns right now, per the routing rule.
+
+        Returns None when the pair's state gives this leg nothing to post --
+        which happens legitimately at the net inventory boundary, where the
+        model disables one side and the other leg posts the survivor.
+        """
+        q_net, reason = self._net_inventory(pair)
+        if q_net is None:
+            return None
+        q_own = self._inventory_level(pair)
+        q_peer = q_net - q_own
+        q_long, q_short = (q_own, q_peer) if self.role == "long" else (q_peer, q_own)
+        return self._mm_core.route_sides(q_long, q_short, int(self.hjb_q_max)).get(self.role)
+
+    def _target_inventory_units(self, pair: str) -> int | None:
+        """Inventory this leg should be carrying next, in signed units.
+
+        One unit in the direction of whichever side this leg currently owns: a
+        resting bid moves it up one, a resting ask moves it down one. That keeps
+        every step a unit jump, which is what the HJB's arrival process assumes
+        (eq. 10.2).
+        """
+        side = self._my_quote_side(pair)
+        if side is None:
+            return None
+        q_own = self._inventory_level(pair)
+        return q_own + 1 if side == "bid" else q_own - 1
+
     def leverage(
         self,
         pair: str,
@@ -3618,13 +4058,30 @@ class Market_Making(IStrategy):
         side: str,
         **kwargs,
     ) -> float:
-        return 1.0
+        """Fixed leverage, capped by whatever the venue allows.
+
+        Leverage does not appear anywhere in the Cartea-Jaimungal model -- it
+        changes only how much margin backs a given notional, not the inventory
+        risk, adverse selection or funding, all of which are set by
+        q * inventory_unit_base * mid. It is a financing choice sitting outside
+        the model, so it is a constant rather than anything the solver drives.
+        """
+        target = float(self.target_leverage)
+        try:
+            ceiling = float(max_leverage)
+        except (TypeError, ValueError):
+            return target
+        if not np.isfinite(ceiling) or ceiling <= 0:
+            return target
+        return float(min(target, ceiling))
 
     def custom_exit_price(self, pair: str, trade: Trade,
                         current_time: datetime, proposed_rate: float,
                         current_profit: float, exit_tag: str, **kwargs) -> float:
         
-        if trade.is_short:
+        # The short leg prices its own quotes from the HJB like any other;
+        # only a long-only instance treats a short as out of scope.
+        if trade.is_short and not self.can_short:
             return proposed_rate
             
         mid_price = self.get_mid_price(pair, proposed_rate)
@@ -4219,7 +4676,9 @@ class Market_Making(IStrategy):
                             current_time: datetime, proposed_rate: float, current_order_rate: float,
                             entry_tag: str, side: str, **kwargs) -> float | None:
         
-        if trade.is_short:
+        # The short leg prices its own quotes from the HJB like any other;
+        # only a long-only instance treats a short as out of scope.
+        if trade.is_short and not self.can_short:
             return current_order_rate
             
         mid_price = self.get_mid_price(pair, proposed_rate)
@@ -4319,7 +4778,9 @@ class Market_Making(IStrategy):
         # NOTE: freqtrade passes the tag positionally/by keyword as `entry_tag`
         # for adjust_exit_price (not `exit_tag`); the parameter name must match
         # or freqtrade raises "missing required positional argument".
-        if trade.is_short:
+        # The short leg prices its own quotes from the HJB like any other;
+        # only a long-only instance treats a short as out of scope.
+        if trade.is_short and not self.can_short:
             return current_order_rate
 
         mid_price = self.get_mid_price(pair, proposed_rate)

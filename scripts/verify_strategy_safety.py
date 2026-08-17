@@ -127,6 +127,45 @@ def parse_strategy_source(source: str) -> tuple[dict[str, Any], dict[str, list[s
     return defaults, signatures, guards, None
 
 
+def check_role_configs(strategy_path: Path) -> list[str]:
+    """Validate the per-role configs the source parser structurally cannot see.
+
+    ``can_short`` stopped being a single class-level constant when the strategy
+    became two cooperating instances, so "the default is False" is no longer the
+    whole safety property. What must hold now is that the long leg cannot short
+    and the short leg can -- and that they disagree, because two legs configured
+    identically are not a two-sided market maker, they are the same bot twice.
+    """
+    reasons: list[str] = []
+    user_data = strategy_path.resolve().parent.parent
+    expected = {"long": False, "short": True}
+    seen: dict[str, Any] = {}
+
+    for role, expected_can_short in expected.items():
+        path = user_data / f"config.{role}.json"
+        if not path.exists():
+            reasons.append(f"role_config_missing:{role}")
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            reasons.append(f"role_config_unreadable:{role}")
+            continue
+        section = payload.get("market_making")
+        if not isinstance(section, dict):
+            reasons.append(f"role_config_market_making_missing:{role}")
+            continue
+        if section.get("role") != role:
+            reasons.append(f"role_config_role_mismatch:{role}")
+        if section.get("can_short") is not expected_can_short:
+            reasons.append(f"role_config_can_short_wrong:{role}")
+        seen[role] = section.get("can_short")
+
+    if len(seen) == 2 and seen.get("long") == seen.get("short"):
+        reasons.append("role_configs_do_not_differ")
+    return reasons
+
+
 def build_strategy_safety_report(
     source: str | None,
     *,
@@ -152,9 +191,18 @@ def build_strategy_safety_report(
     require_value("trading_enabled", False, "trading_enabled_default_not_false")
     require_value("fail_closed_reason", "initial_safety_lock", "fail_closed_reason_default_changed")
     require_value("post_only_verified", False, "post_only_verified_default_not_false")
+    # can_short is now a per-INSTANCE setting (false on the long leg, true on the
+    # short leg), supplied by config.long.json / config.short.json. The class
+    # default must still be the safe one, so a strategy started without a role
+    # config cannot short by accident. Role consistency itself is checked in
+    # check_role_configs below -- a source-level parser cannot see runtime config.
     require_value("can_short", False, "can_short_default_not_false")
     require_value("use_exit_signal", True, "use_exit_signal_not_true")
-    require_value("position_adjustment_enable", False, "position_adjustment_enable_not_false")
+    # position_adjustment_enable must now be TRUE: freqtrade rests one order per
+    # pair, so inventory is carried as the SIZE of a single trade and |q| > 1 is
+    # unreachable without it. The bound is q_max, enforced in
+    # adjust_trade_position and by the HJB boundary, not by disabling the feature.
+    require_value("position_adjustment_enable", True, "position_adjustment_enable_not_true")
 
     minimal_roi = defaults.get("minimal_roi")
     if not isinstance(minimal_roi, dict):
@@ -180,15 +228,44 @@ def build_strategy_safety_report(
         if value is None or value <= 0:
             reasons.append(f"{key}_not_positive")
 
-    if finite_float(defaults.get("hjb_q_max")) != 3:
-        reasons.append("hjb_q_max_not_three")
-    if finite_float(defaults.get("max_abs_inventory_units")) != 3:
-        reasons.append("max_abs_inventory_units_not_three")
+    # q_max and the hard inventory cap must agree. If they drift apart you either
+    # quote past the model's boundary or go dark inside it, and neither failure
+    # is visible from the logs.
+    q_max = finite_float(defaults.get("hjb_q_max"))
+    max_units = finite_float(defaults.get("max_abs_inventory_units"))
+    if q_max is None or q_max < 1:
+        reasons.append("hjb_q_max_not_positive")
+    if max_units is None or max_units < 1:
+        reasons.append("max_abs_inventory_units_not_positive")
+    if q_max is not None and max_units is not None and q_max != max_units:
+        reasons.append("hjb_q_max_and_inventory_cap_disagree")
+
+    # Notional/margin caps are checked against what the configured sizing can
+    # actually reach rather than a fixed number, so the plan limit tracks the
+    # sizing instead of silently going stale when the unit or q_max changes.
+    # Reference mid is deliberately generous: the cap must hold if price runs.
+    reference_mid = 3000.0
+    unit = finite_float(defaults.get("inventory_unit_base"))
+    leverage = finite_float(defaults.get("target_leverage")) or 1.0
+    reachable_notional = None
+    if unit is not None and q_max is not None:
+        reachable_notional = unit * q_max * reference_mid
+
     max_notional = finite_float(defaults.get("max_notional_exposure_usdc"))
-    if max_notional is None or max_notional <= 0 or max_notional > 150:
+    if max_notional is None or max_notional <= 0:
+        reasons.append("max_notional_exposure_not_positive")
+    elif reachable_notional is not None and max_notional < reachable_notional:
+        # A cap below what the strategy can reach dead-stops the quoter.
+        reasons.append("max_notional_exposure_below_reachable_inventory")
+    elif max_notional > 4000:
         reasons.append("max_notional_exposure_above_plan_limit")
+
     max_margin = finite_float(defaults.get("max_margin_used_usdc"))
-    if max_margin is None or max_margin <= 0 or max_margin > 150:
+    if max_margin is None or max_margin <= 0:
+        reasons.append("max_margin_used_not_positive")
+    elif reachable_notional is not None and leverage > 0 and max_margin < reachable_notional / leverage:
+        reasons.append("max_margin_used_below_reachable_inventory")
+    elif max_margin > 2000:
         reasons.append("max_margin_used_above_plan_limit")
     min_liquidation_buffer = finite_float(defaults.get("min_liquidation_buffer_usdc"))
     if min_liquidation_buffer is None or min_liquidation_buffer <= 0:
@@ -222,6 +299,10 @@ def build_strategy_safety_report(
         "custom_exit_price",
         "custom_stake_amount",
         "leverage",
+        # Inventory is carried as the size of one trade, so this callback is the
+        # only path to |q| > 1 and its absence would silently pin the strategy
+        # to a two-state toggle.
+        "adjust_trade_position",
         "adjust_entry_price",
         "adjust_exit_price",
         "_risk_flatten_request_payload",
@@ -237,6 +318,8 @@ def build_strategy_safety_report(
         reasons.append("exit_price_tick_guard_missing")
     if guards.get("internal_estimator_call") is True:
         reasons.append("internal_estimator_call_present")
+
+    reasons.extend(check_role_configs(strategy_path))
 
     return {
         "generated_at": utc_now_iso(),

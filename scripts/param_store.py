@@ -19,6 +19,18 @@ PARAM_KEY_PREFIX = "mm:params:"
 PARAM_CHANNEL_PREFIX = "mm:params:updated:"
 BLOB_SCHEMA_VERSION = 1
 
+# Inventory heartbeat for the two-sided pair. The param key above is namespaced
+# by SYMBOL only, so two instances quoting the same symbol would clobber it;
+# the heartbeat is namespaced by symbol AND role.
+INVENTORY_KEY_PREFIX = "mm:inv:"
+INVENTORY_SCHEMA_VERSION = 1
+ROLES = ("long", "short")
+
+
+def peer_role(role: str) -> str:
+    """The other leg of the pair."""
+    return "short" if str(role).strip().lower() == "long" else "long"
+
 
 def _client(redis_url: str | None):
     if not redis_url:
@@ -97,5 +109,84 @@ def fetch_params(redis_url: str | None, crypto: str) -> dict[str, Any] | None:
     if data.get("blob_schema_version") != BLOB_SCHEMA_VERSION:
         return None
     if not all(isinstance(data.get(k), dict) for k in ("kappa", "epsilon", "lambda")):
+        return None
+    return data
+
+
+def publish_inventory(
+    redis_url: str | None,
+    crypto: str,
+    role: str,
+    *,
+    q_own: int,
+    param_fingerprint: str | None,
+    published_at: str,
+    ttl_seconds: int = 30,
+) -> bool:
+    """Publish this instance's own inventory so its peer can price off the net.
+
+    ``param_fingerprint`` is the CONTENT hash of the parameter snapshot the
+    quote was built from -- deliberately not the strategy's ``hjb_generation``,
+    which is a per-process counter that two instances could never agree on.
+
+    A TTL is set so a dead instance's inventory expires rather than lingering as
+    a plausible-looking stale value. Publishing must never be gated on the
+    instance's own willingness to quote: if a stalled instance stopped
+    publishing, staleness would become mutual and permanent.
+    """
+    client = _client(redis_url)
+    if client is None:
+        return False
+    blob = json.dumps(
+        {
+            "inventory_schema_version": INVENTORY_SCHEMA_VERSION,
+            "crypto": crypto,
+            "role": role,
+            "q_own": int(q_own),
+            "param_fingerprint": param_fingerprint,
+            "published_at": published_at,
+        },
+        sort_keys=True,
+    )
+    try:
+        client.set(
+            INVENTORY_KEY_PREFIX + f"{crypto}:{role}",
+            blob,
+            ex=max(int(ttl_seconds), 1),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def fetch_inventory(redis_url: str | None, crypto: str, role: str) -> dict[str, Any] | None:
+    """Read one leg's published inventory, or None if absent/expired/malformed.
+
+    None is the fail-closed signal: the caller must not assume a missing peer is
+    flat, because "flat" is a perfectly plausible value that would silently
+    mis-price the net inventory.
+    """
+    client = _client(redis_url)
+    if client is None:
+        return None
+    try:
+        raw = client.get(INVENTORY_KEY_PREFIX + f"{crypto}:{role}")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("inventory_schema_version") != INVENTORY_SCHEMA_VERSION:
+        return None
+    if data.get("role") != role or data.get("crypto") != crypto:
+        return None
+    try:
+        data["q_own"] = int(data["q_own"])
+    except (KeyError, TypeError, ValueError):
         return None
     return data

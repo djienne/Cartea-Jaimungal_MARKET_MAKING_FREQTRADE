@@ -15,6 +15,7 @@ if str(SCRIPTS) not in sys.path:
 import replay_market_maker  # noqa: E402
 from replay_market_maker import (  # noqa: E402
     ReplayConfig,
+    compute_hjb_cache,
     compute_quotes,
     first_level_size,
     inventory_q,
@@ -780,3 +781,48 @@ def test_selected_parquet_files_can_limit_to_newest(tmp_path):
     os.utime(new, (new_mtime, new_mtime))
 
     assert selected_parquet_files(tmp_path, newest_per_stream=1) == [new]
+
+
+# ---------------------------------------------------------------------------
+# Two-sided (signed inventory) simulation
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_q_is_signed_when_q_min_is_negative():
+    """The two-sided agent's inventory spans the full signed grid."""
+    assert inventory_q(-0.03, 0.01, 3, -3) == -3
+    assert inventory_q(-0.02, 0.01, 3, -3) == -2
+    assert inventory_q(0.0, 0.01, 3, -3) == 0
+    assert inventory_q(0.02, 0.01, 3, -3) == 2
+    # Still clamped at both ends.
+    assert inventory_q(-99.0, 0.01, 3, -3) == -3
+    assert inventory_q(99.0, 0.01, 3, -3) == 3
+
+
+def test_inventory_q_default_stays_long_only():
+    """Omitting q_min must not change the legacy behaviour."""
+    assert inventory_q(-0.03, 0.01, 3) == 0
+    assert inventory_q(0.02, 0.01, 3) == 2
+
+
+def test_hjb_cache_solves_on_the_requested_domain():
+    """Solving on the reachable domain is what makes the boundary correct: at
+    q_min=0 the disabled side is the ask (cannot sell what you do not hold),
+    not the ask-at-max-short of a symmetric solve."""
+    params = {
+        "kappa+": 2.0,
+        "kappa-": 2.0,
+        "lambda+": 0.1,
+        "lambda-": 0.1,
+        "epsilon+": 0.05,
+        "epsilon-": 0.05,
+    }
+    symmetric = compute_hjb_cache(params, 3)
+    long_only = compute_hjb_cache(params, 3, 0)
+
+    assert list(symmetric["q_grid"]) == [-3, -2, -1, 0, 1, 2, 3]
+    assert list(long_only["q_grid"]) == [0, 1, 2, 3]
+    # In the long-only solve the ask is disabled at q=0; in the symmetric solve
+    # that same inventory has a perfectly finite ask.
+    assert np.isinf(long_only["delta_plus"][0])
+    assert np.isfinite(symmetric["delta_plus"][list(symmetric["q_grid"]).index(0)])

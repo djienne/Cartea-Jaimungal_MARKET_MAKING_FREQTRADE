@@ -8,11 +8,17 @@ Methodology:
 - pre-mid = last mid strictly BEFORE the MO; post-mid = last mid at or before
   MO time + horizon. MOs whose horizon extends past the data window are
   dropped (no truncation bias).
-- The primary horizon is 5 s (--post-horizon-ms / EPSILON_POST_HORIZON_MS):
-  long enough to measure (mostly) permanent impact rather than the mechanical
-  BBO reaction. 200 ms and 1 s trimmed means are recorded as diagnostics
-  (epsilon_200ms_±, epsilon_1s_±).
-- The C-J model defines epsilon >= 0; slightly negative trimmed means
+- The primary horizon is 200 ms (--post-horizon-ms / EPSILON_POST_HORIZON_MS).
+  The book's epsilon (eq. 10.22) is the jump AT the MO arrival, so a long
+  markout measures a different quantity: it absorbs every other MO in the
+  window, and the HJB already carries that net-flow drift separately in the
+  q(lambda+ eps+ - lambda- eps-) term of eq. 10.26. 1 s and 5 s means are
+  recorded as diagnostics (epsilon_1s_±, epsilon_5s_±).
+- The shipped statistic is the plain MEAN of outlier-cleaned impacts, because
+  the model wants E[eps]. A 10% trimmed mean is still reported as a diagnostic
+  but is not the model's moment -- on a right-skewed jump distribution it
+  understates the mean, i.e. understates adverse selection.
+- The C-J model defines epsilon >= 0; slightly negative means
   (mean-reversion noise) floor at 0.
 - Primary epsilon± values are EMA-smoothed across estimator cycles
   (time-aware, tau via --ema-tau / PARAM_EMA_TAU_SECONDS, default 300 s);
@@ -43,8 +49,16 @@ from param_utils import (
     utc_now_iso,
 )
 
-DEFAULT_POST_HORIZON_MS = 5000
-DIAGNOSTIC_HORIZONS_MS = (200, 1000)
+# The book (eq. 10.22) defines epsilon as the midprice jump AT the market-order
+# arrival: dS = sigma dW + eps+ dM+ - eps- dM-. A long markout is a different
+# estimand -- it absorbs the impact of every OTHER MO arriving inside the window,
+# so each side picks up ~horizon * (lambda+ eps+ - lambda- eps-) of net-flow
+# drift. The HJB then adds that drift back itself via the q(lambda+ eps+ -
+# lambda- eps-) term of eq. 10.26, so a long horizon double-counts the trend.
+# 200 ms is short enough to be the arrival jump and long enough to clear the
+# mechanical BBO reaction. The former 5 s default is kept as a diagnostic.
+DEFAULT_POST_HORIZON_MS = 200
+DIAGNOSTIC_HORIZONS_MS = (1000, 5000)
 POST_HORIZON_ENV_VAR = "EPSILON_POST_HORIZON_MS"
 
 # Verbosity control: 0=minimal, 1=verbose
@@ -207,10 +221,19 @@ def estimate_epsilon_parameters(results):
 
 
 def _floored_trimmed_means(results) -> tuple[float | None, float | None, dict]:
-    """Trimmed means per side, floored at 0 (C-J epsilon >= 0)."""
+    """Mean impact per side, floored at 0 (C-J epsilon >= 0).
+
+    The book asks for epsbar = E[eps], so the shipped figure is the plain mean
+    of the outlier-cleaned impacts. The 10% two-sided trim that used to be
+    shipped is still computed as a diagnostic, but it is not the model's moment:
+    on a right-skewed jump distribution trimming systematically understates the
+    mean, i.e. understates the adverse selection the quote is meant to recover.
+    The 3-sigma clip is kept -- that removes bad ticks rather than reshaping the
+    distribution.
+    """
     estimates = estimate_epsilon_parameters(results)
-    eps_plus = estimates['epsilon_buy']['trimmed_mean']
-    eps_minus = estimates['epsilon_sell']['trimmed_mean']
+    eps_plus = estimates['epsilon_buy']['mean']
+    eps_minus = estimates['epsilon_sell']['mean']
     if eps_plus is not None and np.isfinite(eps_plus):
         eps_plus = max(0.0, float(eps_plus))
     if eps_minus is not None and np.isfinite(eps_minus):
@@ -264,7 +287,7 @@ def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filenam
         "epsilon+_raw": finite_or_none(raw.get("epsilon+_raw", eps_plus)),
         "epsilon-_raw": finite_or_none(raw.get("epsilon-_raw", eps_minus)),
         "unit": "USDC",
-        "estimator": "trimmed_mean",
+        "estimator": "mean_at_arrival",
         **metadata,
     }
 
@@ -320,7 +343,9 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
         else:
             diag_results = compute_mo_impacts(mos, window.mids, diag_horizon, window_end_ms)
             diag_plus, diag_minus, _ = _floored_trimmed_means(diag_results)
-        label = "1s" if diag_horizon == 1000 else f"{diag_horizon}ms"
+        label = (
+            f"{diag_horizon // 1000}s" if diag_horizon % 1000 == 0 else f"{diag_horizon}ms"
+        )
         diagnostics[f"epsilon_{label}_plus"] = finite_or_none(diag_plus)
         diagnostics[f"epsilon_{label}_minus"] = finite_or_none(diag_minus)
 

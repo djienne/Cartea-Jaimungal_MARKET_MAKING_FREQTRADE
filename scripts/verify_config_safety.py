@@ -49,8 +49,12 @@ def build_config_safety_report(
     config: dict[str, Any] | None,
     *,
     config_path: Path,
-    max_stake_amount: float = 25.0,
+    # stake_amount must comfortably EXCEED one inventory unit, or
+    # custom_stake_amount's proposed-stake term binds before the one-unit cap
+    # and a 'one unit' fill is quietly smaller than one unit of q.
+    max_stake_amount: float = 600.0,
     max_tradable_balance_ratio: float = 0.10,
+    max_available_capital: float = 1000.0,
     expected_fee: float = 0.00015,
     max_custom_price_distance_ratio: float = 0.05,
     load_error: str | None = None,
@@ -59,6 +63,7 @@ def build_config_safety_report(
     checks: dict[str, Any] = {
         "max_stake_amount": float(max_stake_amount),
         "max_tradable_balance_ratio": float(max_tradable_balance_ratio),
+        "max_available_capital": float(max_available_capital),
         "expected_fee": float(expected_fee),
         "max_custom_price_distance_ratio": float(max_custom_price_distance_ratio),
     }
@@ -90,9 +95,23 @@ def build_config_safety_report(
     elif stake_float > float(max_stake_amount):
         reasons.append(f"stake_amount_above_limit:{stake_float:g}>max_{float(max_stake_amount):g}")
 
+    # Capital is bounded by EITHER available_capital or tradable_balance_ratio.
+    # Freqtrade documents them as incompatible -- setting available_capital
+    # "will replace any configuration of tradable_balance_ratio" -- so requiring
+    # the ratio once available_capital is set would be demanding a value the bot
+    # silently ignores. Exactly one of them must bound the capital.
     tradable_ratio = finite_float(config.get("tradable_balance_ratio"))
-    if tradable_ratio is None or tradable_ratio <= 0:
-        reasons.append("tradable_balance_ratio_invalid")
+    available_capital = finite_float(config.get("available_capital"))
+    if available_capital is not None and available_capital > 0:
+        if tradable_ratio is not None:
+            # Not fatal, but it reads as a live limit and is not one.
+            reasons.append("tradable_balance_ratio_ignored_because_available_capital_set")
+        if available_capital > float(max_available_capital):
+            reasons.append(
+                f"available_capital_above_limit:{available_capital:g}>max_{float(max_available_capital):g}"
+            )
+    elif tradable_ratio is None or tradable_ratio <= 0:
+        reasons.append("capital_bound_missing")
     elif tradable_ratio > float(max_tradable_balance_ratio):
         reasons.append(
             f"tradable_balance_ratio_above_limit:{tradable_ratio:g}>max_{float(max_tradable_balance_ratio):g}"
@@ -165,6 +184,7 @@ def build_config_safety_report(
             "api_forcebuy_enable": api_server.get("forcebuy_enable"),
             "stake_amount": config.get("stake_amount"),
             "tradable_balance_ratio": config.get("tradable_balance_ratio"),
+            "available_capital": config.get("available_capital"),
             "fee": config.get("fee"),
             "custom_price_max_distance_ratio": config.get("custom_price_max_distance_ratio"),
             "max_open_trades": config.get("max_open_trades"),
@@ -193,7 +213,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Verify checked-in fail-closed config safety defaults.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--max-stake-amount", type=float, default=25.0)
+    parser.add_argument("--max-stake-amount", type=float, default=600.0)
+    parser.add_argument("--max-available-capital", type=float, default=1000.0)
     parser.add_argument("--max-tradable-balance-ratio", type=float, default=0.10)
     parser.add_argument("--expected-fee", type=float, default=0.00015)
     parser.add_argument("--max-custom-price-distance-ratio", type=float, default=0.05)
@@ -207,6 +228,7 @@ def main() -> int:
         config,
         config_path=args.config,
         max_stake_amount=float(args.max_stake_amount),
+        max_available_capital=float(args.max_available_capital),
         max_tradable_balance_ratio=float(args.max_tradable_balance_ratio),
         expected_fee=float(args.expected_fee),
         max_custom_price_distance_ratio=float(args.max_custom_price_distance_ratio),

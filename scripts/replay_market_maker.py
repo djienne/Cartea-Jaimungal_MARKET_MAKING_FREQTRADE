@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 
 from hjb import compute_h_asymmetric
+import mm_core
+from mm_core import QuoteConfig, finite_float_or_none
 
 
 MAKER_FEE = 0.00015
@@ -41,6 +43,15 @@ class ReplayConfig:
     mid_fallback: float
     inventory_unit_base: float = 0.01
     q_max: int = 3
+    # 0 reproduces the long-only agent the harness shipped with; set to -q_max
+    # to simulate the two-sided market maker the book actually describes.
+    q_min: int = 0
+    # Inventory domain the HJB is SOLVED on, which is deliberately separate from
+    # the clamp above. None keeps the legacy symmetric [-q_max, q_max] solve --
+    # which, with q_min=0, is the known defect: the boundary is part of the
+    # optimisation (eq. 10.4), so a long-only agent priced off a symmetric solve
+    # is using the wrong control. Keeping both knobs lets the A/B measure it.
+    hjb_q_min: int | None = None
     spread_multiplier: float = 1.0
     min_half_spread_bps: float = MIN_HALF_SPREAD_BPS
     max_half_spread_bps: float = MAX_HALF_SPREAD_BPS
@@ -314,12 +325,27 @@ def post_only_check(side: str, price: float, best_bid: float, best_ask: float) -
     return True, "ok"
 
 
-def inventory_q(inventory_base: float, unit: float, q_max: int) -> int:
-    q = int(round(max(0.0, inventory_base) / max(unit, 1e-12)))
-    return max(0, min(q_max, q))
+def inventory_q(inventory_base: float, unit: float, q_max: int, q_min: int = 0) -> int:
+    """Map a base position onto the integer inventory grid.
+
+    ``q_min`` defaults to 0, reproducing the long-only clamp this harness
+    shipped with. Pass a negative ``q_min`` to simulate the two-sided agent.
+    Delegates to mm_core so replay and live share one mapping.
+    """
+    config = QuoteConfig(
+        inventory_unit_base=max(float(unit), 1e-12),
+        q_max=max(int(q_max), 1),
+        allow_short=int(q_min) < 0,
+    )
+    return mm_core.inventory_to_q(inventory_base, config)
 
 
-def compute_hjb_cache(params: dict[str, float], q_max: int) -> dict:
+def compute_hjb_cache(params: dict[str, float], q_max: int, q_min: int | None = None) -> dict:
+    """Solve the HJB on the inventory domain the simulated agent actually has.
+
+    ``q_min=None`` keeps the symmetric grid. Passing 0 solves the long-only
+    problem, where the disabled side at the bottom of the grid is the ask.
+    """
     return compute_h_asymmetric(
         lambda_plus=params["lambda+"],
         lambda_minus=params["lambda-"],
@@ -331,17 +357,8 @@ def compute_hjb_cache(params: dict[str, float], q_max: int) -> dict:
         phi=params.get("phi", 0.0001),
         T_seconds=params.get("T_seconds", 60.0),
         q_max=q_max,
+        q_min=q_min,
     )
-
-
-def finite_float_or_none(value: Any) -> float | None:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not np.isfinite(parsed):
-        return None
-    return parsed
 
 
 def timestamp_iso(value: Any) -> str | None:
@@ -414,21 +431,23 @@ def assemble_half_spread(
     min_half_spread_bps: float = MIN_HALF_SPREAD_BPS,
     max_half_spread_bps: float = MAX_HALF_SPREAD_BPS,
 ) -> float | None:
-    """Strategy-identical final half-spread (see Market_Making._assemble_half_spread):
+    """Final half-spread for one side, delegated to mm_core:
 
         delta_total = clamp(delta_model * spread_multiplier + maker_fee*mid,
                             min_half_spread_bps, max_half_spread_bps)
 
-    Returns None for a disabled side (non-finite model delta).
+    Returns None for a disabled side (non-finite model delta). mm_core is the
+    single implementation shared with the live path, so replay simulates
+    literally the arithmetic that will quote.
     """
-    if not np.isfinite(float(delta_model)):
-        return None
-    mid = float(mid)
-    fee_cushion = float(maker_fee) * mid
-    delta_pre_clamp = float(delta_model) * float(spread_multiplier) + fee_cushion
-    floor = float(min_half_spread_bps) / 10_000.0 * mid
-    cap = float(max_half_spread_bps) / 10_000.0 * mid
-    return float(min(max(delta_pre_clamp, floor), cap))
+    config = QuoteConfig(
+        maker_fee_rate=float(maker_fee),
+        spread_multiplier=float(spread_multiplier),
+        min_half_spread_bps=float(min_half_spread_bps),
+        max_half_spread_bps=float(max_half_spread_bps),
+    )
+    spread = mm_core.assemble_half_spread(delta_model, mid, config)
+    return None if spread is None else float(spread.delta)
 
 
 def compute_quotes(
@@ -833,14 +852,19 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     quote_refresh_interval_ms = max(0, int(config.quote_refresh_interval_ms))
     next_quote_decision_at: pd.Timestamp | None = None
     used_trade_indices: set[int] = set()
-    hjb_cache = compute_hjb_cache(params, config.q_max)
+    hjb_cache = compute_hjb_cache(params, config.q_max, config.hjb_q_min)
     for row_idx, row in prices.iterrows():
         mid, best_bid, best_ask = mid_from_price_row(row, config.mid_fallback)
         metrics.final_mid = mid
         row_ts = row["timestamp"]
 
-        q = inventory_q(metrics.inventory_base, config.inventory_unit_base, config.q_max)
-        if q == 0:
+        q = inventory_q(
+            metrics.inventory_base,
+            config.inventory_unit_base,
+            config.q_max,
+            config.q_min,
+        )
+        if q == config.q_min:
             metrics.time_at_q_boundary["q_min"] += 1
         if q == config.q_max:
             metrics.time_at_q_boundary["q_max"] += 1
@@ -878,7 +902,10 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
         for side, raw_price in (("bid", bid), ("ask", ask)):
             if raw_price is None:
                 continue
-            if side == "ask" and inventory_at_decision <= 0:
+            # A long-only agent cannot sell what it does not hold. A two-sided
+            # agent can, down to its short bound -- the HJB already returns an
+            # infinite depth at that bound, so no extra gate is needed there.
+            if config.q_min >= 0 and side == "ask" and inventory_at_decision <= 0:
                 continue
             price = round_price_for_side(side, raw_price, config.price_tick_size)
             if abs(float(price) - float(raw_price)) > 1e-12:
@@ -930,7 +957,12 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             trade_price = float(fill_trade.get("price", np.nan))
             trade_size = float(fill_trade.get("size", order_amount) or order_amount)
             if side == "ask":
-                fill_size = min(trade_size, order_amount, max(0.0, metrics.inventory_base))
+                # Selling is bounded by how much further the short bound allows,
+                # which is the whole inventory for a long-only agent (q_min=0)
+                # and inventory-minus-the-floor for a two-sided one.
+                short_floor = float(config.q_min) * float(config.inventory_unit_base)
+                room_to_sell = max(0.0, metrics.inventory_base - short_floor)
+                fill_size = min(trade_size, order_amount, room_to_sell)
             else:
                 fill_size = min(trade_size, order_amount)
             if fill_size <= 0:

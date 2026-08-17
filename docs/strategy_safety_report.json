@@ -1,20 +1,20 @@
 {
-  "generated_at": "2026-06-11T16:48:33Z",
+  "generated_at": "2026-08-17T01:08:57Z",
   "observed": {
     "defaults": {
       "can_short": false,
       "fail_closed_reason": "initial_safety_lock",
       "hjb_alpha": 0.001,
       "hjb_phi": 0.0001,
-      "hjb_q_max": 3,
-      "inventory_unit_base": 0.01,
+      "hjb_q_max": 6,
+      "inventory_unit_base": 0.15,
       "kill_on_taker_fill": true,
       "kill_on_time_in_force_mismatch": true,
       "kill_on_unknown_liquidity_fill": true,
-      "max_abs_inventory_units": 3,
+      "max_abs_inventory_units": 6,
       "max_daily_loss_usdc": 20,
-      "max_margin_used_usdc": 150.0,
-      "max_notional_exposure_usdc": 150.0,
+      "max_margin_used_usdc": 1600.0,
+      "max_notional_exposure_usdc": 3200.0,
       "min_liquidation_buffer_usdc": 100.0,
       "minimal_roi": {
         "0": 10
@@ -26,7 +26,7 @@
         "stoploss": "limit",
         "stoploss_on_exchange": false
       },
-      "position_adjustment_enable": false,
+      "position_adjustment_enable": true,
       "post_only_verified": false,
       "trading_enabled": false,
       "use_exit_signal": true

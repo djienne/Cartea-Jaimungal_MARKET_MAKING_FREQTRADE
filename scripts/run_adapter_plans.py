@@ -75,6 +75,42 @@ def sub_plan_commands(py: str) -> list[tuple[str, list[str]]]:
             ],
         ),
         (
+            # The ask side has never been exercised against the exchange -- every
+            # probe artefact in this repo was --side bid. A two-sided maker rests
+            # an ask continuously, and instance S opens with one, so the ask path
+            # needs its own evidence rather than inheriting the bid's.
+            "direct_alo_probe_preparation_plan_ask",
+            [
+                py,
+                "scripts/hyperliquid_alo_executor.py",
+                "--mode",
+                "prepare-probes",
+                "--testnet",
+                "--symbol",
+                "ETH/USDC:USDC",
+                "--side",
+                "ask",
+                "--size",
+                "0.01",
+                "--best-bid",
+                "1999",
+                "--best-ask",
+                "2001",
+                "--price-tick-size",
+                "0.1",
+                "--amount-step-size",
+                "0.001",
+                "--quote-id",
+                "quote-safety-gate-ask",
+                "--session-id",
+                "safety-gate",
+                "--hjb-generation",
+                "1",
+                "--output",
+                "docs/direct_alo_probe_commands_ask.json",
+            ],
+        ),
+        (
             "direct_risk_flatten_plan",
             [
                 py,

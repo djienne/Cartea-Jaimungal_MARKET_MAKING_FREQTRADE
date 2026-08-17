@@ -19,7 +19,7 @@ class Market_Making:
     post_only_verified = False
     can_short = False
     use_exit_signal = True
-    position_adjustment_enable = False
+    position_adjustment_enable = True
     minimal_roi = {"0": 10}
     order_types = {"entry": "limit", "exit": "limit", "emergency_exit": "market"}
     hjb_alpha = 0.001
@@ -48,6 +48,9 @@ class Market_Making:
         pass
 
     def leverage(self, pair, current_time, current_rate, proposed_leverage, max_leverage, entry_tag, side, **kwargs):
+        pass
+
+    def adjust_trade_position(self, trade, current_time, current_rate, current_profit, min_stake, max_stake, current_entry_rate, current_exit_rate, current_entry_profit, current_exit_profit, **kwargs):
         pass
 
     def confirm_trade_entry(self):

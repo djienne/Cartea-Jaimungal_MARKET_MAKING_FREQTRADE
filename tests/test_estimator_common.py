@@ -388,10 +388,11 @@ def test_epsilon_pipeline_distinguishes_permanent_from_transient_impact(tmp_path
     entry = json.loads(eps_file.read_text(encoding="utf-8"))["SYN"]
     assert entry["status"] == "ok"
     assert entry["n_buy_events"] >= 50
-    assert entry["window_ms"] == 5000
-    assert abs(entry["epsilon+"] - 0.5) < 0.05  # permanent step survives 5s horizon
+    assert entry["window_ms"] == 200
+    assert abs(entry["epsilon+"] - 0.5) < 0.05  # arrival jump measured at 200ms
     assert entry["epsilon-"] == 0.0
-    assert abs(entry["epsilon_200ms_plus"] - 0.5) < 0.05
+    # A genuinely permanent step is still there at the long diagnostic horizons.
+    assert abs(entry["epsilon_5s_plus"] - 0.5) < 0.05
 
     transient_dir = tmp_path / "transient"
     _write_synthetic_market(transient_dir, buy_depths=depths, sell_depths=depths, impact=0.5, transient=True)
@@ -399,9 +400,18 @@ def test_epsilon_pipeline_distinguishes_permanent_from_transient_impact(tmp_path
     run_epsilon_for_crypto("SYN", minutes=10, epsilon_file=str(eps_file2), data_dir=transient_dir)
 
     entry2 = json.loads(eps_file2.read_text(encoding="utf-8"))["SYN"]
-    assert entry2["epsilon_200ms_plus"] > 0.3  # mechanical reaction visible
-    assert entry2["epsilon+"] < 0.05  # but it is NOT permanent impact
-    assert entry2["epsilon_1s_plus"] < 0.05
+    # KNOWN TRADE-OFF of the 200 ms primary horizon: it measures the jump at the
+    # arrival instant, which is what eq. 10.22 defines, but it therefore cannot
+    # tell a permanent step from a mechanical BBO reaction that decays. The long
+    # diagnostics are what distinguish them, and they still do.
+    assert entry2["epsilon+"] > 0.3          # arrival jump is visible...
+    assert entry2["epsilon_1s_plus"] < 0.05  # ...but it did not persist
+    assert entry2["epsilon_5s_plus"] < 0.05
+    # Operators comparing epsilon+ against epsilon_5s_plus can see the decay; a
+    # large gap means the shipped epsilon is pricing in transient reaction. The
+    # principled fix is a drift-debiased long-horizon markout
+    # (eps = markout - horizon * (lambda+ eps+ - lambda- eps-)), which needs
+    # lambda inside get_epsilon and is deliberately not done here.
 
 
 def test_epsilon_pipeline_flags_insufficient_events(tmp_path):

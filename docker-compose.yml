@@ -1,50 +1,80 @@
+# Two-sided market making needs two Freqtrade instances, because Freqtrade rests
+# at most one order per pair and suppresses an exit signal whenever an entry is
+# on the same candle. Hyperliquid perps net one-way per coin, so the two
+# instances must sit on separate SUB-ACCOUNTS to hold an independent long and
+# short; net inventory q = q_long + q_short is shared over Redis.
+#
+#   mm-long  -- can_short false, own inventory q_L >= 0
+#   mm-short -- short-only,      own inventory q_S <= 0
+#
+# The ./user_data mount is deliberately SHARED. The contention that killed
+# hl-collector2 came from two *writers*; here both freqtrade instances only READ
+# the param files (run_estimators_in_strategy=false) and there is exactly one
+# estimator. What must not be shared is the sqlite db, the logfile and the
+# role config -- those are split per instance below.
+x-freqtrade-common: &freqtrade-common
+  image: ft-cartea-jaimungal_market_making_freqtrade:2025.10
+  build:
+    context: .
+    dockerfile: "./Dockerfile.technical"
+  restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        cpus: '0.25'
+        memory: '1024M'
+  volumes:
+    - "./user_data:/freqtrade/user_data"
+    - "./scripts:/freqtrade/scripts"
+    - "./docs:/freqtrade/docs"
+  depends_on:
+    redis:
+      condition: service_healthy
+
+x-freqtrade-env: &freqtrade-env
+  # Read the κ/ε/λ snapshot from Redis (atomic, no torn reads); falls back
+  # to the JSON files under user_data/strategies if Redis is unavailable.
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  # API-server credentials come from the environment, not from the tracked
+  # config.json, which used to carry the username, password and JWT secret
+  # in plaintext. Set these in a local .env (gitignored) beside this file.
+  # NOTE: the previous values are still in git history and should be treated
+  # as compromised -- pick new ones rather than re-entering the old.
+  FREQTRADE__API_SERVER__USERNAME: ${MM_API_USERNAME:?set MM_API_USERNAME in .env}
+  FREQTRADE__API_SERVER__PASSWORD: ${MM_API_PASSWORD:?set MM_API_PASSWORD in .env}
+  FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${MM_API_JWT_SECRET:?set MM_API_JWT_SECRET in .env}
+
 services:
-  freqtrade:
-    image: ft-cartea-jaimungal_market_making_freqtrade:2025.10
-    # image: freqtradeorg/freqtrade:develop
-    # Use plotting image
-    # image: freqtradeorg/freqtrade:develop_plot
-    # Build step - only needed when additional dependencies are needed
-    build:
-      context: .
-      dockerfile: "./Dockerfile.technical"
-    restart: unless-stopped
-    container_name: MM_ADV
-    deploy:
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: '1024M'
-    volumes:
-      - "./user_data:/freqtrade/user_data"
-      - "./scripts:/freqtrade/scripts"
-      - "./docs:/freqtrade/docs"
+  mm-long:
+    <<: *freqtrade-common
+    container_name: MM_ADV_LONG
     environment:
-      # Read the κ/ε/λ snapshot from Redis (atomic, no torn reads); falls back
-      # to the JSON files under user_data/strategies if Redis is unavailable.
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      # API-server credentials come from the environment, not from the tracked
-      # config.json, which used to carry the username, password and JWT secret
-      # in plaintext. Set these in a local .env (gitignored) beside this file.
-      # NOTE: the previous values are still in git history and should be treated
-      # as compromised -- pick new ones rather than re-entering the old.
-      FREQTRADE__API_SERVER__USERNAME: ${MM_API_USERNAME:?set MM_API_USERNAME in .env}
-      FREQTRADE__API_SERVER__PASSWORD: ${MM_API_PASSWORD:?set MM_API_PASSWORD in .env}
-      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${MM_API_JWT_SECRET:?set MM_API_JWT_SECRET in .env}
-    depends_on:
-      redis:
-        condition: service_healthy
-    # Expose api on port 8080 (localhost only)
-    # Please read the https://www.freqtrade.io/en/stable/rest-api/ documentation
-    # before enabling this.
+      <<: *freqtrade-env
+      MM_ROLE: long
     # ports:
     #   - "127.0.0.1:3004:8080"
-    # Default command used when running `docker compose up`
     command: >
       trade
-      --logfile /freqtrade/user_data/logs/freqtrade.log
-      --db-url sqlite:////freqtrade/user_data/tradesv3.sqlite
+      --logfile /freqtrade/user_data/logs/freqtrade_long.log
+      --db-url sqlite:////freqtrade/user_data/tradesv3_long.sqlite
       --config /freqtrade/user_data/config.json
+      --config /freqtrade/user_data/config.long.json
+      --strategy Market_Making
+
+  mm-short:
+    <<: *freqtrade-common
+    container_name: MM_ADV_SHORT
+    environment:
+      <<: *freqtrade-env
+      MM_ROLE: short
+    # ports:
+    #   - "127.0.0.1:3005:8080"
+    command: >
+      trade
+      --logfile /freqtrade/user_data/logs/freqtrade_short.log
+      --db-url sqlite:////freqtrade/user_data/tradesv3_short.sqlite
+      --config /freqtrade/user_data/config.json
+      --config /freqtrade/user_data/config.short.json
       --strategy Market_Making
   # hl-collector2 REMOVED 2026-08-16. It was a byte-for-byte duplicate of the
   # hl-collector defined in ./scripts/docker-compose.yml: same build context

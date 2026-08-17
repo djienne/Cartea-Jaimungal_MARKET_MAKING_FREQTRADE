@@ -302,6 +302,9 @@ def test_adapter_plans_covers_all_former_plan_gates_read_only():
         "post_only_probe_plan",
         "direct_alo_adapter_plan",
         "direct_alo_probe_preparation_plan",
+        # The ask path has no exchange evidence of its own; a two-sided
+        # maker rests an ask continuously, so it gets its own probe.
+        "direct_alo_probe_preparation_plan_ask",
         "direct_risk_flatten_plan",
         "hyperliquid_fee_capture_plan",
     }
