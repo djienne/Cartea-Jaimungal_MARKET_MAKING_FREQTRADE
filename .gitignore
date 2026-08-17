@@ -21,6 +21,10 @@ user_data/strategies/param_update.lock
 
 # Local trade database (+ -wal/-shm)
 user_data/tradesv3.sqlite*
+# Per-instance dry-run databases (mm-long / mm-short).
+user_data/tradesv3_*.sqlite*
+# Local-only compose overrides (e.g. mounting the collector's real data dir).
+docker-compose.override.yml
 
 # Python bytecode cache
 __pycache__/
