@@ -143,7 +143,10 @@ def test_multiplier_scales_only_the_model_term():
     ],
 )
 def test_clamping_is_reported(delta_model, expected_clamp):
-    config = QuoteConfig()
+    # Explicit floor rather than the shipped one: the default floor is anchored
+    # to the maker fee, so a zero-depth quote lands exactly ON it and the clamp
+    # never fires. This test is about the clamp MECHANISM, not the constant.
+    config = QuoteConfig(min_half_spread_bps=3.0)
     spread = assemble_half_spread(delta_model, MID, config)
     assert spread is not None
     assert spread.clamped == expected_clamp

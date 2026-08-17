@@ -51,7 +51,7 @@
         "maker_fee_rate": 0.00015,
         "spread_multiplier": 1.0,
         "extra_cushion_bps": 0.0,
-        "min_half_spread_bps": 3.0,
+        "min_half_spread_bps": 1.5,
         "max_half_spread_bps": 80.0
     },
     "exchange": {

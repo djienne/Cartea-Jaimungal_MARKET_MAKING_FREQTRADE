@@ -110,7 +110,7 @@ class QuoteConfig:
     # HJB's inventory skew intact. Preferred over raising min_half_spread_bps,
     # which is a clamp and therefore flattens skew for every q beneath it.
     extra_cushion_bps: float = 0.0
-    min_half_spread_bps: float = 3.0
+    min_half_spread_bps: float = 1.5
     max_half_spread_bps: float = 80.0
 
     inventory_unit_base: float = 0.01

@@ -337,6 +337,10 @@ def test_spread_multiplier_scales_model_term_only():
 def test_half_spread_floor_clamp_applies_and_is_logged():
     bot = make_bot()
     bot.trading_enabled = True
+    # Explicit floor: the shipped default is anchored to the maker fee, so a
+    # small positive model depth lands at or above it and the clamp never fires.
+    # This test asserts the clamp MECHANISM, not the shipped constant.
+    bot.min_half_spread_bps = 3.0
     # Tiny model delta: pre-clamp ~= 0.01*1 + 0.015 = 0.025 -> 2.5 bps < 3 bps floor.
     bot.hjb_cache = {
         "q_grid": np.array([-1, 0, 1]),

@@ -91,8 +91,13 @@ def test_compute_quotes_clamps_to_half_spread_bounds():
         "delta_plus": np.array([np.inf, 0.005, 0.005]),
         "delta_minus": np.array([0.005, 0.005, np.inf]),
     }
-    bid, ask, _ = compute_quotes(100.0, 0, _QUOTE_TEST_PARAMS, 1, tight_hjb, maker_fee=0.0001)
-    # pre-clamp 0.005 + 0.01 = 0.015 -> 1.5 bps -> floored at 3 bps = 0.03
+    bid, ask, _ = compute_quotes(
+        100.0, 0, _QUOTE_TEST_PARAMS, 1, tight_hjb, maker_fee=0.0001,
+        min_half_spread_bps=3.0,
+    )
+    # pre-clamp 0.005 + 0.01 = 0.015 -> 1.5 bps -> floored at an explicit 3 bps.
+    # The floor is passed explicitly because the shipped default is anchored to
+    # the maker fee and would not bind here; this asserts the clamp mechanism.
     assert round(float(bid), 6) == 99.97
     assert round(float(ask), 6) == 100.03
 

@@ -26,7 +26,7 @@ MAKER_FEE = 0.00015
 TAKER_FEE = 0.00045
 # Quote-assembly defaults mirroring user_data/strategies/Market_Making.py
 # (_assemble_half_spread); tests/test_quote_assembly.py asserts parity.
-MIN_HALF_SPREAD_BPS = 3.0
+MIN_HALF_SPREAD_BPS = 1.5
 MAX_HALF_SPREAD_BPS = 80.0
 MARKOUT_HORIZONS_MS = (100, 1_000, 5_000, 30_000)
 PARAMETER_SERIES_UNIT = {

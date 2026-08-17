@@ -308,7 +308,13 @@ class Market_Making(IStrategy):
     # extra_cushion_bps below, which is additive and therefore skew-preserving.
     spread_multiplier = 1.0
     extra_cushion_bps = 0.0
-    min_half_spread_bps = 3.0
+    # Anchored to the maker fee: a half-spread below your own fee loses money
+    # on the round trip regardless of anything else, so that is a real floor.
+    # Above ~2 bps the clamp starts flattening the HJB's inventory skew (on
+    # live ETH a 3 bps floor clamped all 24 sides and the skew went dead);
+    # below ~1.4 bps it never binds at all, because the fee cushion already
+    # guarantees that much. Defensive widening belongs in extra_cushion_bps.
+    min_half_spread_bps = 1.5
     max_half_spread_bps = 80.0
     # Volatility-aware inventory penalty: phi_effective =
     # hjb_phi + gamma_inventory_risk * sigma2_per_sec * inventory_unit_base
