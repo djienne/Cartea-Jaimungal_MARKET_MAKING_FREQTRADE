@@ -21,7 +21,7 @@ x-freqtrade-common: &freqtrade-common
   deploy:
     resources:
       limits:
-        cpus: '0.1'
+        cpus: '0.25'
         memory: '1024M'
   volumes:
     - "./user_data:/freqtrade/user_data"
@@ -101,7 +101,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
+          cpus: '0.25'
           memory: '1024M'
     environment:
       CRYPTO_NAME: ${PARAM_ESTIMATOR_SYMBOL:-CASHCAT}
@@ -145,7 +145,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
+          cpus: '0.25'
           memory: '128M'
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

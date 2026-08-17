@@ -1210,6 +1210,13 @@ class Market_Making(IStrategy):
                 )
                 self._hjb_import_error_logged = True
             return
+        if self._mm_core is None:
+            logger.error("mm_core unavailable; cannot solve the HJB. Trading stays disabled.")
+            self._debug_log_event(
+                "hjb_unavailable",
+                {"pair": pair, "symbol": symbol, "reason": "mm_core_load_failed"},
+            )
+            return
         # mm_core picks and calls the solver; this only checks the module the
         # operator expects is actually present, and names it for telemetry.
         solver_name = "compute_h_asymmetric" if self.use_asymmetric_kappa else "compute_h_symmetric"
@@ -1272,7 +1279,11 @@ class Market_Making(IStrategy):
                         "kappa_minus": kappa_m,
                         "epsilon_plus": epsilon_p,
                         "epsilon_minus": epsilon_m,
-                        "alpha": float(self.hjb_alpha),
+                        # What the solve ACTUALLY used, not the raw fallback:
+                        # alpha is derived from live kappa and differs by orders
+                        # of magnitude from hjb_alpha.
+                        "alpha": float(hjb_res.get("alpha_effective", self.hjb_alpha)),
+                        "kappa_avg": hjb_res.get("kappa_avg"),
                         "phi": float(phi_effective),
                         "phi_base": float(phi_base),
                         "phi_effective": float(phi_effective),
@@ -2033,10 +2044,13 @@ class Market_Making(IStrategy):
         side_text = str(side or "").strip().lower()
         if side_text in {"bid", "ask"}:
             return side_text
-        is_entry = side_text in {"long", "short", "buy", "sell", "entry", ""}
-        if self.can_short:
-            return "ask" if is_entry else "bid"
-        return "bid" if is_entry else "ask"
+        if side_text in {"long", "short", "buy", "sell", "entry", ""}:
+            return "ask" if self.can_short else "bid"
+        if side_text in {"exit", "close", "close_long", "close_short"}:
+            return "bid" if self.can_short else "ask"
+        # Silently treating an unknown string as an exit is how a wrong-side
+        # quote gets priced. Every caller passes a known token.
+        raise ValueError(f"unrecognised quote side/action: {side!r}")
 
     def _inventory_allows_quote(self, pair: str, freqtrade_action: str) -> bool:
         """May this role rest the book side that a freqtrade entry/exit implies?
@@ -3396,24 +3410,24 @@ class Market_Making(IStrategy):
         return float(pnl)
 
     def _debug_log_path(self) -> Path:
-        """Per-role JSONL path.
+        """Shared JSONL path, with the emitting role stamped on every record.
 
-        The two instances share the user_data mount, so one filename means two
-        processes appending to the same stream and rotating it underneath each
-        other. The records interleave with nothing to say which leg emitted
-        them -- exactly the wrong thing when the two legs are doing opposite
-        things and you are trying to work out which one rejected a quote.
+        Both instances write here. That is deliberate: run_safety_gates.py,
+        verify_dry_run_{enabled,disabled}.py and calibrate_replay_from_logs.py
+        all default to this exact path and thread a single Path through many
+        call sites, so a per-role filename points every gate at a file nothing
+        writes. Attribution is solved by the "role" field on each record instead
+        (see _debug_log_event).
+
+        Known limitation: two writers share one rotation. _rotate_debug_log_if_needed
+        can therefore drop records from the other leg at the rotation boundary.
+        Acceptable for a diagnostic stream; do not put trading state here.
         """
         try:
             base = Path(__file__).resolve().parent.parent  # user_data
         except Exception:
             base = Path.cwd()
-        name = self.debug_json_log_filename
-        role = str(getattr(self, "role", "") or "").strip().lower()
-        if role:
-            stem, dot, suffix = name.rpartition(".")
-            name = f"{stem}_{role}{dot}{suffix}" if dot else f"{name}_{role}"
-        return base / "logs" / name
+        return base / "logs" / self.debug_json_log_filename
 
     def _rotate_debug_log_if_needed(self, path: Path) -> None:
         max_bytes = int(getattr(self, "debug_json_log_max_bytes", 0) or 0)
@@ -3440,6 +3454,9 @@ class Market_Making(IStrategy):
             # the same aware-UTC helper every other timestamp in this file uses.
             "ts": self._now_utc().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "event": event,
+            # Which leg emitted this. Both instances share the file, and without
+            # this a rejected quote cannot be attributed to the leg that made it.
+            "role": str(getattr(self, "role", "") or "") or None,
             **payload,
         }
         path = self._debug_log_path()
@@ -3704,7 +3721,7 @@ class Market_Making(IStrategy):
     def custom_entry_price(self, pair: str, trade: Trade | None, current_time: datetime, proposed_rate: float,
                            entry_tag: str | None, side: str, **kwargs) -> float:
 
-        if side == 'short':
+        if side == 'short' and not self.can_short:
             return proposed_rate
 
         mid_price = self.get_mid_price(pair, proposed_rate)
@@ -3719,7 +3736,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="bid",
+                side=self._physical_quote_side("entry"),
                 action="entry",
                 decision="reject",
                 reason="boundary_side_disabled" if delta_m is not None else "no_hjb_delta",
@@ -3754,7 +3771,7 @@ class Market_Making(IStrategy):
         if not ok:
             self._remember_custom_price_rejection(
                 pair=pair,
-                quote_side="bid",
+                quote_side=self._physical_quote_side("entry"),
                 reason=reason,
                 current_time=current_time,
                 rate=returned_rate,
@@ -3762,7 +3779,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="bid",
+                side=self._physical_quote_side("entry"),
                 action="entry",
                 decision="reject",
                 reason=reason,
@@ -3781,7 +3798,7 @@ class Market_Making(IStrategy):
         if not distance_ok:
             self._remember_custom_price_rejection(
                 pair=pair,
-                quote_side="bid",
+                quote_side=self._physical_quote_side("entry"),
                 reason=distance_reason,
                 current_time=current_time,
                 rate=returned_rate,
@@ -3789,7 +3806,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="bid",
+                side=self._physical_quote_side("entry"),
                 action="entry",
                 decision="reject",
                 reason=distance_reason,
@@ -3807,11 +3824,11 @@ class Market_Making(IStrategy):
             )
             return proposed_rate
 
-        ok, reason = self._maker_safe(pair, "bid", returned_rate)
+        ok, reason = self._maker_safe(pair, self._physical_quote_side("entry"), returned_rate)
         if not ok:
             self._remember_custom_price_rejection(
                 pair=pair,
-                quote_side="bid",
+                quote_side=self._physical_quote_side("entry"),
                 reason=reason,
                 current_time=current_time,
                 rate=returned_rate,
@@ -3821,7 +3838,7 @@ class Market_Making(IStrategy):
         self._log_quote_decision(
             pair=pair,
             symbol=symbol,
-            side="bid",
+            side=self._physical_quote_side("entry"),
             action="entry",
             decision="accept" if ok else "reject",
             reason=reason,
@@ -4176,7 +4193,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="ask",
+                side=self._physical_quote_side("exit"),
                 action="exit",
                 decision="reject",
                 reason="boundary_side_disabled" if delta_p is not None else "no_hjb_delta",
@@ -4214,7 +4231,7 @@ class Market_Making(IStrategy):
         if not ok:
             self._remember_custom_price_rejection(
                 pair=pair,
-                quote_side="ask",
+                quote_side=self._physical_quote_side("exit"),
                 reason=reason,
                 current_time=current_time,
                 rate=returned_rate,
@@ -4222,7 +4239,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="ask",
+                side=self._physical_quote_side("exit"),
                 action="exit",
                 decision="reject",
                 reason=reason,
@@ -4247,7 +4264,7 @@ class Market_Making(IStrategy):
         if not distance_ok:
             self._remember_custom_price_rejection(
                 pair=pair,
-                quote_side="ask",
+                quote_side=self._physical_quote_side("exit"),
                 reason=distance_reason,
                 current_time=current_time,
                 rate=returned_rate,
@@ -4255,7 +4272,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="ask",
+                side=self._physical_quote_side("exit"),
                 action="exit",
                 decision="reject",
                 reason=distance_reason,
@@ -4277,11 +4294,11 @@ class Market_Making(IStrategy):
             )
             return proposed_rate
 
-        ok, reason = self._maker_safe(pair, "ask", returned_rate)
+        ok, reason = self._maker_safe(pair, self._physical_quote_side("exit"), returned_rate)
         if not ok:
             self._remember_custom_price_rejection(
                 pair=pair,
-                quote_side="ask",
+                quote_side=self._physical_quote_side("exit"),
                 reason=reason,
                 current_time=current_time,
                 rate=returned_rate,
@@ -4291,7 +4308,7 @@ class Market_Making(IStrategy):
         self._log_quote_decision(
             pair=pair,
             symbol=symbol,
-            side="ask",
+            side=self._physical_quote_side("exit"),
             action="exit",
             decision="accept" if ok else "reject",
             reason=reason,
@@ -4403,7 +4420,7 @@ class Market_Making(IStrategy):
             )
             return False
 
-        price_ok, price_reason, rounded_rate = self._price_tick_safe(pair, "bid", rate)
+        price_ok, price_reason, rounded_rate = self._price_tick_safe(pair, self._physical_quote_side("entry"), rate)
         if not price_ok:
             self._debug_log_event(
                 "entry_rejected",
@@ -4435,7 +4452,7 @@ class Market_Making(IStrategy):
             )
             return False
 
-        risk_ok, risk_reason, risk_snapshot = self._position_risk_valid(pair, "bid", rate, rounded_amount)
+        risk_ok, risk_reason, risk_snapshot = self._position_risk_valid(pair, self._physical_quote_side("entry"), rate, rounded_amount)
         if not risk_ok:
             self._debug_log_event(
                 "entry_rejected",
@@ -4452,7 +4469,7 @@ class Market_Making(IStrategy):
             )
             return False
 
-        ok, reason = self._maker_safe(pair, "bid", rate)
+        ok, reason = self._maker_safe(pair, self._physical_quote_side("entry"), rate)
         if not ok:
             self._record_quote_decision(pair, "reject", reason)
             self._debug_log_event(
@@ -4464,7 +4481,7 @@ class Market_Making(IStrategy):
         self._clear_custom_price_rejection(pair, "bid")
         self._record_order_attempt_accepted(
             pair=pair,
-            quote_side="bid",
+            quote_side=self._physical_quote_side("entry"),
             rate=float(rate),
             amount=float(amount),
             time_in_force=time_in_force,
@@ -4560,7 +4577,7 @@ class Market_Making(IStrategy):
             )
             return False
 
-        price_ok, price_reason, rounded_rate = self._price_tick_safe(pair, "ask", rate)
+        price_ok, price_reason, rounded_rate = self._price_tick_safe(pair, self._physical_quote_side("exit"), rate)
         if not price_ok:
             self._debug_log_event(
                 "exit_rejected",
@@ -4593,7 +4610,7 @@ class Market_Making(IStrategy):
             )
             return False
 
-        risk_ok, risk_reason, risk_snapshot = self._position_risk_valid(pair, "ask", rate, rounded_amount)
+        risk_ok, risk_reason, risk_snapshot = self._position_risk_valid(pair, self._physical_quote_side("exit"), rate, rounded_amount)
         if not risk_ok:
             self._debug_log_event(
                 "exit_rejected",
@@ -4611,7 +4628,7 @@ class Market_Making(IStrategy):
             )
             return False
 
-        ok, reason = self._maker_safe(pair, "ask", rate)
+        ok, reason = self._maker_safe(pair, self._physical_quote_side("exit"), rate)
         if not ok:
             self._record_quote_decision(pair, "reject", reason)
             self._debug_log_event(
@@ -4630,7 +4647,7 @@ class Market_Making(IStrategy):
         self._clear_custom_price_rejection(pair, "ask")
         self._record_order_attempt_accepted(
             pair=pair,
-            quote_side="ask",
+            quote_side=self._physical_quote_side("exit"),
             rate=float(rate),
             amount=float(amount),
             time_in_force=time_in_force,
@@ -4773,7 +4790,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="bid",
+                side=self._physical_quote_side("entry"),
                 action="adjust_entry",
                 decision="reject",
                 reason=reason,
@@ -4796,7 +4813,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="bid",
+                side=self._physical_quote_side("entry"),
                 action="adjust_entry",
                 decision="reject",
                 reason="boundary_side_disabled" if delta_m is not None else "no_hjb_delta",
@@ -4825,11 +4842,11 @@ class Market_Making(IStrategy):
         if not distance_ok:
             ok, reason = False, distance_reason
         else:
-            ok, reason = self._maker_safe(pair, "bid", returned_rate)
+            ok, reason = self._maker_safe(pair, self._physical_quote_side("entry"), returned_rate)
         self._log_quote_decision(
             pair=pair,
             symbol=symbol,
-            side="bid",
+            side=self._physical_quote_side("entry"),
             action="adjust_entry",
             decision="accept" if ok else "reject",
             reason=reason,
@@ -4876,7 +4893,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="ask",
+                side=self._physical_quote_side("exit"),
                 action="adjust_exit",
                 decision="reject",
                 reason=reason,
@@ -4900,7 +4917,7 @@ class Market_Making(IStrategy):
             self._log_quote_decision(
                 pair=pair,
                 symbol=symbol,
-                side="ask",
+                side=self._physical_quote_side("exit"),
                 action="adjust_exit",
                 decision="reject",
                 reason="boundary_side_disabled" if delta_p is not None else "no_hjb_delta",
@@ -4931,11 +4948,11 @@ class Market_Making(IStrategy):
         if not distance_ok:
             ok, reason = False, distance_reason
         else:
-            ok, reason = self._maker_safe(pair, "ask", returned_rate)
+            ok, reason = self._maker_safe(pair, self._physical_quote_side("exit"), returned_rate)
         self._log_quote_decision(
             pair=pair,
             symbol=symbol,
-            side="ask",
+            side=self._physical_quote_side("exit"),
             action="adjust_exit",
             decision="accept" if ok else "reject",
             reason=reason,

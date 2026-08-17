@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-17T07:07:41Z",
+  "generated_at": "2026-08-17T11:17:21Z",
   "observed": {
     "defaults": {
       "can_short": false,
@@ -7,7 +7,7 @@
       "hjb_alpha": 0.001,
       "hjb_phi": 0.0001,
       "hjb_q_max": 6,
-      "inventory_unit_base": 0.15,
+      "inventory_unit_base": 2430.0,
       "kill_on_taker_fill": true,
       "kill_on_time_in_force_mismatch": true,
       "kill_on_unknown_liquidity_fill": true,

@@ -137,6 +137,13 @@ class QuoteConfig:
     # targets are disabled (set to 0).
     hjb_phi_kappa_t: float = 0.05
     hjb_alpha_kappa: float = 0.05
+    # Ceiling on the SAME dimensionless product, so the volatility channel --
+    # which is still in absolute price units -- cannot quietly undo the
+    # normalisation. Its contribution scales as gamma*sigma2*unit*kappa*T,
+    # which at CASHCAT scale is ~1.8e8 per unit of sigma2 against a 0.05
+    # target, so a volatile stretch would otherwise re-pin quotes to the
+    # floor and cap through the other channel.
+    hjb_phi_kappa_t_max: float = 0.25
     hjb_alpha: float = 0.001
     hjb_phi: float = 0.0001
     hjb_horizon_seconds: float = 60.0
@@ -336,6 +343,10 @@ def solve_hjb(
         if float(config.hjb_phi_kappa_t) > 0 and horizon > 0:
             phi = float(config.hjb_phi_kappa_t) / (kappa_avg * horizon) + vol_delta
             phi_source = "kappa_relative+sigma2" if vol_delta else "kappa_relative"
+            ceiling = float(config.hjb_phi_kappa_t_max)
+            if ceiling > 0 and phi * kappa_avg * horizon > ceiling:
+                phi = ceiling / (kappa_avg * horizon)
+                phi_source += "+capped"
         if float(config.hjb_alpha_kappa) > 0:
             alpha = float(config.hjb_alpha_kappa) / kappa_avg
     solver = compute_h_asymmetric if config.use_asymmetric_kappa else compute_h_symmetric

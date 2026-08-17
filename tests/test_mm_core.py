@@ -360,7 +360,7 @@ def test_solve_hjb_reports_the_phi_channel():
     quiet = solve_hjb(LIVE_PARAMS, config, sigma2_per_sec=None)
     loud = solve_hjb(LIVE_PARAMS, config, sigma2_per_sec=4.0)
     assert quiet["phi_source"] == "kappa_relative"
-    assert loud["phi_source"] == "kappa_relative+sigma2"
+    assert loud["phi_source"].startswith("kappa_relative+sigma2")
     assert loud["phi_effective"] > quiet["phi_effective"]
 
     # With the target disabled the raw phi and the old channel names return.
@@ -672,3 +672,26 @@ def test_raw_phi_is_used_when_the_target_is_disabled():
     result = solve_hjb(_params(2.0), config)
     assert result["phi_source"] == "phi_base_fallback"
     assert result["phi_effective"] == pytest.approx(0.0001)
+
+
+def test_volatility_channel_cannot_undo_the_kappa_normalisation():
+    """The vol term is still in absolute price units, so at large kappa it would
+    otherwise swamp the dimensionless target and re-pin quotes to the floor/cap
+    through the other channel."""
+    config = QuoteConfig(
+        hjb_phi_kappa_t=0.05, hjb_phi_kappa_t_max=0.25,
+        hjb_horizon_seconds=150.0, inventory_unit_base=2430.0,
+    )
+    params = {"kappa+": 10000.0, "kappa-": 10000.0, "epsilon+": 1e-4,
+              "epsilon-": 1e-4, "lambda+": 0.07, "lambda-": 0.07}
+
+    calm = solve_hjb(params, config, sigma2_per_sec=0.0)
+    wild = solve_hjb(params, config, sigma2_per_sec=1.0)
+
+    for r in (calm, wild):
+        product = r["phi_effective"] * r["kappa_avg"] * 150.0
+        assert product <= 0.25 + 1e-9, product
+    assert wild["phi_source"].endswith("+capped")
+    # Uncapped, that sigma2 would have driven the product orders of magnitude past
+    # the target.
+    assert calm["phi_effective"] * calm["kappa_avg"] * 150.0 == pytest.approx(0.05, rel=1e-6)

@@ -24,6 +24,11 @@ BIN_OPS = {
 }
 
 
+# The capital the strategy is configured against (user_data/config.json
+# available_capital). Used only to size the notional/margin cap check.
+DEFAULT_AVAILABLE_CAPITAL = 1000.0
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -78,6 +83,15 @@ def function_calls_price_tick_guard(fn: ast.FunctionDef, quote_side: str) -> boo
             continue
         if call_arg_constant(node, 1) == quote_side:
             return True
+        # The side is role-derived now (an entry is a bid for the long leg and an
+        # ask for the short leg), so the literal was replaced by a call. Accept
+        # the equivalent expression rather than reporting the guard as missing.
+        arg = node.args[1] if len(node.args) > 1 else None
+        if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute):
+            if arg.func.attr == "_physical_quote_side":
+                action = call_arg_constant(arg, 0)
+                if action == {"bid": "entry", "ask": "exit"}.get(quote_side):
+                    return True
     return False
 
 
@@ -240,16 +254,19 @@ def build_strategy_safety_report(
     if q_max is not None and max_units is not None and q_max != max_units:
         reasons.append("hjb_q_max_and_inventory_cap_disagree")
 
-    # Notional/margin caps are checked against what the configured sizing can
-    # actually reach rather than a fixed number, so the plan limit tracks the
-    # sizing instead of silently going stale when the unit or q_max changes.
-    # Reference mid is deliberately generous: the cap must hold if price runs.
-    reference_mid = 3000.0
-    unit = finite_float(defaults.get("inventory_unit_base"))
-    leverage = finite_float(defaults.get("target_leverage")) or 1.0
+    # Notional/margin caps are checked against what the sizing can actually
+    # reach. That is price-INDEPENDENT: the auto-sizing identity
+    #   unit = available_capital * utilisation * leverage / (q_max * mid)
+    # means q_max * unit * mid == available_capital * utilisation * leverage,
+    # so no reference price is needed (and assuming one made this check wrong the
+    # moment the symbol moved from ETH at ~1900 to CASHCAT at ~0.1).
+    # Only meaningful when the strategy actually declares its capital sizing;
+    # a strategy without those attributes has no reachable notional to compare.
+    leverage = finite_float(defaults.get("target_leverage"))
+    utilisation = finite_float(defaults.get("target_capital_utilisation"))
     reachable_notional = None
-    if unit is not None and q_max is not None:
-        reachable_notional = unit * q_max * reference_mid
+    if leverage is not None and utilisation is not None:
+        reachable_notional = DEFAULT_AVAILABLE_CAPITAL * utilisation * leverage
 
     max_notional = finite_float(defaults.get("max_notional_exposure_usdc"))
     if max_notional is None or max_notional <= 0:
@@ -263,7 +280,12 @@ def build_strategy_safety_report(
     max_margin = finite_float(defaults.get("max_margin_used_usdc"))
     if max_margin is None or max_margin <= 0:
         reasons.append("max_margin_used_not_positive")
-    elif reachable_notional is not None and leverage > 0 and max_margin < reachable_notional / leverage:
+    elif (
+        reachable_notional is not None
+        and leverage is not None
+        and leverage > 0
+        and max_margin < reachable_notional / leverage
+    ):
         reasons.append("max_margin_used_below_reachable_inventory")
     elif max_margin > 2000:
         reasons.append("max_margin_used_above_plan_limit")

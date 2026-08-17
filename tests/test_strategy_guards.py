@@ -3306,18 +3306,33 @@ def test_inventory_guard_asks_the_right_question_for_each_role():
     assert long_bot._inventory_allows_quote("X", "exit") is False    # nothing to sell
 
 
-def test_debug_log_path_is_per_role():
+def test_debug_records_are_attributable_to_a_role():
     """Both instances share the user_data mount. One filename means two writers
     on one stream, rotating underneath each other, with nothing in the records
     to say which leg emitted them."""
     long_bot, short_bot = make_bot(), make_bot()
     long_bot.role, short_bot.role = "long", "short"
 
-    assert long_bot._debug_log_path().name == "mm_debug_long.jsonl"
-    assert short_bot._debug_log_path().name == "mm_debug_short.jsonl"
-    assert long_bot._debug_log_path() != short_bot._debug_log_path()
+    # Deliberately the SAME file: run_safety_gates.py, verify_dry_run_*.py and
+    # calibrate_replay_from_logs.py all default to this exact path and thread a
+    # single Path through many call sites, so a per-role filename would point
+    # every gate at a file nothing writes.
+    assert long_bot._debug_log_path() == short_bot._debug_log_path()
+    assert long_bot._debug_log_path().name == "mm_debug.jsonl"
 
-    # A roleless strategy (single-instance use) keeps the original name.
-    plain = make_bot()
-    plain.role = ""
-    assert plain._debug_log_path().name == "mm_debug.jsonl"
+    # Attribution comes from the record instead.
+    records = []
+    for bot in (long_bot, short_bot):
+        bot.debug_json_log = True
+        bot._debug_log_path = lambda: tmp
+        bot._rotate_debug_log_if_needed = lambda _p: None
+    import tempfile, json as _json, os
+    fd, name = tempfile.mkstemp(suffix=".jsonl"); os.close(fd)
+    tmp = Path(name)
+    for bot in (long_bot, short_bot):
+        bot._debug_log_path = lambda: tmp
+        bot._debug_log_event("quote_decision", {"side": "bid"})
+    for line in tmp.read_text(encoding="utf-8").splitlines():
+        records.append(_json.loads(line))
+    tmp.unlink(missing_ok=True)
+    assert [r["role"] for r in records] == ["long", "short"]
