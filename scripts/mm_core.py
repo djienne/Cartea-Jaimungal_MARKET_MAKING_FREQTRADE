@@ -135,7 +135,11 @@ class QuoteConfig:
     # actually responds to and derive phi/alpha from live kappa. These carry
     # across symbols; the raw values below are only the fallback when the
     # targets are disabled (set to 0).
-    hjb_phi_kappa_t: float = 0.05
+    # 10.0 measured on a pinned 9.8h CASHCAT tape: sweeping 0.05 -> 50 gives an
+    # inverted U with the optimum at 10-20, cutting the loss from -78.27 to
+    # -25.70 USDC (743 fills -> 528). Below it the model holds inventory through
+    # adverse moves and loses far more than the extra spread capture is worth.
+    hjb_phi_kappa_t: float = 10.0
     hjb_alpha_kappa: float = 0.05
     # Ceiling on the SAME dimensionless product, so the volatility channel --
     # which is still in absolute price units -- cannot quietly undo the
@@ -143,7 +147,7 @@ class QuoteConfig:
     # which at CASHCAT scale is ~1.8e8 per unit of sigma2 against a 0.05
     # target, so a volatile stretch would otherwise re-pin quotes to the
     # floor and cap through the other channel.
-    hjb_phi_kappa_t_max: float = 0.25
+    hjb_phi_kappa_t_max: float = 50.0
     hjb_alpha: float = 0.001
     hjb_phi: float = 0.0001
     hjb_horizon_seconds: float = 60.0

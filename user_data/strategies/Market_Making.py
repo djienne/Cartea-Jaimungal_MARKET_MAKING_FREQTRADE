@@ -285,7 +285,11 @@ class Market_Making(IStrategy):
     # another: ETH (kappa~2) -> CASHCAT (kappa~10000) took phi*kappa*T from 0.03
     # to 153 and pinned every quote to the floor or the cap. Set either to 0 to
     # fall back to the raw hjb_phi / hjb_alpha below.
-    hjb_phi_kappa_t = 0.05
+    # 10.0 measured on a pinned 9.8h CASHCAT tape: sweeping 0.05 -> 50 gives an
+    # inverted U with the optimum at 10-20, cutting the loss from -78.27 to
+    # -25.70 USDC (743 fills -> 528). Below it the model holds inventory through
+    # adverse moves and loses far more than the extra spread capture is worth.
+    hjb_phi_kappa_t = 10.0
     hjb_alpha_kappa = 0.05
     hjb_alpha = 0.001   # raw fallback, only used when hjb_alpha_kappa == 0
     # Running inventory penalty. NOTE: eq. 10.28 puts this in the transition
