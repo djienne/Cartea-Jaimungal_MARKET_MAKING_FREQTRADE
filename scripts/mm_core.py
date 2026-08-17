@@ -38,6 +38,7 @@ Conventions worth knowing before reading further:
 from __future__ import annotations
 
 import json
+import math
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -54,6 +55,9 @@ SUPPORTED_PARAM_SCHEMA_VERSION = 3
 
 # Keys every snapshot must carry before a quote may be built from it.
 REQUIRED_PARAM_KEYS = ("kappa+", "kappa-", "lambda+", "lambda-", "epsilon+", "epsilon-")
+
+# How the (t,q) control surface is read. See QuoteConfig.hjb_time_mode.
+HJB_TIME_MODES = frozenset({"episodic", "stationary"})
 
 
 def finite_float_or_none(value: Any) -> float | None:
@@ -154,6 +158,19 @@ class QuoteConfig:
     gamma_inventory_risk: float = 0.05
     use_asymmetric_kappa: bool = True
 
+    # The book's control is delta*(t,q) on [0,T] with terminal condition
+    # h(T,q) = -alpha*q^2 (eq. 10.26). "stationary" reads only the t=0 slice,
+    # which is the approximation this project ran until now: the agent never
+    # approaches T, so alpha is inert and the model's flattening pressure never
+    # appears. "episodic" solves the whole surface once and reads the slice at
+    # the caller's actual time-to-go.
+    hjb_time_mode: str = "episodic"
+    # Backward Euler is first order and its error grows as time-to-go shrinks,
+    # so cap dt rather than fixing the step count: n_steps scales with T.
+    hjb_max_dt_seconds: float = 0.25
+    hjb_n_steps_min: int = 200
+    hjb_n_steps_max: int = 2000
+
     max_toxicity: float = 1.5
     max_param_age_seconds: float = 90.0
     max_future_timestamp_skew_seconds: float = 10.0
@@ -171,6 +188,11 @@ class QuoteConfig:
             raise ValueError("spread_multiplier must be a positive finite number")
         if int(self.q_max) < 1:
             raise ValueError("q_max must be >= 1")
+        if self.hjb_time_mode not in HJB_TIME_MODES:
+            raise ValueError(
+                f"hjb_time_mode must be one of {sorted(HJB_TIME_MODES)}, "
+                f"got {self.hjb_time_mode!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -288,21 +310,37 @@ def maker_safe(
     return True, "ok"
 
 
+def inventory_to_q_exact(signed_base: float, config: QuoteConfig) -> float:
+    """Position in inventory units, clamped to the grid but NOT rounded.
+
+    Eq. 10.2 has dq = dN(bid) - dN(ask): unit Poisson jumps, so the book's h and
+    delta* are defined on integer q only. Real fills are partial, so the actual
+    position lands between grid points. Rounding that away (as ``inventory_to_q``
+    must, to index the grid) discards up to half a unit of live risk -- 0.49
+    units reads as flat. This returns what is really held so the caller can
+    price it and report the residual.
+    """
+    value = finite_float_or_none(signed_base)
+    if value is None:
+        return 0.0
+    unit = max(float(config.inventory_unit_base), 1e-12)
+    q_max = float(config.q_max)
+    if not config.allow_short:
+        value = max(0.0, value)
+    q = value / unit
+    return max(-q_max if config.allow_short else 0.0, min(q_max, q))
+
+
 def inventory_to_q(signed_base: float, config: QuoteConfig) -> int:
     """Map a signed base position onto the HJB's integer inventory grid.
 
     With ``allow_short`` the result spans [-q_max, +q_max]; otherwise it is
     clamped to [0, q_max] to reproduce the long-only strategy.
+
+    Integer q stays the currency of routing, boundary tests and the two-leg
+    heartbeat. Use :func:`inventory_to_q_exact` for pricing.
     """
-    value = finite_float_or_none(signed_base)
-    if value is None:
-        return 0
-    unit = max(float(config.inventory_unit_base), 1e-12)
-    q_max = int(config.q_max)
-    if not config.allow_short:
-        value = max(0.0, value)
-    q = int(round(value / unit))
-    return max(-q_max if config.allow_short else 0, min(q_max, q))
+    return int(round(inventory_to_q_exact(signed_base, config)))
 
 
 def effective_phi(config: QuoteConfig, sigma2_per_sec: Any = None) -> tuple[float, str]:
@@ -319,6 +357,22 @@ def effective_phi(config: QuoteConfig, sigma2_per_sec: Any = None) -> tuple[floa
         return base, "phi_base_fallback"
     phi = base + float(config.gamma_inventory_risk) * sigma2 * float(config.inventory_unit_base)
     return float(phi), "sigma2_channel"
+
+
+def hjb_n_steps(config: QuoteConfig) -> int:
+    """Backward-Euler step count that keeps dt under ``hjb_max_dt_seconds``.
+
+    Fixing the step count instead makes dt scale with T, and the solver's error
+    grows as time-to-go shrinks, so a longer horizon would quietly degrade
+    exactly the slices the terminal condition lives on.
+    """
+    horizon = float(config.hjb_horizon_seconds)
+    max_dt = float(config.hjb_max_dt_seconds)
+    lo = int(config.hjb_n_steps_min)
+    hi = int(config.hjb_n_steps_max)
+    if max_dt <= 0 or horizon <= 0:
+        return lo
+    return int(max(lo, min(hi, math.ceil(horizon / max_dt))))
 
 
 def solve_hjb(
@@ -354,6 +408,7 @@ def solve_hjb(
         if float(config.hjb_alpha_kappa) > 0:
             alpha = float(config.hjb_alpha_kappa) / kappa_avg
     solver = compute_h_asymmetric if config.use_asymmetric_kappa else compute_h_symmetric
+    episodic = config.hjb_time_mode == "episodic"
     result = solver(
         lambda_plus=float(params["lambda+"]),
         lambda_minus=float(params["lambda-"]),
@@ -365,8 +420,11 @@ def solve_hjb(
         phi=phi,
         T_seconds=float(config.hjb_horizon_seconds),
         q_max=int(config.q_max),
+        n_steps=hjb_n_steps(config),
+        return_surface=episodic,
     )
     result = dict(result)
+    result["hjb_time_mode"] = config.hjb_time_mode
     result["phi_effective"] = phi
     result["phi_source"] = phi_source
     result["phi_base"] = float(config.hjb_phi)
@@ -385,18 +443,110 @@ def _grid_index(hjb: dict[str, Any], q: int) -> int:
     return int(np.argmin(np.abs(q_grid - q)))
 
 
-def select_delta(hjb: dict[str, Any], q: int, side: str) -> float | None:
-    """Model depth for one side at inventory ``q``.
+def _bracket(axis: np.ndarray, value: float) -> tuple[int, int, float]:
+    """(lower index, upper index, weight on upper) for ``value`` on ``axis``.
+
+    ``axis`` must be ascending. Values outside it clamp to the end, which is
+    what the boundary policy already does for q and what an expired episode
+    needs for t.
+
+    A value sitting exactly ON a node returns that node twice rather than
+    straddling it. That matters: straddling q=2 on a [-3..3] grid would pull in
+    the disabled q=3 neighbour and switch the bid off at an inventory the model
+    quotes perfectly happily.
+    """
+    n = len(axis)
+    if n == 1 or value <= axis[0]:
+        return 0, 0, 0.0
+    if value >= axis[-1]:
+        return n - 1, n - 1, 0.0
+    hi = int(np.searchsorted(axis, value, side="left"))
+    if float(axis[hi]) == float(value):
+        return hi, hi, 0.0
+    lo = hi - 1
+    span = float(axis[hi] - axis[lo])
+    weight = 0.0 if span <= 0 else (float(value) - float(axis[lo])) / span
+    return lo, hi, weight
+
+
+def _blend(low: float, high: float, weight: float) -> float:
+    """Linear blend that keeps a disabled endpoint disabling.
+
+    An infinite depth means "this side is off at this node" (the inventory
+    boundary), not "very deep". Averaging it into a finite neighbour would
+    invent a quotable price at a state the model refuses to quote, so any
+    non-finite endpoint disables the blend.
+
+    Consequence worth knowing: with q_max=6, a fractional q anywhere above 5.0
+    disables the bid, not just q above 5.5 as rounding did. That is the
+    conservative direction -- a bid at q=5.9 would permit a jump to 6.9, past
+    the boundary -- and it only bites once partial fills make q fractional at
+    all.
+    """
+    if not np.isfinite(low) or not np.isfinite(high):
+        return float("inf")
+    if weight <= 0.0:
+        return float(low)
+    if weight >= 1.0:
+        return float(high)
+    return float(low) + weight * (float(high) - float(low))
+
+
+def select_delta(
+    hjb: dict[str, Any],
+    q: float,
+    side: str,
+    *,
+    tau_remaining: float | None = None,
+) -> float | None:
+    """Model depth for one side at inventory ``q`` and time-to-go ``tau_remaining``.
 
     Returns None for a disabled side. delta_minus prices the BID (a bid fill
     increases inventory), delta_plus prices the ASK.
+
+    Two departures from a plain grid lookup, both deliberate:
+
+    - **Time.** The book's control is delta*(t,q) with a terminal condition at
+      T. When the solve carried a surface (``hjb_time_mode="episodic"``) and the
+      caller supplies its time-to-go, the slice at t = T - tau is used, so the
+      depths tighten on the reducing side as the episode runs out. Without a
+      surface, or without tau, this is the t=0 slice -- the stationary
+      approximation -- exactly as before.
+    - **Inventory.** Partial fills put q between grid points. Depths are blended
+      linearly between the bracketing integers, which reproduces the book
+      exactly at every integer q and interpolates over a domain the book does
+      not define. Note this must interpolate DEPTHS, not h: delta reads a
+      difference of h, so a piecewise-linear h yields piecewise-CONSTANT depths
+      that jump at the integers -- no better than rounding.
     """
     if not hjb:
         return None
-    idx = _grid_index(hjb, int(q))
+
     key = "delta_minus" if side == "bid" else "delta_plus"
-    value = finite_float_or_none(np.asarray(hjb[key])[idx])
-    return value
+    surface = hjb.get(f"{key}_surface")
+    t_grid = hjb.get("t_grid")
+    if surface is not None and t_grid is not None and tau_remaining is not None:
+        t_grid = np.asarray(t_grid, dtype=float)
+        elapsed = float(hjb.get("T_seconds", t_grid[-1])) - float(tau_remaining)
+        t_lo, t_hi, t_w = _bracket(t_grid, elapsed)
+        row = np.asarray(surface, dtype=float)
+        # The disabled-side columns are +inf at EVERY time node (the boundary is
+        # structural, not time-varying), so a weight of exactly 0 or 1 has to
+        # short-circuit: 0.0 * inf is NaN, which would turn a disabled side into
+        # a nonsense depth instead of leaving it disabled.
+        if t_lo == t_hi or t_w <= 0.0:
+            depths = row[t_lo]
+        elif t_w >= 1.0:
+            depths = row[t_hi]
+        else:
+            depths = (1.0 - t_w) * row[t_lo] + t_w * row[t_hi]
+    else:
+        depths = np.asarray(hjb[key], dtype=float)
+
+    q_grid = np.asarray(hjb["q_grid"], dtype=float)
+    q_lo, q_hi, q_w = _bracket(q_grid, float(q))
+    value = _blend(depths[q_lo], depths[q_hi], q_w)
+    return finite_float_or_none(value)
 
 
 @dataclass
@@ -410,11 +560,26 @@ class QuotePair:
     bid: HalfSpread | None = None
     ask: HalfSpread | None = None
     hjb_generation: int | None = None
+    # State the depths were actually priced from, as opposed to the integer q
+    # the routing and boundary checks agree on. q_residual is the risk the
+    # integer grid cannot represent; a persistent non-zero value means partial
+    # fills are leaving unmodelled inventory on the book.
+    q_exact: float | None = None
+    tau_remaining: float | None = None
+
+    @property
+    def q_residual(self) -> float | None:
+        if self.q_exact is None:
+            return None
+        return float(self.q_exact) - float(self.q)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "mid": self.mid,
             "q": self.q,
+            "q_exact": self.q_exact,
+            "q_residual": self.q_residual,
+            "tau_remaining": self.tau_remaining,
             "bid_price": self.bid_price,
             "ask_price": self.ask_price,
             "bid": self.bid.as_dict() if self.bid else None,
@@ -432,6 +597,8 @@ def compute_quotes(
     depth_p95_plus: float | None = None,
     depth_p95_minus: float | None = None,
     price_tick_size: float | None = None,
+    tau_remaining: float | None = None,
+    q_exact: float | None = None,
 ) -> QuotePair:
     """Both sides at once, which is the whole point of the rework.
 
@@ -444,14 +611,30 @@ def compute_quotes(
 
     Prices are rounded maker-safe when a tick size is given: bids down, asks up,
     never toward the touch.
+
+    ``q`` stays integer because it is what the boundary tests and the two-leg
+    routing agree on; ``q_exact`` is the unrounded position and is what the
+    depths are priced from when given. ``tau_remaining`` is the episode's
+    time-to-go; see :func:`select_delta`.
     """
     pair = QuotePair(mid=float(mid), q=int(q))
+    q_price = float(q) if q_exact is None else float(q_exact)
+    pair.q_exact = q_price
+    pair.tau_remaining = (
+        None if tau_remaining is None else float(tau_remaining)
+    )
 
     bid_spread = assemble_half_spread(
-        select_delta(hjb, q, "bid"), mid, config, depth_p95=depth_p95_minus
+        select_delta(hjb, q_price, "bid", tau_remaining=tau_remaining),
+        mid,
+        config,
+        depth_p95=depth_p95_minus,
     )
     ask_spread = assemble_half_spread(
-        select_delta(hjb, q, "ask"), mid, config, depth_p95=depth_p95_plus
+        select_delta(hjb, q_price, "ask", tau_remaining=tau_remaining),
+        mid,
+        config,
+        depth_p95=depth_p95_plus,
     )
 
     pair.bid = bid_spread

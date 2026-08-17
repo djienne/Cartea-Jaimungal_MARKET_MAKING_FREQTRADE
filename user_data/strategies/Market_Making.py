@@ -259,6 +259,11 @@ class Market_Making(IStrategy):
     _hjb_last_refresh_dt: datetime | None = None
     _hjb_param_fingerprint: str | None = None
     _hjb_params_snapshot: dict[str, Any] | None = None
+    # Episode clock for hjb_time_mode="episodic". Both legs must agree on it or
+    # they price the same net inventory at different points on the surface, so
+    # it rides the inventory heartbeat (see _adopt_peer_episode).
+    _episode_id: int = 0
+    _episode_start_dt: datetime | None = None
 
     debug_json_log: bool = True
     debug_json_log_filename: str = "mm_debug.jsonl"
@@ -304,6 +309,31 @@ class Market_Making(IStrategy):
     # sizing heuristic (section 10.4.2).
     hjb_horizon_seconds = 150.0
     use_asymmetric_kappa = True  # always use backward-Euler asymmetric-κ solver (kappa+ != kappa-)
+
+    # The book's control is delta*(t,q) on [0,T] with terminal condition
+    # h(T,q) = -alpha*q^2. "stationary" reads only the t=0 slice, so the agent
+    # never approaches T, alpha never bites, and the time dimension of eq. 10.26
+    # is inert -- that is an approximation, not the model. "episodic" runs a real
+    # clock: each episode starts at t=0 and the quoted depths follow the surface
+    # to t=T.
+    #
+    # What that does here is NOT the textbook "flatten harder as t->T" picture,
+    # because our running penalty dwarfs the terminal one: phi*kappa*T = 10 vs
+    # alpha*kappa = 0.05, a factor of 200. The running penalty is what remains to
+    # be PAID over the time left, so it is largest at t=0 and vanishes at T.
+    # Measured at q=+3 on live-scale CASHCAT params, the ask depth runs
+    # -6.8e-6 -> +1.0e-4 as tau goes 150s -> 0: the agent unwinds hardest at the
+    # START of an episode and relaxes into the terminal. That is the correct
+    # reading of eq. 10.26 at this calibration; the book's figures show the
+    # opposite because their alpha dominates their phi*T.
+    hjb_time_mode = "episodic"
+    # End the episode early once inventory is genuinely flat: the book's agent
+    # starts flat at t=0, so reaching flat is the natural place to restart rather
+    # than running a stale clock down against no position.
+    hjb_episode_reset_on_flat = True
+    # ...but not immediately, or a single round trip restarts the clock and the
+    # horizon never advances. Requires this fraction of T to have elapsed first.
+    hjb_episode_min_elapsed_fraction = 0.25
 
     # One inventory unit must match the actual order amount: the HJB assumes one
     # fill moves q by exactly 1 (eq. 10.2 is a unit-jump process). On CASHCAT at
@@ -835,6 +865,15 @@ class Market_Making(IStrategy):
         if self.hjb_solver is None:
             self.hjb_solver = load_hjb_solver()
         logger.info(f"HJB module loaded: {self.hjb_solver is not None}")
+        if self._episodic():
+            self._start_episode("bot_start")
+            logger.info(
+                "HJB time mode: episodic (T=%.1fs, reset_on_flat=%s)",
+                float(self.hjb_horizon_seconds),
+                bool(self.hjb_episode_reset_on_flat),
+            )
+        else:
+            logger.info("HJB time mode: stationary (t=0 slice only)")
         self._refresh_hjb(pairs[0])
         self._log_health(pairs[0], self._now_utc())
 
@@ -850,6 +889,17 @@ class Market_Making(IStrategy):
         now = self._as_utc(current_time) or self._now_utc()
         if pair:
             self._process_pending_fill_markouts(pair, now)
+            # Roll the episode clock BEFORE publishing, so the heartbeat carries
+            # the clock this cycle will actually quote on. Wrapped because the
+            # publish below must never be blocked by it: a leg that stops
+            # publishing makes staleness mutual and the pair never recovers.
+            try:
+                q_net, _ = self._net_inventory(pair)
+                self._advance_episode_clock(q_net, now)
+            except Exception as exc:
+                self._debug_log_event(
+                    "episode_clock_failed", {"pair": pair, "error": str(exc)}
+                )
             # Published before anything can return early, and never gated on
             # this instance's own willingness to quote -- a leg that stops
             # publishing makes staleness mutual and the pair never recovers.
@@ -1326,6 +1376,140 @@ class Market_Making(IStrategy):
         # follows can_short, so a long-only instance still clamps to [0, q_max].
         return self._mm_core.inventory_to_q(signed_base, self._quote_config())
 
+    def _pricing_state(self, pair: str) -> tuple[int, float, float | None]:
+        """(integer q, exact q, time-to-go) -- everything a depth lookup needs.
+
+        One helper rather than five copies, because the two coordinates are easy
+        to get subtly wrong on their own:
+
+        - ``q`` is rounded because eq. 10.2 is a unit-jump process and the HJB
+          grid is integer. Routing, boundary tests and the peer heartbeat all
+          speak this. ``q_exact`` is what is really held -- a partial fill lands
+          between grid points, and rounding it away hides up to half a unit of
+          live risk (0.49 units reads as flat). Depths price off q_exact.
+        - ``tau`` is None in stationary mode, which tells mm_core to read the
+          t=0 slice: what every call site did before the surface existed.
+
+        Both q values come from ONE position read, so they cannot disagree.
+        """
+        signed_base = self._signed_base_position(pair)
+        if self._reject_unexpected_short_position(pair, signed_base):
+            q_exact = 0.0
+        else:
+            q_exact = self._mm_core.inventory_to_q_exact(signed_base, self._quote_config())
+        return int(round(q_exact)), float(q_exact), self._tau_remaining()
+
+    def _pricing_state_payload(self, pair: str) -> dict[str, Any]:
+        """The pricing coordinates, flattened for telemetry.
+
+        ``q_residual`` is the part of the position the integer grid cannot
+        represent. A persistently non-zero value means partial fills are leaving
+        risk the model is not pricing, which is invisible in ``q`` alone.
+        """
+        try:
+            q, q_exact, tau = self._pricing_state(pair)
+        except Exception:
+            return {
+                "q": None,
+                "q_exact": None,
+                "q_residual": None,
+                "tau_remaining_seconds": None,
+                "episode_id": int(self._episode_id),
+                "hjb_time_mode": str(self.hjb_time_mode),
+            }
+        return {
+            "q": int(q),
+            "q_exact": float(q_exact),
+            "q_residual": float(q_exact) - float(q),
+            "tau_remaining_seconds": None if tau is None else float(tau),
+            "episode_id": int(self._episode_id),
+            "hjb_time_mode": str(self.hjb_time_mode),
+        }
+
+    # ---- episode clock (hjb_time_mode="episodic") ----
+
+    def _episodic(self) -> bool:
+        return str(self.hjb_time_mode) == "episodic"
+
+    def _episode_elapsed(self, now: datetime | None = None) -> float:
+        now = now or self._now_utc()
+        if self._episode_start_dt is None:
+            self._episode_start_dt = now
+            return 0.0
+        return max(0.0, (now - self._episode_start_dt).total_seconds())
+
+    def _tau_remaining(self, now: datetime | None = None) -> float | None:
+        """Seconds left in the current episode, or None in stationary mode.
+
+        None is the signal that mm_core should read the t=0 slice, which is what
+        every caller did unconditionally before the surface existed.
+        """
+        if not self._episodic():
+            return None
+        horizon = float(self.hjb_horizon_seconds)
+        return max(0.0, horizon - self._episode_elapsed(now))
+
+    def _start_episode(self, reason: str, now: datetime | None = None) -> None:
+        now = now or self._now_utc()
+        self._episode_id = int(self._episode_id) + 1
+        self._episode_start_dt = now
+        self._debug_log_event(
+            "episode_started",
+            {
+                "role": self.role,
+                "episode_id": int(self._episode_id),
+                "episode_start": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                "reason": reason,
+                "horizon_seconds": float(self.hjb_horizon_seconds),
+            },
+        )
+
+    def _advance_episode_clock(self, q_net: int | None, now: datetime | None = None) -> None:
+        """Roll the episode over when it expires, or once flat and old enough.
+
+        The book liquidates whatever is left at T and pays alpha*q^2. We cannot:
+        every quote here is post-only by construction, so taking liquidity to
+        flatten would contradict the rest of the design. The terminal condition
+        therefore acts through the depths alone and the clock simply restarts.
+        That is a named departure -- see docs/UNITS.md -- not an oversight.
+        """
+        if not self._episodic():
+            return
+        now = now or self._now_utc()
+        elapsed = self._episode_elapsed(now)
+        horizon = float(self.hjb_horizon_seconds)
+        if elapsed >= horizon:
+            self._start_episode("horizon_elapsed", now)
+            return
+        if not self.hjb_episode_reset_on_flat or q_net is None or int(q_net) != 0:
+            return
+        # Restarting the moment inventory touches zero would pin the clock near
+        # t=0 forever: a round trip completes in seconds and the horizon would
+        # never advance far enough for the terminal slice to matter.
+        if elapsed >= horizon * float(self.hjb_episode_min_elapsed_fraction):
+            self._start_episode("flat_inventory", now)
+
+    def _adopt_peer_episode(self, peer: dict[str, Any] | None) -> str | None:
+        """Converge the two legs onto one episode clock.
+
+        Both legs price the SAME net inventory, so a clock disagreement means
+        one leg quotes a 140s-to-go surface while the other quotes 20s-to-go and
+        the pair is internally inconsistent. Lowest episode_id wins: it is a pure
+        function of the exchanged state, needing no negotiation, in the same
+        style as route_sides. Returns the reason it moved, or None.
+        """
+        if not self._episodic() or not isinstance(peer, dict):
+            return None
+        peer_id = self._mm_core.finite_float_or_none(peer.get("episode_id"))
+        peer_start = self._mm_core.parse_utc_timestamp(peer.get("episode_start"))
+        if peer_id is None or peer_start is None:
+            return None
+        if int(peer_id) >= int(self._episode_id):
+            return None
+        self._episode_id = int(peer_id)
+        self._episode_start_dt = peer_start
+        return "adopted_peer_episode"
+
     def _reject_unexpected_short_position(self, pair: str, signed_base: float | None = None) -> bool:
         """Kill-switch on exposure pointing the wrong way for this role.
 
@@ -1455,13 +1639,14 @@ class Market_Making(IStrategy):
 
     def _inventory_snapshot(self, pair: str) -> dict[str, Any]:
         signed_base = self._signed_base_position(pair)
-        q = self._inventory_level(pair)
         return {
             "signed_base_position": float(signed_base),
             "position": float(signed_base),
             "inventory_unit_base": float(self.inventory_unit_base),
-            "q": int(q),
             "max_abs_inventory_units": int(self.max_abs_inventory_units),
+            # q and the coordinates around it come from the one place that
+            # derives them, so a snapshot cannot disagree with what was quoted.
+            **self._pricing_state_payload(pair),
         }
 
     def _account_equity_usdc(self, pair: str) -> float | None:
@@ -1609,25 +1794,38 @@ class Market_Making(IStrategy):
 
         return True, "ok", snapshot
 
-    def _select_delta(self, side: str, q: int) -> float | None:
-        """
-        Select delta+/- from precomputed HJB grid for given inventory level.
-        Returns None when HJB cache is unavailable.
-        """
-        if self.hjb_cache:
-            q_grid = self.hjb_cache["q_grid"]
-            if q < q_grid[0]:
-                idx = 0
-            elif q > q_grid[-1]:
-                idx = -1
-            else:
-                idx = int(np.argmin(np.abs(q_grid - q)))
-            if side == 'bid':
-                return float(self.hjb_cache["delta_minus"][idx])
-            else:
-                return float(self.hjb_cache["delta_plus"][idx])
+    def _no_delta_reason(self) -> str:
+        """Why there is no usable depth here: no model, or side off at this q.
 
-        return None
+        mm_core.select_delta returns None for BOTH -- an infinite depth is the
+        model saying "not this side at this inventory", and finite_float_or_none
+        collapses it to None. An operator reading the log has to tell those
+        apart: one means the HJB never solved (parameters, estimator, import),
+        the other is the boundary policy working exactly as designed.
+        """
+        return "no_hjb_delta" if self.hjb_cache is None else "boundary_side_disabled"
+
+    def _select_delta(
+        self,
+        side: str,
+        q: float,
+        *,
+        tau_remaining: float | None = None,
+    ) -> float | None:
+        """Model depth for one side, off the cached HJB surface.
+
+        Delegates to mm_core so the replay and the live path read the surface
+        the same way -- this used to reimplement mm_core.select_delta and its
+        grid indexing verbatim, which is exactly how the two drift apart.
+
+        ``tau_remaining=None`` means "read the t=0 slice"; pass
+        ``self._tau_remaining()`` for the book's time-dependent control.
+        """
+        if not self.hjb_cache:
+            return None
+        return self._mm_core.select_delta(
+            self.hjb_cache, q, side, tau_remaining=tau_remaining
+        )
 
     def _resize_inventory_unit(self, pair: str, mid_price: float) -> None:
         """Re-derive inventory_unit_base from available capital, when flat.
@@ -1699,6 +1897,7 @@ class Market_Making(IStrategy):
             hjb_alpha_kappa=float(self.hjb_alpha_kappa),
             hjb_phi=float(self.hjb_phi),
             hjb_horizon_seconds=float(self.hjb_horizon_seconds),
+            hjb_time_mode=str(self.hjb_time_mode),
             gamma_inventory_risk=float(self.gamma_inventory_risk),
             use_asymmetric_kappa=bool(self.use_asymmetric_kappa),
             max_toxicity=float(self.max_toxicity),
@@ -2117,11 +2316,11 @@ class Market_Making(IStrategy):
         if self._reject_unexpected_short_position(pair, signed_base):
             return False, "unexpected_short_position"
 
-        q = self._inventory_level(pair)
+        _, q_exact, tau = self._pricing_state(pair)
         quote_side = self._physical_quote_side(side)
-        delta = self._select_delta(quote_side, q)
+        delta = self._select_delta(quote_side, q_exact, tau_remaining=tau)
         if delta is None or not np.isfinite(float(delta)):
-            return False, "boundary_side_disabled"
+            return False, self._no_delta_reason()
 
         if quote_side == "bid" and not self._inventory_allows_bid(pair):
             return False, "position_limit_reached"
@@ -3549,9 +3748,14 @@ class Market_Making(IStrategy):
                 return val.item()
             return val
 
-        return {
+        tau = self._tau_remaining()
+        snapshot = {
             "method": cache.get("method", "matrix_exponential"),
             "q_grid": to_list(cache.get("q_grid")),
+            # The t=0 slice. In episodic mode that is the START of the episode,
+            # not what is being quoted right now -- see delta_*_at_tau below.
+            # Deliberately whitelisted rather than dumped: the (t,q) surface is
+            # ~600x13 floats and would swamp every JSONL record.
             "delta_plus": to_list(cache.get("delta_plus")),
             "delta_minus": to_list(cache.get("delta_minus")),
             "kappa_sym": to_list(cache.get("kappa_sym")),
@@ -3559,7 +3763,22 @@ class Market_Making(IStrategy):
             "kappa_minus": to_list(cache.get("kappa_minus")),
             "dt": to_list(cache.get("dt")),
             "n_steps": to_list(cache.get("n_steps")),
+            "hjb_time_mode": cache.get("hjb_time_mode", "stationary"),
+            "has_surface": "delta_plus_surface" in cache,
+            "tau_remaining_seconds": None if tau is None else float(tau),
+            "episode_id": int(self._episode_id),
         }
+        if tau is not None and "delta_plus_surface" in cache:
+            q_grid = np.asarray(cache["q_grid"])
+            snapshot["delta_plus_at_tau"] = [
+                self._mm_core.select_delta(cache, int(q), "ask", tau_remaining=tau)
+                for q in q_grid
+            ]
+            snapshot["delta_minus_at_tau"] = [
+                self._mm_core.select_delta(cache, int(q), "bid", tau_remaining=tau)
+                for q in q_grid
+            ]
+        return snapshot
 
     def _log_quote_decision(
         self,
@@ -3611,6 +3830,10 @@ class Market_Making(IStrategy):
             "hjb_last_refresh_ts": self._hjb_last_refresh_ts,
             "hjb_param_fingerprint": self._hjb_param_fingerprint,
             "hjb_age_seconds": self._hjb_age_seconds(now),
+            # Derived here rather than passed in by each of the ~20 call sites:
+            # a coordinate only some decisions carry is worse than useless when
+            # you are trying to explain a fill after the fact.
+            **self._pricing_state_payload(pair),
             "param_age_seconds": self._param_age_seconds(symbol, now),
             "collector_age_seconds": self._collector_age_seconds(symbol, now),
             "book_age_ms": self._book_age_ms(pair, now),
@@ -3733,8 +3956,10 @@ class Market_Making(IStrategy):
         if self.hjb_cache is None:
             self._refresh_hjb(pair)
 
-        q_level = self._inventory_level(pair)
-        delta_m = self._select_delta(self._physical_quote_side('entry'), q_level)
+        _, q_exact, tau = self._pricing_state(pair)
+        delta_m = self._select_delta(
+            self._physical_quote_side('entry'), q_exact, tau_remaining=tau
+        )
         if delta_m is None or not np.isfinite(float(delta_m)):
             logger.warning("No HJB delta available for bid; skipping entry pricing.")
             self._log_quote_decision(
@@ -3743,7 +3968,7 @@ class Market_Making(IStrategy):
                 side=self._physical_quote_side("entry"),
                 action="entry",
                 decision="reject",
-                reason="boundary_side_disabled" if delta_m is not None else "no_hjb_delta",
+                reason=self._no_delta_reason(),
                 mid_price=mid_price,
                 proposed_rate=proposed_rate,
             )
@@ -4097,6 +4322,12 @@ class Market_Making(IStrategy):
                 param_fingerprint=getattr(self, "_hjb_param_fingerprint", None),
                 published_at=self._now_utc().isoformat(),
                 ttl_seconds=int(max(self.max_peer_inventory_age_seconds * 2, 10)),
+                episode_id=int(self._episode_id) if self._episodic() else None,
+                episode_start=(
+                    self._episode_start_dt.isoformat()
+                    if self._episodic() and self._episode_start_dt is not None
+                    else None
+                ),
             )
         except Exception as exc:
             self._debug_log_event("inventory_heartbeat_failed", {"pair": pair, "error": str(exc)})
@@ -4111,6 +4342,25 @@ class Market_Making(IStrategy):
             peer = store.fetch_inventory(self._redis_url(), symbol, store.peer_role(self.role))
         except Exception:
             peer = None
+        # Converge the clocks before pricing off them, not after: a leg that
+        # quoted this cycle on its own clock and adopted the peer's on the next
+        # would have priced one cycle at the wrong point on the surface.
+        adopted = self._adopt_peer_episode(peer)
+        if adopted:
+            self._debug_log_event(
+                "episode_clock_adopted",
+                {
+                    "pair": pair,
+                    "role": self.role,
+                    "episode_id": int(self._episode_id),
+                    "episode_start": (
+                        self._episode_start_dt.isoformat()
+                        if self._episode_start_dt is not None
+                        else None
+                    ),
+                    "reason": adopted,
+                },
+            )
         return self._mm_core.resolve_net_inventory(
             self._inventory_level(pair),
             peer,
@@ -4190,8 +4440,10 @@ class Market_Making(IStrategy):
         if self.hjb_cache is None:
             self._refresh_hjb(pair)
 
-        q_level = self._inventory_level(pair)
-        delta_p = self._select_delta(self._physical_quote_side('exit'), q_level)
+        _, q_exact, tau = self._pricing_state(pair)
+        delta_p = self._select_delta(
+            self._physical_quote_side('exit'), q_exact, tau_remaining=tau
+        )
         if delta_p is None or not np.isfinite(float(delta_p)):
             logger.error("No HJB delta available for ask; using proposed_rate for exit pricing.")
             self._log_quote_decision(
@@ -4200,7 +4452,7 @@ class Market_Making(IStrategy):
                 side=self._physical_quote_side("exit"),
                 action="exit",
                 decision="reject",
-                reason="boundary_side_disabled" if delta_p is not None else "no_hjb_delta",
+                reason=self._no_delta_reason(),
                 mid_price=mid_price,
                 proposed_rate=proposed_rate,
                 extra={"trade_id": int(trade.id) if getattr(trade, "id", None) is not None else None},
@@ -4673,7 +4925,13 @@ class Market_Making(IStrategy):
         raw_side = getattr(order, "ft_order_side", None) or getattr(order, "side", None)
         quote_side = self._quote_side_from_order_side(raw_side)
         price = getattr(order, "price", None) or getattr(order, "safe_price", None)
-        amount = getattr(order, "amount", None) or getattr(order, "filled", None)
+        # `filled` first, not `amount`: `amount` is what was REQUESTED, so a
+        # partially filled order was recorded at full size and every fee,
+        # notional and markout figure derived from it was overstated. Partial
+        # fills are also exactly what puts inventory between the HJB's integer
+        # grid points, so mis-recording them hides the residual being carried.
+        amount = getattr(order, "filled", None) or getattr(order, "amount", None)
+        requested_amount = self._finite_float_or_none(getattr(order, "amount", None))
         price_float = self._finite_float_or_none(price)
         amount_float = self._finite_float_or_none(amount)
         fee_paid = self._extract_order_fee_paid(order, price_float, amount_float)
@@ -4742,6 +5000,12 @@ class Market_Making(IStrategy):
             "post_only_verified": bool(self.post_only_verified),
             "price": price_float,
             "amount": amount_float,
+            "requested_amount": requested_amount,
+            "is_partial_fill": (
+                None
+                if amount_float is None or requested_amount is None
+                else amount_float < requested_amount * 0.999
+            ),
             "realized_pnl": float(realized_pnl) if realized_pnl is not None else None,
             **self._inventory_snapshot(pair),
         }
@@ -4810,8 +5074,10 @@ class Market_Making(IStrategy):
             self._record_open_order_cancel_request()
             return None
 
-        q_level = self._inventory_level(pair)
-        delta_m = self._select_delta(self._physical_quote_side('entry'), q_level)
+        _, q_exact, tau = self._pricing_state(pair)
+        delta_m = self._select_delta(
+            self._physical_quote_side('entry'), q_exact, tau_remaining=tau
+        )
         if delta_m is None or not np.isfinite(float(delta_m)):
             logger.warning("No HJB delta available for bid adjust; cancelling open order.")
             self._log_quote_decision(
@@ -4820,7 +5086,7 @@ class Market_Making(IStrategy):
                 side=self._physical_quote_side("entry"),
                 action="adjust_entry",
                 decision="reject",
-                reason="boundary_side_disabled" if delta_m is not None else "no_hjb_delta",
+                reason=self._no_delta_reason(),
                 mid_price=mid_price,
                 proposed_rate=proposed_rate,
                 rounded_price=current_order_rate,
@@ -4914,8 +5180,10 @@ class Market_Making(IStrategy):
             self._record_open_order_cancel_request()
             return None
 
-        q_level = self._inventory_level(pair)
-        delta_p = self._select_delta(self._physical_quote_side('exit'), q_level)
+        _, q_exact, tau = self._pricing_state(pair)
+        delta_p = self._select_delta(
+            self._physical_quote_side('exit'), q_exact, tau_remaining=tau
+        )
         if delta_p is None or not np.isfinite(float(delta_p)):
             logger.warning("No HJB delta available for ask adjust; cancelling open order.")
             self._log_quote_decision(
@@ -4924,7 +5192,7 @@ class Market_Making(IStrategy):
                 side=self._physical_quote_side("exit"),
                 action="adjust_exit",
                 decision="reject",
-                reason="boundary_side_disabled" if delta_p is not None else "no_hjb_delta",
+                reason=self._no_delta_reason(),
                 mid_price=mid_price,
                 proposed_rate=proposed_rate,
                 rounded_price=current_order_rate,

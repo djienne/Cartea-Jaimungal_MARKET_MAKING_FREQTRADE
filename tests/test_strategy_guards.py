@@ -3336,3 +3336,122 @@ def test_debug_records_are_attributable_to_a_role():
         records.append(_json.loads(line))
     tmp.unlink(missing_ok=True)
     assert [r["role"] for r in records] == ["long", "short"]
+
+
+# --- episode clock (hjb_time_mode="episodic") ---
+#
+# The book's control is delta*(t,q) on [0,T]. Reading only the t=0 slice made
+# alpha inert and the time axis of eq. 10.26 decorative. These pin the clock
+# that now drives it.
+
+
+def _clocked_bot(now):
+    bot = make_bot()
+    bot.hjb_time_mode = "episodic"
+    bot.hjb_horizon_seconds = 150.0
+    bot.hjb_episode_reset_on_flat = True
+    bot.hjb_episode_min_elapsed_fraction = 0.25
+    bot._now_utc = lambda: now[0]
+    bot._start_episode("test")
+    return bot
+
+
+def test_tau_counts_down_and_floors_at_zero():
+    now = [datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)]
+    bot = _clocked_bot(now)
+    start = now[0]
+    seen = []
+    for elapsed in (0, 30, 149, 150, 400):
+        now[0] = start + timedelta(seconds=elapsed)
+        seen.append(bot._tau_remaining())
+    assert seen == [150.0, 120.0, 1.0, 0.0, 0.0]
+    assert seen == sorted(seen, reverse=True)
+
+
+def test_stationary_mode_leaves_the_clock_inert():
+    now = [datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)]
+    bot = _clocked_bot(now)
+    bot.hjb_time_mode = "stationary"
+    before = bot._episode_id
+    # None is the signal to mm_core to read the t=0 slice, as before.
+    assert bot._tau_remaining() is None
+    now[0] += timedelta(seconds=1000)
+    bot._advance_episode_clock(q_net=0)
+    assert bot._episode_id == before
+
+
+def test_episode_rolls_at_the_horizon_even_while_holding_inventory():
+    now = [datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)]
+    bot = _clocked_bot(now)
+    first = bot._episode_id
+    now[0] += timedelta(seconds=151)
+    bot._advance_episode_clock(q_net=3)
+    assert bot._episode_id == first + 1
+    assert bot._tau_remaining() == 150.0
+
+
+def test_reset_on_flat_waits_out_the_minimum_elapsed_fraction():
+    """Otherwise a round trip completing in seconds pins the clock at t=0."""
+    now = [datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)]
+    bot = _clocked_bot(now)
+    first = bot._episode_id
+
+    now[0] += timedelta(seconds=10)  # 10/150 < 25%
+    bot._advance_episode_clock(q_net=0)
+    assert bot._episode_id == first
+
+    now[0] += timedelta(seconds=40)  # 50/150 > 25%
+    bot._advance_episode_clock(q_net=0)
+    assert bot._episode_id == first + 1
+
+
+def test_reset_on_flat_ignores_a_held_position_and_an_unknown_peer():
+    now = [datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)]
+    bot = _clocked_bot(now)
+    first = bot._episode_id
+    now[0] += timedelta(seconds=100)
+    bot._advance_episode_clock(q_net=2)
+    bot._advance_episode_clock(q_net=None)  # peer stale: fail closed, do nothing
+    assert bot._episode_id == first
+
+
+def test_both_legs_converge_on_the_lower_episode_id():
+    """Pure function of the exchanged state -- no negotiation, like route_sides."""
+    now = [datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)]
+    bot = _clocked_bot(now)
+    bot._episode_id = 7
+    peer_start = now[0] - timedelta(seconds=20)
+
+    assert bot._adopt_peer_episode(
+        {"episode_id": 4, "episode_start": peer_start.isoformat()}
+    ) == "adopted_peer_episode"
+    assert bot._episode_id == 4
+    assert bot._tau_remaining() == pytest.approx(130.0)
+
+    # A higher or absent clock never moves us, so the pair cannot ping-pong.
+    assert bot._adopt_peer_episode({"episode_id": 9, "episode_start": now[0].isoformat()}) is None
+    assert bot._adopt_peer_episode({"q_own": 1}) is None
+    assert bot._adopt_peer_episode(None) is None
+    assert bot._episode_id == 4
+
+
+def test_quote_telemetry_carries_the_pricing_coordinates():
+    now = [datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)]
+    bot = _clocked_bot(now)
+    payload = bot._pricing_state_payload("ETH/USDC:USDC")
+    assert payload["hjb_time_mode"] == "episodic"
+    assert payload["tau_remaining_seconds"] == pytest.approx(150.0)
+    assert payload["episode_id"] == bot._episode_id
+    assert payload["q_residual"] == pytest.approx(payload["q_exact"] - payload["q"])
+
+
+def test_pricing_state_reports_the_unrounded_position():
+    now = [datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)]
+    bot = _clocked_bot(now)
+    bot.inventory_unit_base = 100.0
+    # A partial fill leaving 0.49 units on the book: q says flat, q_exact does not.
+    bot._signed_base_position = lambda pair: 49.0
+    q, q_exact, tau = bot._pricing_state("ETH/USDC:USDC")
+    assert q == 0
+    assert q_exact == pytest.approx(0.49)
+    assert tau == pytest.approx(150.0)

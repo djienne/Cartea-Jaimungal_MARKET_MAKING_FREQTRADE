@@ -328,3 +328,23 @@ def test_read_jsonl_events_filters_since_and_bad_lines(tmp_path):
     )
 
     assert read_jsonl_events(path, since=start) == [{"event": "health", "ts": "2026-05-25T00:00:01Z"}]
+
+
+def test_inventory_residual_flags_a_persistent_offset():
+    """A standing residual means partial fills leave risk the model never prices."""
+    from verify_dry_run_quality import inventory_residual_stats
+
+    clean = inventory_residual_stats([{"q_residual": 0.02}, {"q_residual": -0.05}])
+    assert clean["reasons"] == []
+    assert clean["samples"] == 2
+
+    drifting = inventory_residual_stats([{"q_residual": 0.44}, {"q_residual": 0.41}])
+    assert drifting["reasons"]
+    assert drifting["reasons"][0].startswith("inventory_residual_too_large:")
+
+    # Absent is not a failure: older logs predate the field, and a run with no
+    # fills has nothing to be fractional about.
+    empty = inventory_residual_stats([{"q": 1}, {}])
+    assert empty["reasons"] == []
+    assert empty["samples"] == 0
+    assert empty["mean_abs_q_residual"] is None

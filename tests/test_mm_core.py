@@ -32,7 +32,9 @@ from mm_core import (  # noqa: E402
     compute_quotes,
     effective_phi,
     finite_float_or_none,
+    hjb_n_steps,
     inventory_to_q,
+    inventory_to_q_exact,
     maker_safe,
     merged_params,
     parse_utc_timestamp,
@@ -695,3 +697,144 @@ def test_volatility_channel_cannot_undo_the_kappa_normalisation():
     # Uncapped, that sigma2 would have driven the product orders of magnitude past
     # the target.
     assert calm["phi_effective"] * calm["kappa_avg"] * 150.0 == pytest.approx(0.05, rel=1e-6)
+
+
+# --- delta*(t,q): the time axis and fractional inventory ---
+
+
+def _episodic_hjb(**overrides):
+    config = QuoteConfig(
+        q_max=3, hjb_horizon_seconds=150.0, hjb_time_mode="episodic", **overrides
+    )
+    return solve_hjb(LIVE_PARAMS, config), config
+
+
+def test_hjb_time_mode_is_validated():
+    with pytest.raises(ValueError, match="hjb_time_mode"):
+        QuoteConfig(hjb_time_mode="whenever")
+
+
+def test_n_steps_scales_with_the_horizon_so_dt_stays_bounded():
+    """Backward Euler's error grows as time-to-go shrinks, so cap dt, not steps.
+
+    A fixed step count would make dt scale with T and quietly degrade exactly
+    the slices the terminal condition lives on.
+    """
+    short = QuoteConfig(hjb_horizon_seconds=150.0, hjb_max_dt_seconds=0.25)
+    long_ = QuoteConfig(hjb_horizon_seconds=600.0, hjb_max_dt_seconds=0.25)
+    assert hjb_n_steps(short) == 600
+    assert hjb_n_steps(long_) == 2000  # hjb_n_steps_max
+    assert 150.0 / hjb_n_steps(short) <= 0.25
+    # The floor holds for horizons short enough not to need the resolution.
+    assert hjb_n_steps(QuoteConfig(hjb_horizon_seconds=1.0)) == 200
+
+
+def test_stationary_mode_solves_without_a_surface():
+    hjb = solve_hjb(LIVE_PARAMS, QuoteConfig(q_max=3, hjb_time_mode="stationary"))
+    assert hjb["hjb_time_mode"] == "stationary"
+    assert "delta_plus_surface" not in hjb
+    # And a tau it cannot honour is ignored rather than being an error.
+    assert select_delta(hjb, 1, "ask", tau_remaining=5.0) == select_delta(hjb, 1, "ask")
+
+
+def test_tau_selects_a_different_slice_than_t_zero():
+    hjb, config = _episodic_hjb()
+    T = config.hjb_horizon_seconds
+    at_start = select_delta(hjb, 2, "ask", tau_remaining=T)
+    at_end = select_delta(hjb, 2, "ask", tau_remaining=0.0)
+    stationary = select_delta(hjb, 2, "ask")
+
+    # tau = T IS t = 0, so it must agree with the legacy read exactly.
+    assert at_start == pytest.approx(stationary)
+    # ...and the terminal slice must not, or the time axis is doing nothing.
+    assert at_end != pytest.approx(at_start)
+
+    # tau outside [0, T] clamps rather than raising: an expired episode is a
+    # normal state, not an error.
+    assert select_delta(hjb, 2, "ask", tau_remaining=-5.0) == pytest.approx(at_end)
+    assert select_delta(hjb, 2, "ask", tau_remaining=10 * T) == pytest.approx(at_start)
+
+
+def test_tau_interpolates_between_time_nodes():
+    hjb, config = _episodic_hjb()
+    t_grid = hjb["t_grid"]
+    T = float(config.hjb_horizon_seconds)
+    lo, hi = float(t_grid[10]), float(t_grid[11])
+    a = select_delta(hjb, 1, "ask", tau_remaining=T - lo)
+    b = select_delta(hjb, 1, "ask", tau_remaining=T - hi)
+    mid = select_delta(hjb, 1, "ask", tau_remaining=T - 0.5 * (lo + hi))
+    assert mid == pytest.approx(0.5 * (a + b))
+
+
+def test_disabled_boundary_survives_the_time_axis():
+    """0.0 * inf is NaN; a disabled side must stay disabled, not become one."""
+    hjb, config = _episodic_hjb()
+    T = float(config.hjb_horizon_seconds)
+    for tau in (T, T / 2, 0.37, 0.0):
+        assert select_delta(hjb, 3, "bid", tau_remaining=tau) is None   # no bid at q_max
+        assert select_delta(hjb, -3, "ask", tau_remaining=tau) is None  # no ask at q_min
+
+
+def test_integer_q_reads_the_grid_exactly():
+    """The interpolation must not perturb the states the book actually defines."""
+    hjb, config = _episodic_hjb()
+    for q, expected in zip(hjb["q_grid"], hjb["delta_plus"]):
+        got = select_delta(hjb, int(q), "ask", tau_remaining=config.hjb_horizon_seconds)
+        if np.isfinite(expected):
+            assert got == float(expected)
+        else:
+            assert got is None
+
+
+def test_fractional_q_blends_the_bracketing_depths():
+    hjb, config = _episodic_hjb()
+    tau = config.hjb_horizon_seconds
+    lo = select_delta(hjb, 1, "ask", tau_remaining=tau)
+    hi = select_delta(hjb, 2, "ask", tau_remaining=tau)
+    assert select_delta(hjb, 1.5, "ask", tau_remaining=tau) == pytest.approx(0.5 * (lo + hi))
+    assert select_delta(hjb, 1.25, "ask", tau_remaining=tau) == pytest.approx(
+        lo + 0.25 * (hi - lo)
+    )
+
+
+def test_fractional_q_next_to_the_boundary_disables_rather_than_extrapolates():
+    """A bid at q=2.4 would permit a jump to 3.4, past q_max=3.
+
+    Conservative by construction: any non-finite bracketing node disables the
+    side, so the outermost interval never quotes the adding side.
+    """
+    hjb, config = _episodic_hjb()
+    tau = config.hjb_horizon_seconds
+    assert select_delta(hjb, 2, "bid", tau_remaining=tau) is not None
+    assert select_delta(hjb, 2.4, "bid", tau_remaining=tau) is None
+    # The reducing side stays live all the way to the boundary.
+    assert select_delta(hjb, 2.4, "ask", tau_remaining=tau) is not None
+
+
+def test_inventory_to_q_exact_keeps_what_rounding_discards():
+    config = QuoteConfig(inventory_unit_base=100.0, q_max=3, allow_short=True)
+    # A partial fill: 0.49 units of live risk that the integer grid calls flat.
+    assert inventory_to_q(49.0, config) == 0
+    assert inventory_to_q_exact(49.0, config) == pytest.approx(0.49)
+    # Rounding stays exactly what it was, including at the clamp.
+    for base in (0.0, 51.0, 149.0, 151.0, -250.0, 10_000.0, -10_000.0):
+        assert inventory_to_q(base, config) == int(round(inventory_to_q_exact(base, config)))
+    assert inventory_to_q_exact(10_000.0, config) == 3.0
+    assert inventory_to_q_exact(-10_000.0, config) == -3.0
+    # allow_short=False floors at zero before anything else.
+    long_only = QuoteConfig(inventory_unit_base=100.0, q_max=3, allow_short=False)
+    assert inventory_to_q_exact(-250.0, long_only) == 0.0
+
+
+def test_compute_quotes_reports_the_residual_it_priced_from():
+    hjb, config = _episodic_hjb()
+    pair = compute_quotes(
+        MID, 1, hjb, config, q_exact=1.4, tau_remaining=config.hjb_horizon_seconds
+    )
+    assert pair.q == 1                      # routing and boundaries stay integer
+    assert pair.q_exact == pytest.approx(1.4)
+    assert pair.q_residual == pytest.approx(0.4)
+    assert pair.as_dict()["q_residual"] == pytest.approx(0.4)
+    # ...and it really priced off 1.4, not 1.
+    integer = compute_quotes(MID, 1, hjb, config, tau_remaining=config.hjb_horizon_seconds)
+    assert pair.ask.delta != pytest.approx(integer.ask.delta)

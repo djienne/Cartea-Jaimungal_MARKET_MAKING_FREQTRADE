@@ -121,6 +121,54 @@ def _optimal_delta_and_value(
     return float(delta_star), float(value_star), float(kappa * value_star)
 
 
+def _depths_from_h(
+    h_vec: np.ndarray,
+    *,
+    lam_p: float,
+    kappa_p: float,
+    eps_p: float,
+    lam_m: float,
+    kappa_m: float,
+    eps_m: float,
+    clip_deltas: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Optimal depths (eq. 10.27) for ONE time slice of h.
+
+    Boundary sides are disabled, not clamped: no ask at q_min, no bid at q_max.
+
+    Only differences of ``h_vec`` are read, so an additive constant on the slice
+    is irrelevant -- which is what makes the solvers' per-slice normalisation
+    harmless.
+    """
+    d = len(h_vec)
+    delta_plus = np.full(d, np.inf, dtype=float)
+    delta_minus = np.full(d, np.inf, dtype=float)
+    for i in range(d):
+        h_q = h_vec[i]
+        if i > 0:
+            raw_plus, _, _ = _optimal_delta_and_value(
+                lam_p, kappa_p, eps_p, h_vec[i - 1] - h_q, clip_at_zero=clip_deltas
+            )
+            delta_plus[i] = max(0.0, raw_plus) if clip_deltas else raw_plus
+        if i < d - 1:
+            raw_minus, _, _ = _optimal_delta_and_value(
+                lam_m, kappa_m, eps_m, h_vec[i + 1] - h_q, clip_at_zero=clip_deltas
+            )
+            delta_minus[i] = max(0.0, raw_minus) if clip_deltas else raw_minus
+    return delta_plus, delta_minus
+
+
+def _surface_depths(
+    h_surface: np.ndarray, **kwargs
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply :func:`_depths_from_h` to every time slice of a surface."""
+    plus = np.empty_like(h_surface)
+    minus = np.empty_like(h_surface)
+    for k in range(h_surface.shape[0]):
+        plus[k], minus[k] = _depths_from_h(h_surface[k], **kwargs)
+    return plus, minus
+
+
 def compute_h_symmetric(
     lambda_plus: float,
     lambda_minus: float,
@@ -134,6 +182,8 @@ def compute_h_symmetric(
     T_seconds: float = 30 * 60,
     q_max: int = 3,
     q_min: int | None = None,
+    n_steps: int = 200,
+    return_surface: bool = False,
 ):
     """
     Closed-form matrix solution from fq_market_making_introduction.ipynb
@@ -142,6 +192,16 @@ def compute_h_symmetric(
 
     ``q_min`` defaults to -q_max (the symmetric grid). Pass it to solve on an
     asymmetric inventory domain, e.g. q_min=0 for a long-only agent.
+
+    ``return_surface`` additionally returns the whole h(t,q) surface on a
+    uniform grid of ``n_steps + 1`` time nodes, ascending from t=0 to t=T. The
+    book's control is δ*(t,q), not δ*(0,q); reading only the t=0 slice is a
+    stationary approximation. ``n_steps`` is used only for that grid -- the
+    closed form is exact at every node, so it costs one extra solve against the
+    eigenvector matrix regardless of resolution.
+
+    Each surface slice is independently normalised (see ``h_surface`` below), so
+    differences WITHIN a slice are meaningful and levels ACROSS slices are not.
     """
     _validate_common_inputs(
         lambda_plus,
@@ -198,27 +258,33 @@ def compute_h_symmetric(
             "HJB transition matrix has a complex spectrum "
             f"(max|Im|={imag_scale:.3e} vs max|Re|={real_scale:.3e})"
         )
-    theta = eigval.real * float(T_seconds)
-    shift = float(np.max(theta))
-    omega = np.real(V @ (np.exp(theta - shift) * np.linalg.solve(V, z)))
-    log_omega = np.log(np.maximum(omega, 1e-300)) + shift
-    # Normalize log-omega to reduce spread before dividing by kappa (invariant up to additive const)
-    log_omega = log_omega - np.max(log_omega)
-    h = log_omega / kappa
+    y = np.linalg.solve(V, z)
 
-    # Boundary sides are disabled, not clamped: no ask at q_min, no bid at q_max.
-    delta_plus = np.full(d, np.inf, dtype=float)
-    delta_minus = np.full(d, np.inf, dtype=float)
-    for i, q in enumerate(q_grid):
-        h_q = h[i]
-        if i > 0:
-            h_qm1 = h[i - 1]
-            delta_plus[i] = (1.0 / kappa) + eps_p - (h_qm1 - h_q)
-        if i < d - 1:
-            h_qp1 = h[i + 1]
-            delta_minus[i] = (1.0 / kappa) + eps_m - (h_qp1 - h_q)
+    def _h_at(tau: np.ndarray) -> np.ndarray:
+        """h(T - tau, .) for each entry of ``tau``, as rows."""
+        theta = np.outer(np.asarray(tau, dtype=float), eigval.real)
+        shift = np.max(theta, axis=1, keepdims=True)
+        omega = np.real((np.exp(theta - shift) * y[None, :]) @ V.T)
+        log_omega = np.log(np.maximum(omega, 1e-300)) + shift
+        # Normalize log-omega to reduce spread before dividing by kappa
+        # (invariant up to an additive constant, per row).
+        log_omega = log_omega - np.max(log_omega, axis=1, keepdims=True)
+        return log_omega / kappa
 
-    return {
+    h = _h_at(np.array([float(T_seconds)]))[0]
+
+    depth_kwargs = dict(
+        lam_p=lam_p,
+        kappa_p=kappa,
+        eps_p=eps_p,
+        lam_m=lam_m,
+        kappa_m=kappa,
+        eps_m=eps_m,
+        clip_deltas=False,
+    )
+    delta_plus, delta_minus = _depths_from_h(h, **depth_kwargs)
+
+    result = {
         "q_grid": q_grid,
         "h": h,
         "delta_plus": delta_plus,
@@ -229,6 +295,22 @@ def compute_h_symmetric(
         "q_min": int(q_grid[0]),
         "q_max": int(q_grid[-1]),
     }
+
+    if return_surface:
+        t_grid = np.linspace(0.0, float(T_seconds), int(max(n_steps, 1)) + 1)
+        h_surface = _h_at(float(T_seconds) - t_grid)
+        surf_plus, surf_minus = _surface_depths(h_surface, **depth_kwargs)
+        result.update(
+            {
+                "t_grid": t_grid,
+                "h_surface": h_surface,
+                "delta_plus_surface": surf_plus,
+                "delta_minus_surface": surf_minus,
+                "T_seconds": float(T_seconds),
+            }
+        )
+
+    return result
 
 
 def compute_h_asymmetric(
@@ -249,6 +331,7 @@ def compute_h_asymmetric(
     tol: float = 1e-8,
     damping: float = 0.7,
     clip_deltas: bool = False,
+    return_surface: bool = False,
 ):
     """
     Backward-Euler solver for the asymmetric-κ HJB (κ+ != κ-).
@@ -266,6 +349,28 @@ def compute_h_asymmetric(
 
     ``q_min`` defaults to -q_max (the symmetric grid). Pass it to solve on an
     asymmetric inventory domain, e.g. q_min=0 for a long-only agent.
+
+    ``return_surface`` keeps every backward step instead of discarding all but
+    the last. The integration already visits h(t,.) for every node on the way
+    from the terminal condition to t=0; the book's control is δ*(t,q), so
+    throwing the intermediate slices away and always quoting off t=0 is a
+    stationary approximation, not the model. Adds ``h_surface``,
+    ``delta_plus_surface``, ``delta_minus_surface`` and ``t_grid``, all ordered
+    ASCENDING in t: index 0 is t=0, index n_steps is the terminal slice t=T.
+
+    Caveat on ``h_surface``: the loop renormalises each step by subtracting its
+    own maximum, so slices are individually shifted. Differences WITHIN a slice
+    -- the only thing the depths read -- are exact; levels ACROSS slices are
+    not comparable, so do not plot it as a value function.
+
+    Caveat on accuracy near T: backward Euler is first order, and measured
+    against the exact symmetric solution the depth error at a fixed time-to-go
+    tau falls like O(dt) but with a constant that grows as tau shrinks -- at
+    T=150s, kappa=100, alpha=0.01 it is 1e-9 at tau=75s, 2e-4 at tau=10s and
+    9e-3 at tau=0.75s with n_steps=200. Only the t=0 slice was ever read
+    before, so this never mattered; it does once the control is time-dependent.
+    Keep dt at or below ~1s (mm_core.solve_hjb scales n_steps with T for
+    exactly this) and treat the final dt of an episode as unresolved.
     """
     _validate_common_inputs(
         lambda_plus,
@@ -351,6 +456,9 @@ def compute_h_asymmetric(
         return g_vec, jac_lower, jac_diag, jac_upper
 
 
+    # Ordered from the terminal slice backwards; reversed to ascending t below.
+    slices: list[np.ndarray] = [h.copy()] if return_surface else []
+
     for _ in range(n_steps):
         h_old = h.copy()
         h_old = h_old - np.max(h_old)
@@ -392,32 +500,21 @@ def compute_h_asymmetric(
             h_new = h_trial
 
         h = h_new
+        if return_surface:
+            slices.append(h.copy())
 
-    # Boundary sides are disabled, not clamped: no ask at q_min, no bid at q_max.
-    delta_plus = np.full(d, np.inf, dtype=float)
-    delta_minus = np.full(d, np.inf, dtype=float)
-    for i, q in enumerate(q_grid):
-        h_q = h[i]
-        if i > 0:
-            raw_plus, _, _ = _optimal_delta_and_value(
-                lam_p,
-                kappa_p,
-                eps_p,
-                h[i - 1] - h_q,
-                clip_at_zero=clip_deltas,
-            )
-            delta_plus[i] = max(0.0, raw_plus) if clip_deltas else raw_plus
-        if i < d - 1:
-            raw_minus, _, _ = _optimal_delta_and_value(
-                lam_m,
-                kappa_m,
-                eps_m,
-                h[i + 1] - h_q,
-                clip_at_zero=clip_deltas,
-            )
-            delta_minus[i] = max(0.0, raw_minus) if clip_deltas else raw_minus
+    depth_kwargs = dict(
+        lam_p=lam_p,
+        kappa_p=kappa_p,
+        eps_p=eps_p,
+        lam_m=lam_m,
+        kappa_m=kappa_m,
+        eps_m=eps_m,
+        clip_deltas=clip_deltas,
+    )
+    delta_plus, delta_minus = _depths_from_h(h, **depth_kwargs)
 
-    return {
+    result = {
         "q_grid": q_grid,
         "h": h,
         "delta_plus": delta_plus,
@@ -431,3 +528,22 @@ def compute_h_asymmetric(
         "dt": dt,
         "n_steps": n_steps,
     }
+
+    if return_surface:
+        h_surface = np.array(slices[::-1], dtype=float)
+        surf_plus, surf_minus = _surface_depths(h_surface, **depth_kwargs)
+        # Built from the ACTUAL dt, which the 1e-6 floor above can raise off
+        # T/n_steps for very short horizons; t_grid must describe the slices
+        # that exist, not the ones the caller asked for.
+        t_grid = float(T_seconds) - dt * np.arange(n_steps, -1, -1, dtype=float)
+        result.update(
+            {
+                "t_grid": t_grid,
+                "h_surface": h_surface,
+                "delta_plus_surface": surf_plus,
+                "delta_minus_surface": surf_minus,
+                "T_seconds": float(T_seconds),
+            }
+        )
+
+    return result

@@ -71,6 +71,20 @@ class ReplayConfig:
     fill_calibration_path: Path | None = None
     newest_per_stream: int | None = None
     max_price_events: int | None = None
+    # HJB risk/horizon knobs, previously buried as params.get() defaults inside
+    # compute_hjb_cache where no caller could reach them. They have to be
+    # sweepable: T is the episode length in episodic mode, and phi/alpha are the
+    # two penalties whose RATIO decides whether the terminal condition matters.
+    hjb_alpha: float = 0.001
+    hjb_phi: float = 0.0001
+    hjb_horizon_seconds: float = 60.0
+    # "episodic" runs the book's delta*(t,q) on a simulated clock; "stationary"
+    # reads only the t=0 slice, which is what this harness did before.
+    hjb_time_mode: str = "episodic"
+    # End the episode early once flat, but only after this fraction of T, so a
+    # single round trip cannot pin the clock at t=0 forever.
+    episode_reset_on_flat: bool = True
+    episode_min_elapsed_fraction: float = 0.25
 
 
 @dataclass
@@ -119,6 +133,12 @@ class ReplayMetrics:
     queue_decay_base: float = 0.0
     time_at_q_boundary: dict[str, int] = field(default_factory=lambda: {"q_min": 0, "q_max": 0})
     inventory_histogram: dict[int, int] = field(default_factory=dict)
+    # Fractional inventory the integer grid cannot represent. The book's q is a
+    # unit-jump count (eq. 10.2); partial fills are not, so this is the size of
+    # the gap between the model's state and the real one.
+    q_residual_abs_sum: float = 0.0
+    q_residual_samples: int = 0
+    episodes: int = 0
     pnl_by_side: dict[str, float] = field(default_factory=lambda: {"bid": 0.0, "ask": 0.0})
     quote_attempts_by_depth: dict[str, int] = field(default_factory=dict)
     fills_by_depth: dict[str, int] = field(default_factory=dict)
@@ -181,6 +201,12 @@ class ReplayMetrics:
             "queue_decay_base": self.queue_decay_base,
             "time_at_q_boundary": self.time_at_q_boundary,
             "inventory_histogram": self.inventory_histogram,
+            "mean_abs_q_residual": (
+                self.q_residual_abs_sum / self.q_residual_samples
+                if self.q_residual_samples
+                else None
+            ),
+            "episodes": self.episodes,
             "pnl_by_side": self.pnl_by_side,
             "quote_attempts_by_depth": self.quote_attempts_by_depth,
             "fills_by_depth": self.fills_by_depth,
@@ -325,6 +351,14 @@ def post_only_check(side: str, price: float, best_bid: float, best_ask: float) -
     return True, "ok"
 
 
+def _inventory_config(unit: float, q_max: int, q_min: int = 0) -> QuoteConfig:
+    return QuoteConfig(
+        inventory_unit_base=max(float(unit), 1e-12),
+        q_max=max(int(q_max), 1),
+        allow_short=int(q_min) < 0,
+    )
+
+
 def inventory_q(inventory_base: float, unit: float, q_max: int, q_min: int = 0) -> int:
     """Map a base position onto the integer inventory grid.
 
@@ -332,20 +366,48 @@ def inventory_q(inventory_base: float, unit: float, q_max: int, q_min: int = 0) 
     shipped with. Pass a negative ``q_min`` to simulate the two-sided agent.
     Delegates to mm_core so replay and live share one mapping.
     """
-    config = QuoteConfig(
-        inventory_unit_base=max(float(unit), 1e-12),
-        q_max=max(int(q_max), 1),
-        allow_short=int(q_min) < 0,
+    return mm_core.inventory_to_q(inventory_base, _inventory_config(unit, q_max, q_min))
+
+
+def inventory_q_exact(inventory_base: float, unit: float, q_max: int, q_min: int = 0) -> float:
+    """The same mapping WITHOUT the rounding -- what the depths price off.
+
+    This harness fills partially by construction (``fill_size`` is capped by the
+    matched trade's size), so its inventory sits between grid points more often
+    than not. That is the same gap the live path has, which makes this the place
+    to measure it.
+    """
+    return mm_core.inventory_to_q_exact(
+        inventory_base, _inventory_config(unit, q_max, q_min)
     )
-    return mm_core.inventory_to_q(inventory_base, config)
 
 
-def compute_hjb_cache(params: dict[str, float], q_max: int, q_min: int | None = None) -> dict:
+def compute_hjb_cache(
+    params: dict[str, float],
+    q_max: int,
+    q_min: int | None = None,
+    *,
+    alpha: float | None = None,
+    phi: float | None = None,
+    T_seconds: float | None = None,
+    time_mode: str = "stationary",
+    max_dt_seconds: float = 0.25,
+) -> dict:
     """Solve the HJB on the inventory domain the simulated agent actually has.
 
     ``q_min=None`` keeps the symmetric grid. Passing 0 solves the long-only
     problem, where the disabled side at the bottom of the grid is the ask.
+
+    ``time_mode="episodic"`` also returns the full delta*(t,q) surface so the
+    caller can quote off its actual time-to-go rather than the t=0 slice.
     """
+    horizon = float(params.get("T_seconds", 60.0) if T_seconds is None else T_seconds)
+    solver_config = QuoteConfig(
+        q_max=max(int(q_max), 1),
+        hjb_horizon_seconds=horizon,
+        hjb_max_dt_seconds=float(max_dt_seconds),
+        hjb_time_mode=str(time_mode),
+    )
     return compute_h_asymmetric(
         lambda_plus=params["lambda+"],
         lambda_minus=params["lambda-"],
@@ -353,11 +415,13 @@ def compute_hjb_cache(params: dict[str, float], q_max: int, q_min: int | None = 
         epsilon_minus=params["epsilon-"],
         kappa_plus=params["kappa+"],
         kappa_minus=params["kappa-"],
-        alpha=params.get("alpha", 0.001),
-        phi=params.get("phi", 0.0001),
-        T_seconds=params.get("T_seconds", 60.0),
+        alpha=float(params.get("alpha", 0.001) if alpha is None else alpha),
+        phi=float(params.get("phi", 0.0001) if phi is None else phi),
+        T_seconds=horizon,
         q_max=q_max,
         q_min=q_min,
+        n_steps=mm_core.hjb_n_steps(solver_config),
+        return_surface=str(time_mode) == "episodic",
     )
 
 
@@ -461,13 +525,18 @@ def compute_quotes(
     spread_multiplier: float = 1.0,
     min_half_spread_bps: float = MIN_HALF_SPREAD_BPS,
     max_half_spread_bps: float = MAX_HALF_SPREAD_BPS,
+    tau_remaining: float | None = None,
+    q_exact: float | None = None,
 ) -> tuple[float | None, float | None, dict]:
     if hjb is None:
         hjb = compute_hjb_cache(params, q_max)
-    q_grid = hjb["q_grid"]
-    idx = int(np.argmin(np.abs(q_grid - q)))
+    # Read the surface through mm_core rather than indexing it here: this used
+    # to do its own argmin over q_grid, which is precisely the kind of second
+    # implementation this module exists to avoid. mm_core also handles the two
+    # things a bare argmin cannot -- the time slice and fractional q.
+    q_price = float(q) if q_exact is None else float(q_exact)
     bid_total = assemble_half_spread(
-        hjb["delta_minus"][idx],
+        mm_core.select_delta(hjb, q_price, "bid", tau_remaining=tau_remaining),
         mid,
         spread_multiplier=spread_multiplier,
         maker_fee=maker_fee,
@@ -475,7 +544,7 @@ def compute_quotes(
         max_half_spread_bps=max_half_spread_bps,
     )
     ask_total = assemble_half_spread(
-        hjb["delta_plus"][idx],
+        mm_core.select_delta(hjb, q_price, "ask", tau_remaining=tau_remaining),
         mid,
         spread_multiplier=spread_multiplier,
         maker_fee=maker_fee,
@@ -852,7 +921,18 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     quote_refresh_interval_ms = max(0, int(config.quote_refresh_interval_ms))
     next_quote_decision_at: pd.Timestamp | None = None
     used_trade_indices: set[int] = set()
-    hjb_cache = compute_hjb_cache(params, config.q_max, config.hjb_q_min)
+    hjb_cache = compute_hjb_cache(
+        params,
+        config.q_max,
+        config.hjb_q_min,
+        alpha=config.hjb_alpha,
+        phi=config.hjb_phi,
+        T_seconds=config.hjb_horizon_seconds,
+        time_mode=config.hjb_time_mode,
+    )
+    episodic = str(config.hjb_time_mode) == "episodic"
+    horizon = float(config.hjb_horizon_seconds)
+    episode_start_ts: pd.Timestamp | None = None
     for row_idx, row in prices.iterrows():
         mid, best_bid, best_ask = mid_from_price_row(row, config.mid_fallback)
         metrics.final_mid = mid
@@ -864,6 +944,33 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             config.q_max,
             config.q_min,
         )
+        q_exact = inventory_q_exact(
+            metrics.inventory_base,
+            config.inventory_unit_base,
+            config.q_max,
+            config.q_min,
+        )
+        metrics.q_residual_abs_sum += abs(q_exact - q)
+        metrics.q_residual_samples += 1
+
+        # Episode clock on SIMULATED time. Rolls at T, or early once flat and
+        # far enough in that a single round trip cannot pin it at t=0.
+        tau: float | None = None
+        if episodic:
+            if episode_start_ts is None:
+                episode_start_ts = row_ts
+                metrics.episodes += 1
+            elapsed = max(0.0, (row_ts - episode_start_ts).total_seconds())
+            if elapsed >= horizon or (
+                config.episode_reset_on_flat
+                and q == 0
+                and elapsed >= horizon * float(config.episode_min_elapsed_fraction)
+            ):
+                episode_start_ts = row_ts
+                metrics.episodes += 1
+                elapsed = 0.0
+            tau = max(0.0, horizon - elapsed)
+
         if q == config.q_min:
             metrics.time_at_q_boundary["q_min"] += 1
         if q == config.q_max:
@@ -892,6 +999,8 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             spread_multiplier=config.spread_multiplier,
             min_half_spread_bps=config.min_half_spread_bps,
             max_half_spread_bps=config.max_half_spread_bps,
+            tau_remaining=tau,
+            q_exact=q_exact,
         )
         inventory_at_decision = metrics.inventory_base
         active_at = row_ts + pd.Timedelta(milliseconds=total_quote_latency_ms)
@@ -1090,6 +1199,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--newest-per-stream", type=int, default=None)
     parser.add_argument("--max-price-events", type=int, default=None)
     parser.add_argument(
+        "--hjb-time-mode",
+        choices=sorted(mm_core.HJB_TIME_MODES),
+        default="episodic",
+        help=(
+            "episodic runs the book's delta*(t,q) on a simulated episode clock; "
+            "stationary reads only the t=0 slice."
+        ),
+    )
+    parser.add_argument("--hjb-horizon-seconds", type=float, default=60.0)
+    parser.add_argument("--hjb-alpha", type=float, default=0.001)
+    parser.add_argument("--hjb-phi", type=float, default=0.0001)
+    parser.add_argument(
+        "--no-episode-reset-on-flat",
+        dest="episode_reset_on_flat",
+        action="store_false",
+        help="Let every episode run the full horizon instead of restarting once flat.",
+    )
+    parser.set_defaults(episode_reset_on_flat=True)
+    parser.add_argument(
         "--quote-refresh-interval-ms",
         type=int,
         default=1000,
@@ -1134,6 +1262,11 @@ def main() -> int:
         fill_calibration_path=args.fill_calibration,
         newest_per_stream=args.newest_per_stream,
         max_price_events=args.max_price_events,
+        hjb_time_mode=args.hjb_time_mode,
+        hjb_horizon_seconds=args.hjb_horizon_seconds,
+        hjb_alpha=args.hjb_alpha,
+        hjb_phi=args.hjb_phi,
+        episode_reset_on_flat=args.episode_reset_on_flat,
     )
     if args.synthetic_smoke:
         original_loader = load_symbol_data

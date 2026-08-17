@@ -183,6 +183,29 @@ Where:
 3. **Backward Euler**: For asymmetric κ (κ+ ≠ κ-), solve the nonlinear HJB on a (t,q) grid via implicit backward-Euler.
 4. **Boundary condition**: `h(T,q) = -α q²` (terminal penalty)
 
+**Reading the control back out.** The solution is `δ*(t,q)`, a *surface*, and
+both coordinates are read as such:
+
+- **Time.** The solver keeps every backward step, and each quote uses the slice
+  at the episode's actual time-to-go (`hjb_time_mode = "episodic"`). A perpetual
+  instrument has no terminal time, so episodes run for `T` and restart — at the
+  horizon, or once inventory is genuinely flat. Setting `"stationary"` reverts to
+  reading only the `t=0` slice, which is what this project did until now and
+  which leaves `α` inert.
+  - **Departure:** the book liquidates the residual at `T` at market and pays
+    `α q²`. Every quote here is post-only by construction, so the terminal
+    condition acts through the depths alone — it cannot force a taker unwind.
+  - At our calibration the terminal effect runs *opposite* to the textbook
+    picture: `φκT = 10` against `ακ = 0.05`, so the running penalty — which is
+    what remains to be paid over the time left, hence largest at `t=0` and gone
+    at `T` — dominates, and the agent unwinds hardest at the *start* of an
+    episode. See `docs/UNITS.md`.
+- **Inventory.** Eq. 10.2 makes `q` a unit-jump count, so `h` exists only at
+  integer `q` — but partial fills land in between. Depths are blended linearly
+  between the bracketing integers (exact at every integer), and the leftover
+  `q_residual` is logged on every quote and fill so unmodelled risk is visible
+  rather than rounded away.
+
 ### Parameter Estimation and Calibration
 
 **Lambda (λ±) - Order Arrival Intensity:**

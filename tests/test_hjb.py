@@ -252,3 +252,111 @@ def test_benign_params_unchanged_by_the_eigen_shift():
     res = compute_h_symmetric(**BASE, q_max=3)
     expected = np.array([0.843943, 0.668927, 0.583217, 0.516783, 0.431073, 0.256057])
     assert np.allclose(res["delta_plus"][1:], expected, atol=1e-5)
+
+
+# --- time-dependent control surface (delta*(t,q), eq. 10.26-10.27) ---
+#
+# The solvers integrate backward from h(T,q) = -alpha*q^2 and used to return
+# only the t=0 slice. Everything below pins the surface that integration was
+# already producing and throwing away.
+
+SURFACE_PARAMS = dict(
+    lambda_plus=1.2,
+    lambda_minus=0.9,
+    epsilon_plus=0.002,
+    epsilon_minus=0.003,
+    alpha=0.01,
+    phi=0.0005,
+    T_seconds=150.0,
+    q_max=4,
+)
+
+
+def test_return_surface_leaves_the_legacy_result_untouched():
+    """The stationary path must be bit-identical, or every existing gate moves."""
+    plain = compute_h_asymmetric(kappa_plus=80.0, kappa_minus=120.0, **SURFACE_PARAMS)
+    with_surface = compute_h_asymmetric(
+        kappa_plus=80.0, kappa_minus=120.0, **SURFACE_PARAMS, return_surface=True
+    )
+    added = {"t_grid", "h_surface", "delta_plus_surface", "delta_minus_surface", "T_seconds"}
+    assert set(with_surface) - set(plain) == added
+    assert np.array_equal(plain["h"], with_surface["h"])
+    assert np.array_equal(plain["delta_plus"], with_surface["delta_plus"])
+    assert np.array_equal(plain["delta_minus"], with_surface["delta_minus"])
+
+
+@pytest.mark.parametrize(
+    "solver, kappas",
+    [
+        (compute_h_asymmetric, dict(kappa_plus=80.0, kappa_minus=120.0)),
+        (compute_h_symmetric, dict(kappa_plus=100.0, kappa_minus=100.0)),
+    ],
+)
+def test_surface_spans_zero_to_T_and_ends_on_the_terminal_condition(solver, kappas):
+    res = solver(**kappas, **SURFACE_PARAMS, return_surface=True)
+    t_grid = res["t_grid"]
+    q_grid = res["q_grid"]
+
+    assert t_grid[0] == pytest.approx(0.0)
+    assert t_grid[-1] == pytest.approx(SURFACE_PARAMS["T_seconds"])
+    assert np.all(np.diff(t_grid) > 0)
+    assert res["h_surface"].shape == (len(t_grid), len(q_grid))
+
+    # h(T,q) = -alpha*q^2 exactly. Only true up to an additive constant in
+    # general -- the solvers renormalise per slice -- so compare differences.
+    terminal = res["h_surface"][-1]
+    expected = -SURFACE_PARAMS["alpha"] * q_grid.astype(float) ** 2
+    assert np.allclose(terminal - terminal[0], expected - expected[0])
+
+    # The t=0 slice is what the stationary path returns.
+    assert np.allclose(res["h_surface"][0], res["h"])
+    assert np.allclose(res["delta_plus_surface"][0], res["delta_plus"], equal_nan=True)
+
+
+def test_terminal_depths_match_the_closed_form_from_the_terminal_condition():
+    """delta+ = 1/k+ + eps+ + alpha(1-2q), delta- = 1/k- + eps- + alpha(1+2q).
+
+    Substituting h(T,q) = -alpha*q^2 into eq. 10.27 gives these directly, so
+    they pin the terminal slice against algebra rather than against the solver.
+    """
+    res = compute_h_asymmetric(
+        kappa_plus=80.0, kappa_minus=120.0, **SURFACE_PARAMS, return_surface=True
+    )
+    q = res["q_grid"].astype(float)
+    alpha = SURFACE_PARAMS["alpha"]
+    expected_plus = 1 / 80.0 + SURFACE_PARAMS["epsilon_plus"] + alpha * (1 - 2 * q)
+    expected_minus = 1 / 120.0 + SURFACE_PARAMS["epsilon_minus"] + alpha * (1 + 2 * q)
+
+    # Boundary columns stay disabled at every time node: no ask at q_min, no bid
+    # at q_max. That is structural, not time-varying.
+    assert np.isinf(res["delta_plus_surface"][:, 0]).all()
+    assert np.isinf(res["delta_minus_surface"][:, -1]).all()
+    assert np.allclose(res["delta_plus_surface"][-1][1:], expected_plus[1:])
+    assert np.allclose(res["delta_minus_surface"][-1][:-1], expected_minus[:-1])
+
+
+def test_solvers_agree_across_the_whole_surface_when_kappa_is_symmetric():
+    """The exact matrix solution is the ground truth for the Newton solver.
+
+    Checked at a FIXED time-to-go, not as a max over slices: backward Euler is
+    first order, so the error at tau falls like O(dt) but with a constant that
+    grows as tau shrinks. A max over all slices is dominated by tau = dt and
+    does not converge -- which is a property of the scheme, not a defect.
+    """
+    base = dict(SURFACE_PARAMS, kappa_plus=100.0, kappa_minus=100.0)
+    errors = {}
+    for n_steps in (200, 800):
+        approx = compute_h_asymmetric(**base, n_steps=n_steps, return_surface=True)
+        exact = compute_h_symmetric(**base, n_steps=n_steps, return_surface=True)
+        assert np.allclose(approx["t_grid"], exact["t_grid"])
+        tau = base["T_seconds"] - approx["t_grid"]
+        idx = int(np.argmin(np.abs(tau - 10.0)))
+        a = approx["delta_plus_surface"][idx]
+        b = exact["delta_plus_surface"][idx]
+        # Skip the disabled boundary column: inf - inf is NaN, not an error.
+        finite = np.isfinite(a) & np.isfinite(b)
+        errors[n_steps] = float(np.max(np.abs(a[finite] - b[finite])))
+
+    assert errors[200] < 1e-3
+    # Four times the resolution, at least three times the accuracy: first order.
+    assert errors[800] < errors[200] / 3.0

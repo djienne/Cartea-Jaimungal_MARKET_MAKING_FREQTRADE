@@ -23,7 +23,10 @@ BLOB_SCHEMA_VERSION = 1
 # by SYMBOL only, so two instances quoting the same symbol would clobber it;
 # the heartbeat is namespaced by symbol AND role.
 INVENTORY_KEY_PREFIX = "mm:inv:"
-INVENTORY_SCHEMA_VERSION = 1
+# 2 added the episode clock (episode_id / episode_start). fetch_inventory
+# rejects any other version, so a mixed-version pair fails closed and stops
+# quoting rather than pricing off two different points on the (t,q) surface.
+INVENTORY_SCHEMA_VERSION = 2
 ROLES = ("long", "short")
 
 
@@ -122,12 +125,19 @@ def publish_inventory(
     param_fingerprint: str | None,
     published_at: str,
     ttl_seconds: int = 30,
+    episode_id: int | None = None,
+    episode_start: str | None = None,
 ) -> bool:
     """Publish this instance's own inventory so its peer can price off the net.
 
     ``param_fingerprint`` is the CONTENT hash of the parameter snapshot the
     quote was built from -- deliberately not the strategy's ``hjb_generation``,
     which is a per-process counter that two instances could never agree on.
+
+    ``episode_id`` / ``episode_start`` carry the HJB episode clock. Unlike
+    hjb_generation these DO have to agree: both legs price the same net
+    inventory off delta*(t,q), so two clocks means two different depths for one
+    position. The lower episode_id wins, which needs no negotiation.
 
     A TTL is set so a dead instance's inventory expires rather than lingering as
     a plausible-looking stale value. Publishing must never be gated on the
@@ -145,6 +155,8 @@ def publish_inventory(
             "q_own": int(q_own),
             "param_fingerprint": param_fingerprint,
             "published_at": published_at,
+            "episode_id": None if episode_id is None else int(episode_id),
+            "episode_start": episode_start,
         },
         sort_keys=True,
     )

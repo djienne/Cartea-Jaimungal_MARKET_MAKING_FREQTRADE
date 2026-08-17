@@ -184,6 +184,53 @@ def dry_run_quality_conclusion(
     return "dry_run_quotes_and_sizing_passed_with_bounded_loss_only"
 
 
+def inventory_residual_stats(
+    events: list[dict[str, Any]],
+    *,
+    max_abs_q_residual: float = 0.35,
+) -> dict[str, Any]:
+    """How far the real position sits from the HJB's integer inventory grid.
+
+    Eq. 10.2 makes inventory a unit-jump process, so h and delta* only exist at
+    integer q. Partial fills land between grid points and the strategy has to
+    round to index the surface. A residual that stays large means the agent is
+    routinely carrying risk the model is not pricing -- 0.49 units reads as
+    flat -- which no other check in this report can see, because ``q`` alone
+    looks perfectly healthy.
+
+    The bound is deliberately below 0.5 (the worst a single rounding can be):
+    the failure this catches is a PERSISTENT offset, not an instantaneous one,
+    so the mean is what is tested.
+    """
+    residuals = [
+        value
+        for value in (finite_float(event.get("q_residual")) for event in events)
+        if value is not None
+    ]
+    reasons: list[str] = []
+    if not residuals:
+        # Absence is not a failure: older logs predate the field, and a run with
+        # no fills has nothing to be fractional about.
+        return {
+            "samples": 0,
+            "mean_abs_q_residual": None,
+            "max_abs_q_residual": None,
+            "reasons": reasons,
+        }
+    abs_residuals = [abs(value) for value in residuals]
+    mean_abs = sum(abs_residuals) / len(abs_residuals)
+    if mean_abs > float(max_abs_q_residual):
+        reasons.append(
+            f"inventory_residual_too_large:{mean_abs:.4f}>max_{float(max_abs_q_residual):.4f}"
+        )
+    return {
+        "samples": len(residuals),
+        "mean_abs_q_residual": mean_abs,
+        "max_abs_q_residual": max(abs_residuals),
+        "reasons": reasons,
+    }
+
+
 def build_dry_run_quality_report(
     events: list[dict[str, Any]],
     *,
@@ -202,6 +249,7 @@ def build_dry_run_quality_report(
     min_final_total_pnl_usdc: float = -1.0,
     event_span_tolerance_seconds: float = 1.0,
     max_collector_read_errors: int = 2,
+    max_abs_q_residual: float = 0.35,
 ) -> dict[str, Any]:
     reasons: list[str] = []
 
@@ -389,6 +437,11 @@ def build_dry_run_quality_report(
                 f"{loss_velocity_usdc_per_hour:.6f}>max_{float(max_loss_rate_usdc_per_hour):.6f}_usdc_per_hour"
             )
 
+    inventory_state = inventory_residual_stats(
+        accepted_quotes + dry_run_fills, max_abs_q_residual=max_abs_q_residual
+    )
+    reasons.extend(inventory_state["reasons"])
+
     error_counts: dict[str, int] = {}
     for event in events:
         name = str(event.get("event") or "")
@@ -422,6 +475,7 @@ def build_dry_run_quality_report(
     return {
         "generated_at": utc_now_iso(),
         "ok": ok,
+        "inventory_residual": inventory_state,
         "conclusion": conclusion,
         "reasons": reasons,
         "criteria": {
