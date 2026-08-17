@@ -1046,12 +1046,73 @@ not make each trade worse --- it makes trades rarer.} At the live CASHCAT value
 $\kappa\epsb \approx 0.25$ it costs about $22\%$ of our fills; at the gate value
 of $1.5$ it would cost $78\%$.
 
-The gate sits at $1.5$ rather than at the break-even $1.0$ deliberately:
-$\kappa\epsb$ is a ratio of two noisy estimates, and a hard cut at the
-theoretical break-even would stop quoting on estimation error alone.
+This is why the strategy gates on $\kappa\epsb$ and not on $\epsb$ alone, and
+why the threshold is where it is. The project's own introduction notebook
+(\code{docs/market\_making\_introduction.ipynb}) sets out the operating rule the
+shipped \code{max\_toxicity} comes from:
+
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+$\kappa\epsb$ & verdict \\
+\midrule
+$< 1$        & tolerable --- profitable if latency is decent \\
+$1$ to $2$   & competitive and toxic; needs good latency \emph{and} a good model \\
+$\ge 1.5$    & \textbf{the shipped gate}: stop quoting \\
+$\ge 2$      & negative PnL close to certain \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The argument behind the bands is worth having, because it explains why
+$\kappa\epsb$ and not $\epsb$ is the right thing to threshold. $1/\kappa$ is the
+half-spread you would quote with no inventory penalty and no adverse selection.
+If $\epsb$ is much \emph{larger} than that, then covering adverse selection
+pushes your quote far past where anyone would fill it --- so either you never
+trade, or the fills you do get are the ones that reached you because you were
+\textbf{slow}, which is adverse selection again by another route. Above
+$\kappa\epsb \approx 2$ that trap is inescapable; between $1$ and $2$ it is a
+pure infrastructure race that most participants lose; below $1$ the flow is
+mostly uninformed and the model's arithmetic works as written.
+
+The gate sits at $1.5$ rather than at break-even because the middle band is a
+genuine regime: the fill rate is badly damaged, but the trade is still worth
+making if the rest of the stack is fast enough. Ours is not, which is
+\S\ref{sec:departures} item~8.
+
+Live CASHCAT sits near $0.25$, comfortably in the benign band --- worth
+remembering when reading \S\ref{sec:phisweep}, because it means toxicity is
+\textbf{not} the reason that sweep loses money.
 \end{intuition}
 
 % ===========================================================================
+\subsection{What the three parameters say about the instrument}
+
+Before any of them reach a solver, $\kappa$, $\lambda$ and $\epsb$ already answer
+a question worth asking first: \emph{is this instrument worth quoting at all?}
+The framework earns its keep where
+
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+& \textbf{you want} & \textbf{because} \\
+\midrule
+$\lambda$   & high & many market orders, so many chances to earn the spread \\
+$\kappa$    & low  & a thin book, so you can stand further back and still get filled \\
+$\epsb$     & low  & little informed flow, so fills are not systematically bad news \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent In one line: \textbf{a lot of behavioural noise and little structural
+efficiency}. A busy, shallow, uninformed market. The opposite --- a thin tape of
+well-informed flow in a deep book --- is where the model is most correct and least
+useful, because it will tell you, accurately, to quote almost nothing.
+
+Note that $\kappa$ appears twice with opposite signs of preference: low $\kappa$
+is good for the rent $1/\kappa$, but $\kappa$ also multiplies $\epsb$ in the
+toxicity number. A thin book helps only if the flow trading in it is uninformed.
+
 \section{Stage 2: solving for \texorpdfstring{$h$}{h}}
 \label{sec:solving}
 
@@ -2038,6 +2099,14 @@ Adverse selection roughly \emph{doubles} between a 200~ms and a 5~s markout on
 this instrument. The model prices $\epsb$ at the 200~ms horizon because that is
 what \eqref{eq:1022} means -- but a quote exposed for 30 seconds is selected
 against on a far longer horizon than the one it was priced for.
+
+This is also the reason market making is a latency business at all. The race for
+speed is not a fashion: it is driven by adverse selection specifically, because
+the only two defences are to widen (which \S\ref{sec:estimation} shows has a hard
+ceiling --- widen far enough and nobody fills you) or to react faster than the
+informed flow. A stack that cannot do the second is left doing the first, and the
+sweep in \S\ref{sec:phisweep} is what that looks like when measured: quoting less
+and less until it barely trades.
 \end{intuition}
 
 Not a departure, despite appearances: the \textbf{volatility term in $\phi$}.
@@ -2090,5 +2159,30 @@ Cartea, \'A., Jaimungal, S. and Penalva, J. (2015). \emph{Algorithmic and
 High-Frequency Trading}. Cambridge University Press. Chapter 10 is market
 making; \S10.2 is the base model, \S10.3 the utility-maximising equivalence,
 \S10.4 adverse selection, and \S10.4.1 the model implemented here.
+
+Avellaneda, M. and Stoikov, S. (2008), ``High-frequency trading in a limit order
+book'', \emph{Quantitative Finance} 8(3). The ancestor of this model: the same
+$\lambda e^{-\kappa\delta}$ fill law and inventory skew, without the
+adverse-selection jumps of \eqref{eq:1022}. Reading it first makes clear which
+parts of Chapter 10 are the jumps' doing.
+
+Guéant, O., Lehalle, C.-A. and Fernandez-Tapia, J. (2013), ``Dealing with the
+inventory risk''. Takes the same problem to closed form under a symmetry
+assumption, and is the standard reference for the inventory-bound treatment.
+
+\code{docs/market\_making\_introduction.ipynb} in this repository is a
+step-by-step course on the same model (in French) with an interactive dashboard
+that simulates a market and lets you move $\kappa$, $\lambda$, $\epsb$, $\phi$
+and $\alpha$ and watch the depths respond. It is the fastest way to build
+intuition for the surface of Figure~\ref{fig:skew} before reading any code, and
+the toxicity bands in \S\ref{sec:estimation} come from it. Its companion video
+(FrenchQuant, \emph{ufNdvd8QCUI} on YouTube) walks through the same material
+and is where the reasoning behind those bands is set out.
+
+On measuring toxicity more generally, VPIN (Easley, L\'opez de Prado and O'Hara,
+2012, ``Flow toxicity and liquidity in a high-frequency world'') is the standard
+alternative to the $\kappa\epsb$ number used here: it estimates the probability
+that flow is informed from volume imbalance rather than from post-trade markouts,
+and does not need a fitted $\kappa$.
 
 \end{document}
