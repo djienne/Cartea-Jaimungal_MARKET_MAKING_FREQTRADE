@@ -8,11 +8,12 @@ PDF complains about that, so this script does.
 
 Two checks, both exact:
 
-1. **Snippets.** Every listing in the ``.tex`` is preceded by a marker
+1. **Snippets.** Every listing in the ``.tex`` is preceded by
 
-       % SNIPPET: scripts/mm_core.py:224-240
+       \snip{scripts/mm_core.py}{224}{240}
 
-   and this script re-reads those lines from the repo and compares them with the
+   which both typesets the attribution for the reader and tells this script what
+   to check. It re-reads those lines from the repo and compares them with the
    listing body character for character. A moved or edited function fails here.
 
 2. **Numbers.** Every worked-example figure is tagged
@@ -52,12 +53,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
+
+import numpy as np  # noqa: E402
 
 import mm_core  # noqa: E402
 
@@ -178,6 +182,53 @@ def worked_example() -> dict[str, float | int | str | None]:
 
     out["floor_price"] = config.min_half_spread_bps / 10_000.0 * MID
     out["cap_price"] = config.max_half_spread_bps / 10_000.0 * MID
+
+    # --- The three terms of eq. 10.27, at the integer node q=2 --------------
+    # The document decomposes the depth rather than presenting it as solver
+    # output, so h has to come out of the surface rather than be back-solved.
+    t_grid = np.asarray(hjb["t_grid"], dtype=float)
+    row = int(np.searchsorted(t_grid, float(hjb["T_seconds"]) - TAU_REMAINING))
+    h_slice = np.asarray(hjb["h_surface"], dtype=float)[row]
+    q_grid = [int(q) for q in hjb["q_grid"]]
+    idx2 = q_grid.index(2)
+    h_diff = float(h_slice[idx2 - 1] - h_slice[idx2])
+    kappa_p = SNAPSHOT["kappa+"]
+    out["h_diff_q2"] = h_diff
+    out["rent_bps"] = (1.0 / kappa_p) / MID * 10_000.0
+    out["adverse_bps"] = SNAPSHOT["epsilon+"] / MID * 10_000.0
+    out["inventory_bps"] = -h_diff / MID * 10_000.0
+    out["delta_plus_q2_bps"] = (1.0 / kappa_p + SNAPSHOT["epsilon+"] - h_diff) / MID * 10_000.0
+
+    # --- The floor IS one maker fee, so the clamp binds at delta_model < 0 ---
+    out["floor_equals_fee_cushion"] = (
+        config.min_half_spread_bps / 10_000.0 * MID == config.maker_fee_rate * MID
+    )
+    d1 = mm_core.select_delta(hjb, 1.0, "ask", tau_remaining=TAU_REMAINING)
+    d2 = mm_core.select_delta(hjb, 2.0, "ask", tau_remaining=TAU_REMAINING)
+    out["ask_zero_crossing_q"] = 1.0 + d1 / (d1 - d2)
+
+    # --- What the finished quotes are worth, back through eq. 10.14 ---------
+    ask_delta = config.maker_fee_rate * MID
+    out["ask_fill_rate_per_sec"] = SNAPSHOT["lambda+"] * math.exp(-kappa_p * ask_delta)
+    out["ask_seconds_per_fill"] = 1.0 / out["ask_fill_rate_per_sec"]
+    out["toxicity_plus"] = kappa_p * SNAPSHOT["epsilon+"]
+    out["fills_kept_at_live_toxicity_pct"] = math.exp(-out["toxicity_plus"]) * 100.0
+    out["fills_kept_at_gate_pct"] = math.exp(-1.5) * 100.0
+
+    # --- The same machine at four inventories ------------------------------
+    for q_probe in (0.0, 0.4, 2.4, 5.4):
+        probe = mm_core.compute_quotes(
+            MID,
+            int(round(q_probe)),
+            hjb,
+            config,
+            price_tick_size=PRICE_TICK,
+            tau_remaining=TAU_REMAINING,
+            q_exact=q_probe,
+        )
+        tag = f"q{str(q_probe).replace('.', 'p')}"
+        out[f"{tag}_bid_bps"] = None if probe.bid is None else probe.bid.bps
+        out[f"{tag}_ask_bps"] = None if probe.ask is None else probe.ask.bps
     out["bid_price"] = pair.bid_price
     out["ask_price"] = pair.ask_price
     if pair.bid is not None:
@@ -194,8 +245,17 @@ def worked_example() -> dict[str, float | int | str | None]:
 # ---------------------------------------------------------------------------
 # Check 1: listings match their source
 # ---------------------------------------------------------------------------
+# The document declares each listing's provenance with a VISIBLE command:
+#
+#     \snip{scripts/hjb.py}{227}{241}
+#
+# which typesets the file and line range above the listing. It used to be a
+# LaTeX comment, which meant the attribution existed only for this script --
+# the reader of the PDF saw twelve unlabelled code blocks and had to take the
+# document's word for where they came from. Parsing the same command the reader
+# sees keeps the claim and the check from ever drifting apart.
 SNIPPET_RE = re.compile(
-    r"^%\s*SNIPPET:\s*(?P<path>[^\s:]+):(?P<start>\d+)-(?P<end>\d+)\s*$"
+    r"^\s*\\snip\{(?P<path>[^}]+)\}\{(?P<start>\d+)\}\{(?P<end>\d+)\}\s*$"
 )
 
 
@@ -271,7 +331,7 @@ def fix_snippets(lines: list[str]) -> tuple[list[str], list[str], list[str]]:
             )
             continue
         new_spec = f"{path_str}:{found}-{found + len(body) - 1}"
-        lines[lineno - 1] = f"% SNIPPET: {new_spec}\n"
+        lines[lineno - 1] = f"\\snip{{{path_str}}}{{{found}}}{{{found + len(body) - 1}}}\n"
         moved.append(f"{spec} -> {new_spec}")
     return lines, moved, unresolved
 

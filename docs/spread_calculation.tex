@@ -26,10 +26,18 @@
 \usepackage{tcolorbox}
 \usepackage{pgfplots}
 \usepackage{enumitem}
+\usepackage{multicol}
+\setcounter{tocdepth}{2}
 \usepackage[colorlinks=true,linkcolor=NavyLink,urlcolor=NavyLink,citecolor=NavyLink]{hyperref}
 
 \tcbuselibrary{skins,breakable}
 \pgfplotsset{compat=1.18}
+% A box split over a page break otherwise continues as an unlabelled slab.
+\tcbset{title after break={\itshape\small (continued)}}
+
+% House equations are numbered D1, D2, ... so they can never be mistaken for
+% one of the book's (10.x) tags, which are set with \tag.
+\renewcommand{\theequation}{D\arabic{equation}}
 
 \definecolor{NavyLink}{HTML}{1F4E79}
 \definecolor{CodeBg}{HTML}{F6F8FA}
@@ -63,15 +71,17 @@
 
 \newtcolorbox{intuition}[1][]{colback=BoxIntuition!5,colframe=BoxIntuition,
   fonttitle=\bfseries,title={Intuition},breakable,#1}
-\newtcolorbox{trap}[1][]{colback=BoxTrap!5,colframe=BoxTrap,
-  fonttitle=\bfseries,title={Easy to get backwards},breakable,#1}
-\newtcolorbox{departure}[1][]{colback=BoxDeparture!5,colframe=BoxDeparture,
-  fonttitle=\bfseries,title={Departure from the book},breakable,#1}
+% Title is an argument: several of these are caveats or findings rather than
+% sign traps, and mislabelling them was costing the colour its meaning.
+\newtcolorbox{trap}[2][]{colback=BoxTrap!5,colframe=BoxTrap,
+  fonttitle=\bfseries,title={#2},breakable,#1}
+\newtcolorbox{departure}[2][]{colback=BoxDeparture!5,colframe=BoxDeparture,
+  fonttitle=\bfseries,title={#2},breakable,#1}
 
 % "The book says X; here is the Python that does X" -- the spine of this
 % document. Upper half is the book, lower half is the implementation.
 \newtcolorbox{booktocode}[2][]{colback=NavyLink!3,colframe=NavyLink,
-  fonttitle=\bfseries,title={Book #2},breakable,#1}
+  fonttitle=\bfseries,title={The book: #2},breakable,#1}
 
 \newcommand{\wecode}{\par\vspace{4pt}\noindent
   \textcolor{NavyLink}{\rule{\linewidth}{0.4pt}}\par\vspace{3pt}
@@ -82,6 +92,14 @@
 \newcommand{\dpm}{\delta^{\pm}}
 \newcommand{\epsb}{\bar{\varepsilon}}
 \newcommand{\code}[1]{\texttt{\small #1}}
+
+% Visible, verified provenance for a code listing. verify_spread_doc.py parses
+% these same three arguments, so what the reader sees is what gets checked.
+% \detokenize so underscores in paths survive text mode without escaping.
+\newcommand{\snip}[3]{%
+  \par\addvspace{6pt}\noindent
+  {\footnotesize\color{NavyLink}\texttt{\detokenize{#1}}\quad lines #2--#3}%
+  \par\nobreak\vspace{1pt}}
 
 \title{\vspace{-1.2cm}\Huge\bfseries How the Spread Is Computed\\[0.35cm]
   \Large\mdseries A step-by-step walkthrough of the Cartea--Jaimungal\\
@@ -136,7 +154,11 @@ the pricing code, by \code{scripts/verify\_spread\_doc.py}.\par}
 \end{titlepage}
 
 % ===========================================================================
+\begingroup\small
+\begin{multicols}{2}
 \tableofcontents
+\end{multicols}
+\endgroup
 \newpage
 
 % ===========================================================================
@@ -169,7 +191,12 @@ we have bought low and sold high without ever predicting the price. The gap we
 collect is the \textbf{spread}. From here on, \textbf{MO} is short for market
 order.
 
-Halfway between the two prices sits the \textbf{mid-price} $S$. It is convenient
+Every exchange publishes a \emph{best bid} and a \emph{best ask} --- the
+highest price anyone is currently willing to buy at and the lowest anyone is
+willing to sell at. Halfway between those two \textbf{market} prices sits the
+\textbf{mid-price} $S$. Note whose prices those are: $S$ is a property of the
+market, not of us. Our own quotes normally rest outside the best bid and ask
+and do not move $S$. It is convenient
 to describe each quote by how far it sits \emph{from} the mid, rather than by its
 absolute price. That distance is the \textbf{half-spread}, or \textbf{depth},
 written $\delta$:
@@ -194,17 +221,43 @@ If earning the spread were the whole story, the answer would be ``quote as tight
 as possible and collect volume''. It is not, because of two costs.
 
 \paragraph{1. Inventory risk.} Fills do not arrive in neat pairs. Sell a few times
-in a row without buying and you are short; the position is now exposed to the
-price moving against you. That exposure has nothing to do with market making --
+in a row without buying and you are \textbf{short} --- your position is negative,
+meaning you have sold units you did not hold and will have to buy them back.
+\textbf{Long} is the opposite. Either way the position is exposed to the price
+moving against you, and that exposure has nothing to do with market making --
 it is a directional bet you did not choose to take. We write the position, in
-units, as $q$. Large $|q|$ is dangerous.
+units, as $q$; it swings through zero in both directions all day, so every
+formula below has to work for negative $q$ as well as positive. Large $|q|$ is
+dangerous.
 
 \paragraph{2. Adverse selection.} This one is subtler and it is the reason this
-particular model exists. Your quotes get filled \emph{by somebody}, and that
+model exists. Your quotes get filled \emph{by somebody}, and that
 somebody chose to trade now, at your price. On average they know something.
-When a large buy order sweeps the book, it lifts your ask \emph{and} pushes the
-mid-price up. You sold just before the price rose. The loss is systematic, not
+When a large buy order arrives it eats the cheapest resting sell orders first,
+then the next cheapest, and so on --- it \emph{walks up} the book, or
+\emph{sweeps} it. On the way it executes (\emph{lifts}) your ask \emph{and}
+pushes the mid-price up. You sold just before the price rose. The loss is systematic, not
 bad luck, and it must be priced in.
+
+\subsection{The concrete setting}
+
+Everything in this document is calibrated on \textbf{CASHCAT}, a low-priced token
+traded on \textbf{Hyperliquid}, a crypto derivatives exchange. The instrument is a
+\emph{perpetual future}: a contract that tracks the token's price, can be held
+long or short, can be traded with leverage, and --- unlike a normal future ---
+\textbf{never expires}. That last property matters more than it sounds, because
+the model in \S\ref{sec:model} has a deadline $T$ and our instrument does not.
+\S\ref{sec:reading} has to decide what to do about that.
+
+One fact about the deployment is needed early, because it leaks into the code
+later. The strategy runs inside \textbf{Freqtrade}, an open-source trading
+framework whose vocabulary is ``entry'' (opening a position) and ``exit''
+(closing one) rather than ``bid'' and ``ask''. Freqtrade rests at most one order
+per pair, so the two-sided quote this document describes is not posted by one
+process: two instances run on separate sub-accounts --- a long \textbf{leg} and a
+short leg --- sharing one net inventory over Redis. Every ``we post a bid and an
+ask'' below is really ``the two legs between them post a bid and an ask''.
+\S\ref{sec:departures} says what that approximation costs.
 
 \subsection{The answer, in one line}
 
@@ -217,9 +270,13 @@ The model's optimal ask depth is
   \;+\;
   \underbrace{\bigl(h(t,q) - h(t,q-1)\bigr)}_{\substack{\text{what you charge for}\\\text{giving up one unit}}}
 \]
-and the bid is its mirror image. The first two terms are constants read straight
-off the market. The third is the interesting one: it is the difference in a
-\emph{value function} $h$ between holding $q$ units and holding $q-1$ --- what
+and the bid is its mirror image. The star means \emph{optimal}: $\dplus$ is any
+depth we might choose, $\dplus{}^{,*}$ is the best one. The first two terms are
+constants read straight off the market. The third is the interesting one. A \textbf{value function} is
+the best total profit you can still expect to earn from here to the end, given
+where you are now; $h(t,q)$ is that number for a maker who is at time $t$
+holding $q$ units and who will quote optimally from now on. So the third term is
+the difference in $h$ between holding $q$ units and holding $q-1$ --- what
 you demand in exchange for parting with a unit --- and it is what makes the
 quotes lean. Long too much inventory? Then being one unit lighter is worth more
 than being where you are, the third term goes negative, and the ask tightens
@@ -227,10 +284,10 @@ until somebody takes it.
 
 \subsection{The pipeline}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}clp{7.1cm}l@{}}
+\begin{tabular}{@{}c p{6.4cm} l l@{}}
 \toprule
 \textbf{Stage} & \textbf{What happens} & \textbf{Output} & \textbf{Where} \\
 \midrule
@@ -281,7 +338,7 @@ implementation and the book genuinely part company it is flagged in an amber box
 and \S\ref{sec:departures} collects every such case in one list. The complete
 correspondence is:
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering\small
 \begin{tabular}{@{}llll@{}}
 \toprule
@@ -318,7 +375,7 @@ selection is \S10.4.1, ``Impact of Market Orders on Midprice'', printed pages
 
 Table~\ref{tab:notation} is worth a bookmark; the rest of the document assumes it.
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
 \small
 \begin{tabular}{@{}llll@{}}
@@ -348,7 +405,7 @@ fills us: a buy MO ($+$) lifts our ask, a sell MO ($-$) hits our bid.}
 \label{tab:notation}
 \end{table}
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 $\dplus$ prices the \textbf{ask} and $\dminus$ prices the \textbf{bid}. The sign
 refers to the incoming market order, \emph{not} to the direction our inventory
 moves. In code, \code{select\_delta(hjb, q, "bid")} reads \code{delta\_minus} --
@@ -373,22 +430,25 @@ depth $\delta$ gets filled is
 $1/\kappa$ is the natural unit of depth. Quote $1/\kappa$ further out and your
 fill rate falls by a factor of $e \approx 2.72$. On live CASHCAT data
 $\kappa^{+} \approx 10{,}123$~USDC$^{-1}$, so $1/\kappa^{+} \approx
-9.9\times10^{-5}$~USDC $\approx 9.3$~bps of a $0.1057$ mid. Push the ask 9.3~bps
+9.9\times10^{-5}$~USDC. That is $9.3$~\textbf{bps} of a $0.1057$ mid --- a
+\emph{basis point} is one hundredth of one per cent, i.e.\ $10^{-4}$ of the
+price, and depths are quoted in bps throughout this document because it makes
+them comparable across instruments at wildly different price levels. The code
+stores them in USDC. Push the ask 9.3~bps
 out and you get filled about a third as often.
 \end{intuition}
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
   width=11.5cm, height=5.4cm,
-  xlabel={depth $\delta$ (USDC)},
+  xlabel={depth $\delta$ ($10^{-4}$ USDC)},
   ylabel={fill rate (1/s)},
   xmin=0, xmax=4e-4, ymin=0,
+  xtick={0,1e-4,2e-4,3e-4,4e-4}, xticklabels={0,1,2,3,4},
   grid=major, grid style={gray!20},
   legend style={draw=none, fill=none, at={(0.97,0.95)}, anchor=north east},
-  scaled x ticks=false,
-  xticklabel style={/pgf/number format/sci, /pgf/number format/sci generic={mantissa sep=,exponent={\times10^{#1}}}},
 ]
 \addplot[NavyLink, very thick, domain=0:4e-4, samples=120]
   {0.11312967808603971*exp(-10123.135078777144*x)};
@@ -414,9 +474,22 @@ market order arrives, in the direction of that order:
   \tag{10.22}
   \label{eq:1022}
 \end{equation}
-where $M^{\pm}$ count buy and sell market orders, and the jump sizes
+Read that as a recipe for one instant. Over a tiny interval the mid moves for two
+separate reasons. The term $\sigma\,dW_t$ is ordinary random drift: $W$ is a
+\emph{Brownian motion}, the continuous-time random walk, and over an interval
+$dt$ this contributes a mean-zero random amount with variance $\sigma^{2}dt$.
+That is the only fact about $W$ this document uses. The term $dM^{\pm}_t$ is $1$
+if a buy/sell market order arrived in that instant and $0$ otherwise, so
+$\varepsilon^{+}dM^{+}_t$ adds a jump of size $\varepsilon^{+}$ exactly when a
+buy order arrives. Add the two and you have the whole price model.
+
+$M^{\pm}$ count buy and sell market orders, and the jump sizes
 $\varepsilon^{\pm}$ are i.i.d.\ draws with means $\epsb^{\pm} =
-\mathbb{E}[\varepsilon^{\pm}]$.
+\mathbb{E}[\varepsilon^{\pm}]$. The distribution is deliberately left
+unspecified: nothing downstream uses anything about $\varepsilon^{\pm}$ except
+its mean, which is why \S\ref{sec:estimation} only ever has to estimate an
+average. Throughout, an unbarred $\varepsilon$ is the random jump and a barred
+$\epsb$ is its mean.
 
 \begin{intuition}
 Read \eqref{eq:fillrate} and \eqref{eq:1022} together and the problem is
@@ -454,7 +527,16 @@ The performance criterion (p.~262) is
   \right],
   \label{eq:criterion}
 \end{equation}
-and the value function is $H = \sup_{\dpm} H^{\delta}$. Three terms:
+and the value function is $H = \sup_{\dpm} H^{\delta}$.
+
+That supremum is not over two numbers. It is over entire \emph{strategies}: a
+choice of $\dplus$ and $\dminus$ for every future instant and every inventory we
+might find ourselves holding. That is what makes the problem hard, and it is why
+the answer comes out as a \emph{function} $\delta^{*}(t,q)$ rather than a pair
+of constants. (The subscripts on $\mathbb{E}$ mean ``given that right now the
+time is $t$, cash is $x$, the mid is $S$ and inventory is $q$''.)
+
+Three terms:
 
 \begin{description}[leftmargin=1.4cm,style=nextline]
 \item[$X^{\delta}_T$] the cash collected from making markets. The thing we want.
@@ -516,7 +598,7 @@ volatility channel does (\S\ref{sec:phicode}), and \eqref{eq:phigamma} is its
 justification.
 \end{intuition}
 
-\begin{departure}
+\begin{departure}{Departure from the book}
 Two honest caveats on borrowing this result. First, the book proves it for the
 \emph{base} model of \S10.2, which has no adverse-selection jumps --- there
 $\sigma$ is the whole of the price movement, whereas in \S10.4.1 part of the
@@ -530,19 +612,47 @@ derivation of it.
 
 \subsection{Reducing the problem}
 
-The value function $H$ depends on four variables, which is three too many. The
+The value function $H$ depends on four variables, which is two too many. The
 book's ansatz strips out cash and price:
 \begin{equation}
   H(t,x,S,q) \;=\; x + qS + h(t,q).
   \tag{10.25}
+  \label{eq:1025}
 \end{equation}
 Cash is worth its face value, the inventory is worth the mid, and everything
-interesting -- the option value of being a market maker with $q$ units in hand --
-is in $h(t,q)$, a function of \emph{time and an integer}.
+interesting is in $h(t,q)$, a function of \emph{time and an integer}.
 
-Substituting this into the dynamic programming equation --- the book's (10.23),
-which we do not reproduce because nothing downstream reads it directly --- makes
-the $x$ and $S$ dependence cancel, collapsing four variables to two:
+\begin{intuition}
+It is worth being concrete about $h$, because every interesting number in the
+rest of this document is a difference of it, and it is the only object here with
+no direct market counterpart.
+
+Ansatz \eqref{eq:1025} says your worth is cash, plus inventory marked at the mid,
+plus $h(t,q)$. So $h(t,q)$ is \textbf{everything not already on your balance
+sheet}: in USDC, how much better or worse off you expect to end up than a trader
+who is handed your exact position, marks it at the mid, and stops trading on the
+spot. It is the value of still being in business, given that you are in business
+holding $q$.
+
+Two consequences get used constantly below. First, $h$ is largest near flat
+inventory and falls away on both sides --- holding a big position is a worse place
+to be trading from. Second, the difference $h(t,q) - h(t,q-1)$ is what you should
+charge to go from $q$ units to $q-1$: not because a unit is worth that, but
+because your whole position is worth that much more once it is one unit lighter.
+That difference is the third term of the answer, and \S\ref{sec:worked} shows it
+dwarfing the other two.
+\end{intuition}
+
+Substitute this into the \textbf{Hamilton--Jacobi--Bellman (HJB)} equation ---
+the book's (10.23), and the reason the solver file is called \code{hjb.py}. The
+HJB equation is the continuous-time statement of dynamic programming: over the
+next instant the value function must change at exactly the rate justified by the
+best action available now, so that no better policy exists. We do not reproduce
+(10.23) itself because nothing downstream reads it, but the mechanical content of
+the substitution is short: differentiate $H = x + qS + h(t,q)$, note that
+$\partial_x H = 1$ and $\partial_S H = q$ so the cash and price terms are linear
+and cancel against the drift, and what survives is an equation in $t$ and $q$
+alone --- four variables collapsed to two:
 \begin{equation}
 \begin{aligned}
   \phi q^{2} \;=\; \partial_t h
@@ -624,13 +734,20 @@ when $\kappa^{+} = \kappa^{-} = \kappa$ it linearises exactly. Substitute
   h(t,q) = \frac{1}{\kappa}\log \omega(t,q).
 \]
 Then $e^{-\kappa\delta^{*}} = e^{-1-\kappa\epsb}\,e^{\kappa\Delta h}
-= e^{-1-\kappa\epsb}\,\omega_{q\mp1}/\omega_q$, so defining
+= e^{-1-\kappa\epsb}\,\omega_{q\mp1}/\omega_q$. Define
 \[
-  \tilde{\lambda}^{\pm} \;=\; \lambda^{\pm} e^{-1-\kappa\epsb^{\pm}}
+  \tilde{\lambda}^{\pm} \;=\; \lambda^{\pm} e^{-1-\kappa\epsb^{\pm}} ,
 \]
-and, since $h = \kappa^{-1}\log\omega$ gives $\partial_t h =
-\partial_t\omega_q / (\kappa\omega_q)$, multiplying \eqref{eq:1026} through by
-$\kappa\omega_q$ turns every term linear:
+which is not merely a grouping of symbols: $\tilde{\lambda}^{\pm}$ is the fill
+rate the strategy actually runs at --- the raw arrival rate, discounted once for
+standing $1/\kappa$ back from the mid, and again for standing $\epsb^{\pm}$
+further back to cover adverse selection. \S\ref{sec:estimation} returns to that
+second factor under the name \emph{toxicity}.
+
+Because $h = \kappa^{-1}\log\omega$ we also have $\partial_t h =
+\partial_t\omega_q / (\kappa\omega_q)$. Multiply \eqref{eq:1026} through by
+$\kappa\omega_q$ and every term is linear --- note that $\phi q^2$ crosses the
+equals sign on the way, so it appears with a minus inside the bracket:
 \[
   \partial_t \omega_q
   + \tilde{\lambda}^{+}\omega_{q-1}
@@ -661,7 +778,7 @@ answer:
   \tag{10.29}
 \end{equation}
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 \label{trap:kappa}
 Look at where $\kappa$ appears in (10.28) and in $z_j = e^{-\alpha\kappa j^2}$:
 the model responds to the \emph{products} $\phi\kappa$ and $\alpha\kappa$, never
@@ -716,7 +833,7 @@ that decides whether the estimates mean anything:
 \end{itemize}
 
 For each market order, the mid \emph{strictly before} it is attached
-(\code{merge\_asof(..., allow\_exact\_matches=False)}), and the walk depth is
+(\code{merge\_asof} with \code{allow\_exact\_matches=False}), and the walk depth is
 measured from that mid:
 \[
   \text{depth}^{+} = \text{(highest buy print)} - \text{pre-mid},
@@ -740,13 +857,25 @@ resting at depth $\delta$ is filled by a market order exactly when that order
   \;=\; \Lambda\cdot S(\delta),
 \]
 and the model's assumption \eqref{eq:fillrate} is precisely the claim that the
-\textbf{survival function} $S(\delta)$ of market-order walk depths is
-exponential. Take logs and it is a straight line:
+\textbf{survival function} $\bar{F}(\delta)$ of market-order walk depths is
+exponential. (We write $\bar F$, not $S$, because $S$ is the mid-price everywhere
+else in this document.) Take logs and it is a straight line:
 \[
-  \log S(\delta) \;=\; c - \kappa\delta .
+  \log \bar{F}(\delta) \;=\; c - \kappa\delta .
 \]
 So $\kappa$ is the slope of a log-survival plot -- no binning, no fill
 simulation, just the empirical distribution of how deep market orders reach.
+
+\begin{trap}{Two idealisations are buried in ``exactly when''}
+A market order that reaches our price level fills the orders \emph{ahead of us in
+the queue} first, and may be exhausted before it reaches ours; it may also be
+smaller than our resting size. The model has no notion of queue position, so
+neither effect can be corrected inside it.
+
+The consequence is worth stating plainly: the walk-depth survival function is an
+\textbf{upper bound} on our fill probability, and the fitted $\kappa$ is
+correspondingly optimistic. Everything downstream inherits that optimism.
+\end{trap}
 
 \begin{booktocode}{assumption: $\text{fill rate}(\delta) = \lambda^{\pm}e^{-\kappa^{\pm}\delta}$}
 The book takes $\kappa^{\pm}$ as given and never says where it comes from. Our
@@ -757,7 +886,7 @@ A weighted log-linear regression of the empirical survival function
 $\log S(\delta) = c - \kappa\delta$, weighted by $\sqrt{\text{tail count}}$:
 \end{booktocode}
 
-% SNIPPET: scripts/estimator_common.py:481-504
+\snip{scripts/estimator_common.py}{481}{504}
 \begin{lstlisting}
     sorted_depths = np.sort(depths)
 
@@ -790,7 +919,7 @@ two observations in the tail is far less precise than one based on two hundred.
 Support is capped at the 99th percentile so a single freak sweep cannot lever the
 slope.
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 A \textbf{buy} market order lifts the \textbf{ask}, so buy-side depths calibrate
 $\kappa^{+}$ -- the parameter that prices \emph{our ask}. Getting this backwards
 produces a strategy that skews the wrong way and is very hard to spot.
@@ -800,7 +929,7 @@ produces a strategy that skews the wrong way and is very hard to spot.
 
 Much simpler: count them and divide by the time actually covered.
 
-% SNIPPET: scripts/get_kappa.py:186-192
+\snip{scripts/get_kappa.py}{186}{192}
 \begin{lstlisting}
         data_start_ms = max(window.window_start_ms or 0.0, float(window.mids["ts_ms"].min()))
         covered_seconds = max(((window.window_end_ms or 0.0) - data_start_ms) / 1000.0, 1e-6)
@@ -821,7 +950,7 @@ $\epsb^{\pm}$ is the average amount the mid moves right after a market order ---
 \emph{markout}, i.e.\ the price change measured a fixed interval after an event.
 It is measured over a $200$~ms window:
 
-% SNIPPET: scripts/get_epsilon.py:152-160
+\snip{scripts/get_epsilon.py}{152}{160}
 \begin{lstlisting}
     post = pd.merge_asof(
         frame,
@@ -851,7 +980,7 @@ are computed anyway, but only as diagnostics.
 
 Variance of one-second mid increments, per second:
 
-% SNIPPET: scripts/estimator_common.py:551-557
+\snip{scripts/estimator_common.py}{551}{557}
 \begin{lstlisting}
     sampled = np.where(fresh, mid[np.clip(idx, 0, None)], np.nan)
 
@@ -870,7 +999,7 @@ every quote in response to a \emph{data} problem.
 
 \subsection{Smoothing, gating and transport}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering\small
 \begin{tabular}{@{}lll@{}}
 \toprule
@@ -896,11 +1025,30 @@ freshness, $\kappa>0$, $\lambda\ge0$, $\epsb\ge0$, fit quality
 \textbf{toxicity} gate $\max(\kappa^{+}\epsb^{+}, \kappa^{-}\epsb^{-}) \le 1.5$.
 
 \begin{intuition}
-The toxicity number $\kappa\epsb$ is dimensionless and deeply meaningful: it is
-adverse-selection cost measured in units of the natural rent $1/\kappa$. If
-$\kappa\epsb > 1$, the average fill loses more to the subsequent price move than
-the entire monopoly rent is worth, and no amount of clever quoting fixes it. The
-live CASHCAT values sit near $0.26$.
+The toxicity number $\kappa\epsb$ is dimensionless, and it is the most
+informative single number you can know about an instrument: adverse-selection
+cost measured in units of the natural rent $1/\kappa$.
+
+Its meaning is exact rather than loose, and it is not the one you might guess.
+At flat inventory the optimal depth is $1/\kappa + \epsb$, so the rate we
+actually get filled at is
+\[
+  \lambda\,e^{-\kappa(1/\kappa + \epsb)}
+  \;=\; \underbrace{\lambda e^{-1}}_{\text{cost of quoting at the optimum}}
+  \;\times\; \underbrace{e^{-\kappa\epsb}}_{\text{cost of adverse selection}}
+  \;=\; \tilde{\lambda},
+\]
+which is exactly the $\tilde{\lambda}^{\pm}$ that appears in \eqref{eq:1028}.
+Now notice what does \emph{not} appear: by \eqref{eq:supvalue} the expected
+profit per fill is $1/\kappa$ \textbf{however toxic the flow is}, because the
+depth simply steps back far enough to cover it. So \textbf{adverse selection does
+not make each trade worse --- it makes trades rarer.} At the live CASHCAT value
+$\kappa\epsb \approx 0.25$ it costs about $22\%$ of our fills; at the gate value
+of $1.5$ it would cost $78\%$.
+
+The gate sits at $1.5$ rather than at the break-even $1.0$ deliberately:
+$\kappa\epsb$ is a ratio of two noisy estimates, and a hard cut at the
+theoretical break-even would stop quoting on estimation error alone.
 \end{intuition}
 
 % ===========================================================================
@@ -921,7 +1069,7 @@ dimensionless $\phi\kappa T$ and $\alpha\kappa$ and derive the rest, then add th
 volatility term that \S10.3 calls for:
 \end{booktocode}
 
-% SNIPPET: scripts/mm_core.py:413-422
+\snip{scripts/mm_core.py}{413}{422}
 \begin{lstlisting}
     if kappa_avg > 0:
         # Derive from the dimensionless targets so the same config expresses the
@@ -957,7 +1105,7 @@ Replaying the whole pipeline over one pinned 18.67-hour CASHCAT tape
 (115{,}364 book updates, 46{,}072 trades), varying only $\phi\kappa T$ and
 deliberately running well past the configured ceiling of 50:
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering\small
 \begin{tabular}{@{}rrrrr@{}}
 \toprule
@@ -976,11 +1124,11 @@ $\phi\kappa T$ & PnL (USDC) & maker fills & USDC per fill & \\
 \bottomrule
 \end{tabular}
 \caption{Running-penalty sweep, one pinned tape, quote attempts held at
-$\approx$60{,}800 throughout. The best setting tested is the largest one tested.}
+$\approx 60{,}800$ throughout. The best setting tested is the largest one tested.}
 \label{tab:phisweep}
 \end{table}
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \begin{tikzpicture}
 \begin{semilogxaxis}[
@@ -1004,12 +1152,13 @@ $\approx$60{,}800 throughout. The best setting tested is the largest one tested.
   at (axis cs:54,-148) {config ceiling};
 \end{semilogxaxis}
 \end{tikzpicture}
-\caption{The same data. Past $\phi\kappa T \approx 1$ the curve improves
-monotonically; it never turns back down within a factor of 400.}
+\caption{The same data. Past $\phi\kappa T \approx 1$ the loss shrinks
+steadily --- with one reversal, $20 \to 50$, well inside the run-to-run noise
+of a single tape --- and never turns back up within a factor of 400.}
 \label{fig:phisweep}
 \end{figure}
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 The configuration comment in \code{mm\_core.py} records an earlier sweep on a
 9.8-hour tape that found ``an inverted U with the optimum at 10--20''. On this
 longer tape \textbf{there is no inverted U and no interior optimum}. The loss
@@ -1045,7 +1194,7 @@ e^{-1-\kappa\epsb^{\pm}}$; then $\boldsymbol{\omega}(t) = e^{\mathbf{A}(T-t)}
 Line for line, with no rearrangement --- compare \eqref{eq:1028}:
 \end{booktocode}
 
-% SNIPPET: scripts/hjb.py:227-241
+\snip{scripts/hjb.py}{227}{241}
 \begin{lstlisting}
     lam_tilde_p = lam_p * np.exp(-1.0 - kappa * eps_p)
     lam_tilde_m = lam_m * np.exp(-1.0 - kappa * eps_m)
@@ -1069,7 +1218,7 @@ Every symbol maps directly: \code{lam\_tilde\_p} is $\tilde{\lambda}^{+} =
 $q\kappa(\lambda^{+}\epsb^{+}-\lambda^{-}\epsb^{-}) - \phi\kappa q^{2}$, and
 \code{z} is $z_j = e^{-\alpha\kappa j^{2}}$.
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 The off-diagonal placement deserves a second look. \code{q\_grid} is
 \emph{ascending}, while the book stacks $\boldsymbol{\omega}$ \emph{descending}
 from $\bar{q}$ down to $\underline{q}$, and the book's case list does not say
@@ -1128,7 +1277,7 @@ which returns $\delta^{*} = 1/\kappa + \epsb - \Delta h$. What is left here is
 the loop over $q$ and, more importantly, the two indicator functions:
 \end{booktocode}
 
-% SNIPPET: scripts/hjb.py:144-158
+\snip{scripts/hjb.py}{144}{158}
 \begin{lstlisting}
     delta_plus = np.full(d, np.inf, dtype=float)
     delta_minus = np.full(d, np.inf, dtype=float)
@@ -1163,7 +1312,7 @@ $h_{q\mp1} - h_q$ and nothing else -- and it is \emph{necessary} because in the
 steady state the unnormalised $h$ drifts linearly in $t$ until its level swamps
 the $O(1/\kappa)$ differences the depths are made of.
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 The consequence: in the returned surface, \textbf{levels are not comparable
 across time slices}. Differences within a slice are exact. Do not plot
 \code{h\_surface} as if it were a value function; it is a value function plus a
@@ -1172,18 +1321,19 @@ different constant on every row.
 
 \subsection{What the solution looks like}
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
   width=12cm, height=6cm,
   xlabel={inventory $q$ (units)},
-  ylabel={depth $\delta$ (USDC)},
+  ylabel={depth $\delta$ ($10^{-4}$ USDC)},
   xmin=-6.5, xmax=6.5, xtick={-6,-4,-2,0,2,4,6},
   grid=major, grid style={gray!20},
-  legend style={draw=none, fill=none, at={(0.03,0.97)}, anchor=north west, font=\small},
-  scaled y ticks=false,
-  yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=5},
+  legend style={draw=none, fill=none, at={(0.5,-0.24)}, anchor=north,
+                legend columns=2, font=\small},
+  ytick={-6e-4,-4e-4,-2e-4,0,2e-4,4e-4,6e-4},
+  yticklabels={$-6$,$-4$,$-2$,$0$,$2$,$4$,$6$},
 ]
 \addplot[NavyLink, very thick, mark=*, mark size=1.3] coordinates {
   (-5,5.72590804e-4) (-4,5.34324665e-4) (-3,4.87696805e-4) (-2,4.28103683e-4)
@@ -1236,7 +1386,7 @@ which at 1000~USDC, 74\% utilisation, 2$\times$ leverage, $\bar q = 6$ and
 $S = 0.0976$ gives $u \approx 2527$~CASHCAT, so a full $\pm6$ band is about
 1480~USDC of notional.
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 $u$ is the denominator of $q = \text{position}/u$, so changing it re-labels the
 whole inventory axis --- and it also appears in the volatility term
 $\gamma\sigma^{2}u$ of $\phi$. Resizing it while holding a position would
@@ -1262,7 +1412,7 @@ choice:
     crosses zero repeatedly cannot restart the clock on every round trip.
 \end{itemize}
 
-\begin{departure}
+\begin{departure}{Departure from the book}
 The book liquidates whatever is left at $T$ at market and pays $\alpha q^{2}$.
 Every quote here is \textbf{post-only} --- an exchange flag meaning ``reject this
 order outright if it would execute on arrival'', which guarantees we are always
@@ -1302,7 +1452,7 @@ our own in between. The bracketing helper has two guards that look redundant and
 are not:
 \end{booktocode}
 
-% SNIPPET: scripts/mm_core.py:464-475
+\snip{scripts/mm_core.py}{464}{475}
 \begin{lstlisting}
     n = len(axis)
     if n == 1 or value <= axis[0]:
@@ -1318,7 +1468,7 @@ are not:
     return lo, hi, weight
 \end{lstlisting}
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 \code{side="left"} and the exact-node check protect \emph{opposite} boundaries,
 and both are needed. Consider a grid $[-3,\dots,3]$, where $\delta^{+}$ is
 infinite at $q=-3$ and $\delta^{-}$ is infinite at $q=+3$.
@@ -1337,7 +1487,7 @@ reproduces the book exactly and only genuinely fractional inventory blends.
 
 And the blend itself refuses to average away a disabled side:
 
-% SNIPPET: scripts/mm_core.py:492-498
+\snip{scripts/mm_core.py}{492}{498}
 \begin{lstlisting}
     if not np.isfinite(low) or not np.isfinite(high):
         return float("inf")
@@ -1348,7 +1498,7 @@ And the blend itself refuses to average away a disabled side:
     return float(low) + weight * (float(high) - float(low))
 \end{lstlisting}
 
-\begin{departure}
+\begin{departure}{Departure from the book}
 Because \emph{either} infinite endpoint disables the blend, with $\bar{q}=6$ a
 bid stops above $q = 5.0$ rather than $q = 5.5$. This is the conservative
 direction: a bid resting at $q=5.9$ would permit a jump to $6.9$, past the
@@ -1380,7 +1530,7 @@ solver reproduces its shape. Treat the table below as a validation, not an
 anomaly.
 \end{intuition}
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering\small
 \begin{tabular}{@{}rrr@{}}
 \toprule
@@ -1407,11 +1557,11 @@ a closed form:
   \dplus{}^{,*}(T,q) = \frac{1}{\kappa^{+}} + \epsb^{+} + \alpha(1-2q).
 \]
 At $q=2$ with the live numbers that is
-$9.87835\times10^{-5} + 2.50349\times10^{-5} - 3\times5.10005\times10^{-6}
-= 1.085184\times10^{-4}$, against the solver's $1.0851837\times10^{-4}$ --
+$9.8783627\times10^{-5} + 2.5034909\times10^{-5}
+- 3\times5.1000538\times10^{-6} = 1.0851837\times10^{-4}$, against the solver's $1.0851837\times10^{-4}$ --
 agreement to seven significant figures.
 
-\begin{departure}
+\begin{departure}{Departure from the book}
 \code{hjb\_alpha\_kappa} was set to $0.05$ at a time when the strategy only ever
 read the $t=0$ slice, so $\alpha$ had almost no effect on any quote and the value
 carries no evidence. It is now live and remains unswept. Treat it as untuned.
@@ -1434,7 +1584,7 @@ rejects orders.
 Everything below is ours, and every line of it can override the model:
 \end{booktocode}
 
-% SNIPPET: scripts/mm_core.py:271-285
+\snip{scripts/mm_core.py}{271}{285}
 \begin{lstlisting}
 
     fee_cushion = float(config.maker_fee_rate) * mid
@@ -1453,8 +1603,7 @@ Everything below is ours, and every line of it can override the model:
     p95 = finite_float_or_none(depth_p95)
 \end{lstlisting}
 
-\begin{table}[h]
-\centering\small
+\begin{center}\small
 \begin{tabular}{@{}llr@{}}
 \toprule
 \textbf{Step} & \textbf{Expression} & \textbf{Default} \\
@@ -1466,7 +1615,7 @@ floor         & \code{min\_half\_spread\_bps}$/10^4 \times$ mid & $1.5$ bps \\
 cap           & \code{max\_half\_spread\_bps}$/10^4 \times$ mid & $80$ bps \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 Four design choices are encoded here:
 
@@ -1484,7 +1633,37 @@ Four design choices are encoded here:
     infinite the function returns \code{None} rather than clamping, because
     clamping $\infty$ into $[\text{floor},\text{cap}]$ would silently turn ``do
     not quote'' into ``quote at the floor''.
+  \item \textbf{The floor is exactly one maker fee, and that is not a
+    coincidence.} \code{min\_half\_spread\_bps} and \code{maker\_fee\_rate} are
+    both $1.5$~bps, so
+% CHECK: floor_equals_fee_cushion = True
+    the floor and the fee cushion are the same number to the last bit. The floor
+    is therefore not a risk limit --- it is the rule ``never quote inside your own
+    fee''.
 \end{itemize}
+
+\begin{trap}{How often the model is actually overruled}
+Work out where that floor binds and the answer is larger than it looks. Because
+floor $=$ fee cushion, $\delta_{\text{total}} = \max(\delta_{\text{model}} +
+\text{fee},\ \text{fee})$, so \textbf{the clamp binds precisely when the model
+asks for a negative depth} --- nothing more, nothing less.
+
+Figure~\ref{fig:skew}'s ask curve crosses zero at
+% CHECK: ask_zero_crossing_q = 1.107
+$q = 1.107$. So at this $\tau$, for every inventory above about $1.1$ units ---
+four-fifths of the positive band --- the ask is pinned at $1.5$~bps and carries
+\textbf{no inventory information at all}, and the bid mirrors it below $-1.1$.
+The skew that \S\ref{sec:model} spends fifteen pages deriving reaches the market,
+on the reducing side, only over roughly $|q| < 1.1$; outside that band one side
+is a constant and the model's entire remaining influence is in how far it widens
+the other.
+
+Figure~\ref{fig:skew} therefore draws the \emph{model}, not the
+\emph{behaviour}. For the behaviour, clip it at zero and add $1.5$~bps. Note the
+interaction with \S\ref{sec:phialpha} as well: the clamp releases as
+$\tau \to 0$, so the model is most overruled at exactly the moments it is most
+aggressive.
+\end{trap}
 
 \begin{intuition}
 Figure~\ref{fig:skew} shows the model asking for \emph{negative} ask depths once
@@ -1496,7 +1675,7 @@ is post-only, so it cannot be obeyed. The floor is what stops it, and the
 
 \subsection{Rounding, safely}
 
-% SNIPPET: scripts/hyperliquid_alo_executor.py:76-93
+\snip{scripts/hyperliquid_alo_executor.py}{76}{93}
 \begin{lstlisting}
 def round_price_for_side(
     *,
@@ -1525,7 +1704,7 @@ order into an exchange rejection.
 
 \subsection{The last check before posting}
 
-% SNIPPET: scripts/mm_core.py:314-325
+\snip{scripts/mm_core.py}{314}{325}
 \begin{lstlisting}
     price_f = finite_float_or_none(price)
     bid_f = finite_float_or_none(best_bid)
@@ -1545,7 +1724,7 @@ The comparisons are non-strict: a bid resting exactly \emph{at} the best ask
 would cross, so equality is rejected too. A crossed or otherwise invalid book
 fails closed.
 
-\begin{trap}
+\begin{trap}{Easy to get backwards}
 Which side of the book a Freqtrade ``entry'' corresponds to \emph{depends on the
 leg's role}:
 \[
@@ -1571,8 +1750,7 @@ is re-checked by \code{scripts/verify\_spread\_doc.py}.
 One coherent estimator cycle from the live CASHCAT dry run, stamped
 2026-08-17T16:20:41Z over a 120-minute window.
 
-\begin{table}[h]
-\centering\small
+\begin{center}\small
 \begin{tabular}{@{}llll@{}}
 \toprule
 $\kappa^{+}$ & $10{,}123.135$ & $\lambda^{+}$ & $0.113130$ \\
@@ -1585,7 +1763,7 @@ $\bar{q}$ & 6 & tick & $10^{-5}$ \\
 $(\phi\kappa T)_{\text{target}}$ & 10 & $(\alpha\kappa)_{\text{target}}$ & 0.05 \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 Inventory is \textbf{6065.6 CASHCAT}, deliberately not a whole number of units --
 this is what a partial fill leaves behind, and it is what the interpolation
@@ -1593,8 +1771,7 @@ exists for. Time-to-go is $\tau = 130.79$~s.
 
 \subsection{Step 1 --- the risk parameters}
 
-\begin{table}[h]
-\centering\small
+\begin{center}\small
 \begin{tabular}{@{}llr@{}}
 \toprule
 \textbf{Quantity} & \textbf{Formula} & \textbf{Value} \\
@@ -1617,7 +1794,7 @@ $\alpha$ & $0.05/\bar{\kappa}$ & $5.1001\times10^{-6}$ \\
 $dt$ & $T/\text{\code{n\_steps}}$ & $0.25$ s \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 The volatility channel contributes about 6\% of $\phi$ here, lifting the
 dimensionless product from the configured $10$ to
@@ -1626,8 +1803,7 @@ $\phi\bar{\kappa}T = 10.6201$ -- comfortably below the cap of 50.
 
 \subsection{Step 2 --- inventory}
 
-\begin{table}[h]
-\centering\small
+\begin{center}\small
 \begin{tabular}{@{}llr@{}}
 \toprule
 % CHECK: q_exact = 2.4
@@ -1638,19 +1814,51 @@ $q$ (integer, for routing) & $\text{round}(q_{\text{exact}})$ & $2$ \\
 $q_{\text{residual}}$ & $q_{\text{exact}} - q$ & $0.4$ \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 That residual of $0.4$ units is roughly $1010$ CASHCAT of live exposure that the
 integer grid cannot represent. It is logged on every quote, and a run whose mean
 $|q_{\text{residual}}|$ exceeds $0.35$ fails the dry-run quality gate.
 
-\subsection{Step 3 --- reading the depths}
+\subsection{Step 3 --- where the depth comes from}
+
+Before blending, look at how the model actually builds the ask at the integer
+node $q=2$. Equation \eqref{eq:1027} has three terms and they are nowhere near
+the same size:
+
+\begin{center}\small
+\begin{tabular}{@{}llrr@{}}
+\toprule
+\textbf{Term} & \textbf{What it is} & \textbf{USDC} & \textbf{bps of mid} \\
+\midrule
+% CHECK: rent_bps = 9.3470
+$1/\kappa^{+}$ & rent & $+9.8784\times10^{-5}$ & $+9.35$ \\
+% CHECK: adverse_bps = 2.3688
+$\epsb^{+}$ & adverse-selection cover & $+2.5035\times10^{-5}$ & $+2.37$ \\
+% CHECK: h_diff_q2 = 2.2846e-04
+% CHECK: inventory_bps = -21.6170
+$-\bigl(h(\tau,1)-h(\tau,2)\bigr)$ & inventory pressure & $-2.2846\times10^{-4}$ & $-21.62$ \\
+\midrule
+% CHECK: delta_plus_q2_bps = -9.9012
+$\delta^{+,*}(\tau,2)$ & & $-1.0464\times10^{-4}$ & $-9.90$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The inventory term is nearly twice the other two combined, and it
+points the other way. \textbf{That is the answer to why the ask gets clamped two
+steps from now}: at $q=2$ the model does not want a spread, it wants \emph{out},
+and it is willing to pay $9.9$~bps through the mid to get there. The first two
+terms --- the entire content of \S\ref{sec:model} up to \eqref{eq:1027} --- are
+worth $11.7$~bps between them and are simply overwhelmed. Everything that makes
+this a \emph{strategy} rather than a fixed spread is in the third row.
+
+\subsection{Step 3b --- blending to the real inventory}
 
 The fractional inventory sits between the $q=2$ and $q=3$ nodes, so each depth is
 a blend with weight $0.4$:
 
-\begin{table}[h]
-\centering\small
+\begin{center}\small
 \begin{tabular}{@{}lrrr@{}}
 \toprule
 & \textbf{at $q=2$} & \textbf{at $q=3$} & \textbf{blended at $q=2.4$} \\
@@ -1665,7 +1873,7 @@ $\delta^{+,*}$ (ask) & $-1.0464\times10^{-4}$ & $-1.7974\times10^{-4}$ & $-1.346
 $\delta^{-,*}$ (bid) & $4.3626\times10^{-4}$ & $4.9105\times10^{-4}$ & $4.5817\times10^{-4}$ \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 Check the ask by hand: $-1.0464\times10^{-4} + 0.4\times(-1.7974 + 1.0464)\times
 10^{-4} = -1.3468\times10^{-4}$. Note it is \textbf{negative}: holding 2.4 units
@@ -1673,8 +1881,7 @@ long, the model wants to sell badly enough to cross the mid.
 
 \subsection{Step 4 --- assembling both prices}
 
-\begin{table}[h]
-\centering\small
+\begin{center}\small
 \begin{tabular}{@{}lrr@{}}
 \toprule
 & \textbf{bid} & \textbf{ask} \\
@@ -1712,7 +1919,7 @@ raw price ($S \mp \delta$) & $0.10521097$ & $0.10570085$ \\
 rounded to tick & $0.10521$ (down) & $0.10571$ (up) \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 \subsection{Reading the result}
 
@@ -1727,7 +1934,56 @@ None of that is a malfunction; the asymmetry is the entire point. Holding 2.4
 units long, the strategy is almost giving the inventory away on the ask while
 making itself very hard to hit on the bid.
 
-Two diagnostics fire on this quote and both are worth attention:
+\begin{intuition}
+Put the two final depths back through \eqref{eq:fillrate} and ask what they are
+worth. The ask, pinned at the floor, runs at
+% CHECK: ask_fill_rate_per_sec = 0.0964
+% CHECK: ask_seconds_per_fill = 10.4
+$\lambda^{+}e^{-\kappa^{+}\delta} = 0.0964$~s$^{-1}$ --- a fill every $10.4$
+seconds. The bid, $44.85$~bps out, runs at $0.00137$~s$^{-1}$: a fill every
+$12$~minutes, against an episode horizon of $150$~seconds.
+
+The bid is not really a quote. It is a decision not to buy, dressed as one. That
+is correct behaviour at $2.4$ units long, and it is the clearest statement of
+what the inventory term does: it does not merely lean the book, it switches a
+side off in practice long before the hard boundary at $\bar q$ ever does.
+\end{intuition}
+
+\subsection{The same machine at four inventories}
+
+The example above shows the model being overruled. It is worth seeing it work
+unobstructed too, so here is the identical pipeline at four inventories:
+
+\begin{center}\small
+\begin{tabular}{@{}rrrll@{}}
+\toprule
+$q$ & bid (bps) & ask (bps) & clamped? & \\
+\midrule
+% CHECK: q0p0_bid_bps = 24.58
+% CHECK: q0p0_ask_bps = 22.03
+$0.0$ & $24.58$ & $22.03$ & no & symmetric; the model as the book intends it \\
+% CHECK: q0p4_bid_bps = 29.02
+% CHECK: q0p4_ask_bps = 14.29
+$0.4$ & $29.02$ & $14.29$ & no & mild skew, both sides live \\
+% CHECK: q2p4_bid_bps = 44.85
+% CHECK: q2p4_ask_bps = 1.50
+$2.4$ & $44.85$ & $1.50$ & ask & the worked example \\
+% CHECK: q5p4_bid_bps = None
+% CHECK: q5p4_ask_bps = 1.50
+$5.4$ & --- & $1.50$ & ask & bid switched off by the boundary blend \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Three things here that no prose in this document can show as well: the
+skew is real and gradual near flat; the boundary blend genuinely disables the bid
+at $5.4$, exactly as \S\ref{sec:reading} warned; and \textbf{the ask is identical
+at $q=2.4$ and $q=5.4$}, because the clamp has flattened it. Between those two
+inventories the model has a great deal more to say and no way to say it.
+
+\subsection{Diagnostics}
+
+Two diagnostics fire on the $q=2.4$ quote and both are worth attention:
 
 \begin{itemize}
   \item \textbf{The ask was clamped at the floor.} The model asked for a negative
@@ -1785,7 +2041,7 @@ against on a far longer horizon than the one it was priced for.
 \end{intuition}
 
 Not a departure, despite appearances: the \textbf{volatility term in $\phi$}.
-$\S$10.4.1 treats $\phi$ as a constant, but \S10.3 derives
+\S10.4.1 treats $\phi$ as a constant, but \S10.3 derives
 $\phi = \tfrac12\sigma^{2}\gamma$ (\S\ref{sec:utility}), so a $\phi$ that scales
 with variance is the book's own correspondence rather than an outside graft. The
 code's constant differs ($\gamma\sigma^{2}u$ rather than $\tfrac12\sigma^{2}
@@ -1797,8 +2053,7 @@ risk aversion.
 \appendix
 \section{File map}
 
-\begin{table}[h]
-\centering\small
+\begin{center}\small
 \begin{tabular}{@{}ll@{}}
 \toprule
 \textbf{File} & \textbf{Role} \\
@@ -1815,7 +2070,7 @@ risk aversion.
 \code{scripts/verify\_spread\_doc.py} & checks this document against the code \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{center}
 
 \section{Rebuilding this document}
 
