@@ -91,8 +91,15 @@ a factor of 200. The running penalty is what remains to be **paid** over the
 time left, so it is largest at `t=0` and vanishes at `T`. Measured at `q=+3` on
 live-scale CASHCAT parameters, the ask depth runs `-6.8e-6 -> +1.0e-4` as `tau`
 goes `150s -> 0`: the agent unwinds hardest at the **start** of an episode and
-relaxes into the terminal. That is the correct reading of eq. 10.26 here; the
-book's figures show the opposite because their `alpha` dominates their `phi*T`.
+relaxes into the terminal. That is the correct reading of eq. 10.26 here.
+
+**This matches the book rather than contradicting it.** An earlier version of
+this note claimed the book's figures show the opposite; they do not. Fig. 10.8
+(p. 265) plots depths for `q = -2..3` fanned wide at `t=0` and converging into
+`T` — the same shape — and its stated parameters are `phi=0.02, kappa=100, T=30,
+alpha=0.0001`, i.e. `phi*kappa*T = 60` against `alpha*kappa = 0.01`, a ratio of
+6000:1. The book's own illustration is even more running-penalty-dominated than
+ours, so the agreement is expected. Checked against the book PDF 2026-08-17.
 
 Consequence: `hjb_alpha_kappa` was tuned while `alpha` was effectively inert and
 now is not. Treat it as an untuned knob.

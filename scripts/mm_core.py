@@ -139,10 +139,25 @@ class QuoteConfig:
     # actually responds to and derive phi/alpha from live kappa. These carry
     # across symbols; the raw values below are only the fallback when the
     # targets are disabled (set to 0).
-    # 10.0 measured on a pinned 9.8h CASHCAT tape: sweeping 0.05 -> 50 gives an
-    # inverted U with the optimum at 10-20, cutting the loss from -78.27 to
-    # -25.70 USDC (743 fills -> 528). Below it the model holds inventory through
-    # adverse moves and loses far more than the extra spread capture is worth.
+    # 10.0 is NOT a measured optimum -- do not treat it as one.
+    #
+    # An early sweep on a pinned 9.8h CASHCAT tape reported an inverted U with
+    # the optimum at 10-20. That did NOT replicate. Re-swept 2026-08-17 over
+    # 0.05 -> 400 on one pinned 18.67h tape (docs/spread_calculation.tex
+    # sec:phisweep): the curve improves MONOTONICALLY past ~1 and is still
+    # improving at 400, eight times hjb_phi_kappa_t_max, where the loss is the
+    # smallest of the sweep (-24.83 vs -135.94 at the worst point).
+    #
+    # The reason it has no optimum: USDC per fill stays between -0.06 and -0.11
+    # across a factor of 8000 in this parameter, while fills fall 1959 -> 338.
+    # Each fill costs about the same however the model is tuned; phi only
+    # changes how many you take. So the sweep is measuring negative expected
+    # value per maker fill at this latency, not an inventory trade-off, and the
+    # limit of "raise phi" is "stop quoting".
+    #
+    # 10.0 is kept as a deliberately mid-range setting that still trades enough
+    # to exercise and measure the model, which is this project's stated goal.
+    # Raising it would lose less money and demonstrate less.
     hjb_phi_kappa_t: float = 10.0
     hjb_alpha_kappa: float = 0.05
     # Ceiling on the SAME dimensionless product, so the volatility channel --
@@ -432,15 +447,6 @@ def solve_hjb(
     result["kappa_avg"] = kappa_avg
     result["sigma2_per_sec"] = finite_float_or_none(sigma2_per_sec)
     return result
-
-
-def _grid_index(hjb: dict[str, Any], q: int) -> int:
-    q_grid = np.asarray(hjb["q_grid"])
-    if q <= q_grid[0]:
-        return 0
-    if q >= q_grid[-1]:
-        return int(len(q_grid) - 1)
-    return int(np.argmin(np.abs(q_grid - q)))
 
 
 def _bracket(axis: np.ndarray, value: float) -> tuple[int, int, float]:
@@ -927,7 +933,9 @@ __all__ = [
     "compute_quotes",
     "effective_phi",
     "finite_float_or_none",
+    "hjb_n_steps",
     "inventory_to_q",
+    "inventory_to_q_exact",
     "maker_safe",
     "merged_params",
     "parse_utc_timestamp",

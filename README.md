@@ -4,6 +4,21 @@ A market making system built on Freqtrade, implementing the Cartea–Jaimungal�
 model (Chapter 10 of *Algorithmic and High-Frequency Trading*, 2015) with real-time
 parameter estimation. **Works ONLY for Hyperliquid**.
 
+<p align="center">
+  <a href="docs/spread_calculation.pdf">
+    <img src="docs/img/spread_calculation_cover.png" width="290"
+         alt="How the Spread Is Computed — cover of the PDF walkthrough">
+  </a>
+</p>
+
+<p align="center">
+  <b><a href="docs/spread_calculation.pdf">📄 How the Spread Is Computed</a></b><br>
+  <sub>A beginner-friendly walkthrough: what the book says, the Python that
+  implements it, and a fully worked example from L2 tick data to a resting order.<br>
+  Every listing is checked against the source and every number recomputed by
+  <a href="scripts/verify_spread_doc.py"><code>verify_spread_doc.py</code></a>.</sub>
+</p>
+
 ---
 
 ## ⚠️ Read this before running it with real money

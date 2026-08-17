@@ -37,3 +37,16 @@ project_bundle*.md
 # textbook was committed once by accident (32 MB, and not ours to
 # redistribute) and had to be stripped from history with git-filter-repo.
 docs/*.pdf
+# ...except our own writing. This one is ~0.7 MB, is generated from
+# docs/spread_calculation.tex in this repo, and the README links to it, so it
+# has to be committed or the link is dead for everyone but us.
+!docs/spread_calculation.pdf
+
+# LaTeX build artefacts
+docs/*.aux
+docs/*.fdb_latexmk
+docs/*.fls
+docs/*.log
+docs/*.out
+docs/*.toc
+docs/*.synctex.gz

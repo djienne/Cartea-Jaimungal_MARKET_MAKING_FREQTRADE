@@ -269,8 +269,11 @@ def load_kappa_from_json(crypto: str, filename: str = 'kappa.json'):
 def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filename: str = "epsilon.json",
                          metadata: dict | None = None, raw_values: dict | None = None):
     """Save epsilon estimates to JSON. Primary keys are EMA-smoothed; *_raw
-    holds this window's unsmoothed trimmed means (defaulting to the primaries
-    when not supplied so every v3 snapshot carries the full key set)."""
+    holds this window's unsmoothed means -- 3-sigma-clipped and floored at zero,
+    NOT trimmed. The trimmed mean is computed alongside but deliberately not
+    shipped: trimming a right-skewed jump distribution understates adverse
+    selection. *_raw defaults to the primaries when not supplied, so every v3
+    snapshot carries the full key set."""
     metadata = dict(metadata or {})
     status = str(metadata.pop("status", "ok"))
     metadata.setdefault("generated_at", utc_now_iso())
@@ -462,7 +465,8 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
 
     vprint("\nNotes:")
     vprint("- epsilon is measured per market order against the BBO mid stream")
-    vprint("- the primary horizon targets permanent impact; 200ms/1s diagnostics show the decay profile")
+    vprint("- the primary 200ms horizon targets the jump AT arrival (eq 10.22), not permanent impact;")
+    vprint("  the 1s/5s markouts are diagnostics only -- see the rationale at the top of this file")
     vprint("- monitor epsilon over time as market conditions change")
 
     vprint("\n" + "-"*60 + "\n")

@@ -50,6 +50,12 @@ terminal one**. The running penalty is what remains to be paid over the time
 left, so it dominates the whole surface and the terminal condition barely bends
 it. Moving along the time axis therefore moves the depths very little.
 
+(Note: an earlier version of this file said this makes depths tighten at the
+start of an episode "the opposite of the book's figures". That was wrong — the
+book's Fig. 10.8 runs `phi*kappa*T = 60` against `alpha*kappa = 0.01`, so it is
+in the same running-penalty-dominated regime and shows the same shape. Corrected
+2026-08-17 against the book PDF.)
+
 The corollary matters more than the number: **`hjb_alpha_kappa` is now a live
 knob and it is untuned.** It was set to 0.05 while α was structurally inert, so
 that value carries no evidence. Raising it is what would make the time axis do

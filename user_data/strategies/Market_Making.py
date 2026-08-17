@@ -290,10 +290,13 @@ class Market_Making(IStrategy):
     # another: ETH (kappa~2) -> CASHCAT (kappa~10000) took phi*kappa*T from 0.03
     # to 153 and pinned every quote to the floor or the cap. Set either to 0 to
     # fall back to the raw hjb_phi / hjb_alpha below.
-    # 10.0 measured on a pinned 9.8h CASHCAT tape: sweeping 0.05 -> 50 gives an
-    # inverted U with the optimum at 10-20, cutting the loss from -78.27 to
-    # -25.70 USDC (743 fills -> 528). Below it the model holds inventory through
-    # adverse moves and loses far more than the extra spread capture is worth.
+    # 10.0 is NOT a measured optimum. An early 9.8h sweep reported an inverted U
+    # peaking at 10-20; it did not replicate. Re-swept 2026-08-17 over 0.05 ->
+    # 400 on one pinned 18.67h tape: monotonically improving past ~1 and still
+    # improving at 400. USDC per fill barely moves (-0.06 to -0.11) while fills
+    # fall 1959 -> 338, i.e. phi only changes how much we trade, not how well.
+    # Kept mid-range so the model still trades enough to be measured. Full
+    # numbers and reasoning in docs/spread_calculation.tex, sec:phisweep.
     hjb_phi_kappa_t = 10.0
     hjb_alpha_kappa = 0.05
     hjb_alpha = 0.001   # raw fallback, only used when hjb_alpha_kappa == 0
@@ -3767,6 +3770,15 @@ class Market_Making(IStrategy):
             "has_surface": "delta_plus_surface" in cache,
             "tau_remaining_seconds": None if tau is None else float(tau),
             "episode_id": int(self._episode_id),
+            # The risk parameters the solve actually ran with, as opposed to the
+            # configured targets. phi is derived from hjb_phi_kappa_t and then
+            # has the volatility term added, so neither the config nor the
+            # params snapshot tells you what was solved; without these the
+            # sigma2 channel is invisible in every log we keep.
+            "phi_effective": to_list(cache.get("phi_effective")),
+            "phi_source": cache.get("phi_source"),
+            "alpha_effective": to_list(cache.get("alpha_effective")),
+            "sigma2_per_sec": to_list(cache.get("sigma2_per_sec")),
         }
         if tau is not None and "delta_plus_surface" in cache:
             q_grid = np.asarray(cache["q_grid"])
