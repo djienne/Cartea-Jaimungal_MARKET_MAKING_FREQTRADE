@@ -110,7 +110,7 @@ def param_metadata_lines(symbol: str, *sources: dict) -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(description="Compute bid/ask spreads (bps from mid) using HJB deltas.")
-    parser.add_argument("--crypto", "-c", default="ETH", help="Symbol key in JSON files (default ETH)")
+    parser.add_argument("--crypto", "-c", default="CASHCAT", help="Symbol key in JSON files (default CASHCAT)")
     parser.add_argument("--mid", "-m", type=float, default=None, help="Mid price to evaluate (falls back to mid_price.json or 1.0)")
     parser.add_argument("--inventory", "-q", type=int, default=0, help="Inventory level q (clipped to HJB grid)")
     parser.add_argument("--alpha", type=float, default=0.0, help="Terminal inventory penalty (alpha)")

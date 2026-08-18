@@ -329,7 +329,7 @@ that means a spread wider than ~3 bps before any edge exists at all.
 ## Configuration
 
 ### Main Configuration (`user_data/config.json`)
-Uses ETH by default now.
+Uses CASHCAT by default now — it is the only symbol that clears the viability gate.
 ```json
 {
     "max_open_trades": 1,
@@ -385,13 +385,13 @@ widening quotes defensively never inflates the fee compensation.
 
 ```bash
 # Test kappa calculation
-python scripts/get_kappa.py --crypto ETH
+python scripts/get_kappa.py --crypto CASHCAT
 
 # Test epsilon calculation  
-python scripts/get_epsilon.py --crypto ETH
+python scripts/get_epsilon.py --crypto CASHCAT
 
 # Quick spread check (refreshes κ/ε/λ first, then prints table of spreads vs inventory)
-python scripts/compute_spreads.py --crypto ETH --spread-multiplier 3.0
+python scripts/compute_spreads.py --crypto CASHCAT --spread-multiplier 3.0
 ```
 
 ### Market viability (run this first)

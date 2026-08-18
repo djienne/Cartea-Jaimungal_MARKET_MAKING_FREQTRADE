@@ -298,8 +298,10 @@ def optional_positive_int(value: int | None) -> int | None:
 def replay_acceptance_report_command(
     py: str,
     *,
-    symbol: str = "ETH",
-    mid: float = 2116.95,
+    symbol: str = "CASHCAT",
+    # Fallback mid only (used when a price row carries no bid/ask). Keep it on the
+    # same scale as `symbol` -- CASHCAT trades near 0.10, not 2116.
+    mid: float = 0.1015,
     newest_per_stream: int | None = 25,
     max_price_events: int | None = 2000,
     min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
@@ -368,8 +370,8 @@ def local_gates(
     use_default_post_only_artifacts: bool = True,
     max_evidence_age_seconds: float = DEFAULT_REPORT_MAX_AGE_SECONDS,
     max_canary_event_age_seconds: float = DEFAULT_LIVE_CANARY_MAX_EVENT_AGE_SECONDS,
-    replay_acceptance_symbol: str = "ETH",
-    replay_acceptance_mid: float = 2116.95,
+    replay_acceptance_symbol: str = "CASHCAT",
+    replay_acceptance_mid: float = 0.1015,
     replay_acceptance_newest_per_stream: int | None = 25,
     replay_acceptance_max_price_events: int | None = 2000,
     replay_acceptance_min_price_events_per_day: float = DEFAULT_REPLAY_MIN_PRICE_EVENTS_PER_DAY,
@@ -452,10 +454,14 @@ def local_gates(
             [
                 py,
                 "scripts/compute_spreads.py",
+                # The traded symbol. --mid must stay on the same scale as the
+                # symbol: it is only used to turn model depth into bps and to
+                # apply the clamps, but an ETH-scale mid on CASHCAT params makes
+                # every printed row meaningless.
                 "--crypto",
-                "ETH",
+                "CASHCAT",
                 "--mid",
-                "4322.05",
+                "0.1015",
                 "--qmax",
                 "3",
                 "--asym-kappa",
@@ -464,6 +470,12 @@ def local_gates(
             [0],
         ),
         (
+            # DELIBERATELY STILL ETH, unlike every other gate here. --synthetic-smoke
+            # reads nothing from disk: it builds its own tape out of --mid using
+            # ABSOLUTE offsets (bid = mid - 0.5, a trade at mid - 3.0), so the symbol
+            # name, the mid and the ETH-fitted kappas/lambdas below are one matched
+            # fixture. Renaming the symbol to CASHCAT without rescaling would be a lie;
+            # rescaling the mid to 0.1015 would generate negative bids and break it.
             "replay_smoke",
             [
                 py,
@@ -626,7 +638,7 @@ def local_gates(
                         sys.executable,
                         "scripts/validate_hl_data.py",
                         "--symbol",
-                        "ETH",
+                        "CASHCAT",
                         "--newest-per-stream",
                         "25",
                         "--max-age-seconds",
@@ -642,10 +654,15 @@ def local_gates(
                     [
                         sys.executable,
                         "scripts/replay_market_maker.py",
+                        # Real on-disk tape, so this must be the symbol the
+                        # collector is actually writing. --mid is only the
+                        # fallback for a price row with no bid/ask, but it has to
+                        # be on the tape's scale or a single fallback row would
+                        # inject a 2117 mid into a 0.1 tape.
                         "--symbol",
-                        "ETH",
+                        "CASHCAT",
                         "--mid",
-                        "2117.35",
+                        "0.1015",
                         "--newest-per-stream",
                         "10",
                         "--max-price-events",
@@ -1204,12 +1221,12 @@ def parse_args() -> argparse.Namespace:
             "Defaults to docs/post_only_passive_result.json when that file exists."
         ),
     )
-    parser.add_argument("--replay-acceptance-symbol", default="ETH", help="Symbol for the replay acceptance report.")
+    parser.add_argument("--replay-acceptance-symbol", default="CASHCAT", help="Symbol for the replay acceptance report.")
     parser.add_argument(
         "--replay-acceptance-mid",
         type=float,
-        default=2116.95,
-        help="Mid-price fallback for the replay acceptance report.",
+        default=0.1015,
+        help="Mid-price fallback for the replay acceptance report (must match --replay-acceptance-symbol's scale).",
     )
     parser.add_argument(
         "--replay-acceptance-newest-per-stream",

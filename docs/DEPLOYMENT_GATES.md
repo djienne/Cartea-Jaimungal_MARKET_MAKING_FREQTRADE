@@ -323,7 +323,7 @@ Parameter sidecar:
 Data freshness/replay-readiness report:
 
 ```bash
-python scripts/validate_hl_data.py --symbol ETH --newest-per-stream 25 --max-age-seconds 30 --output docs/hl_data_validation.json --fail-on-bad-data
+python scripts/validate_hl_data.py --symbol CASHCAT --newest-per-stream 25 --max-age-seconds 30 --output docs/hl_data_validation.json --fail-on-bad-data
 ```
 
 The freshness report is intentionally separate from the default pass/fail gate:

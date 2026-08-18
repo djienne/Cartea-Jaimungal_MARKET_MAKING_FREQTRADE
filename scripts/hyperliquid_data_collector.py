@@ -884,7 +884,7 @@ class HyperliquidDataCollector:
 def main():
     """Main function"""
     # Configuration
-    SYMBOLS = ["ETH"]  # Add more symbols as needed
+    SYMBOLS = ["CASHCAT"]  # Add more symbols as needed
     OUTPUT_DIR = "HL_data"
     ORDERBOOK_DEPTH = 20  # Number of order book levels to capture (default: 20)
     

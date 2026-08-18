@@ -707,7 +707,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--crypto",
         "-c",
-        default="ETH",
+        default="CASHCAT",
         help="Symbol to evaluate, or ALL to scan every symbol with collector data",
     )
     parser.add_argument("--minutes", "-m", type=int, default=DEFAULT_MINUTES)

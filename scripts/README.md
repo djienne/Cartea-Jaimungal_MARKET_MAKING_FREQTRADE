@@ -53,18 +53,18 @@ python hyperliquid_data_collector.py
 
 ```bash
 # Survival-fit κ + per-side MO arrival rate λ + σ², saves kappa.json & lambda.json
-python get_kappa.py --crypto ETH --minutes 30
+python get_kappa.py --crypto CASHCAT --minutes 30
 
 # Event-level ε per MO at the 5s permanent-impact horizon, saves epsilon.json
-python get_epsilon.py --crypto ETH --minutes 30 [--post-horizon-ms 5000] [--ema-tau 300]
+python get_epsilon.py --crypto CASHCAT --minutes 30 [--post-horizon-ms 5000] [--ema-tau 300]
 
 # Optional raw trades/sec sanity check (writes lambda_trades.json)
-python get_lambda.py --crypto ETH --minutes 30
+python get_lambda.py --crypto CASHCAT --minutes 30
 
 # Inspect spreads across inventory (refreshes κ/ε/λ, then shows bid/ask and bps by q;
 # pass --spread-multiplier 3.0 to mirror the production config)
 # --mid defaults to the freshly collected BBO mid via mid_price.json when omitted
-python compute_spreads.py --crypto ETH --qmax 3 --spread-multiplier 3.0
+python compute_spreads.py --crypto CASHCAT --qmax 3 --spread-multiplier 3.0
 ```
 
 ---

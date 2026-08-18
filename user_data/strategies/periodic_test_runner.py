@@ -635,7 +635,7 @@ def schedule_tests(
     max_up: int = 10,
     copy_configs: bool = True,
     run_once: bool = True,
-    crypto: str = "ETH",
+    crypto: str = "CASHCAT",
     lock_stale_seconds: float = 3600.0,
     cycle_timeout_seconds: float = 0.0,
     window_minutes: int | None = None,
@@ -728,8 +728,8 @@ def _parse_args(argv: list[str]):
     p.add_argument(
         "--crypto",
         type=str,
-        default=os.getenv("CRYPTO_NAME", "ETH"),
-        help="Symbol to pass to estimator scripts (default: ETH)",
+        default=os.getenv("CRYPTO_NAME", "CASHCAT"),
+        help="Symbol to pass to estimator scripts (default: CASHCAT)",
     )
     p.add_argument(
         "--lock-stale-seconds",

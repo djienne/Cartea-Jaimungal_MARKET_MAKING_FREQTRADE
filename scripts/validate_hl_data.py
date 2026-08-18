@@ -232,7 +232,7 @@ def validate_symbol(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate HL_data parquet shards for replay readiness.")
-    parser.add_argument("--symbol", default="ETH")
+    parser.add_argument("--symbol", default="CASHCAT")
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "HL_data")
     parser.add_argument("--max-files", type=int, default=None)
     parser.add_argument("--newest-per-stream", type=int, default=None)
