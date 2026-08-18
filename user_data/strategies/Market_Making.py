@@ -4282,11 +4282,44 @@ class Market_Making(IStrategy):
         carried as the SIZE of one trade, moved a unit at a time from here.
         Positive stake adds, negative reduces.
 
-        Freqtrade calls this on every iteration and cancel-and-replaces any open
-        order whose amount or price differs. For a quoter that IS the requote
-        path, so unlike the documented example we deliberately do not bail out on
-        ``trade.has_open_orders``; the refresh cadence is governed instead by
-        _should_refresh_quote so we do not churn the book every few seconds.
+        Freqtrade calls this on every iteration, and unlike the documented
+        example we deliberately do not bail out on ``trade.has_open_orders``.
+
+        WHAT ACTUALLY PACES THE REQUOTES (verified against freqtrade 2025.10's
+        FreqtradeBot.manage_open_orders / replace_order, and measured live on
+        2026-08-18). An earlier version of this docstring claimed the cadence was
+        governed by ``_should_refresh_quote``. No such method has ever existed --
+        ``git log -S"def _should_refresh_quote"`` is empty across all history --
+        and freqtrade does not cancel-and-replace on any price change either.
+        The real mechanism is two paths, and the one that dominates is not the
+        one you would expect:
+
+        1. TIMEOUT (dominant). ``manage_open_orders`` checks ``ft_check_timed_out``
+           FIRST and cancels on ``unfilledtimeout``; freqtrade's own docstring
+           says "Timeout setting takes priority over limit order adjustment
+           request". The order is then re-placed on a later iteration. So the
+           cadence is ``unfilledtimeout`` plus however many
+           ``internals.process_throttle_secs`` iterations the cancel/re-place
+           round trip needs. At 3 s / 2 s that measured p10 1.0 s, p50 5.5 s,
+           p90 10.9 s between order placements.
+
+        2. CANDLE-GATED REPLACE (rare). ``replace_order`` is only reached when
+           the timeout did NOT fire, and it gates on a new candle
+           (``latest_candle_close_date > order_obj.order_date_utc``) before
+           calling ``adjust_order_price`` -> our ``adjust_entry_price`` /
+           ``adjust_exit_price``. With ``timeframe='1m'`` and a 3 s
+           ``unfilledtimeout``, an order only lives across a candle boundary
+           about 3/60 of the time, so those two callbacks fire on roughly 5% of
+           orders. They are not dead code, but they are not the requote path
+           either -- raising ``unfilledtimeout`` above the timeframe is what
+           would make them primary.
+
+        There is therefore no separate refresh gate to configure, and adding one
+        would be a third mechanism rather than a clarification: the cadence is
+        already set by ``unfilledtimeout`` and ``internals.process_throttle_secs``.
+        Note they do not compose linearly -- dropping them from 15 s / 15 s to
+        3 s / 2 s took the median from 30.3 s to ~10 s, but tightening further to
+        2 s / 1 s measured no faster while doubling API load.
 
         Sizing is re-derived here rather than inherited: custom_stake_amount is
         NOT called for position adjustments, so its one-unit cap would otherwise
