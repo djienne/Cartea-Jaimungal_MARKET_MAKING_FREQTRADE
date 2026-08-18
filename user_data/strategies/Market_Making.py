@@ -268,6 +268,10 @@ class Market_Making(IStrategy):
     debug_json_log: bool = True
     debug_json_log_filename: str = "mm_debug.jsonl"
     debug_json_log_max_bytes: int = 2_000_000
+    # 2 MB x 1 backup retained ~66 minutes at the measured 3.7 MB/hour. 48 files
+    # is ~4.4 days of continuous quoting, which is what a multi-day dry run needs
+    # to hand calibrate_replay_from_logs.py a usable fill sample. ~98 MB on disk.
+    debug_json_log_backup_count: int = 48
     _debug_log_lock = threading.Lock()
 
     _data_checked_and_available: bool = False # Added to track initial data presence
@@ -3650,18 +3654,30 @@ class Market_Making(IStrategy):
         return base / "logs" / self.debug_json_log_filename
 
     def _rotate_debug_log_if_needed(self, path: Path) -> None:
+        """Roll .1 -> .2 -> ... -> debug_json_log_backup_count, dropping the oldest.
+
+        Keeping a single backup bounded the retained history at roughly two
+        files' worth -- about 66 minutes at the measured 3.7 MB/hour against the
+        2 MB cap. Everything downstream reads this stream
+        (calibrate_replay_from_logs.py for the replay's fill model, and the
+        dry-run quality / live canary / fee evidence gates), so that cap was
+        deciding how much evidence a multi-day run could ever produce.
+        """
         max_bytes = int(getattr(self, "debug_json_log_max_bytes", 0) or 0)
         if max_bytes <= 0:
             return
+        keep = max(1, int(getattr(self, "debug_json_log_backup_count", 1) or 1))
         try:
-            if path.exists() and path.stat().st_size > max_bytes:
-                backup = path.with_suffix(path.suffix + ".1")
-                try:
-                    backup.unlink(missing_ok=True)
-                except TypeError:
-                    if backup.exists():
-                        backup.unlink()
-                path.replace(backup)
+            if not path.exists() or path.stat().st_size <= max_bytes:
+                return
+            oldest = path.with_suffix(f"{path.suffix}.{keep}")
+            if oldest.exists():
+                oldest.unlink()
+            for index in range(keep - 1, 0, -1):
+                source = path.with_suffix(f"{path.suffix}.{index}")
+                if source.exists():
+                    source.replace(path.with_suffix(f"{path.suffix}.{index + 1}"))
+            path.replace(path.with_suffix(f"{path.suffix}.1"))
         except Exception:
             return
 

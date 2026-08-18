@@ -886,20 +886,38 @@ class JsonlEventLogger:
         *,
         enabled: bool = True,
         max_bytes: int = 2_000_000,
+        backup_count: int = 1,
     ) -> None:
         self.path = Path(path)
         self.enabled = bool(enabled)
         self.max_bytes = int(max_bytes)
+        self.backup_count = max(1, int(backup_count))
         self._lock = threading.Lock()
 
     def _rotate_if_needed(self) -> None:
+        """Roll .1 -> .2 -> ... -> .backup_count, dropping the oldest.
+
+        This kept exactly ONE backup, which silently bounded how much history
+        could ever exist. At the measured 3.7 MB/hour a 2 MB cap retained about
+        66 minutes across both files, so a week-long dry run would have kept
+        0.7% of its own fill evidence -- and accumulating that evidence is the
+        entire reason the run exists. Every consumer of this stream
+        (calibrate_replay_from_logs, verify_dry_run_quality, verify_live_canary,
+        verify_fee_evidence) reads whatever survives, so the cap was quietly
+        setting the sample size of the gates too.
+        """
         if self.max_bytes <= 0:
             return
         try:
-            if self.path.exists() and self.path.stat().st_size > self.max_bytes:
-                backup = self.path.with_suffix(self.path.suffix + ".1")
-                backup.unlink(missing_ok=True)
-                self.path.replace(backup)
+            if not self.path.exists() or self.path.stat().st_size <= self.max_bytes:
+                return
+            oldest = self.path.with_suffix(f"{self.path.suffix}.{self.backup_count}")
+            oldest.unlink(missing_ok=True)
+            for index in range(self.backup_count - 1, 0, -1):
+                source = self.path.with_suffix(f"{self.path.suffix}.{index}")
+                if source.exists():
+                    source.replace(self.path.with_suffix(f"{self.path.suffix}.{index + 1}"))
+            self.path.replace(self.path.with_suffix(f"{self.path.suffix}.1"))
         except OSError:
             return
 
