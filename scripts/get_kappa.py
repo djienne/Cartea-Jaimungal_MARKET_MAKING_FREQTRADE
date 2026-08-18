@@ -13,6 +13,12 @@ Methodology:
   function P(depth >= delta): a resting order at depth delta fills when an MO
   walks at least that deep, so the model fill intensity is
   lambda(delta) = lambda± * exp(-kappa± * delta).
+- The fit support is per side and configurable as quantiles of that side's own
+  depth distribution: [--support-quantile-lower-{plus,minus},
+  --support-quantile-{plus,minus}], defaulting to [0.0, 0.99] — the whole
+  distribution up to the 99th percentile, which is the fit that has always
+  shipped. Raising the lower bound refits kappa over only the deeper region
+  where the measured edge is positive (see fit_kappa_survival for the argument).
 - lambda± is the raw per-side MO arrival rate (count / covered window
   seconds). The old binned-density regression intercept equals
   lambda*kappa*binwidth (bin-width dependent) and is kept only as the
@@ -28,20 +34,26 @@ import argparse
 import os
 import warnings
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 
 from estimator_common import (
+    DEFAULT_SUPPORT_QUANTILE_LOWER,
+    DEFAULT_SUPPORT_QUANTILE_UPPER,
+    EMIT_PAYLOAD_KIND,
     MIN_KAPPA_FIT_POINTS,
     MIN_KAPPA_R2,
     aggregate_market_orders,
     attach_pre_mid,
+    build_emit_window_block,
     fit_kappa_survival,
     load_market_window,
     mo_depths,
     realized_sigma2_per_sec,
     resolve_ema_tau,
     ema_update,
+    write_emit_payload,
 )
 from param_utils import (
     PARAM_SCHEMA_VERSION,
@@ -94,21 +106,18 @@ def list_available_cryptos(data_dir: str = None):
         return []
 
 
-def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus,
-                              crypto: str, kappa_file: str = "kappa.json", lambda_file: str = "lambda.json",
-                              metadata: dict | None = None, raw_values: dict | None = None):
-    """Persist kappa and per-side MO arrival rates (per second) to JSON files.
+def build_kappa_lambda_entries(kappa_plus, kappa_minus, lambda_plus, lambda_minus,
+                               metadata: dict | None = None,
+                               raw_values: dict | None = None) -> tuple[dict, dict]:
+    """The (kappa.json, lambda.json) entries for one symbol.
 
-    Primary keys hold the EMA-smoothed values; *_raw keys hold this window's
-    unsmoothed estimates (defaulting to the primaries when not supplied so
-    every v3 snapshot carries the full key set).
+    Split out of save_kappa_lambda_to_json so emit mode can produce the identical
+    entries without writing anywhere near the live snapshots.
     """
     metadata = dict(metadata or {})
     status = str(metadata.pop("status", "ok"))
     metadata.setdefault("generated_at", utc_now_iso())
     raw = dict(raw_values or {})
-    kappa_data = load_json_object(kappa_file)
-    lambda_data = load_json_object(lambda_file)
 
     raw_block = {
         "kappa+_raw": finite_or_none(raw.get("kappa+_raw", kappa_plus)),
@@ -117,7 +126,7 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
         "lambda-_raw": finite_or_none(raw.get("lambda-_raw", lambda_minus)),
     }
 
-    kappa_data[crypto] = {
+    kappa_entry = {
         "schema_version": PARAM_SCHEMA_VERSION,
         "status": status,
         "kappa+": finite_or_none(kappa_plus),
@@ -132,7 +141,7 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
         },
         **metadata,
     }
-    lambda_data[crypto] = {
+    lambda_entry = {
         "schema_version": PARAM_SCHEMA_VERSION,
         "status": status,
         "lambda+": finite_or_none(lambda_plus),
@@ -143,6 +152,26 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
         "unit": "events_per_second",
         **metadata,
     }
+    return kappa_entry, lambda_entry
+
+
+def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus,
+                              crypto: str, kappa_file: str = "kappa.json", lambda_file: str = "lambda.json",
+                              metadata: dict | None = None, raw_values: dict | None = None):
+    """Persist kappa and per-side MO arrival rates (per second) to JSON files.
+
+    Primary keys hold the EMA-smoothed values; *_raw keys hold this window's
+    unsmoothed estimates (defaulting to the primaries when not supplied so
+    every v3 snapshot carries the full key set).
+    """
+    kappa_entry, lambda_entry = build_kappa_lambda_entries(
+        kappa_plus, kappa_minus, lambda_plus, lambda_minus,
+        metadata=metadata, raw_values=raw_values,
+    )
+    kappa_data = load_json_object(kappa_file)
+    lambda_data = load_json_object(lambda_file)
+    kappa_data[crypto] = kappa_entry
+    lambda_data[crypto] = lambda_entry
 
     atomic_write_json(kappa_file, kappa_data)
     atomic_write_json(lambda_file, lambda_data)
@@ -153,16 +182,56 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
 
 def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None = None,
                          kappa_file: str = "kappa.json", lambda_file: str = "lambda.json",
-                         data_dir=None, window=None):
+                         data_dir=None, window=None,
+                         support_quantile_plus: float | None = None,
+                         support_quantile_minus: float | None = None,
+                         support_quantile_lower_plus: float | None = None,
+                         support_quantile_lower_minus: float | None = None,
+                         window_start=None, window_end=None,
+                         emit_params_json: str | Path | None = None,
+                         emit_sink: dict | None = None):
     """Run the full kappa/lambda estimation flow for a single crypto symbol.
 
     ``window`` lets a caller that already loaded the market window (estimate_all.py)
     hand it over instead of paying for a second full parquet scan of the same data.
+
+    The four support_* arguments set the per-side depth range the survival fit
+    runs over (quantiles of that side's own depths). None means "use the shipped
+    default", so the live estimator keeps the [0.0, 0.99] fit unchanged.
+
+    ``emit_params_json`` / ``emit_sink`` switch on emit mode: the computed
+    entries go to the given path (and/or into the given dict) and NOTHING is
+    written to kappa.json or lambda.json, so a sweep can run alongside the live
+    estimator container without disturbing the snapshots two freqtrade legs read.
     """
+    support_upper_plus = (
+        DEFAULT_SUPPORT_QUANTILE_UPPER if support_quantile_plus is None else float(support_quantile_plus)
+    )
+    support_upper_minus = (
+        DEFAULT_SUPPORT_QUANTILE_UPPER if support_quantile_minus is None else float(support_quantile_minus)
+    )
+    support_lower_plus = (
+        DEFAULT_SUPPORT_QUANTILE_LOWER
+        if support_quantile_lower_plus is None
+        else float(support_quantile_lower_plus)
+    )
+    support_lower_minus = (
+        DEFAULT_SUPPORT_QUANTILE_LOWER
+        if support_quantile_lower_minus is None
+        else float(support_quantile_lower_minus)
+    )
+    emitting = emit_params_json is not None or emit_sink is not None
+
     log_section(f"KAPPA/LAMBDA FROM MARKET DATA - {crypto} (last {minutes} min)")
+    if emitting:
+        target = emit_params_json if emit_params_json is not None else "caller (combined emit)"
+        print(f"[emit] kappa.json/lambda.json will NOT be written (emit mode); target: {target}")
     if window is None:
         try:
-            window = load_market_window(crypto, minutes, data_dir=data_dir)
+            window = load_market_window(
+                crypto, minutes, data_dir=data_dir,
+                window_start=window_start, window_end=window_end,
+            )
         except (FileNotFoundError, ValueError) as e:
             print(f"Error: {e}")
             return
@@ -176,8 +245,16 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
     n_buy_mos = int((mos["side"] == "buy").sum()) if not mos.empty else 0
     n_sell_mos = int((mos["side"] == "sell").sum()) if not mos.empty else 0
 
-    buy_fit = fit_kappa_survival(depth_info["buy_depths"])
-    sell_fit = fit_kappa_survival(depth_info["sell_depths"])
+    buy_fit = fit_kappa_survival(
+        depth_info["buy_depths"],
+        support_quantile=support_upper_plus,
+        support_quantile_lower=support_lower_plus,
+    )
+    sell_fit = fit_kappa_survival(
+        depth_info["sell_depths"],
+        support_quantile=support_upper_minus,
+        support_quantile_lower=support_lower_minus,
+    )
 
     # Arrival rate over the span both streams actually cover.
     if window.mids.empty:
@@ -195,6 +272,25 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
 
     log_section(f"KAPPA/LAMBDA ESTIMATES - {crypto}")
     print(f"Window: {window.window_start_iso()} -> {window.window_end_iso()} (covered {covered_seconds:.0f}s)")
+    if (
+        support_lower_plus != DEFAULT_SUPPORT_QUANTILE_LOWER
+        or support_lower_minus != DEFAULT_SUPPORT_QUANTILE_LOWER
+        or support_upper_plus != DEFAULT_SUPPORT_QUANTILE_UPPER
+        or support_upper_minus != DEFAULT_SUPPORT_QUANTILE_UPPER
+    ):
+        # A non-default support silently changes what kappa means; never let one
+        # appear in the log without saying so.
+        def _depth(value) -> str:
+            return "none" if value is None or not np.isfinite(value) else f"{float(value):.6g}"
+
+        print(
+            f"  fit support (quantiles): + [{support_lower_plus:g}, {support_upper_plus:g}] "
+            f"-> depths [{_depth(buy_fit.get('support_depth_lower'))}, "
+            f"{_depth(buy_fit.get('support_depth_upper'))}]; "
+            f"- [{support_lower_minus:g}, {support_upper_minus:g}] "
+            f"-> depths [{_depth(sell_fit.get('support_depth_lower'))}, "
+            f"{_depth(sell_fit.get('support_depth_upper'))}]"
+        )
     for label, fit, lam_raw, n_mos in (
         ("kappa+ (ask side, buy MOs)", buy_fit, lambda_plus_raw, n_buy_mos),
         ("kappa- (bid side, sell MOs)", sell_fit, lambda_minus_raw, n_sell_mos),
@@ -228,6 +324,19 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
         "depth_p95_minus": finite_or_none(sell_fit.get("depth_p95")),
         "depth_max_fitted_plus": finite_or_none(buy_fit.get("depth_max_fitted")),
         "depth_max_fitted_minus": finite_or_none(sell_fit.get("depth_max_fitted")),
+        # Which depth range each side's fit actually used. Two kappa values are
+        # only comparable across cycles if they were fitted over the same
+        # support, so the support travels with the number.
+        "depth_min_fitted_plus": finite_or_none(buy_fit.get("depth_min_fitted")),
+        "depth_min_fitted_minus": finite_or_none(sell_fit.get("depth_min_fitted")),
+        "support_quantile_lower_plus": float(support_lower_plus),
+        "support_quantile_lower_minus": float(support_lower_minus),
+        "support_quantile_upper_plus": float(support_upper_plus),
+        "support_quantile_upper_minus": float(support_upper_minus),
+        "support_depth_lower_plus": finite_or_none(buy_fit.get("support_depth_lower")),
+        "support_depth_lower_minus": finite_or_none(sell_fit.get("support_depth_lower")),
+        "support_depth_upper_plus": finite_or_none(buy_fit.get("support_depth_upper")),
+        "support_depth_upper_minus": finite_or_none(sell_fit.get("support_depth_upper")),
         "sigma2_per_sec": finite_or_none(sigma2) if sigma2 is not None else None,
         "mid_source": window.mid_source,
         "ts_source": window.ts_source,
@@ -276,7 +385,7 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
 
     tau = resolve_ema_tau(ema_tau)
     metadata["ema_tau_seconds"] = float(tau)
-    if metadata["status"] == "ok":
+    if metadata["status"] == "ok" and not emitting:
         prev_entry = load_json_object(kappa_file).get(crypto)
         prev_entry = prev_entry if isinstance(prev_entry, dict) else None
         smoothed = {}
@@ -295,10 +404,42 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
         lambda_plus_out, lambda_minus_out = smoothed["lambda+"], smoothed["lambda-"]
     else:
         # Bad windows ship raw (consumers reject on status); the next ok cycle
-        # re-seeds rather than blending across the bad snapshot.
+        # re-seeds rather than blending across the bad snapshot. Emit mode also
+        # lands here on purpose: a sweep result must be a pure function of its
+        # slice and settings, and blending against whatever the live container
+        # last wrote would make the same slice give different answers.
         metadata["ema_seeded"] = True
         kappa_plus_out, kappa_minus_out = raw_values["kappa+_raw"], raw_values["kappa-_raw"]
         lambda_plus_out, lambda_minus_out = raw_values["lambda+_raw"], raw_values["lambda-_raw"]
+
+    if emitting:
+        kappa_entry, lambda_entry = build_kappa_lambda_entries(
+            kappa_plus_out, kappa_minus_out, lambda_plus_out, lambda_minus_out,
+            metadata=metadata, raw_values=raw_values,
+        )
+        payload = {
+            "kind": EMIT_PAYLOAD_KIND,
+            "schema_version": PARAM_SCHEMA_VERSION,
+            "crypto": crypto,
+            "generated_at": generated_at,
+            "window": build_emit_window_block(window, minutes),
+            "calibration": {
+                "kappa_support_quantile_lower_plus": float(support_lower_plus),
+                "kappa_support_quantile_lower_minus": float(support_lower_minus),
+                "kappa_support_quantile_upper_plus": float(support_upper_plus),
+                "kappa_support_quantile_upper_minus": float(support_upper_minus),
+                "ema_tau_seconds": float(tau),
+                "ema_applied": False,
+            },
+            "kappa": kappa_entry,
+            "lambda": lambda_entry,
+        }
+        if emit_sink is not None:
+            emit_sink.update(payload)
+        if emit_params_json is not None:
+            written = write_emit_payload(emit_params_json, payload)
+            print(f"[emit] kappa/lambda params -> {written}")
+        return
 
     save_kappa_lambda_to_json(
         kappa_plus_out,
@@ -316,13 +457,45 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
 # Parse command line arguments
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Joint kappa/lambda estimation from market data (survival fit + MO arrival rates)')
-    parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'ETH'),
+    parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'CASHCAT'),
                         help='Cryptocurrency symbol (e.g., ETH) or ALL to process every symbol in HL_data')
     parser.add_argument('--minutes', '-m', type=int, default=30,
                         help='Number of minutes from most recent data to analyze')
     parser.add_argument('--ema-tau', type=float, default=None,
                         help='EMA time constant in seconds for smoothing primary values '
                              '(default: PARAM_EMA_TAU_SECONDS env or 300; 0 disables smoothing)')
+    parser.add_argument('--support-quantile', type=float, default=None,
+                        help='Shorthand: upper quantile of the kappa fit support on BOTH sides '
+                             f'(default {DEFAULT_SUPPORT_QUANTILE_UPPER})')
+    parser.add_argument('--support-quantile-plus', type=float, default=None,
+                        help='Upper quantile of the fit support for kappa+ (buy MO depths). '
+                             'Overrides --support-quantile.')
+    parser.add_argument('--support-quantile-minus', type=float, default=None,
+                        help='Upper quantile of the fit support for kappa- (sell MO depths). '
+                             'Overrides --support-quantile.')
+    parser.add_argument('--support-quantile-lower', type=float, default=None,
+                        help='Shorthand: lower quantile of the kappa fit support on BOTH sides '
+                             f'(default {DEFAULT_SUPPORT_QUANTILE_LOWER} = no lower bound). Raise it '
+                             'to fit kappa only over the deeper market orders that actually pay.')
+    parser.add_argument('--support-quantile-lower-plus', type=float, default=None,
+                        help='Lower quantile of the fit support for kappa+ (buy MO depths). '
+                             'Overrides --support-quantile-lower.')
+    parser.add_argument('--support-quantile-lower-minus', type=float, default=None,
+                        help='Lower quantile of the fit support for kappa- (sell MO depths). '
+                             'Overrides --support-quantile-lower.')
+    parser.add_argument('--window-start', type=str, default=None,
+                        help='ISO-8601 (or epoch) start of the window; selects a historical slice '
+                             'instead of the trailing --minutes window')
+    parser.add_argument('--window-end', type=str, default=None,
+                        help='ISO-8601 (or epoch) end of the window (clamped to the data that exists)')
+    parser.add_argument('--emit-params-json', type=str, default=None,
+                        help='Write the computed kappa/lambda set to this path and write NOTHING '
+                             'else: kappa.json and lambda.json are left untouched. Use for '
+                             'calibration sweeps while the live estimator is running. With '
+                             '--crypto ALL the symbol is inserted into the filename.')
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Root of the collector output (default: scripts/HL_data). A sweep can '
+                             'point this at a frozen copy so it never contends with the collector.')
     parser.add_argument('--verbosity', '-v', type=int, choices=[0, 1], default=0,
                         help='Verbosity: 0=minimal (default), 1=verbose')
 
@@ -331,16 +504,50 @@ if __name__ == "__main__":
     _set_verbosity(args.verbosity)
 
     if isinstance(args.crypto, str) and args.crypto.strip().upper() == 'ALL':
-        symbols = list_available_cryptos('HL_data')
+        symbols = list_available_cryptos(args.data_dir)
         if not symbols:
             print("No crypto data found in HL_data (need prices/orderbooks and trades parquet).")
             raise SystemExit(1)
     else:
         symbols = [args.crypto.strip().upper()]
 
+    # Per-side flag wins over the both-sides shorthand, which wins over the
+    # default. Same precedence the epsilon horizons use.
+    support_upper_plus = args.support_quantile_plus if args.support_quantile_plus is not None else args.support_quantile
+    support_upper_minus = args.support_quantile_minus if args.support_quantile_minus is not None else args.support_quantile
+    support_lower_plus = (
+        args.support_quantile_lower_plus if args.support_quantile_lower_plus is not None else args.support_quantile_lower
+    )
+    support_lower_minus = (
+        args.support_quantile_lower_minus if args.support_quantile_lower_minus is not None else args.support_quantile_lower
+    )
+
+    if (args.window_start or args.window_end) and not args.emit_params_json:
+        # Not forbidden -- someone may legitimately want to backfill a snapshot --
+        # but it is worth one loud line, because writing a historical slice into
+        # kappa.json hands the live strategy parameters from another hour.
+        print("WARNING: --window-start/--window-end without --emit-params-json will OVERWRITE "
+              "kappa.json/lambda.json with parameters fitted on a historical slice.")
+
     for sym in symbols:
+        emit_path = args.emit_params_json
+        if emit_path and len(symbols) > 1:
+            p = Path(emit_path)
+            emit_path = str(p.with_name(f"{p.stem}.{sym}{p.suffix}"))
         try:
-            run_kappa_for_crypto(sym, minutes=args.minutes, ema_tau=args.ema_tau)
+            run_kappa_for_crypto(
+                sym,
+                minutes=args.minutes,
+                ema_tau=args.ema_tau,
+                support_quantile_plus=support_upper_plus,
+                support_quantile_minus=support_upper_minus,
+                support_quantile_lower_plus=support_lower_plus,
+                support_quantile_lower_minus=support_lower_minus,
+                window_start=args.window_start,
+                window_end=args.window_end,
+                emit_params_json=emit_path,
+                data_dir=args.data_dir,
+            )
         except KeyboardInterrupt:
             raise
         except Exception as e:

@@ -53,7 +53,7 @@ class LambdaResults:
     n_trades_total: int
 
 
-def load_trades_only(crypto: str = 'ETH', time_range_minutes: int = 15) -> pd.DataFrame:
+def load_trades_only(crypto: str = 'CASHCAT', time_range_minutes: int = 15) -> pd.DataFrame:
     """Load trades for the chosen crypto and filter to the last time_range_minutes from Parquet files."""
     
     # Define paths relative to this script
@@ -155,7 +155,7 @@ def save_lambda_to_json(lam_plus: float, lam_minus: float, crypto: str, filename
 
 def main():
     parser = argparse.ArgumentParser(description='Calibrate raw trade lambda (trades/sec) from HL_data trades only')
-    parser.add_argument('--crypto', '-c', type=str, default='ETH', help='Crypto symbol (default ETH)')
+    parser.add_argument('--crypto', '-c', type=str, default='CASHCAT', help='Crypto symbol (default CASHCAT)')
     parser.add_argument('--minutes', '-m', type=int, default=30, help='Minutes from most recent to analyze')
     parser.add_argument('--output', '-o', type=str, default='lambda_trades.json',
                         help='Output JSON filename (default lambda_trades.json)')

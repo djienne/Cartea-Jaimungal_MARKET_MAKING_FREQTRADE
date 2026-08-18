@@ -153,7 +153,9 @@ def test_run_all_loads_the_window_once_and_shares_it(monkeypatch):
     loads = []
     seen = {}
 
-    def fake_load(crypto, minutes, data_dir=None):
+    def fake_load(crypto, minutes, data_dir=None, **kwargs):
+        # **kwargs absorbs the optional window_start/window_end bounds a
+        # calibration sweep passes; a live cycle leaves both None.
         loads.append((crypto, minutes))
         return window
 

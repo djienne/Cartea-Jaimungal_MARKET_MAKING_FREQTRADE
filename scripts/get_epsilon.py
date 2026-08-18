@@ -8,12 +8,13 @@ Methodology:
 - pre-mid = last mid strictly BEFORE the MO; post-mid = last mid at or before
   MO time + horizon. MOs whose horizon extends past the data window are
   dropped (no truncation bias).
-- The primary horizon is 200 ms (--post-horizon-ms / EPSILON_POST_HORIZON_MS).
-  The book's epsilon (eq. 10.22) is the jump AT the MO arrival, so a long
-  markout measures a different quantity: it absorbs every other MO in the
-  window, and the HJB already carries that net-flow drift separately in the
-  q(lambda+ eps+ - lambda- eps-) term of eq. 10.26. 1 s and 5 s means are
-  recorded as diagnostics (epsilon_1s_±, epsilon_5s_±).
+- The primary horizon is 200 ms per side (--post-horizon-ms-plus /
+  --post-horizon-ms-minus, or --post-horizon-ms / EPSILON_POST_HORIZON_MS as the
+  shorthand that sets both). The book's epsilon (eq. 10.22) is the jump AT the
+  MO arrival, so a long markout measures a different quantity: it absorbs every
+  other MO in the window, and the HJB already carries that net-flow drift
+  separately in the q(lambda+ eps+ - lambda- eps-) term of eq. 10.26. 1 s and
+  5 s means are recorded as diagnostics (epsilon_1s_±, epsilon_5s_±).
 - The shipped statistic is the plain MEAN of outlier-cleaned impacts, because
   the model wants E[eps]. A 10% trimmed mean is still reported as a diagnostic
   but is not the model's moment -- on a right-skewed jump distribution it
@@ -29,17 +30,21 @@ import argparse
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from estimator_common import (
+    EMIT_PAYLOAD_KIND,
     MIN_EPSILON_EVENTS,
     aggregate_market_orders,
     attach_pre_mid,
+    build_emit_window_block,
     ema_update,
     load_market_window,
     resolve_ema_tau,
+    write_emit_payload,
 )
 from param_utils import (
     PARAM_SCHEMA_VERSION,
@@ -57,9 +62,21 @@ from param_utils import (
 # lambda- eps-) term of eq. 10.26, so a long horizon double-counts the trend.
 # 200 ms is short enough to be the arrival jump and long enough to clear the
 # mechanical BBO reaction. The former 5 s default is kept as a diagnostic.
+#
+# The horizon is resolved PER SIDE. That argument for 200 ms assumes continuous
+# requoting; this stack leaves a quote resting for ~30 s, and on CASHCAT the
+# realized 5 s markout on a bid fill is an order of magnitude larger than the
+# 200 ms jump (1.0 bps vs 15.2 bps at the quoted depth). Whether the bid side
+# should price a longer horizon than the ask side is a measurement question, not
+# a taste question, so both sides are independently sweepable and BOTH still
+# default to 200 ms — nothing about the live estimator changes unless a flag or
+# env var is set. Per the standing rule that parameters are always a +/- pair,
+# the per-side flags are the primary interface and the scalar is the shorthand.
 DEFAULT_POST_HORIZON_MS = 200
 DIAGNOSTIC_HORIZONS_MS = (1000, 5000)
 POST_HORIZON_ENV_VAR = "EPSILON_POST_HORIZON_MS"
+POST_HORIZON_ENV_VAR_PLUS = "EPSILON_POST_HORIZON_MS_PLUS"
+POST_HORIZON_ENV_VAR_MINUS = "EPSILON_POST_HORIZON_MS_MINUS"
 
 # Verbosity control: 0=minimal, 1=verbose
 VERBOSITY = 0
@@ -81,19 +98,48 @@ def log_section(title: str) -> None:
     print("=" * 60)
 
 
+def _coerce_horizon_ms(value) -> int | None:
+    """A positive integer number of ms, or None when the source said nothing."""
+    if value is None:
+        return None
+    try:
+        return max(1, int(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
 def resolve_post_horizon_ms(cli_value: int | None = None) -> int:
-    if cli_value is not None:
-        try:
-            return max(1, int(cli_value))
-        except (TypeError, ValueError):
-            pass
-    env_value = os.getenv(POST_HORIZON_ENV_VAR)
-    if env_value is not None:
-        try:
-            return max(1, int(float(env_value)))
-        except (TypeError, ValueError):
-            pass
-    return DEFAULT_POST_HORIZON_MS
+    """Scalar horizon resolution (CLI > env > default), kept for callers that
+    only ever wanted one number. Both sides go through the pair resolver."""
+    return resolve_post_horizon_ms_pair(cli_scalar=cli_value)[0]
+
+
+def resolve_post_horizon_ms_pair(
+    cli_scalar: int | None = None,
+    cli_plus: int | None = None,
+    cli_minus: int | None = None,
+) -> tuple[int, int]:
+    """(horizon_plus_ms, horizon_minus_ms).
+
+    Precedence per side, most specific first: the per-side CLI flag, the scalar
+    CLI flag (the shorthand that sets both), the per-side env var, the scalar env
+    var, then DEFAULT_POST_HORIZON_MS. A side that is never mentioned anywhere
+    stays at 200 ms, so the live estimator — which passes none of these — is
+    bit-identical to before the split.
+    """
+    env_scalar = os.getenv(POST_HORIZON_ENV_VAR)
+    resolved = []
+    for cli_side, env_side_var in (
+        (cli_plus, POST_HORIZON_ENV_VAR_PLUS),
+        (cli_minus, POST_HORIZON_ENV_VAR_MINUS),
+    ):
+        value = None
+        for candidate in (cli_side, cli_scalar, os.getenv(env_side_var), env_scalar):
+            value = _coerce_horizon_ms(candidate)
+            if value is not None:
+                break
+        resolved.append(value if value is not None else DEFAULT_POST_HORIZON_MS)
+    return resolved[0], resolved[1]
 
 
 def list_available_cryptos(data_dir: str = None):
@@ -173,6 +219,36 @@ def compute_mo_impacts(mos_with_pre_mid: pd.DataFrame, mids: pd.DataFrame,
         for impact, size in zip(sells['pre_mid'] - sells['post_mid'], sells['size'])
     ]
     return results
+
+
+def compute_mo_impacts_per_side(mos_with_pre_mid: pd.DataFrame, mids: pd.DataFrame,
+                                horizon_plus_ms: int, horizon_minus_ms: int,
+                                window_end_ms: float) -> dict:
+    """Impacts with an independent horizon per side.
+
+    Equal horizons take the single-pass path, so the default configuration runs
+    exactly the code (and the one merge_asof) it always did. Only a genuinely
+    asymmetric setting pays for the second pass.
+
+    epsilon+ is the impact of BUY market orders (they lift our resting ask) and
+    epsilon- the impact of SELL market orders, so the plus horizon governs the
+    buy side and the minus horizon the sell side.
+    """
+    if int(horizon_plus_ms) == int(horizon_minus_ms):
+        return compute_mo_impacts(mos_with_pre_mid, mids, int(horizon_plus_ms), window_end_ms)
+
+    plus = compute_mo_impacts(mos_with_pre_mid, mids, int(horizon_plus_ms), window_end_ms)
+    minus = compute_mo_impacts(mos_with_pre_mid, mids, int(horizon_minus_ms), window_end_ms)
+    analyzed = len(plus['buy_impacts']) + len(minus['sell_impacts'])
+    return {
+        'buy_impacts': plus['buy_impacts'],
+        'sell_impacts': minus['sell_impacts'],
+        'trades_analyzed': int(analyzed),
+        # Each MO is counted once, against the horizon its own side used; a
+        # longer horizon drops more MOs at the end of the window (no truncation
+        # bias), which is exactly what shows up here.
+        'trades_skipped': int(len(mos_with_pre_mid) - analyzed),
+    }
 
 
 def estimate_epsilon_parameters(results):
@@ -266,6 +342,30 @@ def load_kappa_from_json(crypto: str, filename: str = 'kappa.json'):
     return float(kappa_plus), float(kappa_minus)
 
 
+def build_epsilon_entry(eps_plus: float, eps_minus: float, metadata: dict | None = None,
+                        raw_values: dict | None = None) -> dict:
+    """The epsilon.json entry for one symbol.
+
+    Split out of save_epsilon_to_json so emit mode can produce the identical
+    entry without writing anywhere near the live snapshot.
+    """
+    metadata = dict(metadata or {})
+    status = str(metadata.pop("status", "ok"))
+    metadata.setdefault("generated_at", utc_now_iso())
+    raw = dict(raw_values or {})
+    return {
+        "schema_version": PARAM_SCHEMA_VERSION,
+        "status": status,
+        "epsilon+": finite_or_none(eps_plus),
+        "epsilon-": finite_or_none(eps_minus),
+        "epsilon+_raw": finite_or_none(raw.get("epsilon+_raw", eps_plus)),
+        "epsilon-_raw": finite_or_none(raw.get("epsilon-_raw", eps_minus)),
+        "unit": "USDC",
+        "estimator": "mean_at_arrival",
+        **metadata,
+    }
+
+
 def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filename: str = "epsilon.json",
                          metadata: dict | None = None, raw_values: dict | None = None):
     """Save epsilon estimates to JSON. Primary keys are EMA-smoothed; *_raw
@@ -274,30 +374,14 @@ def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filenam
     shipped: trimming a right-skewed jump distribution understates adverse
     selection. *_raw defaults to the primaries when not supplied, so every v3
     snapshot carries the full key set."""
-    metadata = dict(metadata or {})
-    status = str(metadata.pop("status", "ok"))
-    metadata.setdefault("generated_at", utc_now_iso())
-    raw = dict(raw_values or {})
-    epsilon_plus_val = finite_or_none(eps_plus)
-    epsilon_minus_val = finite_or_none(eps_minus)
+    entry = build_epsilon_entry(eps_plus, eps_minus, metadata=metadata, raw_values=raw_values)
     data = load_json_object(filename)
-
-    data[crypto] = {
-        "schema_version": PARAM_SCHEMA_VERSION,
-        "status": status,
-        "epsilon+": epsilon_plus_val,
-        "epsilon-": epsilon_minus_val,
-        "epsilon+_raw": finite_or_none(raw.get("epsilon+_raw", eps_plus)),
-        "epsilon-_raw": finite_or_none(raw.get("epsilon-_raw", eps_minus)),
-        "unit": "USDC",
-        "estimator": "mean_at_arrival",
-        **metadata,
-    }
+    data[crypto] = entry
 
     atomic_write_json(filename, data)
 
     print(f"[save] epsilon -> {filename}")
-    print(f"[save] {crypto}: epsilon+={epsilon_plus_val}, epsilon-={epsilon_minus_val}")
+    print(f"[save] {crypto}: epsilon+={entry['epsilon+']}, epsilon-={entry['epsilon-']}")
 
 
 def load_mid_price_from_json(crypto: str, filename: str = 'mid_price.json') -> float:
@@ -313,17 +397,45 @@ def load_mid_price_from_json(crypto: str, filename: str = 'mid_price.json') -> f
 
 def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int | None = None,
                            ema_tau: float | None = None, epsilon_file: str = "epsilon.json",
-                           data_dir=None, window=None):
+                           data_dir=None, window=None,
+                           post_horizon_ms_plus: int | None = None,
+                           post_horizon_ms_minus: int | None = None,
+                           window_start=None, window_end=None,
+                           emit_params_json: str | Path | None = None,
+                           emit_sink: dict | None = None,
+                           kappa_override: tuple[float, float] | None = None):
     """Run the full epsilon analysis and persistence for a single crypto symbol.
 
     ``window`` lets a caller that already loaded the market window (estimate_all.py)
     hand it over instead of paying for a second full parquet scan of the same data.
+
+    ``emit_params_json`` / ``emit_sink`` switch on emit mode: the computed entry
+    goes to the given path (and/or into the given dict) and NOTHING is written to
+    epsilon.json. That is the whole point — a calibration sweep must be able to
+    recompute parameters at arbitrary settings while a live estimator container
+    and two freqtrade legs are using the real snapshot.
     """
-    horizon_ms = resolve_post_horizon_ms(post_horizon_ms)
-    log_section(f"EPSILON FROM MARKET DATA - {crypto} (last {minutes} min, horizon {horizon_ms} ms)")
+    horizon_plus_ms, horizon_minus_ms = resolve_post_horizon_ms_pair(
+        cli_scalar=post_horizon_ms,
+        cli_plus=post_horizon_ms_plus,
+        cli_minus=post_horizon_ms_minus,
+    )
+    horizon_label = (
+        f"{horizon_plus_ms} ms"
+        if horizon_plus_ms == horizon_minus_ms
+        else f"+{horizon_plus_ms} ms / -{horizon_minus_ms} ms"
+    )
+    emitting = emit_params_json is not None or emit_sink is not None
+    log_section(f"EPSILON FROM MARKET DATA - {crypto} (last {minutes} min, horizon {horizon_label})")
+    if emitting:
+        target = emit_params_json if emit_params_json is not None else "caller (combined emit)"
+        print(f"[emit] epsilon.json will NOT be written (emit mode); target: {target}")
     if window is None:
         try:
-            window = load_market_window(crypto, minutes, data_dir=data_dir)
+            window = load_market_window(
+                crypto, minutes, data_dir=data_dir,
+                window_start=window_start, window_end=window_end,
+            )
         except (FileNotFoundError, ValueError) as e:
             print(f"Error: {e}")
             return
@@ -336,12 +448,17 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
 
     log_section(f"CALCULATING PRICE IMPACTS FOR {crypto}")
 
-    impact_results = compute_mo_impacts(mos, window.mids, horizon_ms, window_end_ms)
+    impact_results = compute_mo_impacts_per_side(
+        mos, window.mids, horizon_plus_ms, horizon_minus_ms, window_end_ms
+    )
     eps_plus_raw, eps_minus_raw, final_estimates = _floored_trimmed_means(impact_results)
 
     diagnostics: dict[str, float | None] = {}
     for diag_horizon in DIAGNOSTIC_HORIZONS_MS:
-        if diag_horizon == horizon_ms:
+        # Reuse the primary result only when BOTH sides were measured at exactly
+        # this horizon; otherwise a diagnostic labelled "5s" could silently carry
+        # a 200 ms number for one side.
+        if diag_horizon == horizon_plus_ms and diag_horizon == horizon_minus_ms:
             diag_plus, diag_minus = eps_plus_raw, eps_minus_raw
         else:
             diag_results = compute_mo_impacts(mos, window.mids, diag_horizon, window_end_ms)
@@ -352,17 +469,23 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
         diagnostics[f"epsilon_{label}_plus"] = finite_or_none(diag_plus)
         diagnostics[f"epsilon_{label}_minus"] = finite_or_none(diag_minus)
 
-    log_section(f"EPSILON ESTIMATES (event-level, {horizon_ms} ms horizon) - {crypto}")
+    log_section(f"EPSILON ESTIMATES (event-level, {horizon_label} horizon) - {crypto}")
     print(f"{crypto}: epsilon+={eps_plus_raw:.8f}, epsilon-={eps_minus_raw:.8f} (raw)")
 
     n_buy_events = int(final_estimates["epsilon_buy"].get("n_trades", 0) or 0)
     n_sell_events = int(final_estimates["epsilon_sell"].get("n_trades", 0) or 0)
 
-    # Check toxicity using kappa from kappa.json (per-crypto)
+    # Check toxicity using kappa from kappa.json (per-crypto). In emit mode the
+    # caller can hand over the kappa it just computed on the SAME slice; mixing
+    # a slice epsilon with the live kappa would make the emitted toxicity a
+    # number that belongs to no window at all.
     toxicity_plus = None
     toxicity_minus = None
     try:
-        kappa_plus, kappa_minus = load_kappa_from_json(crypto)
+        if kappa_override is not None:
+            kappa_plus, kappa_minus = float(kappa_override[0]), float(kappa_override[1])
+        else:
+            kappa_plus, kappa_minus = load_kappa_from_json(crypto)
         log_section(f"TOXICITY CHECK - {crypto}")
         toxicity_plus = kappa_plus * eps_plus_raw
         toxicity_minus = kappa_minus * eps_minus_raw
@@ -425,43 +548,82 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
         "epsilon+_raw": finite_or_none(eps_plus_raw),
         "epsilon-_raw": finite_or_none(eps_minus_raw),
     }
-    if status == "ok":
+    if status == "ok" and not emitting:
         prev_entry = load_json_object(epsilon_file).get(crypto)
         prev_entry = prev_entry if isinstance(prev_entry, dict) else None
         eps_plus_out, meta_plus = ema_update(eps_plus_raw, prev_entry, "epsilon+", tau, now=generated_at_dt)
         eps_minus_out, meta_minus = ema_update(eps_minus_raw, prev_entry, "epsilon-", tau, now=generated_at_dt)
         ema_seeded = bool(meta_plus["ema_seeded"]) and bool(meta_minus["ema_seeded"])
     else:
+        # Emit mode never blends against the live snapshot: a sweep result has to
+        # be a pure function of its own slice and settings, and reading the live
+        # file would make the same slice give different answers depending on what
+        # the running container last wrote. Bad windows also ship raw (consumers
+        # reject on status) so the next ok cycle re-seeds.
         eps_plus_out, eps_minus_out = eps_plus_raw, eps_minus_raw
         ema_seeded = True
 
-    save_epsilon_to_json(
-        eps_plus_out,
-        eps_minus_out,
-        crypto,
-        filename=epsilon_file,
-        metadata={
-            "status": status,
-            "window_ms": int(horizon_ms),
-            "window_start": window.window_start_iso(),
-            "window_end": window.window_end_iso(),
+    metadata = {
+        "status": status,
+        # window_ms is the pre-split key and stays for compatibility. With one
+        # shared horizon it is that horizon, exactly as before. With per-side
+        # horizons no single number is the truth, so it reports the LONGEST one
+        # in use (overstating the markout is the direction that warns a reader
+        # rather than reassuring them) and window_ms_plus / window_ms_minus carry
+        # what each side actually used.
+        "window_ms": int(max(horizon_plus_ms, horizon_minus_ms)),
+        "window_ms_plus": int(horizon_plus_ms),
+        "window_ms_minus": int(horizon_minus_ms),
+        "window_start": window.window_start_iso(),
+        "window_end": window.window_end_iso(),
+        "generated_at": generated_at,
+        "n_quotes": int(len(window.mids)),
+        "n_trades": int(len(window.trades)),
+        "n_buy_events": n_buy_events,
+        "n_sell_events": n_sell_events,
+        "trades_analyzed": int(impact_results.get("trades_analyzed", 0) or 0),
+        "trades_skipped": int(impact_results.get("trades_skipped", 0) or 0),
+        "toxicity_plus": finite_or_none(toxicity_plus),
+        "toxicity_minus": finite_or_none(toxicity_minus),
+        "mid_source": window.mid_source,
+        "ts_source": window.ts_source,
+        "ema_tau_seconds": float(tau),
+        "ema_seeded": ema_seeded,
+        **diagnostics,
+    }
+
+    if emitting:
+        entry = build_epsilon_entry(
+            eps_plus_out, eps_minus_out, metadata=metadata, raw_values=raw_values
+        )
+        payload = {
+            "kind": EMIT_PAYLOAD_KIND,
+            "schema_version": PARAM_SCHEMA_VERSION,
+            "crypto": crypto,
             "generated_at": generated_at,
-            "n_quotes": int(len(window.mids)),
-            "n_trades": int(len(window.trades)),
-            "n_buy_events": n_buy_events,
-            "n_sell_events": n_sell_events,
-            "trades_analyzed": int(impact_results.get("trades_analyzed", 0) or 0),
-            "trades_skipped": int(impact_results.get("trades_skipped", 0) or 0),
-            "toxicity_plus": finite_or_none(toxicity_plus),
-            "toxicity_minus": finite_or_none(toxicity_minus),
-            "mid_source": window.mid_source,
-            "ts_source": window.ts_source,
-            "ema_tau_seconds": float(tau),
-            "ema_seeded": ema_seeded,
-            **diagnostics,
-        },
-        raw_values=raw_values,
-    )
+            "window": build_emit_window_block(window, minutes),
+            "calibration": {
+                "epsilon_post_horizon_ms_plus": int(horizon_plus_ms),
+                "epsilon_post_horizon_ms_minus": int(horizon_minus_ms),
+                "ema_tau_seconds": float(tau),
+                "ema_applied": False,
+            },
+            "epsilon": entry,
+        }
+        if emit_sink is not None:
+            emit_sink.update(payload)
+        if emit_params_json is not None:
+            written = write_emit_payload(emit_params_json, payload)
+            print(f"[emit] epsilon params -> {written}")
+    else:
+        save_epsilon_to_json(
+            eps_plus_out,
+            eps_minus_out,
+            crypto,
+            filename=epsilon_file,
+            metadata=metadata,
+            raw_values=raw_values,
+        )
 
     vprint("\nNotes:")
     vprint("- epsilon is measured per market order against the BBO mid stream")
@@ -476,16 +638,39 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Calculate epsilon (permanent price impact) from market data')
-    parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'ETH'),
+    parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'CASHCAT'),
                         help='Cryptocurrency symbol (e.g., ETH) or ALL for all available in HL_data')
     parser.add_argument('--minutes', '-m', type=int, default=30,
                         help='Number of minutes from most recent data to analyze')
     parser.add_argument('--post-horizon-ms', type=int, default=None,
-                        help='Primary post-trade horizon in ms for the permanent-impact measurement '
+                        help='Shorthand that sets BOTH per-side post-trade horizons in ms '
                              f'(default: {POST_HORIZON_ENV_VAR} env or {DEFAULT_POST_HORIZON_MS})')
+    parser.add_argument('--post-horizon-ms-plus', type=int, default=None,
+                        help='Post-trade horizon in ms for epsilon+ (impact of BUY market orders, '
+                             f'i.e. fills on our resting ask). Overrides --post-horizon-ms. '
+                             f'(default: {POST_HORIZON_ENV_VAR_PLUS} env, then {POST_HORIZON_ENV_VAR}, '
+                             f'then {DEFAULT_POST_HORIZON_MS})')
+    parser.add_argument('--post-horizon-ms-minus', type=int, default=None,
+                        help='Post-trade horizon in ms for epsilon- (impact of SELL market orders, '
+                             f'i.e. fills on our resting bid). Overrides --post-horizon-ms. '
+                             f'(default: {POST_HORIZON_ENV_VAR_MINUS} env, then {POST_HORIZON_ENV_VAR}, '
+                             f'then {DEFAULT_POST_HORIZON_MS})')
     parser.add_argument('--ema-tau', type=float, default=None,
                         help='EMA time constant in seconds for smoothing primary values '
                              '(default: PARAM_EMA_TAU_SECONDS env or 300; 0 disables smoothing)')
+    parser.add_argument('--window-start', type=str, default=None,
+                        help='ISO-8601 (or epoch) start of the window; selects a historical slice '
+                             'instead of the trailing --minutes window')
+    parser.add_argument('--window-end', type=str, default=None,
+                        help='ISO-8601 (or epoch) end of the window (clamped to the data that exists)')
+    parser.add_argument('--emit-params-json', type=str, default=None,
+                        help='Write the computed epsilon set to this path and write NOTHING else: '
+                             'epsilon.json is left untouched. Use for calibration sweeps while the '
+                             'live estimator is running. With --crypto ALL the symbol is inserted '
+                             'into the filename.')
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Root of the collector output (default: scripts/HL_data). A sweep can '
+                             'point this at a frozen copy so it never contends with the collector.')
     parser.add_argument('--verbosity', '-v', type=int, choices=[0, 1], default=0,
                         help='Verbosity: 0=minimal (default), 1=verbose')
 
@@ -495,16 +680,38 @@ if __name__ == "__main__":
 
     # Determine cryptos to process
     if isinstance(args.crypto, str) and args.crypto.strip().upper() == 'ALL':
-        symbols = list_available_cryptos('HL_data')
+        symbols = list_available_cryptos(args.data_dir)
         if not symbols:
             print("No crypto data found in HL_data (need <SYMBOL>/prices or orderbooks plus trades parquet)")
             raise SystemExit(1)
     else:
         symbols = [args.crypto.strip().upper()]
 
+    if (args.window_start or args.window_end) and not args.emit_params_json:
+        # Not forbidden -- someone may legitimately want to backfill a snapshot --
+        # but it is worth one loud line, because writing a historical slice into
+        # epsilon.json hands the live strategy parameters from another hour.
+        print("WARNING: --window-start/--window-end without --emit-params-json will OVERWRITE "
+              "epsilon.json with parameters fitted on a historical slice.")
+
     for sym in symbols:
+        emit_path = args.emit_params_json
+        if emit_path and len(symbols) > 1:
+            p = Path(emit_path)
+            emit_path = str(p.with_name(f"{p.stem}.{sym}{p.suffix}"))
         try:
-            run_epsilon_for_crypto(sym, minutes=args.minutes, post_horizon_ms=args.post_horizon_ms, ema_tau=args.ema_tau)
+            run_epsilon_for_crypto(
+                sym,
+                minutes=args.minutes,
+                post_horizon_ms=args.post_horizon_ms,
+                post_horizon_ms_plus=args.post_horizon_ms_plus,
+                post_horizon_ms_minus=args.post_horizon_ms_minus,
+                ema_tau=args.ema_tau,
+                window_start=args.window_start,
+                window_end=args.window_end,
+                emit_params_json=emit_path,
+                data_dir=args.data_dir,
+            )
         except KeyboardInterrupt:
             raise
         except Exception as e:
