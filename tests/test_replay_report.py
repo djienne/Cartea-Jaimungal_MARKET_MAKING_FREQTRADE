@@ -3,15 +3,19 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import mm_core  # noqa: E402
 from run_replay_report import (  # noqa: E402
     DEFAULT_VARIANTS,
     REQUIRED_MARKOUT_HORIZONS_MS,
+    ReplayVariant,
     build_refusal_checks,
     build_report,
     coverage_days,
@@ -22,9 +26,15 @@ from run_replay_report import (  # noqa: E402
     replay_required_stream_guard,
     render_markdown,
     variant_config,
+    variant_params,
     replay_param_guard,
 )
-from replay_market_maker import ReplayConfig, ReplayMetrics  # noqa: E402
+from replay_market_maker import (  # noqa: E402
+    ReplayConfig,
+    ReplayMetrics,
+    hjb_quote_config,
+    solve_replay_hjb,
+)
 
 
 def minimal_metrics(**overrides):
@@ -488,6 +498,114 @@ def test_replay_required_stream_guard_rejects_empty_stream_even_when_file_exists
     assert ok is False
     assert reason == "missing_collector_streams:trades"
     assert missing == ["trades"]
+
+
+# ---------------------------------------------------------------------------
+# Parameter-stress variants on a sub-dollar, high-kappa instrument
+# ---------------------------------------------------------------------------
+
+# The live CASHCAT snapshot the sweep is being set up against. What makes it the
+# right test fixture is the scale: mid 0.1179 and kappa in the thousands, where
+# an absolute epsilon offset sized for ETH is hundreds of bps of mid.
+CASHCAT_PARAMS = {
+    "kappa+": 6200.0,
+    "kappa-": 8500.0,
+    "lambda+": 0.23,
+    "lambda-": 0.49,
+    "epsilon+": 2.97e-5,
+    "epsilon-": 1.19e-5,
+}
+CASHCAT_MID = 0.1179
+MAX_TOXICITY = 1.5
+
+
+def _cashcat_config() -> ReplayConfig:
+    return ReplayConfig(
+        symbol="CASHCAT",
+        data_dir=Path("unused"),
+        mid_fallback=CASHCAT_MID,
+        inventory_unit_base=2092.0,
+        q_max=6,
+        q_min=-6,
+        price_tick_size=1e-6,
+        hjb_phi_kappa_t=10.0,
+        hjb_alpha_kappa=0.05,
+        hjb_horizon_seconds=150.0,
+    )
+
+
+def _toxicity(params: dict[str, float]) -> float:
+    return max(params["kappa+"] * params["epsilon+"], params["kappa-"] * params["epsilon-"])
+
+
+def _quote_bps(params: dict[str, float]) -> dict[tuple[int, str], tuple[float, str | None]]:
+    """Assembled half-spread (bps of mid, clamp flag) at every inventory the
+    agent can hold -- the quotes a variant would actually rest."""
+    config = _cashcat_config()
+    quote_config = hjb_quote_config(config)
+    hjb = solve_replay_hjb(config, params)
+    quotes: dict[tuple[int, str], tuple[float, str | None]] = {}
+    for q in range(-config.q_max, config.q_max + 1):
+        for side in ("bid", "ask"):
+            spread = mm_core.assemble_half_spread(
+                mm_core.select_delta(hjb, float(q), side), CASHCAT_MID, quote_config
+            )
+            if spread is not None:
+                quotes[(q, side)] = (float(spread.bps), spread.clamped)
+    return quotes
+
+
+def _named_variant(name: str) -> ReplayVariant:
+    return next(variant for variant in DEFAULT_VARIANTS if variant.name == name)
+
+
+def test_parameter_stress_variants_stay_inside_the_toxicity_gate_on_cashcat():
+    """The regression. With the old absolute epsilon_add these toxicities were
+    49.7 and 149.0 against a 1.5 ceiling -- the stressed variants described a
+    market the live validator would have refused to quote at all."""
+    soft = variant_params(CASHCAT_PARAMS, _named_variant("params_soft"))
+    hard = variant_params(CASHCAT_PARAMS, _named_variant("params_hard"))
+
+    assert _toxicity(CASHCAT_PARAMS) < _toxicity(soft) < _toxicity(hard) < MAX_TOXICITY
+    # The stress is a multiple of what was measured, so it tracks the instrument.
+    assert soft["epsilon+"] == pytest.approx(2.0 * CASHCAT_PARAMS["epsilon+"])
+    assert hard["epsilon+"] == pytest.approx(4.0 * CASHCAT_PARAMS["epsilon+"])
+
+
+def test_parameter_stress_variants_produce_different_uncapped_quotes_on_cashcat():
+    """The test that would have caught it: soft and hard must disagree.
+
+    Under the old offsets every quote pinned to the 80 bps cap or the 1.5 bps
+    floor, so the two variants returned identical depths, identical fills and
+    identical P&L, and the acceptance report read that as two independent passes.
+    """
+    soft = _quote_bps(variant_params(CASHCAT_PARAMS, _named_variant("params_soft")))
+    hard = _quote_bps(variant_params(CASHCAT_PARAMS, _named_variant("params_hard")))
+
+    shared = sorted(set(soft) & set(hard))
+    assert shared, "the two stresses must quote at overlapping inventories"
+
+    # Nothing may ride the cap: a capped quote carries no information about the
+    # parameters that produced it, which is precisely how the bug hid.
+    assert [key for key in soft if soft[key][1] == "cap"] == []
+    assert [key for key in hard if hard[key][1] == "cap"] == []
+
+    # And they must differ by an amount an operator could act on, not by noise.
+    biggest_gap = max(abs(soft[key][0] - hard[key][0]) for key in shared)
+    assert biggest_gap > 1.0, f"params_soft and params_hard quote within {biggest_gap:.3f} bps"
+
+
+def test_absolute_epsilon_offset_is_still_reachable_for_old_artifacts():
+    """The ETH-scale behaviour stays reproducible -- explicitly, never by
+    default. This is also a live demonstration of why it cannot be the default:
+    at CASHCAT scale the same offset is a toxicity of 50."""
+    legacy = ReplayVariant("legacy_params_soft", params_multiplier=0.8, epsilon_add=0.01)
+
+    params = variant_params(CASHCAT_PARAMS, legacy)
+
+    assert params["epsilon+"] == pytest.approx(CASHCAT_PARAMS["epsilon+"] + 0.01)
+    assert _toxicity(params) > MAX_TOXICITY
+    assert all(variant.epsilon_add == 0.0 for variant in DEFAULT_VARIANTS)
 
 
 def test_default_replay_variants_include_widened_tick_stress():

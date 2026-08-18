@@ -4,20 +4,46 @@
 This is intentionally conservative. It is not a candle backtest: quotes that
 cross the book are post-only rejects, quotes away from touch wait for the book to
 move through them, and quotes at touch need observed traded volume before fill.
+
+Four things a reader of any artifact this harness produces has to know:
+
+- **The solve is the live solve.** ``solve_replay_hjb`` routes through
+  ``mm_core.solve_hjb``, which derives phi and alpha from the DIMENSIONLESS
+  targets ``hjb_phi_kappa_t`` / ``hjb_alpha_kappa`` and live kappa. Sweeping the
+  raw phi/alpha means nothing across symbols (eq. 10.28: they are not
+  kappa-invariant), and a replay that solved them differently from the strategy
+  would be scoring a model nobody runs.
+- **Latency is a headline axis, not a sensitivity.** A quote decided at a book
+  event only rests ``decision_latency_ms + order_ack_latency_ms`` later and stays
+  cancellable for ``cancel_latency_ms`` after it goes stale. The shipped default
+  is 250 + 250 = 500 ms total, which is the SLOW end of what this stack can
+  reach; it is the default only so every artifact recorded before 2026-08-17
+  still reproduces. State the latency of a run, never assume it.
+- **Staleness is set by the slower of two channels**: order latency and
+  ``quote_refresh_interval_ms``. At the 1 s refresh default, dropping latency
+  500 -> 50 ms only moves total staleness from ~1.5 s to ~1.05 s, so a
+  latency-only sweep reads nearly flat and invites the wrong conclusion. Sweep
+  them together as coherent machines (a stack that acks in 50 ms also re-quotes
+  faster) and vary latency alone only to isolate the effect on the record.
+- **The clock is the exchange's**, not the collector's receive clock; see
+  :func:`apply_event_clock`. And a tape can only resolve latency down to its own
+  inter-update cadence -- ``price_event_cadence_ms`` in the metrics reports it,
+  so no reader can over-read a rung that sits below it.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
 
-from hjb import compute_h_asymmetric
+from hjb import compute_h_asymmetric, compute_h_symmetric
 import mm_core
 from mm_core import QuoteConfig, finite_float_or_none
 
@@ -55,9 +81,20 @@ class ReplayConfig:
     spread_multiplier: float = 1.0
     min_half_spread_bps: float = MIN_HALF_SPREAD_BPS
     max_half_spread_bps: float = MAX_HALF_SPREAD_BPS
+    # Latency, in three parts, all sweepable from the CLI. decision+ack is when
+    # the quote starts resting; cancel is how long it keeps resting after it
+    # should have been pulled. The 250+250 = 500 ms default is deliberately the
+    # SLOW end -- it is what every artifact in docs/ was measured at, so it stays
+    # the default for reproducibility rather than because it is good. 50 ms total
+    # is the target a colocated stack would hit.
     decision_latency_ms: int = 250
     order_ack_latency_ms: int = 250
     cancel_latency_ms: int = 250
+    # The OTHER staleness channel, and usually the dominant one: at 1000 ms the
+    # quote is re-priced once a second no matter how fast the exchange acks. A
+    # latency sweep at a fixed refresh interval measures mostly the interval.
+    # Live median requote cadence on this stack is ~30 s, so 1 s is already 30x
+    # optimistic.
     quote_refresh_interval_ms: int = 1000
     maker_fee: float = MAKER_FEE
     taker_fee: float = TAKER_FEE
@@ -77,6 +114,25 @@ class ReplayConfig:
     # two penalties whose RATIO decides whether the terminal condition matters.
     hjb_alpha: float = 0.001
     hjb_phi: float = 0.0001
+    # The DIMENSIONLESS targets the live path actually configures (see the
+    # comments above QuoteConfig.hjb_phi_kappa_t). phi and alpha are not
+    # kappa-invariant, so these -- not the raw values above -- are what a sweep
+    # can carry from one symbol to another. Both default to 0, which disables the
+    # derivation and leaves mm_core.solve_hjb using the raw hjb_phi/hjb_alpha, so
+    # every historical CLI run (docs/time_mode_ab.md) still reproduces. Live sets
+    # 10.0 / 0.05.
+    hjb_phi_kappa_t: float = 0.0
+    hjb_alpha_kappa: float = 0.0
+    # Ceiling on the same dimensionless product, tracked from QuoteConfig so
+    # replay clamps where live clamps. Sweeping hjb_phi_kappa_t past this without
+    # raising it produces a flat curve, because every setting above the ceiling
+    # solves the identical problem.
+    hjb_phi_kappa_t_max: float = QuoteConfig.hjb_phi_kappa_t_max
+    gamma_inventory_risk: float = QuoteConfig.gamma_inventory_risk
+    # Volatility channel: phi_effective = phi + gamma*sigma2*inventory_unit_base.
+    # None reproduces a run with the channel quiet, which is also what the live
+    # path does when the estimator publishes no sigma2.
+    sigma2_per_sec: float | None = None
     hjb_horizon_seconds: float = 60.0
     # "episodic" runs the book's delta*(t,q) on a simulated clock; "stationary"
     # reads only the t=0 slice, which is what this harness did before.
@@ -85,6 +141,10 @@ class ReplayConfig:
     # single round trip cannot pin the clock at t=0 forever.
     episode_reset_on_flat: bool = True
     episode_min_elapsed_fraction: float = 0.25
+    # Which of the collector's two clocks orders the event stream. See
+    # apply_event_clock: "exchange" is correct, "local" reproduces artifacts
+    # recorded before 2026-08-17.
+    event_clock: str = "exchange"
 
 
 @dataclass
@@ -98,6 +158,21 @@ class ReplayMetrics:
     price_events_per_day: float = 0.0
     max_price_gap_seconds: float | None = None
     p95_price_gap_seconds: float | None = None
+    # Inter-arrival of the BBO stream this run actually scored. The tape cannot
+    # resolve a latency shorter than its own cadence: if total latency is under
+    # one inter-update gap the quote goes live before the book has moved at all,
+    # so two such rungs produce the same fills. Measured on CASHCAT at
+    # p10 67 ms / p50 ~203 ms / p90 ~0.85 s, which is why a 50 ms rung is an
+    # UPPER BOUND on this tape and not a forecast: the real book moves faster
+    # than the collector recorded it.
+    price_gap_ms_p10: float | None = None
+    price_gap_ms_p50: float | None = None
+    price_gap_ms_p90: float | None = None
+    event_clock: str = ""
+    event_clock_by_stream: dict[str, str] = field(default_factory=dict)
+    decision_latency_ms: int = 0
+    order_ack_latency_ms: int = 0
+    cancel_latency_ms: int = 0
     quote_attempts: int = 0
     quote_decision_events: int = 0
     post_only_rejects: int = 0
@@ -140,6 +215,23 @@ class ReplayMetrics:
     q_residual_samples: int = 0
     episodes: int = 0
     pnl_by_side: dict[str, float] = field(default_factory=lambda: {"bid": 0.0, "ask": 0.0})
+    # Per-side attribution. The edge on CASHCAT is strongly one-sided, and WHICH
+    # side is not stable: the depth study found the resting ask profitable past
+    # ~14 bps and the resting bid negative at every depth out to 34 bps, while
+    # the first replay to carry these fields (3.4 h tape, 2026-08-17) came back
+    # with the signs reversed -- 30 s markout +0.29 USDC/fill on the bid against
+    # -0.27 on the ask, on a tape that trended up. That is the whole argument for
+    # measuring it per run: a total alone cannot distinguish a working ask
+    # carrying a losing bid from neither side working. Depth is the mean over
+    # fills of the quote's distance from mid at the decision that placed it.
+    fills_by_side: dict[str, int] = field(default_factory=lambda: {"bid": 0, "ask": 0})
+    fill_depth_bps_sum_by_side: dict[str, float] = field(default_factory=lambda: {"bid": 0.0, "ask": 0.0})
+    markout_usdc_by_side: dict[str, dict[int, float]] = field(
+        default_factory=lambda: {"bid": {}, "ask": {}}
+    )
+    markout_fills_by_side: dict[str, dict[int, int]] = field(
+        default_factory=lambda: {"bid": {}, "ask": {}}
+    )
     quote_attempts_by_depth: dict[str, int] = field(default_factory=dict)
     fills_by_depth: dict[str, int] = field(default_factory=dict)
     markout_samples: list[dict[str, Any]] = field(default_factory=list)
@@ -153,7 +245,66 @@ class ReplayMetrics:
             key: self.fills_by_depth.get(key, 0) / max(attempts_at_depth, 1)
             for key, attempts_at_depth in sorted(self.quote_attempts_by_depth.items())
         }
+        total_quote_latency_ms = int(self.decision_latency_ms) + int(self.order_ack_latency_ms)
+        # How long the quote actually rests: it goes live at total latency, is
+        # replaced at the refresh interval, and lingers one cancel latency past
+        # whichever came later. Note that CUTTING latency at a fixed refresh
+        # interval LENGTHENS this -- the quote goes live sooner and is still
+        # pulled at refresh+cancel -- which is why the two must be swept together.
+        quote_exposure_ms = max(0, int(self.quote_refresh_interval_ms) - total_quote_latency_ms) + int(
+            self.cancel_latency_ms
+        )
+        mean_fill_depth_bps_by_side = {
+            side: (
+                self.fill_depth_bps_sum_by_side.get(side, 0.0) / self.fills_by_side[side]
+                if self.fills_by_side.get(side, 0)
+                else None
+            )
+            for side in ("bid", "ask")
+        }
+        markout_by_side = {
+            side: {
+                str(horizon_ms): {
+                    "count": int(self.markout_fills_by_side.get(side, {}).get(horizon_ms, 0)),
+                    "sum_usdc": float(self.markout_usdc_by_side.get(side, {}).get(horizon_ms, 0.0)),
+                    "mean_usdc": (
+                        float(self.markout_usdc_by_side[side][horizon_ms])
+                        / int(self.markout_fills_by_side[side][horizon_ms])
+                        if int(self.markout_fills_by_side.get(side, {}).get(horizon_ms, 0))
+                        else None
+                    ),
+                }
+                for horizon_ms in MARKOUT_HORIZONS_MS
+            }
+            for side in ("bid", "ask")
+        }
         return {
+            "latency": {
+                "decision_latency_ms": int(self.decision_latency_ms),
+                "order_ack_latency_ms": int(self.order_ack_latency_ms),
+                "cancel_latency_ms": int(self.cancel_latency_ms),
+                "total_quote_latency_ms": total_quote_latency_ms,
+                "quote_refresh_interval_ms": int(self.quote_refresh_interval_ms),
+                "quote_exposure_ms": quote_exposure_ms,
+                # True when the quote is live before the tape's fastest decile of
+                # book updates: the rung is then bounded by data cadence, not by
+                # the simulator, and reads as an upper bound.
+                "below_tape_resolution": (
+                    None
+                    if self.price_gap_ms_p10 is None
+                    else bool(total_quote_latency_ms < float(self.price_gap_ms_p10))
+                ),
+            },
+            "price_event_cadence_ms": {
+                "p10": self.price_gap_ms_p10,
+                "p50": self.price_gap_ms_p50,
+                "p90": self.price_gap_ms_p90,
+            },
+            "event_clock": self.event_clock,
+            "event_clock_by_stream": self.event_clock_by_stream,
+            "fills_by_side": self.fills_by_side,
+            "mean_fill_depth_bps_by_side": mean_fill_depth_bps_by_side,
+            "markout_by_side": markout_by_side,
             "input_files": self.input_files,
             "input_rows": self.input_rows,
             "data_start": self.data_start,
@@ -313,21 +464,60 @@ def normalize_price_bbo(prices: pd.DataFrame) -> pd.DataFrame:
     return bbo
 
 
+def apply_event_clock(frame: pd.DataFrame, event_clock: str) -> tuple[pd.DataFrame, str]:
+    """Re-key one stream onto the exchange's clock, and say which clock won.
+
+    The collector records two: ``timestamp`` is when the local process received
+    the message, ``exchange_timestamp`` is when Hyperliquid stamped it. This
+    harness ordered events by the RECEIVE clock until 2026-08-17, which is fine
+    for anything measured in seconds and wrong for anything measured in
+    milliseconds. On the CASHCAT tape the receive lag runs 349/397/559 ms
+    (p10/p50/p90) on prices but 425/470/671 ms on orderbooks, so the streams are
+    smeared against each other by more than the latency a sweep is trying to
+    resolve: a 50 ms rung read off the receive clock is measuring collector
+    jitter, not the market. The lag itself is harmless (it shifts every stream
+    alike); the per-message and per-stream VARIANCE in it is not.
+
+    All-or-nothing per stream, and it falls back rather than failing: an older
+    tape with no exchange_timestamp still replays, it just cannot resolve tens of
+    milliseconds. Mixing the two clocks in one column would also break the unit
+    inference in :func:`normalize_timestamp_column`, which reads the magnitude.
+    """
+    if str(event_clock) != "exchange":
+        return frame, "local"
+    if frame.empty or "exchange_timestamp" not in frame.columns:
+        return frame, "local_no_exchange_timestamp"
+    exchange = pd.to_numeric(frame["exchange_timestamp"], errors="coerce")
+    if exchange.isna().any() or bool((exchange <= 0).any()):
+        return frame, "local_invalid_exchange_timestamp"
+    frame = frame.copy()
+    frame["timestamp"] = exchange
+    return frame, "exchange"
+
+
 def load_symbol_data(config: ReplayConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, int]]:
     base = config.data_dir / config.symbol
     prices, price_files = load_parquet_dir(base / "prices", config.newest_per_stream)
     trades, trade_files = load_parquet_dir(base / "trades", config.newest_per_stream)
     orderbooks, orderbook_files = load_parquet_dir(base / "orderbooks", config.newest_per_stream)
-    for frame in (prices, trades, orderbooks):
-        if not frame.empty and "timestamp" in frame:
-            frame = normalize_timestamp_column(frame)
-            frame.sort_values("timestamp", inplace=True)
+    # Pick the clock BEFORE normalising: normalize_timestamp_column infers the
+    # unit from the column's magnitude, so the swap has to happen while the
+    # column is still raw. (This replaced a sort loop that rebound its own loop
+    # variable and therefore normalised nothing -- the real normalisation has
+    # always been the lines below.)
+    prices, prices_clock = apply_event_clock(prices, config.event_clock)
+    trades, trades_clock = apply_event_clock(trades, config.event_clock)
+    orderbooks, orderbooks_clock = apply_event_clock(orderbooks, config.event_clock)
     prices = normalize_price_bbo(normalize_timestamp_column(prices))
     trades = normalize_timestamp_column(trades)
     orderbooks = normalize_timestamp_column(orderbooks)
-    for frame in (prices, trades, orderbooks):
+    for frame, clock in ((prices, prices_clock), (trades, trades_clock), (orderbooks, orderbooks_clock)):
         if not frame.empty and "timestamp" in frame:
             frame.sort_values("timestamp", inplace=True)
+        # Rides along on the frame so the metrics can state which clock scored
+        # the run without load_symbol_data having to grow a fifth return value
+        # (tests monkeypatch it with a four-tuple).
+        frame.attrs["event_clock"] = clock
     return prices, trades, orderbooks, {
         "prices": price_files,
         "trades": trade_files,
@@ -335,12 +525,46 @@ def load_symbol_data(config: ReplayConfig) -> tuple[pd.DataFrame, pd.DataFrame, 
     }
 
 
+@dataclass(frozen=True)
+class ReplayTape:
+    """One immutable load of the collected data, scored by many configs.
+
+    The collector keeps writing shards while a sweep runs, so calling
+    ``load_symbol_data`` per variant scores DIFFERENT data every few minutes.
+    That is not hypothetical: it invalidated a phi sweep where one setting came
+    back at both -3.98 and -19.39 USDC, and docs/time_mode_ab.md had to
+    monkeypatch the loader to work around it. Load once, pass the tape to every
+    run, and the only thing that differs between rows of a sweep is the setting.
+
+    ``run_replay`` never mutates these frames -- it re-indexes and filters, both
+    of which copy -- so one tape is safely reusable for any number of runs.
+    """
+
+    prices: pd.DataFrame
+    trades: pd.DataFrame
+    orderbooks: pd.DataFrame
+    input_files: dict[str, int]
+
+    def frames(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, int]]:
+        return self.prices, self.trades, self.orderbooks, dict(self.input_files)
+
+
+def load_tape(config: ReplayConfig) -> ReplayTape:
+    """Load the data ONCE so a sweep can pin it. See :class:`ReplayTape`."""
+    prices, trades, orderbooks, input_files = load_symbol_data(config)
+    return ReplayTape(prices=prices, trades=trades, orderbooks=orderbooks, input_files=input_files)
+
+
 def post_only_check(side: str, price: float, best_bid: float, best_ask: float) -> tuple[bool, str]:
     try:
         price, best_bid, best_ask = (float(price), float(best_bid), float(best_ask))
     except (TypeError, ValueError):
         return False, "crossed_or_invalid_book"
-    if not all(np.isfinite(value) for value in (price, best_bid, best_ask)):
+    # math.isfinite, not the generator over np.isfinite this used to run: the
+    # three values are already Python floats by here, so the answer is the same
+    # and the generator plus three numpy scalar dispatches per quote was costing
+    # about a second per pass over a 148k-row tape.
+    if not (math.isfinite(price) and math.isfinite(best_bid) and math.isfinite(best_ask)):
         return False, "crossed_or_invalid_book"
     if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
         return False, "crossed_or_invalid_book"
@@ -382,6 +606,107 @@ def inventory_q_exact(inventory_base: float, unit: float, q_max: int, q_min: int
     )
 
 
+def hjb_quote_config(config: ReplayConfig) -> QuoteConfig:
+    """The QuoteConfig the replay's solve runs on -- the live object, live values.
+
+    Built from ReplayConfig so a swept setting means the same thing here as in
+    user_data/strategies/Market_Making.py, which builds the same object from its
+    own attributes. Note ``inventory_unit_base`` and ``gamma_inventory_risk``
+    matter to the SOLVE, not just to sizing: mm_core.effective_phi multiplies
+    sigma2 by both.
+    """
+    return QuoteConfig(
+        maker_fee_rate=float(config.maker_fee),
+        spread_multiplier=float(config.spread_multiplier),
+        min_half_spread_bps=float(config.min_half_spread_bps),
+        max_half_spread_bps=float(config.max_half_spread_bps),
+        inventory_unit_base=max(float(config.inventory_unit_base), 1e-12),
+        q_max=max(int(config.q_max), 1),
+        allow_short=int(config.q_min) < 0,
+        hjb_phi_kappa_t=float(config.hjb_phi_kappa_t),
+        hjb_alpha_kappa=float(config.hjb_alpha_kappa),
+        hjb_phi_kappa_t_max=float(config.hjb_phi_kappa_t_max),
+        hjb_alpha=float(config.hjb_alpha),
+        hjb_phi=float(config.hjb_phi),
+        hjb_horizon_seconds=float(config.hjb_horizon_seconds),
+        gamma_inventory_risk=float(config.gamma_inventory_risk),
+        hjb_time_mode=str(config.hjb_time_mode),
+    )
+
+
+def solve_hjb_on_domain(
+    params: dict[str, float],
+    solver_config: QuoteConfig,
+    *,
+    q_min: int | None = None,
+    sigma2_per_sec: float | None = None,
+) -> dict:
+    """mm_core.solve_hjb, extended to this harness's asymmetric inventory domain.
+
+    Everything that decides WHAT is solved -- deriving phi and alpha from the
+    dimensionless targets and live kappa, the hjb_phi_kappa_t_max ceiling, the
+    sigma2 volatility channel, the step count -- belongs to mm_core, because a
+    replay that re-derives any of it is a second implementation that will drift
+    from the quoter. So the symmetric solve is always mm_core's.
+
+    ``q_min`` is the one thing mm_core.solve_hjb cannot express: it always solves
+    the symmetric [-q_max, q_max] grid, and the long-only A/B needs [0, q_max],
+    where the disabled side at the bottom is the ask ("cannot sell what you do
+    not hold") rather than the ask at maximum short. Rather than edit mm_core --
+    the live path has no asymmetric domain and does not need one -- the
+    asymmetric case re-solves on the reachable grid with the penalties mm_core
+    just derived. That costs one extra solve (~0.3 s at q_max=6, T=150 s), once
+    per run, and only when an asymmetric domain is actually asked for; the
+    default q_min=None never pays it.
+    """
+    solved = mm_core.solve_hjb(params, solver_config, sigma2_per_sec=sigma2_per_sec)
+    q_max = int(solver_config.q_max)
+    if q_min is None or int(q_min) == -q_max:
+        return solved
+
+    solver = compute_h_asymmetric if solver_config.use_asymmetric_kappa else compute_h_symmetric
+    asymmetric = dict(
+        solver(
+            lambda_plus=float(params["lambda+"]),
+            lambda_minus=float(params["lambda-"]),
+            epsilon_plus=float(params["epsilon+"]),
+            epsilon_minus=float(params["epsilon-"]),
+            kappa_plus=float(params["kappa+"]),
+            kappa_minus=float(params["kappa-"]),
+            alpha=float(solved["alpha_effective"]),
+            phi=float(solved["phi_effective"]),
+            T_seconds=float(solver_config.hjb_horizon_seconds),
+            q_max=q_max,
+            q_min=int(q_min),
+            n_steps=mm_core.hjb_n_steps(solver_config),
+            return_surface=solver_config.hjb_time_mode == "episodic",
+        )
+    )
+    for key in (
+        "hjb_time_mode",
+        "phi_effective",
+        "phi_source",
+        "phi_base",
+        "alpha_effective",
+        "kappa_avg",
+        "sigma2_per_sec",
+    ):
+        asymmetric[key] = solved[key]
+    return asymmetric
+
+
+def solve_replay_hjb(config: ReplayConfig, params: dict[str, float]) -> dict:
+    """The surface run_replay quotes off. One line, on purpose: it is the whole
+    parity claim -- same params, same QuoteConfig, same mm_core.solve_hjb the
+    strategy calls."""
+    return solve_hjb_on_domain(
+        params,
+        hjb_quote_config(config),
+        q_min=config.hjb_q_min,
+        sigma2_per_sec=config.sigma2_per_sec,
+    )
+
+
 def compute_hjb_cache(
     params: dict[str, float],
     q_max: int,
@@ -393,7 +718,13 @@ def compute_hjb_cache(
     time_mode: str = "stationary",
     max_dt_seconds: float = 0.25,
 ) -> dict:
-    """Solve the HJB on the inventory domain the simulated agent actually has.
+    """Solve on the requested domain from RAW alpha/phi, via mm_core.
+
+    This is the pre-dimensionless entry point, kept because raw phi/alpha are
+    still the fallback the CLI exposes and what docs/time_mode_ab.md was run
+    with. It reaches the solver through the same mm_core.solve_hjb the live path
+    uses, with the kappa-relative targets disabled (0), which is exactly the
+    branch in solve_hjb that passes the raw values through untouched.
 
     ``q_min=None`` keeps the symmetric grid. Passing 0 solves the long-only
     problem, where the disabled side at the bottom of the grid is the ask.
@@ -404,25 +735,15 @@ def compute_hjb_cache(
     horizon = float(params.get("T_seconds", 60.0) if T_seconds is None else T_seconds)
     solver_config = QuoteConfig(
         q_max=max(int(q_max), 1),
+        hjb_phi_kappa_t=0.0,
+        hjb_alpha_kappa=0.0,
+        hjb_alpha=float(params.get("alpha", 0.001) if alpha is None else alpha),
+        hjb_phi=float(params.get("phi", 0.0001) if phi is None else phi),
         hjb_horizon_seconds=horizon,
         hjb_max_dt_seconds=float(max_dt_seconds),
         hjb_time_mode=str(time_mode),
     )
-    return compute_h_asymmetric(
-        lambda_plus=params["lambda+"],
-        lambda_minus=params["lambda-"],
-        epsilon_plus=params["epsilon+"],
-        epsilon_minus=params["epsilon-"],
-        kappa_plus=params["kappa+"],
-        kappa_minus=params["kappa-"],
-        alpha=float(params.get("alpha", 0.001) if alpha is None else alpha),
-        phi=float(params.get("phi", 0.0001) if phi is None else phi),
-        T_seconds=horizon,
-        q_max=q_max,
-        q_min=q_min,
-        n_steps=mm_core.hjb_n_steps(solver_config),
-        return_surface=str(time_mode) == "episodic",
-    )
+    return solve_hjb_on_domain(params, solver_config, q_min=q_min)
 
 
 def timestamp_iso(value: Any) -> str | None:
@@ -486,6 +807,27 @@ def replay_toxicity_snapshot(
     }
 
 
+def half_spread_quote_config(
+    *,
+    spread_multiplier: float = 1.0,
+    maker_fee: float = MAKER_FEE,
+    min_half_spread_bps: float = MIN_HALF_SPREAD_BPS,
+    max_half_spread_bps: float = MAX_HALF_SPREAD_BPS,
+) -> QuoteConfig:
+    """The QuoteConfig :func:`assemble_half_spread` prices off.
+
+    Split out so ``run_replay`` can build it ONCE instead of once per side per
+    quote decision -- it is a function of the run's configuration, not of the
+    event -- while leaving exactly one place that decides which fields go in.
+    """
+    return QuoteConfig(
+        maker_fee_rate=float(maker_fee),
+        spread_multiplier=float(spread_multiplier),
+        min_half_spread_bps=float(min_half_spread_bps),
+        max_half_spread_bps=float(max_half_spread_bps),
+    )
+
+
 def assemble_half_spread(
     delta_model: float,
     mid: float,
@@ -494,6 +836,7 @@ def assemble_half_spread(
     maker_fee: float = MAKER_FEE,
     min_half_spread_bps: float = MIN_HALF_SPREAD_BPS,
     max_half_spread_bps: float = MAX_HALF_SPREAD_BPS,
+    quote_config: QuoteConfig | None = None,
 ) -> float | None:
     """Final half-spread for one side, delegated to mm_core:
 
@@ -503,12 +846,19 @@ def assemble_half_spread(
     Returns None for a disabled side (non-finite model delta). mm_core is the
     single implementation shared with the live path, so replay simulates
     literally the arithmetic that will quote.
+
+    ``quote_config`` supplies a pre-built config; it must be the one
+    :func:`half_spread_quote_config` would have built from the same keywords.
     """
-    config = QuoteConfig(
-        maker_fee_rate=float(maker_fee),
-        spread_multiplier=float(spread_multiplier),
-        min_half_spread_bps=float(min_half_spread_bps),
-        max_half_spread_bps=float(max_half_spread_bps),
+    config = (
+        quote_config
+        if quote_config is not None
+        else half_spread_quote_config(
+            spread_multiplier=spread_multiplier,
+            maker_fee=maker_fee,
+            min_half_spread_bps=min_half_spread_bps,
+            max_half_spread_bps=max_half_spread_bps,
+        )
     )
     spread = mm_core.assemble_half_spread(delta_model, mid, config)
     return None if spread is None else float(spread.delta)
@@ -527,9 +877,17 @@ def compute_quotes(
     max_half_spread_bps: float = MAX_HALF_SPREAD_BPS,
     tau_remaining: float | None = None,
     q_exact: float | None = None,
+    quote_config: QuoteConfig | None = None,
 ) -> tuple[float | None, float | None, dict]:
     if hjb is None:
         hjb = compute_hjb_cache(params, q_max)
+    if quote_config is None:
+        quote_config = half_spread_quote_config(
+            spread_multiplier=spread_multiplier,
+            maker_fee=maker_fee,
+            min_half_spread_bps=min_half_spread_bps,
+            max_half_spread_bps=max_half_spread_bps,
+        )
     # Read the surface through mm_core rather than indexing it here: this used
     # to do its own argmin over q_grid, which is precisely the kind of second
     # implementation this module exists to avoid. mm_core also handles the two
@@ -538,18 +896,12 @@ def compute_quotes(
     bid_total = assemble_half_spread(
         mm_core.select_delta(hjb, q_price, "bid", tau_remaining=tau_remaining),
         mid,
-        spread_multiplier=spread_multiplier,
-        maker_fee=maker_fee,
-        min_half_spread_bps=min_half_spread_bps,
-        max_half_spread_bps=max_half_spread_bps,
+        quote_config=quote_config,
     )
     ask_total = assemble_half_spread(
         mm_core.select_delta(hjb, q_price, "ask", tau_remaining=tau_remaining),
         mid,
-        spread_multiplier=spread_multiplier,
-        maker_fee=maker_fee,
-        min_half_spread_bps=min_half_spread_bps,
-        max_half_spread_bps=max_half_spread_bps,
+        quote_config=quote_config,
     )
     bid = None if bid_total is None else mid - bid_total
     ask = None if ask_total is None else mid + ask_total
@@ -564,6 +916,203 @@ def mid_from_price_row(row: pd.Series, fallback: float) -> tuple[float, float, f
     return (best_bid + best_ask) / 2.0, best_bid, best_ask
 
 
+# ---------------------------------------------------------------------------
+# Column views
+#
+# run_replay used to read every field through pandas scalar access -- iterrows
+# for the price stream, a full-frame boolean mask per quote to cut the trade
+# window, .iloc on an 83-column orderbook frame per quote. That is microseconds
+# per field on work that is a handful of flops, and it made one pass over a
+# 148k-row tape take about five minutes; the sweep driver runs hundreds of such
+# passes. Everything below hoists a column into a numpy array ONCE per run so
+# the loop indexes it.
+#
+# The rule these helpers are written to: the arithmetic is not allowed to
+# change, only the access. Where the row-wise version used min/max/float those
+# calls are kept verbatim, because reassociating them would move fills.
+# tests/test_replay_performance.py pins each helper against the row-wise
+# function it replaces, and pins whole-run outputs against a reference recorded
+# before any of this existed.
+# ---------------------------------------------------------------------------
+
+_NS_PER_MS = 1_000_000
+_NS_PER_SECOND = 1_000_000_000
+
+# Column names first_level_size consults, per side, in priority order.
+_FIRST_LEVEL_SIZE_KEYS: dict[str, tuple[str, ...]] = {
+    "bid": ("bid_size", "best_bid_size", "bid_size_0", "bids"),
+    "ask": ("ask_size", "best_ask_size", "ask_size_0", "asks"),
+}
+_NESTED_LEVEL_KEYS = frozenset({"bids", "asks"})
+
+
+def total_seconds_from_ns(delta_ns: int) -> float:
+    """``pd.Timedelta(delta_ns, "ns").total_seconds()`` without the Timedelta.
+
+    Reproduced rather than approximated. The episode clock, the funding accrual
+    and the queue decay all read this number, so a different rounding would move
+    fills, and pandas does NOT compute what either obvious shortcut computes: it
+    truncates to whole microseconds and then adds the microsecond part to the
+    integer-second part in floating point. 1904529860 ns is 1.9045290000000001 s
+    to pandas, 1.90452986 s to ``ns / 1e9`` and 1.904529 s to the exact
+    ``ns // 1000 / 1e6``. tests/test_replay_performance.py checks the identity
+    over 200k samples spanning both signs and seventeen decades.
+    """
+    return (delta_ns // _NS_PER_SECOND) + ((delta_ns % _NS_PER_SECOND) // 1000) / 1e6
+
+
+def timestamps_as_ns(
+    frame: pd.DataFrame, column: str = "timestamp", *, coerce: bool = False
+) -> np.ndarray | None:
+    """UTC nanoseconds as int64, or None when the column is not a datetime one.
+
+    Any resolution is widened to nanoseconds, which is lossless and leaves
+    Timedelta's microsecond truncation (see :func:`total_seconds_from_ns`)
+    untouched. Returning None rather than raising lets the caller decide: an
+    absent column is legitimate on some streams and fatal on others.
+
+    ``coerce`` converts a present-but-not-datetime column element by element,
+    exactly as the row-wise code's ``pd.Timestamp(cell)`` did. It is off by
+    default because the whole point here is the one cheap vectorised conversion;
+    the public DataFrame adapters turn it on so they keep accepting frames the
+    replay itself would have rejected earlier.
+    """
+    if frame is None or column not in getattr(frame, "columns", ()):
+        return None
+    series = frame[column]
+    if not pd.api.types.is_datetime64_any_dtype(series):
+        if not coerce:
+            return None
+        return np.array([timestamp_as_ns(value) for value in series], dtype="int64")
+    return series.to_numpy(dtype="datetime64[ns]").astype("int64", copy=False)
+
+
+def timestamp_as_ns(value: Any) -> int | None:
+    """One timestamp as UTC nanoseconds, matching :func:`timestamps_as_ns`."""
+    if value is None:
+        return None
+    stamp = pd.Timestamp(value)
+    if stamp.unit != "ns":
+        stamp = stamp.as_unit("ns")
+    return int(stamp.value)
+
+
+def is_monotonic_ns(values: np.ndarray | None) -> bool:
+    """Is this timestamp array non-decreasing?
+
+    Only the TRADE stream needs the answer. The original cut its window with a
+    boolean mask, which does not care about order, so a searchsorted range is
+    only equivalent when the column is sorted -- and a monkeypatched loader in a
+    test is free to hand over an unsorted frame. The price and orderbook streams
+    were already read with ``searchsorted`` before this rewrite, so they carry
+    the same assumption they always did and need no guard.
+    """
+    if values is None or len(values) < 2:
+        return True
+    return bool(np.all(values[1:] >= values[:-1]))
+
+
+def price_event_arrays(prices: pd.DataFrame, fallback: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """:func:`mid_from_price_row` for a whole frame, column-wise.
+
+    Same column preference (``bid`` then ``best_bid``) -- which is a property of
+    the frame's columns, not of any row, so resolving it once is exact -- and
+    the same "either side non-finite disables the row" rule. The mid is an IEEE
+    double add and divide either way, so the values are bit-identical to the
+    per-row function.
+    """
+    n = len(prices)
+    columns = prices.columns
+
+    def column(primary: str, secondary: str) -> np.ndarray:
+        if primary in columns:
+            return prices[primary].to_numpy(dtype=float)
+        if secondary in columns:
+            return prices[secondary].to_numpy(dtype=float)
+        return np.full(n, np.nan, dtype=float)
+
+    best_bid = column("bid", "best_bid")
+    best_ask = column("ask", "best_ask")
+    with np.errstate(invalid="ignore"):
+        usable = np.isfinite(best_bid) & np.isfinite(best_ask)
+        mid = np.where(usable, (best_bid + best_ask) / 2.0, float(fallback))
+    nan = np.full(n, np.nan, dtype=float)
+    return mid, np.where(usable, best_bid, nan), np.where(usable, best_ask, nan)
+
+
+def _float_column(frame: pd.DataFrame, name: str, missing: float) -> tuple[np.ndarray, np.ndarray]:
+    """One column as float64, plus the mask of cells that are falsy.
+
+    The falsy mask exists because both trade-size call sites read the value as
+    ``float(x or default)`` and the two defaults DIFFER -- 0.0 in the queue walk,
+    the order amount at the fill -- so the substitution cannot be baked in here.
+    Under that idiom 0.0 and None take the default while NaN does not, which is
+    why None cannot simply be converted to NaN.
+    """
+    n = len(frame)
+    if name not in frame.columns:
+        return np.full(n, missing, dtype=float), np.zeros(n, dtype=bool)
+    series = frame[name]
+    if pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_object_dtype(series):
+        values = series.to_numpy(dtype=float)
+        with np.errstate(invalid="ignore"):
+            return values, values == 0.0
+    raw = series.to_numpy(dtype=object)
+    values = np.empty(n, dtype=float)
+    falsy = np.empty(n, dtype=bool)
+    for i, item in enumerate(raw):
+        falsy[i] = not bool(item)
+        values[i] = 0.0 if item is None else float(item)
+    return values, falsy
+
+
+def trade_event_arrays(trades: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(price, size, size_is_falsy) for a trade frame."""
+    price, _ = _float_column(trades, "price", np.nan)
+    size, size_falsy = _float_column(trades, "size", 0.0)
+    if "size" not in trades.columns:
+        # ``row.get("size", default)`` returns the DEFAULT when the column is
+        # absent, and both defaults are truthy at their call sites, so an absent
+        # column must read as falsy for every row.
+        size_falsy = np.ones(len(trades), dtype=bool)
+    return price, size, size_falsy
+
+
+def first_level_size_array(frame: pd.DataFrame, side: str) -> np.ndarray:
+    """:func:`first_level_size` for every row of ``frame``, column-wise.
+
+    Walks the same key preference in the same order and falls through on the
+    same failures, but resolves a whole column at a time: a numeric column
+    converts for every row at once (``float(nan)`` succeeds, so NaN is a
+    resolved value and not a fallthrough), and only object or nested-list
+    columns need a per-row pass.
+    """
+    n = len(frame)
+    out = np.zeros(n, dtype=float)
+    resolved = np.zeros(n, dtype=bool)
+    for key in _FIRST_LEVEL_SIZE_KEYS[side]:
+        if key not in frame.columns or resolved.all():
+            continue
+        series = frame[key]
+        nested = key in _NESTED_LEVEL_KEYS
+        if not nested and pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_object_dtype(series):
+            pending = ~resolved
+            out[pending] = series.to_numpy(dtype=float)[pending]
+            resolved[pending] = True
+            continue
+        raw = series.to_numpy(dtype=object)
+        for i in np.nonzero(~resolved)[0]:
+            value = raw[i]
+            if value is None:
+                continue
+            try:
+                out[i] = float(value[0][1]) if nested else float(value)
+            except Exception:
+                continue
+            resolved[i] = True
+    return out
+
+
 def future_mid(prices: pd.DataFrame, start_ts: pd.Timestamp, horizon_ms: int, fallback: float) -> float | None:
     target = start_ts + pd.Timedelta(milliseconds=horizon_ms)
     idx = prices["timestamp"].searchsorted(target, side="left")
@@ -573,19 +1122,39 @@ def future_mid(prices: pd.DataFrame, start_ts: pd.Timestamp, horizon_ms: int, fa
     return mid
 
 
+def future_mid_from_arrays(
+    price_ts_ns: np.ndarray, price_mid: np.ndarray, start_ns: int, horizon_ms: int
+) -> float | None:
+    """:func:`future_mid` against the hoisted columns.
+
+    The old version searched the frame and then materialised a Series per fill
+    per horizon -- four Series for every fill. Same ``side="left"`` search on the
+    same ascending timestamps, same mid.
+    """
+    idx = int(price_ts_ns.searchsorted(start_ns + horizon_ms * _NS_PER_MS, side="left"))
+    if idx >= len(price_ts_ns):
+        return None
+    return float(price_mid[idx])
+
+
 def markout_value(side: str, fill_price: float, future_mid_price: float) -> float:
     if side == "bid":
         return future_mid_price - fill_price
     return fill_price - future_mid_price
 
 
+def quote_depth_bps(mid: float, price: float) -> float:
+    """Distance from mid in bps -- the coordinate the per-side attribution, the
+    depth buckets and the fill calibration all have to agree on."""
+    return 0.0 if mid <= 0 else abs(float(mid) - float(price)) / float(mid) * 10_000.0
+
+
 def quote_depth_key(side: str, mid: float, price: float) -> str:
-    depth_bps = 0.0 if mid <= 0 else abs(float(mid) - float(price)) / float(mid) * 10_000.0
-    return f"{side}:{depth_bps:.2f}bps"
+    return f"{side}:{quote_depth_bps(mid, price):.2f}bps"
 
 
 def quote_depth_bucket_key(side: str, mid: float, price: float, bucket_bps: float) -> str:
-    depth_bps = 0.0 if mid <= 0 else abs(float(mid) - float(price)) / float(mid) * 10_000.0
+    depth_bps = quote_depth_bps(mid, price)
     bucket = max(0.0, float(bucket_bps))
     if bucket <= 0:
         return f"{side}:{depth_bps:.2f}bps"
@@ -594,16 +1163,34 @@ def quote_depth_bucket_key(side: str, mid: float, price: float, bucket_bps: floa
     return f"{side}:{lower:.2f}-{upper:.2f}bps"
 
 
-def round_price_for_side(side: str, price: float, tick_size: float) -> float:
+def usable_tick_size(tick_size: float) -> float | None:
+    """The tick, or None when there is no usable one. Loop-invariant per run."""
     tick = finite_float_or_none(tick_size)
-    if tick is None or tick <= 0:
-        return float(price)
+    return None if tick is None or tick <= 0 else tick
+
+
+def round_price_to_tick(side: str, price: float, tick: float) -> float:
+    """Round one price onto a KNOWN-GOOD tick.
+
+    Split out of :func:`round_price_for_side` only so the caller can resolve the
+    tick once instead of per quote. The np.floor/np.ceil and the 12-digit round
+    are kept exactly as they were: ``round`` on a numpy scalar dispatches to
+    numpy's scale-and-rint, which is not the same algorithm as Python's round on
+    a float, so swapping in math.floor would silently change quoted prices.
+    """
     scaled = float(price) / tick
     if side == "bid":
         rounded = np.floor(scaled) * tick
     else:
         rounded = np.ceil(scaled) * tick
     return float(round(rounded, 12))
+
+
+def round_price_for_side(side: str, price: float, tick_size: float) -> float:
+    tick = usable_tick_size(tick_size)
+    if tick is None:
+        return float(price)
+    return round_price_to_tick(side, price, tick)
 
 
 def round_amount_down(amount: float, step_size: float) -> float:
@@ -770,12 +1357,12 @@ def active_orderbook_row(orderbooks: pd.DataFrame, ts: pd.Timestamp) -> pd.Serie
 def first_level_size(row: pd.Series | None, side: str) -> float:
     if row is None:
         return 0.0
-    keys = ("bid_size", "best_bid_size", "bid_size_0", "bids") if side == "bid" else ("ask_size", "best_ask_size", "ask_size_0", "asks")
+    keys = _FIRST_LEVEL_SIZE_KEYS["bid"] if side == "bid" else _FIRST_LEVEL_SIZE_KEYS["ask"]
     for key in keys:
         value = row.get(key, None)
         if value is None:
             continue
-        if key in {"bids", "asks"}:
+        if key in _NESTED_LEVEL_KEYS:
             try:
                 return float(value[0][1])
             except Exception:
@@ -793,6 +1380,77 @@ def is_joining_best(side: str, price: float, best_bid: float, best_ask: float) -
     return abs(float(price) - float(best_ask)) <= max(1e-9, abs(float(best_ask)) * 1e-9)
 
 
+def scan_for_matching_trade(
+    side: str,
+    price: float,
+    positions: Iterable[int] | Sequence[int],
+    *,
+    trade_ts_ns: np.ndarray | None,
+    trade_price: np.ndarray,
+    trade_size: np.ndarray,
+    trade_size_falsy: np.ndarray,
+    used: np.ndarray | None,
+    queue_ahead: float,
+    queue_decay_per_second: float = 0.0,
+    active_at_ns: int | None = None,
+) -> tuple[int, float]:
+    """Walk a window of trades and return (position of the fill, queue decayed).
+
+    The single implementation of the fill rule.
+    :func:`matching_trade_with_queue_decay` is the DataFrame adapter over it and
+    ``run_replay`` calls it straight, because the frame the adapter would build
+    is the frame this rewrite exists to stop building.
+
+    The arithmetic is deliberately the same statements the row-wise version ran,
+    including the ``min``/``max`` calls: ``min(remaining, decay)`` and
+    ``max(0.0, size)`` propagate NaN differently from the comparison rewrites
+    they invite, and a NaN size is reachable from a real feed.
+
+    ``positions`` gives the window IN EVENT ORDER; ``used`` is the consumed-trade
+    mask, applied here so the caller never has to build a filtered copy.
+    Returns -1 for no fill.
+    """
+    remaining_queue = max(0.0, float(queue_ahead))
+    initial_queue = remaining_queue
+    decay_rate = max(0.0, float(queue_decay_per_second))
+    queue_decay_base = 0.0
+    last_ns = active_at_ns
+    has_ts = trade_ts_ns is not None
+    # A side that is neither bid nor ask crosses nothing, as before.
+    mode = 0 if side == "bid" else (1 if side == "ask" else 2)
+    for position in positions:
+        if used is not None and used[position]:
+            continue
+        trade_ns = int(trade_ts_ns[position]) if has_ts else None
+        if last_ns is None and trade_ns is not None:
+            last_ns = trade_ns
+        if decay_rate > 0 and last_ns is not None and trade_ns is not None and remaining_queue > 0:
+            elapsed_seconds = max(0.0, total_seconds_from_ns(trade_ns - last_ns))
+            decay = min(remaining_queue, initial_queue * decay_rate * elapsed_seconds)
+            remaining_queue -= decay
+            queue_decay_base += decay
+            last_ns = trade_ns
+
+        candidate_price = trade_price[position]
+        if not math.isfinite(candidate_price):
+            continue
+        if mode == 0:
+            crosses = candidate_price <= price
+        elif mode == 1:
+            crosses = candidate_price >= price
+        else:
+            crosses = False
+        if not crosses:
+            continue
+        candidate_size = 0.0 if trade_size_falsy[position] else float(trade_size[position])
+        if remaining_queue > 0:
+            remaining_queue -= max(0.0, candidate_size)
+            if remaining_queue >= 0:
+                continue
+        return int(position), queue_decay_base
+    return -1, queue_decay_base
+
+
 def matching_trade_with_queue_decay(
     side: str,
     price: float,
@@ -802,35 +1460,24 @@ def matching_trade_with_queue_decay(
     queue_decay_per_second: float = 0.0,
     active_at: pd.Timestamp | None = None,
 ) -> tuple[pd.Series | None, float]:
-    remaining_queue = max(0.0, float(queue_ahead))
-    initial_queue = remaining_queue
-    decay_rate = max(0.0, float(queue_decay_per_second))
-    queue_decay_base = 0.0
-    last_ts = pd.Timestamp(active_at) if active_at is not None else None
-    for _, trade in window.iterrows():
-        trade_ts = trade.get("timestamp", None)
-        if last_ts is None and trade_ts is not None:
-            last_ts = pd.Timestamp(trade_ts)
-        if decay_rate > 0 and last_ts is not None and trade_ts is not None and remaining_queue > 0:
-            elapsed_seconds = max(0.0, (pd.Timestamp(trade_ts) - last_ts).total_seconds())
-            decay = min(remaining_queue, initial_queue * decay_rate * elapsed_seconds)
-            remaining_queue -= decay
-            queue_decay_base += decay
-            last_ts = pd.Timestamp(trade_ts)
-
-        trade_price = float(trade.get("price", np.nan))
-        if not np.isfinite(trade_price):
-            continue
-        crosses = (side == "bid" and trade_price <= price) or (side == "ask" and trade_price >= price)
-        if not crosses:
-            continue
-        trade_size = float(trade.get("size", 0.0) or 0.0)
-        if remaining_queue > 0:
-            remaining_queue -= max(0.0, trade_size)
-            if remaining_queue >= 0:
-                continue
-        return trade, queue_decay_base
-    return None, queue_decay_base
+    """DataFrame adapter over :func:`scan_for_matching_trade`."""
+    trade_price, trade_size, trade_size_falsy = trade_event_arrays(window)
+    position, queue_decay_base = scan_for_matching_trade(
+        side,
+        price,
+        range(len(window)),
+        trade_ts_ns=timestamps_as_ns(window, coerce=True),
+        trade_price=trade_price,
+        trade_size=trade_size,
+        trade_size_falsy=trade_size_falsy,
+        used=None,
+        queue_ahead=queue_ahead,
+        queue_decay_per_second=queue_decay_per_second,
+        active_at_ns=timestamp_as_ns(active_at),
+    )
+    if position < 0:
+        return None, queue_decay_base
+    return window.iloc[position], queue_decay_base
 
 
 def matching_trade(
@@ -853,8 +1500,22 @@ def matching_trade(
     return trade
 
 
-def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
-    prices, trades, orderbooks, input_files = load_symbol_data(config)
+def run_replay(
+    config: ReplayConfig,
+    params: dict[str, float],
+    tape: ReplayTape | None = None,
+) -> ReplayMetrics:
+    """Score one configuration.
+
+    ``tape=None`` loads the data here, which is what a single run wants and is
+    byte-identical to what this function always did. A SWEEP must pass a tape
+    from :func:`load_tape` instead: the collector keeps writing, so two runs
+    minutes apart otherwise score different data and the comparison is worthless
+    (see :class:`ReplayTape`).
+    """
+    prices, trades, orderbooks, input_files = (
+        load_symbol_data(config) if tape is None else tape.frames()
+    )
     metrics = ReplayMetrics()
     metrics.input_files = input_files
     metrics.starting_equity_usdc = float(config.starting_equity_usdc)
@@ -862,6 +1523,14 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     metrics.min_equity_usdc = float(config.starting_equity_usdc)
     metrics.min_liquidation_buffer_usdc = float(config.starting_equity_usdc)
     metrics.quote_refresh_interval_ms = int(config.quote_refresh_interval_ms)
+    metrics.decision_latency_ms = int(config.decision_latency_ms)
+    metrics.order_ack_latency_ms = int(config.order_ack_latency_ms)
+    metrics.cancel_latency_ms = int(config.cancel_latency_ms)
+    metrics.event_clock = str(config.event_clock)
+    metrics.event_clock_by_stream = {
+        name: str(frame.attrs.get("event_clock", "unknown"))
+        for name, frame in (("prices", prices), ("trades", trades), ("orderbooks", orderbooks))
+    }
     metrics.price_tick_size = float(config.price_tick_size)
     metrics.amount_step_size = float(config.amount_step_size)
     metrics.fill_calibration = load_fill_calibration(config.fill_calibration_path)
@@ -897,6 +1566,12 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
     if not gaps.empty:
         metrics.max_price_gap_seconds = float(gaps.max())
         metrics.p95_price_gap_seconds = float(gaps.quantile(0.95))
+        # Same distribution in ms, because that is the unit the latency ladder is
+        # read in: a rung shorter than p10 cannot be distinguished from a faster
+        # one on this tape.
+        metrics.price_gap_ms_p10 = float(gaps.quantile(0.10) * 1000.0)
+        metrics.price_gap_ms_p50 = float(gaps.quantile(0.50) * 1000.0)
+        metrics.price_gap_ms_p90 = float(gaps.quantile(0.90) * 1000.0)
     snapshot_ts = prices.iloc[0]["timestamp"]
     metrics.parameter_series.append(
         replay_parameter_snapshot(
@@ -919,37 +1594,100 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
 
     total_quote_latency_ms = config.decision_latency_ms + config.order_ack_latency_ms
     quote_refresh_interval_ms = max(0, int(config.quote_refresh_interval_ms))
-    next_quote_decision_at: pd.Timestamp | None = None
-    used_trade_indices: set[int] = set()
-    hjb_cache = compute_hjb_cache(
-        params,
-        config.q_max,
-        config.hjb_q_min,
-        alpha=config.hjb_alpha,
-        phi=config.hjb_phi,
-        T_seconds=config.hjb_horizon_seconds,
-        time_mode=config.hjb_time_mode,
-    )
+    next_quote_decision_ns: int | None = None
+    hjb_cache = solve_replay_hjb(config, params)
+    # mm_core.select_delta reads the inventory axis through
+    # np.asarray(hjb["q_grid"], dtype=float), and the solvers hand back an int64
+    # grid -- so that allocated a fresh array on every side of every quote.
+    # Converting once makes the asarray a no-op. It cannot move a value: the
+    # grid is small integers, exact in float64, and nothing else reads this
+    # dict (it never leaves run_replay).
+    if isinstance(hjb_cache, dict) and "q_grid" in hjb_cache:
+        hjb_cache["q_grid"] = np.asarray(hjb_cache["q_grid"], dtype=float)
     episodic = str(config.hjb_time_mode) == "episodic"
     horizon = float(config.hjb_horizon_seconds)
-    episode_start_ts: pd.Timestamp | None = None
-    for row_idx, row in prices.iterrows():
-        mid, best_bid, best_ask = mid_from_price_row(row, config.mid_fallback)
-        metrics.final_mid = mid
-        row_ts = row["timestamp"]
+    episode_start_ns: int | None = None
 
-        q = inventory_q(
-            metrics.inventory_base,
-            config.inventory_unit_base,
-            config.q_max,
-            config.q_min,
-        )
-        q_exact = inventory_q_exact(
-            metrics.inventory_base,
-            config.inventory_unit_base,
-            config.q_max,
-            config.q_min,
-        )
+    # ---- hoisted columns and loop invariants ------------------------------
+    # See the "Column views" block above for why. Nothing here changes what is
+    # computed; it changes only how many times per event pandas is asked for it.
+    price_ts_ns = timestamps_as_ns(prices)
+    if price_ts_ns is None:
+        raise TypeError("replay needs a datetime 'timestamp' column on the price stream")
+    price_mid_arr, price_best_bid_arr, price_best_ask_arr = price_event_arrays(
+        prices, config.mid_fallback
+    )
+    price_count = len(prices)
+    # tolist() once, then index Python lists in the loop. ndarray element access
+    # boxes a numpy scalar every time, which then has to be unboxed again by the
+    # float()/int() the metrics need; the list holds the identical values as
+    # native ints and floats. The arrays stay for searchsorted, which needs them.
+    price_ts = price_ts_ns.tolist()
+    price_mid_list = price_mid_arr.tolist()
+    price_best_bid_list = price_best_bid_arr.tolist()
+    price_best_ask_list = price_best_ask_arr.tolist()
+
+    trades_empty = bool(trades.empty)
+    trade_ts_ns = timestamps_as_ns(trades)
+    if not trades_empty and trade_ts_ns is None:
+        raise TypeError("replay needs a datetime 'timestamp' column on the trade stream")
+    trade_price_arr, trade_size_arr, trade_size_falsy_arr = trade_event_arrays(trades)
+    trade_ts = None if trade_ts_ns is None else trade_ts_ns.tolist()
+    trade_price = trade_price_arr.tolist()
+    trade_size = trade_size_arr.tolist()
+    trade_size_falsy = trade_size_falsy_arr.tolist()
+    trade_ts_series = trades["timestamp"] if "timestamp" in trades.columns else None
+    # A boolean mask instead of the set of consumed row labels, and the window
+    # instead of a filtered copy of it: the old pair cost an isin() over a fresh
+    # DataFrame per quote, which was a quarter of the whole run.
+    trade_used = [False] * len(trades)
+    trades_sorted = is_monotonic_ns(trade_ts_ns)
+
+    book_ts_ns = timestamps_as_ns(orderbooks)
+    if not orderbooks.empty and "timestamp" in orderbooks.columns and book_ts_ns is None:
+        raise TypeError("replay needs a datetime 'timestamp' column on the orderbook stream")
+    if book_ts_ns is not None and len(book_ts_ns):
+        book_bid_size = first_level_size_array(orderbooks, "bid")
+        book_ask_size = first_level_size_array(orderbooks, "ask")
+    else:
+        book_ts_ns = None
+        book_bid_size = book_ask_size = None
+
+    inventory_config = _inventory_config(config.inventory_unit_base, config.q_max, config.q_min)
+    quote_config = half_spread_quote_config(
+        spread_multiplier=config.spread_multiplier,
+        maker_fee=config.maker_fee,
+        min_half_spread_bps=config.min_half_spread_bps,
+        max_half_spread_bps=config.max_half_spread_bps,
+    )
+    # Both arguments are configuration, so the order size never varies by event.
+    order_amount = round_amount_down(config.inventory_unit_base, config.amount_step_size)
+    order_amount_ok = order_amount > 0
+    calibration_bucket_bps = metrics.fill_calibration.get("bucket_bps")
+    calibration_applied = bool(metrics.fill_calibration.get("applied"))
+    funding_rate_per_hour = config.funding_rate_per_hour
+    queue_decay_per_second = config.queue_decay_per_second
+    q_min = int(config.q_min)
+    q_max = int(config.q_max)
+    long_only = q_min >= 0
+    short_floor = float(q_min) * float(config.inventory_unit_base)
+    maker_fee = config.maker_fee
+    price_tick = usable_tick_size(config.price_tick_size)
+    latency_ns = int(total_quote_latency_ms) * _NS_PER_MS
+    refresh_ns = quote_refresh_interval_ms * _NS_PER_MS
+    cancel_ns = int(config.cancel_latency_ms) * _NS_PER_MS
+    episode_min_elapsed = horizon * float(config.episode_min_elapsed_fraction)
+    consumed_trade_events = 0
+
+    for row_idx in range(price_count):
+        row_ts_ns = price_ts[row_idx]
+        mid = price_mid_list[row_idx]
+        metrics.final_mid = mid
+
+        # inventory_to_q IS round(inventory_to_q_exact(...)) on the same config,
+        # so the exact value is computed once and rounded rather than twice.
+        q_exact = mm_core.inventory_to_q_exact(metrics.inventory_base, inventory_config)
+        q = int(round(q_exact))
         metrics.q_residual_abs_sum += abs(q_exact - q)
         metrics.q_residual_samples += 1
 
@@ -957,56 +1695,77 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
         # far enough in that a single round trip cannot pin it at t=0.
         tau: float | None = None
         if episodic:
-            if episode_start_ts is None:
-                episode_start_ts = row_ts
+            if episode_start_ns is None:
+                episode_start_ns = row_ts_ns
                 metrics.episodes += 1
-            elapsed = max(0.0, (row_ts - episode_start_ts).total_seconds())
+            elapsed = max(0.0, total_seconds_from_ns(row_ts_ns - episode_start_ns))
             if elapsed >= horizon or (
-                config.episode_reset_on_flat
-                and q == 0
-                and elapsed >= horizon * float(config.episode_min_elapsed_fraction)
+                config.episode_reset_on_flat and q == 0 and elapsed >= episode_min_elapsed
             ):
-                episode_start_ts = row_ts
+                episode_start_ns = row_ts_ns
                 metrics.episodes += 1
                 elapsed = 0.0
             tau = max(0.0, horizon - elapsed)
 
-        if q == config.q_min:
+        if q == q_min:
             metrics.time_at_q_boundary["q_min"] += 1
-        if q == config.q_max:
+        if q == q_max:
             metrics.time_at_q_boundary["q_max"] += 1
         metrics.inventory_histogram[q] = metrics.inventory_histogram.get(q, 0) + 1
 
-        if config.funding_rate_per_hour and row_idx > 0:
-            prev_ts = prices.loc[row_idx - 1, "timestamp"]
-            elapsed_hours = max(0.0, (row_ts - prev_ts).total_seconds() / 3600.0)
-            funding = -metrics.inventory_base * mid * float(config.funding_rate_per_hour) * elapsed_hours
+        if funding_rate_per_hour and row_idx > 0:
+            elapsed_hours = max(
+                0.0, total_seconds_from_ns(row_ts_ns - price_ts[row_idx - 1]) / 3600.0
+            )
+            funding = -metrics.inventory_base * mid * float(funding_rate_per_hour) * elapsed_hours
             metrics.funding_usdc += funding
             metrics.cash_usdc += funding
 
-        if next_quote_decision_at is not None and row_ts < next_quote_decision_at:
+        if next_quote_decision_ns is not None and row_ts_ns < next_quote_decision_ns:
             update_margin_metrics(metrics, config, mid)
             continue
 
+        # Only a quote decision reads the touch, so it is not unpacked above the
+        # early continue -- most events on a fast tape never get here.
+        best_bid = price_best_bid_list[row_idx]
+        best_ask = price_best_ask_list[row_idx]
         metrics.quote_decision_events += 1
         bid, ask, _ = compute_quotes(
             mid,
             q,
             params,
-            config.q_max,
+            q_max,
             hjb_cache,
-            maker_fee=config.maker_fee,
+            maker_fee=maker_fee,
             spread_multiplier=config.spread_multiplier,
             min_half_spread_bps=config.min_half_spread_bps,
             max_half_spread_bps=config.max_half_spread_bps,
             tau_remaining=tau,
             q_exact=q_exact,
+            quote_config=quote_config,
         )
         inventory_at_decision = metrics.inventory_base
-        active_at = row_ts + pd.Timedelta(milliseconds=total_quote_latency_ms)
-        refresh_due_at = row_ts + pd.Timedelta(milliseconds=quote_refresh_interval_ms)
-        stale_at = max(active_at, refresh_due_at) + pd.Timedelta(milliseconds=config.cancel_latency_ms)
-        next_quote_decision_at = refresh_due_at
+        active_at_ns = row_ts_ns + latency_ns
+        refresh_due_ns = row_ts_ns + refresh_ns
+        stale_at_ns = max(active_at_ns, refresh_due_ns) + cancel_ns
+        next_quote_decision_ns = refresh_due_ns
+        # The window the old code cut with a full-frame boolean mask and a take,
+        # once per side. On sorted timestamps -- which is every tape the loader
+        # produces -- it is a contiguous range, so two binary searches give the
+        # same rows without materialising anything. The mask is kept for the
+        # unsorted case a monkeypatched loader can still hand over, where a
+        # range would be wrong rather than merely slower.
+        window_positions: Any = ()
+        if not trades_empty:
+            if trades_sorted:
+                window_positions = range(
+                    int(trade_ts_ns.searchsorted(active_at_ns, side="left")),
+                    int(trade_ts_ns.searchsorted(stale_at_ns, side="right")),
+                )
+            else:
+                window_positions = np.nonzero(
+                    (trade_ts_ns >= active_at_ns) & (trade_ts_ns <= stale_at_ns)
+                )[0]
 
         for side, raw_price in (("bid", bid), ("ask", ask)):
             if raw_price is None:
@@ -1014,25 +1773,29 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
             # A long-only agent cannot sell what it does not hold. A two-sided
             # agent can, down to its short bound -- the HJB already returns an
             # infinite depth at that bound, so no extra gate is needed there.
-            if config.q_min >= 0 and side == "ask" and inventory_at_decision <= 0:
+            if long_only and side == "ask" and inventory_at_decision <= 0:
                 continue
-            price = round_price_for_side(side, raw_price, config.price_tick_size)
+            price = (
+                float(raw_price)
+                if price_tick is None
+                else round_price_to_tick(side, raw_price, price_tick)
+            )
             if abs(float(price) - float(raw_price)) > 1e-12:
                 metrics.price_rounding_adjustments += 1
-            order_amount = round_amount_down(config.inventory_unit_base, config.amount_step_size)
-            if order_amount <= 0:
+            if not order_amount_ok:
                 metrics.amount_rounding_rejects += 1
                 continue
             metrics.quote_attempts += 1
             depth_key = quote_depth_key(side, mid, price)
-            calibration_bucket_bps = metrics.fill_calibration.get("bucket_bps")
             calibration_key = (
                 quote_depth_bucket_key(side, mid, price, calibration_bucket_bps)
                 if calibration_bucket_bps is not None
                 else depth_key
             )
-            cal_key, _cal_probability = calibration_probability_key(metrics.fill_calibration, side, calibration_key)
-            if metrics.fill_calibration.get("applied"):
+            if calibration_applied:
+                cal_key, _cal_probability = calibration_probability_key(
+                    metrics.fill_calibration, side, calibration_key
+                )
                 metrics.calibration_attempts_by_key[cal_key] = metrics.calibration_attempts_by_key.get(cal_key, 0) + 1
             metrics.quote_attempts_by_depth[depth_key] = metrics.quote_attempts_by_depth.get(depth_key, 0) + 1
             ok, _reason = post_only_check(side, price, best_bid, best_ask)
@@ -1040,40 +1803,46 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                 metrics.post_only_rejects += 1
                 continue
 
-            if trades.empty:
+            if trades_empty:
                 metrics.stale_quote_cancels += 1
                 continue
 
-            queue_row = active_orderbook_row(orderbooks, active_at)
-            queue_ahead = first_level_size(queue_row, side) if is_joining_best(side, price, best_bid, best_ask) else 0.0
-            window = trades[(trades["timestamp"] >= active_at) & (trades["timestamp"] <= stale_at)]
-            if used_trade_indices:
-                window = window.loc[~window.index.isin(used_trade_indices)]
-            fill_trade, queue_decay_base = matching_trade_with_queue_decay(
+            queue_ahead = 0.0
+            if book_ts_ns is not None and is_joining_best(side, price, best_bid, best_ask):
+                book_idx = int(book_ts_ns.searchsorted(active_at_ns, side="right")) - 1
+                if book_idx >= 0:
+                    sizes = book_bid_size if side == "bid" else book_ask_size
+                    queue_ahead = float(sizes[book_idx])
+            fill_index, queue_decay_base = scan_for_matching_trade(
                 side,
                 price,
-                window,
-                queue_ahead,
-                queue_decay_per_second=config.queue_decay_per_second,
-                active_at=active_at,
+                window_positions,
+                trade_ts_ns=trade_ts,
+                trade_price=trade_price,
+                trade_size=trade_size,
+                trade_size_falsy=trade_size_falsy,
+                used=trade_used,
+                queue_ahead=queue_ahead,
+                queue_decay_per_second=queue_decay_per_second,
+                active_at_ns=active_at_ns,
             )
             metrics.queue_decay_base += queue_decay_base
 
-            if fill_trade is None:
+            if fill_index < 0:
                 metrics.stale_quote_cancels += 1
                 continue
 
-            trade_price = float(fill_trade.get("price", np.nan))
-            trade_size = float(fill_trade.get("size", order_amount) or order_amount)
+            fill_trade_size = (
+                order_amount if trade_size_falsy[fill_index] else trade_size[fill_index]
+            )
             if side == "ask":
                 # Selling is bounded by how much further the short bound allows,
                 # which is the whole inventory for a long-only agent (q_min=0)
                 # and inventory-minus-the-floor for a two-sided one.
-                short_floor = float(config.q_min) * float(config.inventory_unit_base)
                 room_to_sell = max(0.0, metrics.inventory_base - short_floor)
-                fill_size = min(trade_size, order_amount, room_to_sell)
+                fill_size = min(fill_trade_size, order_amount, room_to_sell)
             else:
-                fill_size = min(trade_size, order_amount)
+                fill_size = min(fill_trade_size, order_amount)
             if fill_size <= 0:
                 continue
 
@@ -1084,16 +1853,15 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                 side=side,
                 depth_key=calibration_key,
             )
+            trade_used[fill_index] = True
+            consumed_trade_events += 1
+            metrics.consumed_trade_events = consumed_trade_events
             if not calibrated_allowed:
-                used_trade_indices.add(int(fill_trade.name))
-                metrics.consumed_trade_events = len(used_trade_indices)
                 metrics.calibration_rejected_fills += 1
                 metrics.stale_quote_cancels += 1
                 continue
-            used_trade_indices.add(int(fill_trade.name))
-            metrics.consumed_trade_events = len(used_trade_indices)
             notional = fill_size * price
-            fee = notional * config.maker_fee
+            fee = notional * maker_fee
             gross_spread = abs(mid - price) * fill_size
             side_pnl = gross_spread - fee
             metrics.maker_fills += 1
@@ -1108,12 +1876,25 @@ def run_replay(config: ReplayConfig, params: dict[str, float]) -> ReplayMetrics:
                 metrics.pnl_by_side["ask"] += side_pnl
             metrics.realized_spread_usdc += gross_spread
             metrics.fills_by_depth[depth_key] = metrics.fills_by_depth.get(depth_key, 0) + 1
-            fill_ts = fill_trade["timestamp"]
+            metrics.fills_by_side[side] = metrics.fills_by_side.get(side, 0) + 1
+            metrics.fill_depth_bps_sum_by_side[side] = metrics.fill_depth_bps_sum_by_side.get(
+                side, 0.0
+            ) + quote_depth_bps(mid, price)
+            fill_ts = trade_ts_series.iloc[fill_index]
+            fill_ts_ns = trade_ts[fill_index]
             for horizon_ms in MARKOUT_HORIZONS_MS:
-                future = future_mid(prices, fill_ts, horizon_ms, config.mid_fallback)
+                future = future_mid_from_arrays(price_ts_ns, price_mid_arr, fill_ts_ns, horizon_ms)
                 if future is None:
                     continue
                 markout = markout_value(side, price, future)
+                # Aggregated per side as well as sampled, because the sample list
+                # is only usable by a reader who re-groups it, and the question a
+                # sweep asks -- which side is paying, and does it stay paid at
+                # 30 s -- has to be answerable straight from to_dict().
+                side_markouts = metrics.markout_usdc_by_side[side]
+                side_counts = metrics.markout_fills_by_side[side]
+                side_markouts[horizon_ms] = side_markouts.get(horizon_ms, 0.0) + markout * fill_size
+                side_counts[horizon_ms] = side_counts.get(horizon_ms, 0) + 1
                 metrics.markout_samples.append({
                     "fill_ts": fill_ts.isoformat(),
                     "side": side,
@@ -1161,9 +1942,21 @@ def synthetic_symbol_data(config: ReplayConfig) -> tuple[pd.DataFrame, pd.DataFr
     return prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}
 
 
+def synthetic_tape(config: ReplayConfig) -> ReplayTape:
+    """The built-in smoke data as a tape, so --synthetic-smoke goes through the
+    same entry point as a real run instead of monkeypatching the module global."""
+    prices, trades, orderbooks, input_files = synthetic_symbol_data(config)
+    for frame in (prices, trades, orderbooks):
+        # Synthetic frames carry no exchange_timestamp, so the metrics should say
+        # so rather than claiming a clock the smoke data does not have.
+        _, clock = apply_event_clock(frame, config.event_clock)
+        frame.attrs["event_clock"] = clock
+    return ReplayTape(prices=prices, trades=trades, orderbooks=orderbooks, input_files=input_files)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Replay HJB market-making quotes over collected Hyperliquid data.")
-    parser.add_argument("--symbol", default="ETH")
+    parser.add_argument("--symbol", default="CASHCAT")
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "HL_data")
     parser.add_argument("--mid", type=float, default=1.0)
     parser.add_argument("--output", type=Path, default=None)
@@ -1208,8 +2001,113 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--hjb-horizon-seconds", type=float, default=60.0)
-    parser.add_argument("--hjb-alpha", type=float, default=0.001)
-    parser.add_argument("--hjb-phi", type=float, default=0.0001)
+    parser.add_argument(
+        "--hjb-alpha",
+        type=float,
+        default=0.001,
+        help="RAW terminal penalty. Only used when --hjb-alpha-kappa is 0; not kappa-invariant.",
+    )
+    parser.add_argument(
+        "--hjb-phi",
+        type=float,
+        default=0.0001,
+        help="RAW running penalty. Only used when --hjb-phi-kappa-t is 0; not kappa-invariant.",
+    )
+    parser.add_argument(
+        "--hjb-phi-kappa-t",
+        type=float,
+        default=0.0,
+        help=(
+            "Dimensionless running penalty phi*kappa*T, the sweepable one (live runs 10.0). "
+            "0 disables the derivation and falls back to the raw --hjb-phi."
+        ),
+    )
+    parser.add_argument(
+        "--hjb-alpha-kappa",
+        type=float,
+        default=0.0,
+        help=(
+            "Dimensionless terminal penalty alpha*kappa (live runs 0.05). "
+            "0 disables the derivation and falls back to the raw --hjb-alpha."
+        ),
+    )
+    parser.add_argument(
+        "--hjb-phi-kappa-t-max",
+        type=float,
+        default=QuoteConfig.hjb_phi_kappa_t_max,
+        help="Ceiling on phi*kappa*T, as live. Sweeping --hjb-phi-kappa-t past it changes nothing.",
+    )
+    parser.add_argument(
+        "--sigma2-per-sec",
+        type=float,
+        default=None,
+        help="Variance per second for mm_core's volatility channel; omitted leaves it quiet.",
+    )
+    parser.add_argument("--gamma-inventory-risk", type=float, default=QuoteConfig.gamma_inventory_risk)
+    parser.add_argument(
+        "--q-max",
+        type=int,
+        default=3,
+        help="Inventory clamp, in inventory units.",
+    )
+    parser.add_argument(
+        "--q-min",
+        type=int,
+        default=0,
+        help=(
+            "Lower inventory clamp. 0 (the default) is the long-only agent this harness shipped "
+            "with; pass -q_max to simulate the two-sided market maker the live system runs."
+        ),
+    )
+    parser.add_argument(
+        "--hjb-q-min",
+        type=int,
+        default=None,
+        help=(
+            "Inventory domain the HJB is SOLVED on, separate from the clamp above. "
+            "Omit for the symmetric [-q_max, q_max] solve; pass 0 to solve the long-only problem."
+        ),
+    )
+    parser.add_argument("--inventory-unit-base", type=float, default=0.01)
+    parser.add_argument(
+        "--decision-latency-ms",
+        type=int,
+        default=None,
+        help="Overrides the decision half of --latency-ms (default 250).",
+    )
+    parser.add_argument(
+        "--order-ack-latency-ms",
+        type=int,
+        default=None,
+        help="Overrides the ack half of --latency-ms (default 250).",
+    )
+    parser.add_argument(
+        "--cancel-latency-ms",
+        type=int,
+        default=250,
+        help="How long a quote keeps resting after it should have been pulled.",
+    )
+    parser.add_argument(
+        "--latency-ms",
+        type=int,
+        default=None,
+        help=(
+            "TOTAL order latency, split evenly across decision and ack (odd values give the "
+            "extra millisecond to decision). 50 is a colocated stack, 500 is this one. "
+            "Sweep it together with --quote-refresh-interval-ms: at a fixed 1 s refresh the "
+            "refresh interval, not the latency, sets most of the staleness."
+        ),
+    )
+    parser.add_argument(
+        "--event-clock",
+        choices=("exchange", "local"),
+        default="exchange",
+        help=(
+            "Which collector clock orders events. 'exchange' is correct; 'local' is the "
+            "receive clock this harness used before 2026-08-17 and carries ~200 ms of jitter, "
+            "which is more than a latency rung."
+        ),
+    )
     parser.add_argument(
         "--no-episode-reset-on-flat",
         dest="episode_reset_on_flat",
@@ -1232,6 +2130,27 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_latency_ms(args: argparse.Namespace) -> tuple[int, int]:
+    """(decision, ack) from --latency-ms plus any explicit override.
+
+    A sweep varies ONE number, so --latency-ms is the total and the split is an
+    implementation detail: half each, with the odd millisecond going to decision.
+    The individual flags still win, because the two halves are not physically the
+    same thing (think time vs round trip) and a stack can improve one alone.
+    """
+    if args.latency_ms is None:
+        decision, ack = 250, 250
+    else:
+        total = max(0, int(args.latency_ms))
+        ack = total // 2
+        decision = total - ack
+    if args.decision_latency_ms is not None:
+        decision = int(args.decision_latency_ms)
+    if args.order_ack_latency_ms is not None:
+        ack = int(args.order_ack_latency_ms)
+    return decision, ack
+
+
 def main() -> int:
     args = parse_args()
     params = {
@@ -1242,10 +2161,18 @@ def main() -> int:
         "epsilon+": args.epsilon_plus,
         "epsilon-": args.epsilon_minus,
     }
+    decision_latency_ms, order_ack_latency_ms = resolve_latency_ms(args)
     config = ReplayConfig(
         symbol=args.symbol,
         data_dir=args.data_dir,
         mid_fallback=args.mid,
+        inventory_unit_base=args.inventory_unit_base,
+        q_max=args.q_max,
+        q_min=args.q_min,
+        hjb_q_min=args.hjb_q_min,
+        decision_latency_ms=decision_latency_ms,
+        order_ack_latency_ms=order_ack_latency_ms,
+        cancel_latency_ms=args.cancel_latency_ms,
         maker_fee=args.maker_fee,
         taker_fee=args.taker_fee,
         spread_multiplier=args.spread_multiplier,
@@ -1266,17 +2193,15 @@ def main() -> int:
         hjb_horizon_seconds=args.hjb_horizon_seconds,
         hjb_alpha=args.hjb_alpha,
         hjb_phi=args.hjb_phi,
+        hjb_phi_kappa_t=args.hjb_phi_kappa_t,
+        hjb_alpha_kappa=args.hjb_alpha_kappa,
+        hjb_phi_kappa_t_max=args.hjb_phi_kappa_t_max,
+        gamma_inventory_risk=args.gamma_inventory_risk,
+        sigma2_per_sec=args.sigma2_per_sec,
         episode_reset_on_flat=args.episode_reset_on_flat,
+        event_clock=args.event_clock,
     )
-    if args.synthetic_smoke:
-        original_loader = load_symbol_data
-        try:
-            globals()["load_symbol_data"] = synthetic_symbol_data
-            metrics = run_replay(config, params)
-        finally:
-            globals()["load_symbol_data"] = original_loader
-    else:
-        metrics = run_replay(config, params)
+    metrics = run_replay(config, params, tape=synthetic_tape(config) if args.synthetic_smoke else None)
     payload = metrics.to_dict()
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.output:
