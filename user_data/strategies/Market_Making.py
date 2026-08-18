@@ -298,6 +298,12 @@ class Market_Making(IStrategy):
     # Kept mid-range so the model still trades enough to be measured. Full
     # numbers and reasoning in docs/spread_calculation.tex, sec:phisweep.
     hjb_phi_kappa_t = 10.0
+    # Ceiling on the SAME dimensionless product, so the sigma2 volatility channel
+    # -- which is still in absolute price units -- cannot re-pin quotes to the
+    # clamps through the other channel. Set it ABOVE hjb_phi_kappa_t or the
+    # setting above is silently clamped to this one; the gap between them is the
+    # headroom the volatility channel is allowed.
+    hjb_phi_kappa_t_max = 50.0
     hjb_alpha_kappa = 0.05
     hjb_alpha = 0.001   # raw fallback, only used when hjb_alpha_kappa == 0
     # Running inventory penalty. NOTE: eq. 10.28 puts this in the transition
@@ -771,7 +777,10 @@ class Market_Making(IStrategy):
             "gamma_inventory_risk",
             "extra_cushion_bps",
             "hjb_phi_kappa_t",
+            "hjb_phi_kappa_t_max",
             "hjb_alpha_kappa",
+            "max_daily_loss_usdc",
+            "max_consecutive_losses",
             "min_kappa_fit_points",
             "min_kappa_r2",
             "min_epsilon_events",
@@ -1897,6 +1906,11 @@ class Market_Making(IStrategy):
             allow_short=bool(self.can_short),
             hjb_alpha=float(self.hjb_alpha),
             hjb_phi_kappa_t=float(self.hjb_phi_kappa_t),
+            # This was never passed, so the ceiling silently sat at QuoteConfig's
+            # default of 50 and any hjb_phi_kappa_t above it was clamped back --
+            # a setting of 200 would have quoted exactly like a setting of 50,
+            # with nothing in the logs to say so.
+            hjb_phi_kappa_t_max=float(self.hjb_phi_kappa_t_max),
             hjb_alpha_kappa=float(self.hjb_alpha_kappa),
             hjb_phi=float(self.hjb_phi),
             hjb_horizon_seconds=float(self.hjb_horizon_seconds),
