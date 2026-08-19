@@ -4291,7 +4291,7 @@ class Market_Making(IStrategy):
         governed by ``_should_refresh_quote``. No such method has ever existed --
         ``git log -S"def _should_refresh_quote"`` is empty across all history --
         and freqtrade does not cancel-and-replace on any price change either.
-        The real mechanism is two paths, and the one that dominates is not the
+        The real mechanism is three paths, and the one that dominates is not the
         one you would expect:
 
         1. TIMEOUT (dominant). ``manage_open_orders`` checks ``ft_check_timed_out``
@@ -4314,12 +4314,28 @@ class Market_Making(IStrategy):
            either -- raising ``unfilledtimeout`` above the timeframe is what
            would make them primary.
 
-        There is therefore no separate refresh gate to configure, and adding one
-        would be a third mechanism rather than a clarification: the cadence is
-        already set by ``unfilledtimeout`` and ``internals.process_throttle_secs``.
-        Note they do not compose linearly -- dropping them from 15 s / 15 s to
-        3 s / 2 s took the median from 30.3 s to ~10 s, but tightening further to
-        2 s / 1 s measured no faster while doubling API load.
+        3. POSITION-ADJUST REPLACE (this callback, live since 2026-08-19). The
+           two paths above were measured while THIS METHOD CRASHED on every call,
+           so they were the whole story only by accident. With the crash fixed,
+           ``process_open_trade_positions`` reaches here on an entry that has not
+           filled, we return a one-unit stake, and freqtrade logs
+           "Position adjust: about to create a new order" immediately followed by
+           "Buy order cancelled to be replaced by new limit order". It does not
+           stack a second order -- it cancels and re-places the resting one, at
+           the price ``custom_entry_price`` computes this iteration. So it is a
+           genuine third requote path, and it is not candle-gated.
+
+           Inventory cannot run away through it: the trade carries
+           ``amount=0`` while unfilled, so ``_inventory_level`` stays flat and
+           each cycle re-places the same single unit.
+
+        There is therefore no separate refresh gate to configure: the cadence is
+        set by ``unfilledtimeout``, ``internals.process_throttle_secs`` and the
+        rate this callback is reached. Note the first two do not compose linearly
+        -- dropping them from 15 s / 15 s to 3 s / 2 s took the median from 30.3 s
+        to ~10 s, but tightening further to 2 s / 1 s measured no faster while
+        doubling API load. The p10 1.0 / p50 5.5 / p90 10.9 s figures quoted above
+        predate path 3 and are now an upper bound on the interval.
 
         Sizing is re-derived here rather than inherited: custom_stake_amount is
         NOT called for position adjustments, so its one-unit cap would otherwise
