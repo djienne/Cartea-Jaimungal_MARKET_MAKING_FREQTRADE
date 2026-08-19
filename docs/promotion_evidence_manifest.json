@@ -25,7 +25,7 @@
   },
   "external_gates": [
     {
-      "generated_at": "2026-06-11T16:48:38Z",
+      "generated_at": "2026-08-19T10:38:59Z",
       "name": "hyperliquid_post_only_mapping",
       "ok": false,
       "path": "docs\\post_only_evidence_report.json",
@@ -77,7 +77,7 @@
       ]
     },
     {
-      "generated_at": "2026-06-11T16:49:31Z",
+      "generated_at": "2026-08-19T10:38:59Z",
       "name": "live_canary",
       "ok": false,
       "path": "docs\\live_canary_report.json",
@@ -87,15 +87,14 @@
         "replay_gate_not_passed",
         "manual_monitoring_not_acknowledged",
         "insufficient_canary_sessions:0<min_3",
-        "unknown_fill_liquidity:8",
-        "fill_not_live_enabled:8",
-        "accepted_quote_not_live_enabled:33",
-        "accepted_quote_not_post_only:33",
-        "accepted_quote_post_only_unverified:33",
-        "accepted_order_attempt_not_live_enabled:28",
-        "accepted_order_attempt_not_post_only:28",
-        "accepted_order_attempt_post_only_unverified:28",
-        "param_update_rejected:3",
+        "unknown_fill_liquidity:2",
+        "fill_not_live_enabled:2",
+        "accepted_quote_not_live_enabled:163",
+        "accepted_quote_not_post_only:163",
+        "accepted_quote_post_only_unverified:163",
+        "accepted_order_attempt_not_live_enabled:160",
+        "accepted_order_attempt_not_post_only:160",
+        "accepted_order_attempt_post_only_unverified:160",
         "no_live_health_events"
       ]
     }
@@ -114,7 +113,7 @@
     "requires_exchange_submit_evidence": true,
     "research_gtc_supported": true
   },
-  "generated_at": "2026-06-11T16:49:31Z",
+  "generated_at": "2026-08-19T10:38:59Z",
   "manual_gates_remaining": 4,
   "ok": true,
   "promotion_commands": {

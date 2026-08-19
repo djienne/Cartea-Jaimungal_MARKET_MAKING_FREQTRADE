@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "fee": {
-      "age_seconds": 14.196532,
-      "freshness_reason": "ok",
+      "age_seconds": 5939382.175692,
+      "freshness_reason": "stale",
       "generated_at": "2026-06-11T16:49:17Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
@@ -28,9 +28,9 @@
       "report_ok": false
     },
     "post_only": {
-      "age_seconds": 53.196532,
+      "age_seconds": 0.175692,
       "freshness_reason": "ok",
-      "generated_at": "2026-06-11T16:48:38Z",
+      "generated_at": "2026-08-19T10:38:59Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -42,8 +42,8 @@
       "report_ok": false
     },
     "replay": {
-      "age_seconds": 1.196532,
-      "freshness_reason": "ok",
+      "age_seconds": 5939369.175692,
+      "freshness_reason": "stale",
       "generated_at": "2026-06-11T16:49:30Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
@@ -79,14 +79,12 @@
     }
   },
   "eligible_sessions": 0,
-  "error_events": {
-    "param_update_rejected": 3
-  },
-  "event_count": 193,
+  "error_events": {},
+  "event_count": 591,
   "event_freshness": {
-    "fresh": 193,
+    "fresh": 591,
     "future": 0,
-    "max_age_seconds": 1857.189532,
+    "max_age_seconds": 1176.752692,
     "max_allowed_age_seconds": 604800.0,
     "stale": 0,
     "timestamp_missing": 0
@@ -107,12 +105,12 @@
     "unmatched_order_attempts": []
   },
   "fills": {
-    "count": 8,
+    "count": 2,
     "maker": 0,
     "taker": 0,
-    "unknown_liquidity": 8
+    "unknown_liquidity": 2
   },
-  "generated_at": "2026-06-11T16:49:31Z",
+  "generated_at": "2026-08-19T10:38:59Z",
   "health_failures": {
     "no_live_health_events": true
   },
@@ -130,14 +128,14 @@
   },
   "ok": false,
   "order_attempt_failures": {
-    "accepted_order_attempt_not_live_enabled": 28,
-    "accepted_order_attempt_not_post_only": 28,
-    "accepted_order_attempt_post_only_unverified": 28
+    "accepted_order_attempt_not_live_enabled": 160,
+    "accepted_order_attempt_not_post_only": 160,
+    "accepted_order_attempt_post_only_unverified": 160
   },
   "quote_failures": {
-    "accepted_quote_not_live_enabled": 33,
-    "accepted_quote_not_post_only": 33,
-    "accepted_quote_post_only_unverified": 33
+    "accepted_quote_not_live_enabled": 163,
+    "accepted_quote_not_post_only": 163,
+    "accepted_quote_post_only_unverified": 163
   },
   "reasons": [
     "post_only_gate_not_passed",
@@ -145,32 +143,31 @@
     "replay_gate_not_passed",
     "manual_monitoring_not_acknowledged",
     "insufficient_canary_sessions:0<min_3",
-    "unknown_fill_liquidity:8",
-    "fill_not_live_enabled:8",
-    "accepted_quote_not_live_enabled:33",
-    "accepted_quote_not_post_only:33",
-    "accepted_quote_post_only_unverified:33",
-    "accepted_order_attempt_not_live_enabled:28",
-    "accepted_order_attempt_not_post_only:28",
-    "accepted_order_attempt_post_only_unverified:28",
-    "param_update_rejected:3",
+    "unknown_fill_liquidity:2",
+    "fill_not_live_enabled:2",
+    "accepted_quote_not_live_enabled:163",
+    "accepted_quote_not_post_only:163",
+    "accepted_quote_post_only_unverified:163",
+    "accepted_order_attempt_not_live_enabled:160",
+    "accepted_order_attempt_not_post_only:160",
+    "accepted_order_attempt_post_only_unverified:160",
     "no_live_health_events"
   ],
   "sessions": [
     {
-      "accepted_quotes": 33,
-      "duration_minutes": 30.787283333333335,
-      "end_ts": "2026-06-11T16:49:21.244000Z",
-      "events": 193,
-      "health_events": 28,
+      "accepted_quotes": 163,
+      "duration_minutes": 13.657816666666667,
+      "end_ts": "2026-08-19T10:33:01.892000Z",
+      "events": 591,
+      "health_events": 25,
       "kill_switches": 0,
       "live_accepted_quotes": 0,
       "live_health_events": 0,
       "live_maker_fills": 0,
       "maker_fills": 0,
-      "quote_decisions": 33,
+      "quote_decisions": 168,
       "session_id": "implicit-1",
-      "start_ts": "2026-06-11T16:18:34.007000Z",
+      "start_ts": "2026-08-19T10:19:22.423000Z",
       "taker_fills": 0
     }
   ]
