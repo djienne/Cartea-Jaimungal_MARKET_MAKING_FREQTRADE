@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "fee": {
-      "age_seconds": 5939382.175692,
+      "age_seconds": 5942189.929676,
       "freshness_reason": "stale",
       "generated_at": "2026-06-11T16:49:17Z",
       "invalid": false,
@@ -28,9 +28,9 @@
       "report_ok": false
     },
     "post_only": {
-      "age_seconds": 0.175692,
+      "age_seconds": 0.929676,
       "freshness_reason": "ok",
-      "generated_at": "2026-08-19T10:38:59Z",
+      "generated_at": "2026-08-19T11:25:46Z",
       "invalid": false,
       "max_age_seconds": 86400.0,
       "missing": false,
@@ -42,7 +42,7 @@
       "report_ok": false
     },
     "replay": {
-      "age_seconds": 5939369.175692,
+      "age_seconds": 5942176.929676,
       "freshness_reason": "stale",
       "generated_at": "2026-06-11T16:49:30Z",
       "invalid": false,
@@ -80,11 +80,11 @@
   },
   "eligible_sessions": 0,
   "error_events": {},
-  "event_count": 591,
+  "event_count": 898,
   "event_freshness": {
-    "fresh": 591,
+    "fresh": 898,
     "future": 0,
-    "max_age_seconds": 1176.752692,
+    "max_age_seconds": 1416.907676,
     "max_allowed_age_seconds": 604800.0,
     "stale": 0,
     "timestamp_missing": 0
@@ -105,12 +105,12 @@
     "unmatched_order_attempts": []
   },
   "fills": {
-    "count": 2,
+    "count": 1,
     "maker": 0,
     "taker": 0,
-    "unknown_liquidity": 2
+    "unknown_liquidity": 1
   },
-  "generated_at": "2026-08-19T10:38:59Z",
+  "generated_at": "2026-08-19T11:25:46Z",
   "health_failures": {
     "no_live_health_events": true
   },
@@ -128,14 +128,15 @@
   },
   "ok": false,
   "order_attempt_failures": {
-    "accepted_order_attempt_not_live_enabled": 160,
-    "accepted_order_attempt_not_post_only": 160,
-    "accepted_order_attempt_post_only_unverified": 160
+    "accepted_order_attempt_not_live_enabled": 207,
+    "accepted_order_attempt_not_post_only": 207,
+    "accepted_order_attempt_post_only_unverified": 207
   },
   "quote_failures": {
-    "accepted_quote_not_live_enabled": 163,
-    "accepted_quote_not_post_only": 163,
-    "accepted_quote_post_only_unverified": 163
+    "accepted_quote_not_live_enabled": 210,
+    "accepted_quote_not_post_only": 210,
+    "accepted_quote_post_only_unverified": 210,
+    "accepted_quote_stale_collector": 1
   },
   "reasons": [
     "post_only_gate_not_passed",
@@ -143,31 +144,32 @@
     "replay_gate_not_passed",
     "manual_monitoring_not_acknowledged",
     "insufficient_canary_sessions:0<min_3",
-    "unknown_fill_liquidity:2",
-    "fill_not_live_enabled:2",
-    "accepted_quote_not_live_enabled:163",
-    "accepted_quote_not_post_only:163",
-    "accepted_quote_post_only_unverified:163",
-    "accepted_order_attempt_not_live_enabled:160",
-    "accepted_order_attempt_not_post_only:160",
-    "accepted_order_attempt_post_only_unverified:160",
+    "unknown_fill_liquidity:1",
+    "fill_not_live_enabled:1",
+    "accepted_quote_not_live_enabled:210",
+    "accepted_quote_not_post_only:210",
+    "accepted_quote_post_only_unverified:210",
+    "accepted_quote_stale_collector:1",
+    "accepted_order_attempt_not_live_enabled:207",
+    "accepted_order_attempt_not_post_only:207",
+    "accepted_order_attempt_post_only_unverified:207",
     "no_live_health_events"
   ],
   "sessions": [
     {
-      "accepted_quotes": 163,
-      "duration_minutes": 13.657816666666667,
-      "end_ts": "2026-08-19T10:33:01.892000Z",
-      "events": 591,
-      "health_events": 25,
+      "accepted_quotes": 210,
+      "duration_minutes": 23.568383333333333,
+      "end_ts": "2026-08-19T11:25:44.125000Z",
+      "events": 898,
+      "health_events": 43,
       "kill_switches": 0,
       "live_accepted_quotes": 0,
       "live_health_events": 0,
       "live_maker_fills": 0,
       "maker_fills": 0,
-      "quote_decisions": 168,
+      "quote_decisions": 223,
       "session_id": "implicit-1",
-      "start_ts": "2026-08-19T10:19:22.423000Z",
+      "start_ts": "2026-08-19T11:02:10.022000Z",
       "taker_fills": 0
     }
   ]

@@ -402,9 +402,21 @@ class MarketWindow:
 
     @property
     def window_seconds(self) -> float:
+        """Wall-clock span. NOT the right denominator for an arrival rate."""
         if self.window_start_ms is None or self.window_end_ms is None:
             return 0.0
         return max(0.0, (self.window_end_ms - self.window_start_ms) / 1000.0)
+
+    @property
+    def observed_seconds(self) -> float:
+        """Wall clock minus time the collector was down -- the rate denominator.
+
+        lambda is a count divided by the time we were WATCHING. Dividing by wall
+        clock understates it by exactly the missing fraction, which was 6.6% on
+        the window holding the 7.9 min outage and would be 50% inside the 1 h
+        gap the acceptance gate now tolerates.
+        """
+        return max(0.0, self.window_seconds - float((self.meta or {}).get("outage_seconds", 0.0)))
 
     def window_start_iso(self) -> str | None:
         return _ms_to_iso(self.window_start_ms)
@@ -518,6 +530,17 @@ def load_market_window(
     if not trades.empty:
         trades = trades[(trades["ts_ms"] >= window_start) & (trades["ts_ms"] <= window_end)].reset_index(drop=True)
 
+    # Interior collector downtime, asked of both streams at once -- see
+    # outage_seconds() for why the mid stream alone cannot answer it.
+    n_outages, outage_total = outage_seconds(
+        [
+            mids["ts_ms"].to_numpy(dtype=float) if not mids.empty else np.array([]),
+            trades["ts_ms"].to_numpy(dtype=float) if not trades.empty else np.array([]),
+        ],
+        window_start_ms=window_start,
+        window_end_ms=window_end,
+    )
+
     return MarketWindow(
         mids=mids,
         trades=trades,
@@ -529,6 +552,9 @@ def load_market_window(
             "n_mid_updates": int(len(mids)),
             "n_trade_prints": int(len(trades)),
             "duplicate_trade_ids_dropped": n_duplicate_trade_ids,
+            "outage_seconds": outage_total,
+            "n_outages": n_outages,
+            "outage_threshold_seconds": float(DEFAULT_OUTAGE_THRESHOLD_SECONDS),
             "requested_window_start_ms": requested_start_ms,
             "requested_window_end_ms": requested_end_ms,
             "shard_stats": shard_stats,
@@ -566,6 +592,9 @@ def build_emit_window_block(window: "MarketWindow", minutes: int | float | None)
         "start": window.window_start_iso(),
         "end": window.window_end_iso(),
         "seconds": window.window_seconds,
+        "observed_seconds": window.observed_seconds,
+        "outage_seconds": meta.get("outage_seconds"),
+        "n_outages": meta.get("n_outages"),
         "minutes_requested": float(minutes) if minutes is not None else None,
         "requested_start_ms": meta.get("requested_window_start_ms"),
         "requested_end_ms": meta.get("requested_window_end_ms"),
@@ -774,6 +803,48 @@ def fit_kappa_survival(
         "support_depth_lower": support_floor,
         "support_depth_upper": support_cap,
     }
+
+
+# A collector outage and a quiet market look identical on the price stream
+# alone: CASHCAT's BBO simply does not move for minutes at a time. Measured over
+# 61.2 h to 2026-08-19, the price stream had 91.5 min of gaps > 60 s, but only
+# 43.2 min of those were the collector actually being down -- the other 48.3 min
+# had trades or book updates arriving normally. Treating all 91.5 min as missing
+# would over-correct lambda by more than the bug it fixes, so "was the collector
+# alive" is asked of the UNION of the streams, not of the mids.
+#
+# prices+trades is used rather than all three because both are already loaded on
+# the live path, and the estimator container re-runs every 30 s. Adding the
+# orderbook stream would tighten the estimate from 42.4 to 36.5 min over that
+# same 61.2 h -- 0.16% of the span -- which does not pay for the extra I/O.
+DEFAULT_OUTAGE_THRESHOLD_SECONDS = 60.0
+
+
+def outage_seconds(
+    streams: "list[np.ndarray] | tuple[np.ndarray, ...]",
+    window_start_ms: float | None = None,
+    window_end_ms: float | None = None,
+    threshold_seconds: float = DEFAULT_OUTAGE_THRESHOLD_SECONDS,
+) -> tuple[int, float]:
+    """(count, seconds) of interior stretches where EVERY stream went silent.
+
+    Only interior stretches count. A window that merely starts late is handled
+    by the caller trimming its start; extending this to the edges would charge
+    the same missing time twice.
+    """
+    stamps = [np.asarray(a, dtype=float).ravel() for a in streams if a is not None and len(a)]
+    if not stamps:
+        return 0, 0.0
+    alive = np.sort(np.concatenate(stamps))
+    if window_start_ms is not None:
+        alive = alive[alive >= float(window_start_ms)]
+    if window_end_ms is not None:
+        alive = alive[alive <= float(window_end_ms)]
+    if len(alive) < 2:
+        return 0, 0.0
+    deltas = np.diff(alive) / 1000.0
+    over = deltas > float(threshold_seconds)
+    return int(over.sum()), float(deltas[over].sum())
 
 
 def realized_sigma2_per_sec(

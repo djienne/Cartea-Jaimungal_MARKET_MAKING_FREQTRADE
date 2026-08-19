@@ -17,10 +17,20 @@ python scripts/run_safety_gates.py --markdown-output docs/LAST_SAFETY_GATES.md
 
 - **full** (`--include-runtime`, ≈17 min) — adds the Docker probes and both
   dry-run smokes (disabled + enabled), then the post-run plan-status audit. Use
-  pre-merge / pre-promotion. The disabled smoke replaces the production
-  `MM_ADV` container while it runs; the runner now restores it automatically
-  afterwards (`production_restore` in the payload; opt out with
-  `--no-restore-production`):
+  pre-merge / pre-promotion.
+
+  **Stale since 2026-08-16 and not yet repaired.** Every Docker gate addresses a
+  compose service named `freqtrade` and a collector service named
+  `hl-collector2`, and the disabled smoke runs its container under the name
+  `MM_ADV` (`PRODUCTION_FREQTRADE_CONTAINER` / `PRODUCTION_FREQTRADE_SERVICE` /
+  `COLLECTOR_SERVICE` in `scripts/run_safety_gates.py`). This compose file now
+  defines `mm-long` (container MM_ADV_LONG), `mm-short` (MM_ADV_SHORT),
+  `param-estimator` and `redis`, and the collectors were moved to
+  `HYPERLIQUID_DATA`. So the runtime gates fail on a missing service rather than
+  running — and, unlike before, they no longer replace the production bot while
+  they do it. `docs/last_safety_gates.json` still carries
+  `generated_at: 2026-06-11T16:49:31Z`, which is the last time this profile
+  completed:
 
 ```bash
 python scripts/run_safety_gates.py --include-runtime --json-output docs/last_safety_gates.json --markdown-output docs/LAST_SAFETY_GATES.md
@@ -88,6 +98,15 @@ These gates do not require a live exchange connection:
   mode, positive inventory-risk parameters, limit passive orders, kill switches
   enabled, no internal estimator calls from strategy callbacks, and current
   callback surface present.
+- `strategy_attribute_report`: writes `docs/strategy_attribute_report.json` and
+  fails if the strategy reads a `self.X` it never defines and that `IStrategy`
+  does not supply. Added 2026-08-19 after `adjust_trade_position` spent weeks
+  raising `AttributeError` on `self._kill_switch_active` — an attribute assigned
+  nowhere — on every single call. Freqtrade's `strategy_wrapper` swallows that
+  into a log line and returns `None`, which is indistinguishable from the
+  callback declining, so the inventory-adjustment path was dead while the bot
+  looked healthy. It is a static AST check because no existing test imports the
+  strategy (that would need freqtrade installed).
 - `compute_spreads_boundary_smoke`: verifies disabled HJB boundary sides render
   as disabled instead of finite quotes.
 - `replay_smoke`: verifies the replay CLI runs without candle-fill assumptions.
@@ -496,8 +515,12 @@ half-spread (including fees) lands inside the strategy's clamp band:
 - `--max-quote-depth-bps 80`: accepted quotes wider than 80 bps fail
   (`accepted_quote_depth_too_wide`).
 - `--min-quote-depth-bps 3`: accepted quotes tighter than 3 bps fail
-  (`accepted_quote_depth_too_tight`) — tighter than the floor means the
-  strategy clamps are not being applied and quotes may not cover fees.
+  (`accepted_quote_depth_too_tight`) — a quote that does not cover fees means
+  the strategy clamps are not being applied. **This no longer tracks the clamp
+  band.** `min_half_spread_bps` was lowered from 3.0 to 1.5 on 2026-08-17 (a
+  3 bps floor clamped all 24 live quote sides and flattened the HJB's inventory
+  skew), but the gate still passes 3, so a half-spread between 1.5 and 3 bps is
+  legal for the strategy and fails the gate.
 - Informational (never pass/fail on their own): `quote_quality.clamp_counts`
   (how often the floor/cap bound, from the per-quote `clamped` field) and
   `quote_quality.outside_calibrated_range_*` (how often the final depth

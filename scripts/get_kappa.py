@@ -256,12 +256,22 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
         support_quantile_lower=support_lower_minus,
     )
 
-    # Arrival rate over the span both streams actually cover.
+    # Arrival rate over the span both streams actually cover. Two corrections,
+    # and they are different: trimming the START drops a window that begins
+    # before the data does, while subtracting OUTAGE drops interior stretches
+    # where the collector was down. Only the first existed before 2026-08-19, so
+    # lambda was understated by exactly the missing interior fraction -- 5.6% on
+    # the window holding the 7.9 min outage, and up to 50% inside the 1 h gap
+    # the acceptance gate now tolerates. See estimator_common.outage_seconds for
+    # why a silent mid stream on its own is not evidence of an outage.
     if window.mids.empty:
         covered_seconds = 0.0
+        outage_excluded = 0.0
     else:
         data_start_ms = max(window.window_start_ms or 0.0, float(window.mids["ts_ms"].min()))
-        covered_seconds = max(((window.window_end_ms or 0.0) - data_start_ms) / 1000.0, 1e-6)
+        wall_seconds = max(((window.window_end_ms or 0.0) - data_start_ms) / 1000.0, 1e-6)
+        outage_excluded = float((window.meta or {}).get("outage_seconds", 0.0) or 0.0)
+        covered_seconds = max(wall_seconds - outage_excluded, 1e-6)
 
     lambda_plus_raw = n_buy_mos / covered_seconds if covered_seconds > 0 else float("nan")
     lambda_minus_raw = n_sell_mos / covered_seconds if covered_seconds > 0 else float("nan")
@@ -271,7 +281,10 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
     sigma2 = realized_sigma2_per_sec(window.mids)
 
     log_section(f"KAPPA/LAMBDA ESTIMATES - {crypto}")
-    print(f"Window: {window.window_start_iso()} -> {window.window_end_iso()} (covered {covered_seconds:.0f}s)")
+    print(
+        f"Window: {window.window_start_iso()} -> {window.window_end_iso()} "
+        f"(covered {covered_seconds:.0f}s, {outage_excluded:.0f}s of outage excluded)"
+    )
     if (
         support_lower_plus != DEFAULT_SUPPORT_QUANTILE_LOWER
         or support_lower_minus != DEFAULT_SUPPORT_QUANTILE_LOWER
@@ -316,6 +329,8 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
         "n_trades": int(len(window.trades)),
         "n_market_orders_plus": n_buy_mos,
         "n_market_orders_minus": n_sell_mos,
+        "lambda_covered_seconds": float(covered_seconds),
+        "lambda_outage_seconds_excluded": float(outage_excluded),
         "r2_plus": finite_or_none(buy_fit.get("r_squared")),
         "r2_minus": finite_or_none(sell_fit.get("r_squared")),
         "n_points_plus": int(buy_fit.get("n_points", 0) or 0),

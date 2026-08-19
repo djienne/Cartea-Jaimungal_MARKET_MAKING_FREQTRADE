@@ -86,12 +86,16 @@ The book's control is `delta*(t,q)` on `[0,T]` with terminal condition
 ### What the terminal condition actually does at our calibration
 
 Not the textbook "flatten harder as `t -> T`" picture, because the *running*
-penalty dwarfs the terminal one: `phi*kappa*T = 10` against `alpha*kappa = 0.05`,
-a factor of 200. The running penalty is what remains to be **paid** over the
-time left, so it is largest at `t=0` and vanishes at `T`. Measured at `q=+3` on
-live-scale CASHCAT parameters, the ask depth runs `-6.8e-6 -> +1.0e-4` as `tau`
-goes `150s -> 0`: the agent unwinds hardest at the **start** of an episode and
-relaxes into the terminal. That is the correct reading of eq. 10.26 here.
+penalty dwarfs the terminal one. The shipped config runs
+`phi*kappa*T = 200` (ceiling `hjb_phi_kappa_t_max = 300`) against
+`alpha*kappa = 0.05`, a factor of 4000; the strategy class default is 10, a
+factor of 200, and that is still what `sweep_replay.py` calls the shipped value
+in its Stage A. Either way the running penalty is what remains to be **paid**
+over the time left, so it is largest at `t=0` and vanishes at `T`. Measured at
+`q=+3` on live-scale CASHCAT parameters at `phi*kappa*T = 10`, the ask depth
+runs `-6.8e-6 -> +1.0e-4` as `tau` goes `150s -> 0`: the agent unwinds hardest
+at the **start** of an episode and relaxes into the terminal. That is the
+correct reading of eq. 10.26 here, and raising `phi` only deepens it.
 
 **This matches the book rather than contradicting it.** An earlier version of
 this note claimed the book's figures show the opposite; they do not. Fig. 10.8

@@ -4,17 +4,17 @@ Automated gates: PASS
 Deployment ready: NO
 Manual gates remaining: 5
 
-- PASS `compileall` (1.003s)
-- PASS `pytest_core` (13.827s)
-- PASS `config_safety_report` (0.066s)
-- PASS `strategy_safety_report` (0.102s)
-- PASS `strategy_attribute_report` (0.125s)
-- PASS `compute_spreads_boundary_smoke` (0.744s)
-- PASS `replay_smoke` (0.97s)
-- PASS `adapter_plans` (0.52s)
-- PASS `post_only_evidence_report` (0.062s)
-- PASS `live_canary_evidence_report` (0.095s)
-- PASS `promotion_evidence_manifest` (0.084s)
+- PASS `compileall` (2.999s)
+- PASS `pytest_core` (26.051s)
+- PASS `config_safety_report` (0.33s)
+- PASS `strategy_safety_report` (0.467s)
+- PASS `strategy_attribute_report` (0.455s)
+- PASS `compute_spreads_boundary_smoke` (1.234s)
+- PASS `replay_smoke` (1.62s)
+- PASS `adapter_plans` (1.875s)
+- PASS `post_only_evidence_report` (0.138s)
+- PASS `live_canary_evidence_report` (0.179s)
+- PASS `promotion_evidence_manifest` (0.102s)
 
 Manual/external gate evidence:
 - PASS `deterministic_dry_run_trading_disabled`: Requires running the bot loop and confirming zero orders plus health logs in Freqtrade logs.

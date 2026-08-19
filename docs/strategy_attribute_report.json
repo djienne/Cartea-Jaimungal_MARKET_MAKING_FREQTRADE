@@ -2,7 +2,7 @@
   "attributes_defined": 279,
   "attributes_read": 226,
   "class_name": "Market_Making",
-  "generated_at": "2026-08-19T10:38:56Z",
+  "generated_at": "2026-08-19T11:25:41Z",
   "ok": true,
   "strategy_path": "user_data\\strategies\\Market_Making.py",
   "undefined_attributes": []

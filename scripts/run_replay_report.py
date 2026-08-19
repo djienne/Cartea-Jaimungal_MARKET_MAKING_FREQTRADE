@@ -97,7 +97,22 @@ REQUIRED_MARKOUT_HORIZONS_MS = (100, 1_000, 5_000, 30_000)
 DEFAULT_MAX_POST_ONLY_REJECT_RATIO = 0.80
 DEFAULT_MAX_STALE_QUOTE_CANCEL_RATIO = 0.99
 DEFAULT_MIN_PRICE_EVENTS_PER_DAY = 1_000.0
-DEFAULT_MAX_PRICE_GAP_SECONDS = 300.0
+# Raised from 300 s on 2026-08-19 (user decision: tolerate up to ~1 h). A gap
+# is a coverage fact, not a correctness fact, and rejecting a whole tape for one
+# outage threw away good evidence -- the 60 h CASHCAT tape failed this gate on a
+# single 474 s stretch. What a gap MUST NOT do is bias the numbers, so the three
+# places it could were fixed first rather than the threshold simply being
+# loosened:
+#   * lambda divided by wall clock, understating the arrival rate by the missing
+#     fraction (get_kappa.py now divides by observed time);
+#   * markouts measured against the first mid after the horizon, which across an
+#     outage charges minutes of drift to one fill (MARKOUT_MAX_STALENESS_MS);
+#   * realized variance across an outage, already guarded by
+#     realized_sigma2_per_sec(max_gap_seconds=5.0).
+# kappa and epsilon were measured on the real tape and move by <0.3% and <5%
+# respectively, dominated by quiet markets rather than outages -- filtering them
+# on staleness would discard legitimate data, so they are deliberately untouched.
+DEFAULT_MAX_PRICE_GAP_SECONDS = 3600.0
 
 
 def parse_ts(value: str | None) -> pd.Timestamp | None:

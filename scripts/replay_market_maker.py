@@ -1113,27 +1113,62 @@ def first_level_size_array(frame: pd.DataFrame, side: str) -> np.ndarray:
     return out
 
 
-def future_mid(prices: pd.DataFrame, start_ts: pd.Timestamp, horizon_ms: int, fallback: float) -> float | None:
+# A markout is only a markout if the mid is observed near the horizon. The
+# search takes the FIRST mid at or after it, so a fill landing just before a
+# data outage would otherwise have its "30 s markout" measured against a mid
+# minutes later, charging the whole outage's drift to that one fill. Past the
+# end of the tape both functions already decline; an outage is the same
+# situation and gets the same answer.
+#
+# Both implementations carry it, because test_replay_performance asserts they
+# agree fill-for-fill -- and that guard is what caught the tolerance being added
+# to only one of them.
+MARKOUT_MAX_STALENESS_MS = 5_000
+
+
+def future_mid(
+    prices: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    horizon_ms: int,
+    fallback: float,
+    max_staleness_ms: int | None = MARKOUT_MAX_STALENESS_MS,
+) -> float | None:
     target = start_ts + pd.Timedelta(milliseconds=horizon_ms)
     idx = prices["timestamp"].searchsorted(target, side="left")
     if idx >= len(prices):
         return None
+    found = prices["timestamp"].iloc[int(idx)]
+    if max_staleness_ms is not None:
+        if (found - target) > pd.Timedelta(milliseconds=int(max_staleness_ms)):
+            return None
     mid, _, _ = mid_from_price_row(prices.iloc[int(idx)], fallback)
     return mid
 
 
 def future_mid_from_arrays(
-    price_ts_ns: np.ndarray, price_mid: np.ndarray, start_ns: int, horizon_ms: int
+    price_ts_ns: np.ndarray,
+    price_mid: np.ndarray,
+    start_ns: int,
+    horizon_ms: int,
+    max_staleness_ms: int = MARKOUT_MAX_STALENESS_MS,
 ) -> float | None:
     """:func:`future_mid` against the hoisted columns.
 
     The old version searched the frame and then materialised a Series per fill
     per horizon -- four Series for every fill. Same ``side="left"`` search on the
     same ascending timestamps, same mid.
+
+    Returns None when the nearest mid at or after the horizon is more than
+    ``max_staleness_ms`` past it, rather than reporting a drift measurement as a
+    markout.
     """
-    idx = int(price_ts_ns.searchsorted(start_ns + horizon_ms * _NS_PER_MS, side="left"))
+    target_ns = start_ns + horizon_ms * _NS_PER_MS
+    idx = int(price_ts_ns.searchsorted(target_ns, side="left"))
     if idx >= len(price_ts_ns):
         return None
+    if max_staleness_ms is not None:
+        if int(price_ts_ns[idx]) - target_ns > int(max_staleness_ms) * _NS_PER_MS:
+            return None
     return float(price_mid[idx])
 
 
