@@ -32,24 +32,50 @@ maker earns the spread and pays for being slow: every millisecond your quote sit
 stale is time an informed trader can pick it off. The model assumes you requote
 *continuously*. This stack does not come close:
 
-| | measured |
+| | measured, between order placements |
 |---|---|
-| median requote interval | **~30 s** |
-| p90 | ~50 s |
-| worst observed | ~100 s |
+| p10 | 1.0 s |
+| median requote interval | **5.5 s** |
+| p90 | 10.9 s |
 
-That is Freqtrade's loop cadence plus Python plus ccxt plus your home
-connection — three to five orders of magnitude slower than the venue moves.
+Measured 2026-08-18 at `unfilledtimeout` 3 s and `internals.process_throttle_secs`
+2; at the previous 15 s / 15 s the same measurement read p50 30.3 s, p90 ~60 s.
+Since 2026-08-19 a *third* requote path is also live — Freqtrade's position-adjust
+replace, which cancels and re-places the resting order rather than stacking a
+second one, and unlike `replace_order` is not candle-gated — so the figures above
+are now an upper bound on the interval. It is still Freqtrade's loop cadence plus
+Python plus ccxt plus your home connection: three to five orders of magnitude
+slower than the venue moves.
 
 What that costs, measured rather than assumed: adverse selection roughly
 **doubles** between a 200 ms and a 5 s markout (ε went 1.98→3.98 bps on the ask
-and 3.53→6.14 bps on the bid). Your quotes are exposed for *thirty seconds*.
+and 3.53→6.14 bps on the bid). Your quotes are exposed for *seconds*.
 
-A live dry run on CASHCAT lost **64 USDC over 16 trades** while the price ran
-+10%, and a replay sweep over the inventory-penalty parameter found **every
-setting loses money** — the best of them −23 USDC over 10 hours. Shrinking the
-order size 7.5× only cut the loss 2.6×, which is the signature of negative
-expected value rather than a mis-set risk limit.
+**And cutting the cadence did not make it pay.** The current evidence is a staged
+parameter sweep on a pinned **60.32 h** CASHCAT tape (296,286 price rows, 127,196
+trades, train/held-out split at 2026-08-18T16:11, 0.7 train) — `docs/cashcat_sweep.md`:
+
+- **Every finalist loses out of sample**: −3.68 / −0.78 / −3.68 USDC, 4 of 10
+  six-hour windows positive, worst window −8.63.
+- **The whole latency ladder is negative**: colocated (50 ms) −7.32, good
+  (100 ms) −3.68, mid (200 ms) −17.76, this_stack (500 ms) −9.26, reality
+  (500 ms / 30 s refresh) −11.39. Non-monotonic, for the third tape in a row, so
+  the latency *ordering* is noise rather than signal.
+- **The spread is earned; the direction gives it back.** Net realized spread
+  after fees is positive in every row of every table and the directional term is
+  negative in every row — on the held-out slice, +73.49 against −77.16.
+- **The loss scales with activity.** The busiest six-hour window (254 fills) is
+  the worst at −8.63; windows under 20 fills sit near zero. That is adverse
+  selection, not a mis-set knob: each fill earns slightly less spread than its
+  expected markout costs, so trading more loses more.
+- Stage A, which holds the risk knobs at the strategy default
+  `hjb_phi_kappa_t = 10`, loses on **all 81 calibrations**, on every tape measured.
+
+Shorter tapes read positive out of sample — +1.18 on 24.8 h, +1.56 on 31.23 h
+(`docs/cashcat_sweep_phitail.md`), +1.37 on 44.97 h — and 60.32 h reads negative.
+The winning calibration also *moved* between the 44.97 h and 60.32 h tapes, so
+nothing here supports a claim of calibration stability. An earlier live dry run
+on CASHCAT lost **64 USDC over 16 trades** while the price ran +10%.
 
 **If you intend to trade this seriously you need a co-located VPS** — an AWS
 instance in the region nearest the exchange (Tokyo is the usual choice for
@@ -91,7 +117,7 @@ This project implements an advanced market making strategy that:
 - **Exponential decay models** for lambda estimation
 - **Statistical analysis** of trade patterns and volatility
 
-### 🏗️ Modular Architecture (four services here, plus a shared collector)
+### 🏗️ Modular Architecture (four services here, plus two shared collectors)
 - **`mm-long` (MM_ADV_LONG) and `mm-short` (MM_ADV_SHORT)**: two instances of
   `Market_Making.py`, on separate Hyperliquid sub-accounts, that together present a
   two-sided quote. Freqtrade rests at most one order per pair and suppresses an exit
@@ -102,7 +128,7 @@ This project implements an advanced market making strategy that:
   shared over Redis and is what prices both legs; `mm_core.route_sides` decides which
   leg owns which side each cycle, preferring the assignment that unwinds gross
   inventory. Each leg fails closed if its peer's heartbeat goes stale.
-- **`hl-collector`** *(not in this compose file)*: `hyperliquid_data_collector.py` - Streams live Hyperliquid order book / trade / price data to Parquet shards. It is operated from `HYPERLIQUID_DATA/docker-compose.yml` alongside the other three Hyperliquid collectors; `scripts/HL_data` is a junction into `HYPERLIQUID_DATA/data/eth_mm`, so every reader here still finds its data where it always did. **Do not add a collector to this project's compose** — two collectors sharing one output directory write every tick twice under different shard names, which silently doubled `n_trades` and `λ±` on 2026-08-16.
+- **`hl-collector` and `hl-cashcat-collector`** *(neither in this compose file)*: two instances of `hyperliquid_data_collector.py` - Stream live Hyperliquid order book / trade / price data to Parquet shards. They are operated from `HYPERLIQUID_DATA/docker-compose.yml` alongside the other three Hyperliquid collectors; `scripts/HL_data` is a junction into `HYPERLIQUID_DATA/data/eth_mm`, so every reader here still finds its data where it always did. `hl-cashcat-collector` carries **CASHCAT alone at 30-day retention** because the traded symbol is what the sweeps and the replay acceptance gate read; `hl-collector` carries `ETH,ACE,CHIP,PENGU,NIL` at 3 days as controls and candidates. **Their `SYMBOLS` lists must stay disjoint, and do not add a collector to this project's compose** — two collectors sharing one output directory write every tick twice under different shard names, which silently doubled `n_trades` and `λ±` on 2026-08-16. A watchdog fix on 2026-08-19 made a collector reconnect on a websocket *close* within ~10 s instead of waiting out `INACTIVITY_TIMEOUT_SEC=180`; before it, Hyperliquid's ~3-hourly session expiry cost 20 gaps of 3.1-3.5 min over 60 h of CASHCAT — 71% of all missing data, 2.5% of the span.
 - **`param-estimator`**: `periodic_test_runner.py --loop` - Sidecar that runs `estimate_all.py` each cycle, validates the snapshot, copies it for the strategy, and publishes it to Redis. `estimate_all.py` loads the market window **once** and drives κ, ε and λ from it; running the three scripts separately made each re-scan the same parquet shards, which is how a cycle could outrun its own interval and stall parameter updates for 87 minutes on 2026-08-16. Cycle duration is recorded in `param_update_status.json`, and `--cycle-timeout-seconds` bounds a wedged cycle so it cannot hold the lock and starve every later one.
 - **`redis` (mm-redis)**: Atomic transport for the κ/ε/λ snapshot (`scripts/param_store.py`). The strategy prefers the single Redis blob (no torn multi-file reads, no estimator-lock stalls) and falls back to the JSON files when Redis is unavailable.
 
@@ -128,6 +154,8 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │   ├── run_collector.py
 │   ├── mm_core.py                         # Shared quoting core (engine + replay import this)
 │   ├── verify_market_viability.py         # Can a passive maker profit here at all?
+│   ├── verify_strategy_attributes.py      # Static check: no self.X the strategy never defines
+│   ├── sweep_replay.py                    # Staged train/held-out parameter sweep
 │   ├── estimate_all.py                    # One market-window load per estimator cycle
 │   ├── param_store.py                     # Redis transport for the κ/ε/λ snapshot
 │   ├── get_kappa.py
@@ -141,7 +169,7 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │   ├── mid_price.py
 │   └── HL_data/                           # junction -> HYPERLIQUID_DATA/data/eth_mm
 ├── tests/                                 # pytest suite (strategy guards, runner, gates, replay)
-├── docker-compose.yml                     # freqtrade + estimator + redis (collector lives elsewhere)
+├── docker-compose.yml                     # mm-long + mm-short + estimator + redis (collectors live elsewhere)
 ├── Dockerfile.technical                   # Freqtrade image (adds deps + pinned ccxt)
 ├── analyze_trades.py
 └── README.md
@@ -211,10 +239,10 @@ both coordinates are read as such:
     `α q²`. Every quote here is post-only by construction, so the terminal
     condition acts through the depths alone — it cannot force a taker unwind.
   - At our calibration the terminal effect runs *opposite* to the textbook
-    picture: `φκT = 10` against `ακ = 0.05`, so the running penalty — which is
-    what remains to be paid over the time left, hence largest at `t=0` and gone
-    at `T` — dominates, and the agent unwinds hardest at the *start* of an
-    episode. See `docs/UNITS.md`.
+    picture: the shipped `φκT = 200` against `ακ = 0.05`, so the running penalty
+    — which is what remains to be paid over the time left, hence largest at `t=0`
+    and gone at `T` — dominates, and the agent unwinds hardest at the *start* of
+    an episode. See `docs/UNITS.md`.
 - **Inventory.** Eq. 10.2 makes `q` a unit-jump count, so `h` exists only at
   integer `q` — but partial fills land in between. Depths are blended linearly
   between the bracketing integers (exact at every integer), and the leftover
@@ -311,16 +339,17 @@ that means a spread wider than ~3 bps before any edge exists at all.
    # Set your Hyperliquid API keys
    ```
 
-2. **Run the full stack** (collector + parameter estimator + redis + freqtrade):
+2. **Run the stack** (two quoting legs + parameter estimator + redis; the
+   collectors are started separately, from `HYPERLIQUID_DATA`):
    ```bash
    # from the root directory of this project
    docker compose up -d
    ```
-   - `hl-collector` (started separately from `HYPERLIQUID_DATA`) writes order book / price / trade Parquet shards to `scripts/HL_data`, flushed every `FLUSH_INTERVAL_SEC`, merged into one file per hour after `COMPACT_AFTER_MINUTES`, and pruned after `RETENTION_MINUTES` (default 3 days).
+   - `hl-collector` and `hl-cashcat-collector` (started separately from `HYPERLIQUID_DATA`) write order book / price / trade Parquet shards to `scripts/HL_data`, flushed every `FLUSH_INTERVAL_SEC`, merged into one file per hour after `COMPACT_AFTER_MINUTES`, and pruned after `RETENTION_MINUTES` (3 days for the five control symbols, 30 days for CASHCAT; the collector's own default is 60 minutes).
      Compaction is what makes a long retention affordable: a 10 s flush writes ~360 shards/hour/stream, and for the 83-column orderbook schema parquet spends 27,343 bytes per row on 664 bytes of data. Merging an hour of ETH orderbooks takes 18.4 MB → 0.27 MB and the estimator's read of that directory from 2199 ms → 6 ms.
      **Do not disable pruning to capture a replay dataset** — raise `RETENTION_MINUTES` instead. Reads select shards by the timestamp in the filename, so cost tracks the window you ask for rather than everything on disk.
    - `param-estimator` recomputes κ/ε/λ each cycle and publishes the snapshot to Redis (plus the JSON files as fallback).
-   - `freqtrade` (MM_ADV) quotes only when params, collector data, and order book are all fresh.
+   - `mm-long` (MM_ADV_LONG) and `mm-short` (MM_ADV_SHORT) quote only when params, collector data, and order book are all fresh.
 
    Only use in dry-run (paper trading).
    Monitor from the Freqtrade web client, or set up the Telegram interface.
@@ -340,11 +369,21 @@ Uses CASHCAT by default now — it is the only symbol that clears the viability 
         "pair_whitelist": ["CASHCAT/USDC:USDC"]
     },
     "unfilledtimeout": {
-        "entry": 15,
-        "exit": 15
+        "entry": 3,
+        "exit": 3,
+        "unit": "seconds"
+    },
+    "internals": {
+        "process_throttle_secs": 2
     }
 }
 ```
+
+`unfilledtimeout` and `internals.process_throttle_secs` are the requote cadence:
+a resting order is cancelled on timeout and re-placed some number of bot
+iterations later. They do not compose linearly — 15 s / 15 s measured a median of
+30.3 s, 3 s / 2 s measured 5.5 s, and tightening to 2 s / 1 s measured no faster
+while doubling API load.
 
 ### Parameter Files
 
@@ -373,7 +412,8 @@ widening quotes defensively never inflates the fee compensation.
 - `trading_enabled`: master switch for quoting (safe with `dry_run: true`; live use additionally requires post-only evidence and stage gates — fail-closed).
 - `maker_fee_rate`: the maker fee the quotes assume. Must match what ccxt reports for the exchange or the fee gate fail-closes (pinned ccxt 4.5.22 reports Hyperliquid's documented 0.00015).
 - `spread_multiplier`: scales the HJB model depth. **Kept at 1.0**: nothing in the book supports scaling delta*, least of all the 1/kappa term which *is* the optimum, and a multiplier scales the inventory skew along with it. Use the additive `extra_cushion_bps` (default 0) for defensive widening — additive shifts both sides equally and leaves the skew intact.
-- `min_half_spread_bps` / `max_half_spread_bps` (defaults 3 / 80): hard clamps on the final half-spread including fees. The floor guarantees every round trip collects at least ~2x the round-trip fee; the cap bounds how far quotes can drift from mid. Clamp activity is logged per quote (`clamped: "floor"|"cap"`).
+- `min_half_spread_bps` / `max_half_spread_bps` (defaults 1.5 / 80): hard clamps on the final half-spread including fees. The floor is anchored to the maker fee — a half-spread below your own fee loses on the round trip regardless of anything else. It was 3.0 until 2026-08-17, where on live ETH it clamped all 24 quote sides and flattened the HJB's inventory skew into a constant; at 1.5 it binds on 1 of 24 sides, and below ~1.4 it never binds, because the fee cushion already guarantees that much. Defensive widening belongs in `extra_cushion_bps`, which is additive and leaves the skew intact. The cap bounds how far quotes can drift from mid. Clamp activity is logged per quote (`clamped: "floor"|"cap"`).
+- `hjb_phi_kappa_t` / `hjb_phi_kappa_t_max` (shipped 200 / 300; strategy defaults 10 / 50): the dimensionless running inventory penalty `φκT` and its ceiling. `φ` is not κ-invariant (eq. 10.28), so the raw value is meaningless across symbols and the solver derives `φ` from live κ at every refresh. Until 2026-08-18 the ceiling was never passed through from config, so any `hjb_phi_kappa_t` above `QuoteConfig`'s default of 50 was silently clamped back to 50. At 200 the flat-inventory half-spread is ~39 bps rather than 15-18; the 23.1 h empirical profit curve put the optimum at 45 bps on the bid and 60 on the ask, so the previous setting was quoting inside the region where measured edge is negative.
 - `gamma_inventory_risk` (default 0.05): volatility-aware inventory penalty. The HJB running penalty becomes `phi_effective = hjb_phi + gamma * sigma2_per_sec * inventory_unit_base` using the realized mid variance published by the estimator; missing sigma2 falls back to the static `hjb_phi`.
 - `min_kappa_fit_points` / `min_kappa_r2` / `min_epsilon_events` (defaults 6 / 0.30 / 50): validation floors on the estimator fit diagnostics; snapshots below them are rejected (fail-closed).
 - `PARAM_EMA_TAU_SECONDS` (environment, estimator-side, default 300): time constant of the EMA smoothing applied to the primary κ/ε/λ values across estimator cycles (0 disables; raw per-window values are kept in the `*_raw` keys).
@@ -413,7 +453,9 @@ and over that burst the profit curve read +$4,117/h).
 # fast profile (~2.5 min): static gates + full pytest + evidence evaluators
 python scripts/run_safety_gates.py --markdown-output docs/LAST_SAFETY_GATES.md
 
-# full battery (~17 min): adds docker probes + both dry-run smokes; restores MM_ADV afterwards
+# full battery (~17 min): adds docker probes + both dry-run smokes
+# STALE: the docker gates still name the `freqtrade` and `hl-collector2` compose
+# services and the `MM_ADV` container, none of which exist since 2026-08-16
 python scripts/run_safety_gates.py --include-runtime --json-output docs/last_safety_gates.json --markdown-output docs/LAST_SAFETY_GATES.md
 
 # rerun: everything cheap re-runs live, smoke results reused from the last battery (<=6h old), ~4 min
@@ -432,6 +474,7 @@ The main strategy implementing:
 - **Custom entry/exit bid-ask spread pricing** using Cartea-Jaimungal formulas
 - **Real-time parameter loading** from JSON configuration files
 - **Inventory skew adjustment**: Implemented via HJB grid (uses asymmetric κ+/κ- and ε+/ε- by default).
+- **Requote cadence**: there is no refresh gate to configure. Three Freqtrade paths re-place a resting order: the `unfilledtimeout` cancel (dominant), the candle-gated `replace_order` → `adjust_entry_price`/`adjust_exit_price` (rare — with a 1 m timeframe and a 3 s timeout an order lives across a candle boundary about 3/60 of the time), and `process_open_trade_positions` → `adjust_trade_position`, live since 2026-08-19 and not candle-gated. The `adjust_trade_position` docstring documents all three against freqtrade 2025.10.
 - **Debugging**: Writes `user_data/logs/mm_debug.jsonl` with per-quote spreads (bps from mid) and the parameters/HJB surface used.
 
 ### Parameter Calculation Scripts
@@ -447,10 +490,11 @@ The main strategy implementing:
 
 ### Built-in Protections
 
-- **Maximum drawdown protection**: Optional (currently commented out in `user_data/strategies/Market_Making.py`)
-- **Position limits**: Single position with unlimited stake
-- **Order timeouts**: 15-second unfilled order cancellation
+- **Maximum drawdown protection**: Freqtrade's `protections()` block is optional and currently commented out in `user_data/strategies/Market_Making.py`; the strategy's own `max_daily_loss_usdc` (200) and `max_consecutive_losses` (25) kill switches are live.
+- **Position limits**: `max_open_trades: 1` and `stake_amount: 500` USDC against `available_capital: 1000`. Inventory is carried as the *size* of that one trade, not as a count of trades: `custom_stake_amount` caps a new entry at one inventory unit and `adjust_trade_position` moves it one unit at a time, bounded by `hjb_q_max` (6) on both directions.
+- **Order timeouts**: 3-second unfilled order cancellation (`unfilledtimeout`), with `internals.process_throttle_secs: 2`.
 - **Inventory risk control**: Dynamic spread adjustment based on position
+- **Inventory adjustment was dead until 2026-08-19.** `adjust_trade_position` read `self._kill_switch_active`, an attribute assigned nowhere, so it raised `AttributeError` on every call from commit d20b27d onward — 520 raises in 12 h on the long leg and 410 on the short. Freqtrade's `strategy_wrapper` catches that and returns `None`, which is indistinguishable from the callback declining, so the path was dead for weeks while the bot looked healthy. `scripts/verify_strategy_attributes.py` now catches this class of bug statically and runs as a safety gate. With the crash fixed, the short leg turned out to be inverted in every case — freqtrade reads the stake sign as "grow or shrink the position" while the code derived it from the direction `q` moves, and a bid on the short leg buys back and *shrinks* it — and only the positive branch was gated, so the short leg's adds ignored `q_max` entirely. Both are fixed, with 18 tests in `tests/test_strategy_guards.py`.
 
 ## Disclaimer
 

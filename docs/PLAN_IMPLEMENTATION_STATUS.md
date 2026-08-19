@@ -1,6 +1,17 @@
 # PLAN Implementation Status
 
-Generated from the current local worktree after the latest safety-gate run.
+Generated from the local worktree after a safety-gate run.
+
+**Pinned to the 2026-06-11 runtime battery.** `scripts/verify_plan_status.py`
+fails this document if its test count disagrees with the `pytest_core` evidence
+in `docs/last_safety_gates.json`, and that artifact still carries
+`generated_at: 2026-06-11T16:49:31Z` — so the 424 below is the count from that
+run, not the current one. `python -m pytest tests` reports **727 passed** today
+(measured 2026-08-19; keep this line moving with the suite). The
+number here can only be corrected by a full `--include-runtime` battery that
+rewrites both files, and that profile is itself broken: every Docker gate
+addresses compose services (`freqtrade`, `hl-collector2`) and a container
+(`MM_ADV`) that stopped existing on 2026-08-16. See `docs/DEPLOYMENT_GATES.md`.
 
 ## Automated Evidence
 
@@ -375,6 +386,13 @@ Generated from the current local worktree after the latest safety-gate run.
   gate state so runtime toggles cannot bypass the startup guard.
 
 ## Phase Status
+
+Also pinned to 2026-06-11. One row reads differently now: "long-only research
+mode" in Phase 2 describes the checked-in strategy *defaults* (`can_short=False`,
+which `strategy_safety_report` enforces), not the deployment. The shipped design
+is two Freqtrade legs on separate Hyperliquid sub-accounts — `mm-long`
+(`can_short=false`) and `mm-short` (`can_short=true`, meaning short-only, not
+both directions) — sharing net inventory `q = q_long + q_short` over Redis.
 
 | Phase | Status | Evidence |
 | --- | --- | --- |

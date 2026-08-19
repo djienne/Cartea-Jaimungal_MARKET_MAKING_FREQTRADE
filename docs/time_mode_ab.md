@@ -23,6 +23,11 @@ sizing (`q_max=6`, `inventory_unit_base=2430`, leverage 2, tick 1e-5).
 `mm_core.solve_hjb` does live — φ is **not** κ-invariant (eq. 10.28), and holding
 it fixed across a horizon sweep would sweep two things at once. `ακ = 0.05`.
 
+(`φκT = 10` was the shipped value when this A/B was run. On 2026-08-18 the live
+config moved to 200, with the ceiling `hjb_phi_kappa_t_max` raised to 300 and
+actually wired through for the first time. The numbers below are the A/B as run
+and have not been re-measured at 200.)
+
 Reproduce with `scripts/replay_market_maker.py --hjb-time-mode {stationary,episodic}`.
 
 ## Result

@@ -21,7 +21,7 @@ A comprehensive Python suite for collecting real-time tick data from Hyperliquid
 - **Market-order aggregation**: trade prints sharing side + exchange timestamp are ONE market order; depths and impacts are measured per MO, not per print
 - **Mid-relative coordinates**: depths are measured from the prevailing mid (last BBO update strictly before the MO, exchange-timestamp aligned via merge_asof) — the same coordinate the strategy quotes in; negative depths are truncated to 0, not dropped
 - **κ± (Kappa)**: survival-function fit — weighted log-linear regression of P(depth ≥ δ); saved to `kappa.json` with `depth_p95`/`depth_max_fitted` calibration diagnostics
-- **λ± (Lambda)**: raw per-side MO arrival rate (count / covered window seconds) — the survival-consistent fill rate the HJB needs (`lambda_source: mo_survival_fit`); the old binned-density intercept was bin-width dependent and ~3× too small (kept as `lambda0_intercept_±` diagnostic)
+- **λ± (Lambda)**: raw per-side MO arrival rate — the survival-consistent fill rate the HJB needs (`lambda_source: mo_survival_fit`); the old binned-density intercept was bin-width dependent and ~3× too small (kept as `lambda0_intercept_±` diagnostic). Since 2026-08-19 the denominator is *observed* seconds, not wall clock: time when the collector was down (no print in the union of the price and trade streams) is subtracted, because dividing by wall clock understated λ by exactly the missing fraction. Both halves are published as `lambda_covered_seconds` / `lambda_outage_seconds_excluded` so the denominator is auditable. Measured effect on real windows: +1.2% to +6.0%; inside the 1 h price gap the replay now tolerates it would have been 50%
 - **ε± (Epsilon)**: per-MO mid impact at a 5 s primary horizon (permanent impact), with 200 ms and 1 s trimmed means recorded as diagnostics (`epsilon_200ms_±`, `epsilon_1s_±`); floor at 0 (C-J defines ε ≥ 0); saved to `epsilon.json`
 - **σ² (`sigma2_per_sec`)**: realized mid variance (USDC²/s from 1 s increments, gap-tolerant), feeding the strategy's volatility-aware inventory penalty
 - **EMA smoothing**: primary κ/ε/λ values are time-aware EMA-smoothed across cycles (`--ema-tau` / `PARAM_EMA_TAU_SECONDS`, default 300 s; 0 disables); per-window raw values live in the `*_raw` keys; the EMA never blends across schema versions or non-ok snapshots
@@ -71,60 +71,84 @@ python compute_spreads.py --crypto CASHCAT --qmax 3 --spread-multiplier 3.0
 
 ## Hyperliquid Data Collector (Docker)
 
-This project also includes a **Dockerized setup** for the data collector.
+**There is no compose file in this folder any more.** Both collectors that build
+from here are defined in `HYPERLIQUID_DATA/docker-compose.yml`, alongside the
+other three Hyperliquid collectors, and are operated from there:
+
+- **`hl-cashcat-collector`** — `SYMBOLS=CASHCAT`, `RETENTION_MINUTES=43200`
+  (30 days). CASHCAT is the symbol the strategy quotes, and the sweeps, replays
+  and the acceptance gate all read the traded symbol, so it needs a far longer
+  tape than the rest.
+- **`hl-collector`** — `SYMBOLS=ETH,ACE,CHIP,PENGU,NIL`, `RETENTION_MINUTES=4320`
+  (3 days), as controls and candidates.
+
+**The two `SYMBOLS` lists must never overlap.** Both write into the same
+`./data/eth_mm` directory. On 2026-08-16 two collectors were run over the same
+symbol into one directory: each wrote its own shards under its own names, nothing
+collided or errored, and every trade simply landed on disk twice — the estimators
+read the directory, not the writer, so `n_trades` and λ± silently doubled. If you
+add a symbol to one list, remove it from the other in the same edit.
 
 ### Quick start
 
 ```bash
-# Build and start the collector in background
-docker compose up -d
-
-# Tail the logs (press CTRL-C to detach, container keeps running)
-docker compose logs -f
-
-# Stop the collector
-docker compose down
+# from HYPERLIQUID_DATA/, not from here
+docker compose up -d --build hl-collector hl-cashcat-collector
+docker compose logs -f hl-cashcat-collector
+python inventory.py            # what is being collected, and is it fresh
 ```
 
 ### Configuration
 
-The service is defined in [`docker-compose.yml`](./docker-compose.yml).
-You can configure it via environment variables, either inline or using a `.env` file in the same folder:
+Environment variables, read by `run_collector.py` / `hyperliquid_data_collector.py`:
 
-| Variable          | Default            | Description                                |
-| ----------------- | ------------------ | ------------------------------------------ |
-| `SYMBOLS`         | `ETH` | Comma-separated list of symbols to collect |
-| `OUTPUT_DIR`      | `HL_data` | Directory where Parquet files are written           |
-| `ORDERBOOK_DEPTH` | `20`               | Orderbook depth to record                  |
-| `TZ`              | `UTC`              | Timezone inside the container              |
+| Variable                  | Default   | Description                                                        |
+| ------------------------- | --------- | ------------------------------------------------------------------ |
+| `SYMBOLS`                 | `ETH`     | Comma-separated list of symbols to collect                         |
+| `OUTPUT_DIR`              | `HL_data` | Directory where Parquet files are written                          |
+| `ORDERBOOK_DEPTH`         | `20`      | Orderbook depth to record                                          |
+| `FLUSH_INTERVAL_SEC`      | `10`      | Buffer flush cadence; must stay well under the strategy's 30 s freshness window |
+| `COMPACT_AFTER_MINUTES`   | `15`      | Merge an hour's shards into one file once they are this old        |
+| `RETENTION_MINUTES`       | `60`      | Prune shards older than this (the compose services override it)    |
+| `INACTIVITY_TIMEOUT_SEC`  | `180`     | Reconnect after this long with no data at all                      |
+| `WS_HEALTH_GRACE_SEC`     | `20`      | Ignore "socket is down" readings for this long after any connect   |
+| `TZ`                      | `UTC`     | Timezone inside the container                                      |
 
-Example `.env`:
+### Websocket expiry (fixed 2026-08-19)
 
-```env
-SYMBOLS=BTC,ETH
-OUTPUT_DIR=HL_data
-ORDERBOOK_DEPTH=20
-TZ=UTC
-```
+Hyperliquid expires a websocket session about every 3 hours and sends a close
+frame; the SDK logs it, its manager thread exits, and nothing in the SDK
+reconnects. Recovery used to come only from the time-based inactivity watchdog,
+so every routine expiry cost a full `INACTIVITY_TIMEOUT_SEC` of missing data —
+measured over 60.3 h of CASHCAT as 20 gaps of 3.1-3.5 min on a clockwork ~3 h
+cadence, **71% of all missing data and 2.5% of the span**. The watchdog now also
+reads the SDK's own socket state and acts within ~10 s, guarded against a
+reconnect loop by requiring two consecutive down readings and by
+`WS_HEALTH_GRACE_SEC` after any connect (the SDK starts its thread before the
+handshake completes). The inactivity path is unchanged and still covers a socket
+that looks alive but delivers nothing.
 
 ### Data persistence
 
-Collected Parquet files are stored on the host in `./HL_data` (mounted into the container).
-This makes them directly usable by the parameter estimation scripts (`get_kappa.py`, `get_epsilon.py`, `get_lambda.py`).
+Collected Parquet files are stored on the host in `HYPERLIQUID_DATA/data/eth_mm`.
+The market-making project reaches them through the `scripts/HL_data` junction, so
+the parameter estimation scripts (`get_kappa.py`, `get_epsilon.py`,
+`get_lambda.py`) still find their data where they always did.
 
 ### Logs
 
-* Run `docker compose logs -f` to watch live output.
+* Run `docker compose logs -f <service>` from `HYPERLIQUID_DATA/` to watch live output.
 * Press **CTRL-C** to stop watching (collector continues running in the background).
 * To detach from a non-detached `docker compose up`, press **CTRL-P + CTRL-Q**.
 
 ### Updating
 
-If you change code or dependencies, rebuild with:
+If you change code in this folder, rebuild from `HYPERLIQUID_DATA/` — both
+collector services use this folder as their build context, so **both must be
+rebuilt together** or they run different code against the same output directory:
 
 ```bash
-docker compose build
-docker compose up -d
+docker compose up -d --build hl-collector hl-cashcat-collector
 ```
 
 ---
@@ -133,7 +157,7 @@ docker compose up -d
 
 For each symbol, the collector writes **Parquet shards** into per-type subdirectories. Flush cadence is controlled by `FLUSH_INTERVAL_SEC` (default 10s — it must stay well below the strategy's `max_collector_age_seconds=30` freshness window or quotes get rejected as `stale_collector_data`).
 
-> **Retention warning:** `RETENTION_MINUTES` (default 60, also set in `docker-compose.yml`) prunes shards older than the window. That is plenty for the live estimators (~30-min lookback), but it silently deletes the history the replay/calibration tooling (`replay_market_maker.py`, `calibrate_replay_from_logs.py`) consumes. When collecting a dataset for replays, set `RETENTION_MINUTES=0` (disable) or a value covering the full capture.
+> **Retention warning:** `RETENTION_MINUTES` (code default 60; the compose services set 4320 and 43200) prunes shards older than the window. Sixty minutes is plenty for the live estimators, but it silently deletes the history the replay/calibration tooling (`replay_market_maker.py`, `sweep_replay.py`, `calibrate_replay_from_logs.py`) consumes. When collecting a dataset for replays, **raise** `RETENTION_MINUTES` to cover the full capture — do not set it to 0. Reads select shards by the flush timestamp in the filename (2026-08-17), so read cost tracks the window you ask for rather than everything on disk; before that change a long retention would have stalled the estimator outright.
 
 * `HL_data/<SYMBOL>/prices/prices_<epoch_ms>.parquet` (BBO updates)
 * `HL_data/<SYMBOL>/trades/trades_<epoch_ms>.parquet` (trade executions)
@@ -246,7 +270,9 @@ Buffer sizes by symbol:
 ## Stopping the Collector
 
 * **Local**: Press `Ctrl+C` → graceful shutdown (flushes data and closes connections)
-* **Docker**: Run `docker compose down`
+* **Docker**: `docker compose stop hl-cashcat-collector` from `HYPERLIQUID_DATA/`.
+  A bare `docker compose down` there takes all five Hyperliquid collectors with it,
+  not just this one.
 
 ---
 

@@ -166,7 +166,8 @@ Optional Docker runtime gates:
   the default safety lock, stops it, stores logs, and fails if any order creation
   line appears.
 - `dry_run_enabled_smoke`: starts the public collector, writes temporary
-  schema-v2 OK parameter snapshots under `user_data/logs`, starts Freqtrade with
+  OK parameter snapshots under `user_data/logs` at the current
+  `PARAM_SCHEMA_VERSION` (3), starts Freqtrade with
   `dry_run=true` and `trading_enabled=true` through a temporary config for a
   10-minute enabled window, and
   requires fresh collector data, fresh params, fresh HJB, an accepted quote
