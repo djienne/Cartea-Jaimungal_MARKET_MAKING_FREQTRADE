@@ -4350,12 +4350,37 @@ class Market_Making(IStrategy):
         # One unit at a time: the HJB's arrival process is unit-jump (eq. 10.2),
         # so a multi-unit step would be priced by a control that never
         # contemplated it.
-        step = 1 if target_q > current_q else -1
         unit_stake = float(self.inventory_unit_base) * rate / max(float(self.target_leverage), 1e-9)
 
-        if step > 0:
+        # TWO SEPARATE QUESTIONS, and conflating them inverted the whole short leg.
+        #
+        #   1. Which side of the BOOK is this step? q is signed and rises on a
+        #      bid, so `target_q > current_q` means a bid on either leg.
+        #   2. Does that GROW or SHRINK the freqtrade position? A bid on the long
+        #      leg buys and adds. A bid on the SHORT leg buys back and REDUCES.
+        #
+        # freqtrade reads the sign of the return as (2): positive grows the
+        # position in its own direction, negative gives some back. The previous
+        # code derived it from (1) alone, so on the short leg every cover was
+        # submitted as an add and every add as a cover. It also gated only the
+        # positive branch on _inventory_allows_bid, which meant the short leg's
+        # adds -- which landed in the ungated branch -- ignored q_max entirely
+        # and could grow past the inventory cap.
+        physical_side = "bid" if target_q > current_q else "ask"
+        is_short = bool(getattr(trade, "is_short", False))
+        adding = (physical_side == "ask") if is_short else (physical_side == "bid")
+
+        # Gate on the physical side, for both directions. _inventory_allows_bid /
+        # _inventory_allows_ask already carry the per-leg meaning (long: bid is
+        # capped by q_max and ask needs inventory to sell; short: the mirror), so
+        # this is the same rule the quoting path uses.
+        if physical_side == "bid":
             if not self._inventory_allows_bid(pair):
                 return None
+        elif not self._inventory_allows_ask(pair):
+            return None
+
+        if adding:
             if min_stake is not None and unit_stake < float(min_stake):
                 self._debug_log_event(
                     "position_adjustment_rejected",

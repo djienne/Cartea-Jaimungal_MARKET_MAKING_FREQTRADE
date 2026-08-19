@@ -3455,3 +3455,183 @@ def test_pricing_state_reports_the_unrounded_position():
     assert q == 0
     assert q_exact == pytest.approx(0.49)
     assert tau == pytest.approx(150.0)
+
+
+# ---------------------------------------------------------------------------
+# adjust_trade_position. This callback raised AttributeError on every call from
+# d20b27d until 2026-08-19 (a phantom `self._kill_switch_active`), so none of it
+# had ever run. With the crash removed, the short leg turned out to be inverted
+# in every case AND to ignore q_max on its adding path. These tests pin the
+# direction, the sign and the caps for both legs.
+#
+# The two questions the code has to keep apart:
+#   which side of the BOOK  -- q is signed, so a bid always raises q;
+#   grow or shrink the POSITION -- a bid adds on the long leg and covers on the
+#   short one, and freqtrade reads the SIGN of the return as this second thing.
+# ---------------------------------------------------------------------------
+
+
+class _AdjustTrade:
+    """Only what adjust_trade_position reads. stake_amount is real on Trade."""
+
+    def __init__(self, is_short: bool, stake_amount: float = 250.0, pair: str = "ETH/USDC:USDC"):
+        self.pair = pair
+        self.is_short = is_short
+        self.stake_amount = stake_amount
+
+
+def _adjust_bot(role: str, q: int, side: str | None, *, q_max: int = 3):
+    bot = make_bot()
+    bot.role = role
+    bot.can_short = role == "short"
+    bot.trading_enabled = True
+    bot.target_leverage = 2.0
+    bot.hjb_q_max = q_max
+    bot.max_abs_inventory_units = q_max
+    bot._model_ready = lambda pair: True
+    bot._reject_unexpected_short_position = lambda pair, signed_base=None: False
+    bot._inventory_level = lambda pair: q
+    bot._my_quote_side = lambda pair: side
+    return bot
+
+
+def _adjust(bot, *, is_short: bool, stake_amount: float = 250.0, min_stake=0.1, max_stake=1000.0):
+    return bot.adjust_trade_position(
+        _AdjustTrade(is_short, stake_amount),
+        datetime.now(timezone.utc),
+        100.0,  # current_rate -> unit_stake = 0.01 * 100 / 2 = 0.5
+        0.0,
+        min_stake,
+        max_stake,
+        100.0,
+        100.0,
+        0.0,
+        0.0,
+    )
+
+
+UNIT_STAKE = 0.5
+
+
+def test_long_leg_bid_adds_one_unit():
+    assert _adjust(_adjust_bot("long", 1, "bid"), is_short=False) == pytest.approx(UNIT_STAKE)
+
+
+def test_long_leg_ask_reduces_one_unit():
+    assert _adjust(_adjust_bot("long", 2, "ask"), is_short=False) == pytest.approx(-UNIT_STAKE)
+
+
+def test_short_leg_ask_adds_one_unit_of_short():
+    """The inverted case. An ask on the short leg SELLS, growing the position,
+    so freqtrade needs a POSITIVE stake. The old code returned negative here and
+    covered instead."""
+    assert _adjust(_adjust_bot("short", -1, "ask"), is_short=True) == pytest.approx(UNIT_STAKE)
+
+
+def test_short_leg_bid_covers_one_unit():
+    """The mirror of the above: a bid on the short leg buys back, so the stake
+    must be NEGATIVE. The old code returned positive and grew the short."""
+    assert _adjust(_adjust_bot("short", -2, "bid"), is_short=True) == pytest.approx(-UNIT_STAKE)
+
+
+def test_short_leg_will_not_add_past_q_max():
+    """The risk-limit breach. The short leg's adds landed in a branch that was
+    never gated, so q_max did not apply to them at all."""
+    assert _adjust(_adjust_bot("short", -3, "ask", q_max=3), is_short=True) is None
+
+
+def test_long_leg_will_not_add_past_q_max():
+    assert _adjust(_adjust_bot("long", 3, "bid", q_max=3), is_short=False) is None
+
+
+def test_long_leg_flat_will_not_sell_into_a_short():
+    """q=0 with an owned ask targets q=-1, which a long-only leg must refuse."""
+    assert _adjust(_adjust_bot("long", 0, "ask"), is_short=False) is None
+
+
+def test_short_leg_flat_will_not_buy_into_a_long():
+    assert _adjust(_adjust_bot("short", 0, "bid"), is_short=True) is None
+
+
+def test_stake_sign_always_matches_position_direction():
+    """Property, over the whole matrix: the returned sign must grow the position
+    when q moves away from flat and shrink it when q moves toward flat.
+
+    This is the invariant the short leg violated everywhere. Stated as |q| so it
+    reads the same on both legs.
+    """
+    cases = [
+        # role,   q,  side,  is_short, moves_away_from_flat
+        ("long", 0, "bid", False, True),
+        ("long", 1, "bid", False, True),
+        ("long", 2, "ask", False, False),
+        ("long", 1, "ask", False, False),
+        ("short", 0, "ask", True, True),
+        ("short", -1, "ask", True, True),
+        ("short", -2, "bid", True, False),
+        ("short", -1, "bid", True, False),
+    ]
+    for role, q, side, is_short, growing in cases:
+        got = _adjust(_adjust_bot(role, q, side), is_short=is_short)
+        assert got is not None, f"{role} q={q} {side} was refused"
+        if growing:
+            assert got > 0, f"{role} q={q} {side} must GROW the position, got {got}"
+        else:
+            assert got < 0, f"{role} q={q} {side} must SHRINK the position, got {got}"
+
+
+def test_min_stake_blocks_an_add_but_never_a_reduce():
+    """A venue minimum is a constraint on submitting new size. Applying it to a
+    reduction would strand inventory the model has decided to give back."""
+    blocked = _adjust(_adjust_bot("long", 1, "bid"), is_short=False, min_stake=10.0)
+    assert blocked is None
+    allowed = _adjust(_adjust_bot("long", 2, "ask"), is_short=False, min_stake=10.0)
+    assert allowed == pytest.approx(-UNIT_STAKE)
+
+
+def test_max_stake_caps_an_add():
+    got = _adjust(_adjust_bot("long", 1, "bid"), is_short=False, max_stake=0.2)
+    assert got == pytest.approx(0.2)
+
+
+def test_reduction_never_exceeds_what_the_position_holds():
+    got = _adjust(_adjust_bot("long", 2, "ask"), is_short=False, stake_amount=0.3)
+    assert got == pytest.approx(-0.3)
+
+
+def test_reduction_refused_when_nothing_is_held():
+    assert _adjust(_adjust_bot("long", 2, "ask"), is_short=False, stake_amount=0.0) is None
+
+
+def test_no_adjustment_without_an_owned_side():
+    assert _adjust(_adjust_bot("long", 1, None), is_short=False) is None
+
+
+def test_no_adjustment_while_fail_closed():
+    bot = _adjust_bot("long", 1, "bid")
+    bot.trading_enabled = False
+    assert _adjust(bot, is_short=False) is None
+
+
+def test_no_adjustment_when_the_model_is_not_ready():
+    bot = _adjust_bot("long", 1, "bid")
+    bot._model_ready = lambda pair: False
+    assert _adjust(bot, is_short=False) is None
+
+
+def test_no_adjustment_on_a_nonsense_rate():
+    bot = _adjust_bot("long", 1, "bid")
+    out = bot.adjust_trade_position(
+        _AdjustTrade(False), datetime.now(timezone.utc), 0.0, 0.0,
+        0.1, 1000.0, 100.0, 100.0, 0.0, 0.0,
+    )
+    assert out is None
+
+
+def test_adjustment_moves_exactly_one_unit():
+    """eq. 10.2 is a unit-jump process; a multi-unit step would be priced by a
+    control that never contemplated it."""
+    bot = _adjust_bot("long", 0, "bid")
+    bot.inventory_unit_base = 0.04
+    # unit_stake = 0.04 * 100 / 2 = 2.0, i.e. one unit and not two.
+    assert _adjust(bot, is_short=False) == pytest.approx(2.0)
