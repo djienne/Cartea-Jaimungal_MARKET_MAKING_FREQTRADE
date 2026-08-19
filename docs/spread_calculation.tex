@@ -886,13 +886,19 @@ A weighted log-linear regression of the empirical survival function
 $\log S(\delta) = c - \kappa\delta$, weighted by $\sqrt{\text{tail count}}$:
 \end{booktocode}
 
-\snip{scripts/estimator_common.py}{481}{504}
+\snip{scripts/estimator_common.py}{756}{785}
 \begin{lstlisting}
     sorted_depths = np.sort(depths)
 
-    grid = np.unique(sorted_depths[sorted_depths <= support_cap])
+    in_support = sorted_depths <= support_cap
+    support_floor = float("nan")
+    if support_quantile_lower > 0.0:
+        support_floor = float(np.quantile(depths, support_quantile_lower))
+        in_support &= sorted_depths >= support_floor
+
+    grid = np.unique(sorted_depths[in_support])
     if len(grid) < 3:
-        return empty
+        return _empty(support_floor, support_cap)
 
     # Tail counts via searchsorted: count of depths >= delta.
     tail_counts = n_total - np.searchsorted(sorted_depths, grid, side="left")
@@ -902,7 +908,7 @@ $\log S(\delta) = c - \kappa\delta$, weighted by $\sqrt{\text{tail count}}$:
     survival = survival[mask]
     tail_counts = tail_counts[mask]
     if len(grid) < 3:
-        return empty
+        return _empty(support_floor, support_cap)
 
     y = np.log(survival)
     weights = np.sqrt(tail_counts.astype(float))
@@ -910,7 +916,7 @@ $\log S(\delta) = c - \kappa\delta$, weighted by $\sqrt{\text{tail count}}$:
     try:
         coef, _, _, _ = np.linalg.lstsq(design * weights[:, None], y * weights, rcond=None)
     except np.linalg.LinAlgError:
-        return empty
+        return _empty(support_floor, support_cap)
     intercept, kappa = float(coef[0]), float(coef[1])
 \end{lstlisting}
 
@@ -929,10 +935,12 @@ produces a strategy that skews the wrong way and is very hard to spot.
 
 Much simpler: count them and divide by the time actually covered.
 
-\snip{scripts/get_kappa.py}{186}{192}
+\snip{scripts/get_kappa.py}{271}{279}
 \begin{lstlisting}
         data_start_ms = max(window.window_start_ms or 0.0, float(window.mids["ts_ms"].min()))
-        covered_seconds = max(((window.window_end_ms or 0.0) - data_start_ms) / 1000.0, 1e-6)
+        wall_seconds = max(((window.window_end_ms or 0.0) - data_start_ms) / 1000.0, 1e-6)
+        outage_excluded = float((window.meta or {}).get("outage_seconds", 0.0) or 0.0)
+        covered_seconds = max(wall_seconds - outage_excluded, 1e-6)
 
     lambda_plus_raw = n_buy_mos / covered_seconds if covered_seconds > 0 else float("nan")
     lambda_minus_raw = n_sell_mos / covered_seconds if covered_seconds > 0 else float("nan")
@@ -940,9 +948,24 @@ Much simpler: count them and divide by the time actually covered.
     kappa_minus_raw = sell_fit["kappa"]
 \end{lstlisting}
 
-The coverage window starts at the \emph{later} of the requested start and the
-first observed mid, so a cold start with a partially filled window does not
-deflate $\lambda$.
+Two corrections, and they are not the same one. The window starts at the
+\emph{later} of the requested start and the first observed mid, so a cold start
+with a partially filled window does not deflate $\lambda$. Interior
+\emph{outages} are then subtracted as well: a rate is a count over the time we
+were watching, and dividing by wall clock understates it by exactly the missing
+fraction. On a two-hour CASHCAT window containing a $405$\,s outage that is
+$5.6\%$; inside the one-hour gap the acceptance gate now tolerates it would be
+$50\%$.
+
+\begin{trap}{A silent price stream is not an outage}
+On an illiquid instrument the best bid and offer can sit unchanged for minutes
+while the collector is perfectly healthy. Over $61.2$\,h of CASHCAT the price
+stream showed $91.5$ minutes of gaps longer than a minute, but only $43.2$ of
+those minutes had \emph{no} stream receiving anything -- the rest was a quiet
+book with trades still arriving. Charging that time to downtime would inflate
+$\lambda$, which is the opposite of the bug being fixed, so the outage census
+asks the union of the streams rather than the mids alone.
+\end{trap}
 
 \subsection{\texorpdfstring{$\epsb^{\pm}$}{epsilon-bar}: the adverse-selection cost}
 
@@ -950,7 +973,7 @@ $\epsb^{\pm}$ is the average amount the mid moves right after a market order ---
 \emph{markout}, i.e.\ the price change measured a fixed interval after an event.
 It is measured over a $200$~ms window:
 
-\snip{scripts/get_epsilon.py}{152}{160}
+\snip{scripts/get_epsilon.py}{198}{206}
 \begin{lstlisting}
     post = pd.merge_asof(
         frame,
@@ -980,7 +1003,7 @@ are computed anyway, but only as diagnostics.
 
 Variance of one-second mid increments, per second:
 
-\snip{scripts/estimator_common.py}{551}{557}
+\snip{scripts/estimator_common.py}{879}{885}
 \begin{lstlisting}
     sampled = np.where(fresh, mid[np.clip(idx, 0, None)], np.nan)
 
