@@ -4326,7 +4326,12 @@ class Market_Making(IStrategy):
         be silently bypassed.
         """
         pair = getattr(trade, "pair", "") or ""
-        if not self.trading_enabled or self._kill_switch_active:
+        # `trading_enabled` IS the kill switch: `_trigger_kill_switch` clears it.
+        # An earlier version also read `self._kill_switch_active`, an attribute that
+        # has never been assigned anywhere -- so this callback raised AttributeError
+        # on every single call from d20b27d until 2026-08-19, and inventory was never
+        # adjusted live. Keep this guard spelled the same way as the other three.
+        if not self.trading_enabled:
             return None
         if not self._model_ready(pair):
             return None
