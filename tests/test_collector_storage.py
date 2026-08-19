@@ -230,3 +230,66 @@ def test_loader_still_raises_on_real_corruption_after_the_vanish_carve_out(tmp_p
 
     with pytest.raises(ShardReadError):
         _load_parquet_dir(directory)
+
+
+# --------------------------------------------------------------------------
+# Websocket health probe. Hyperliquid expires a session every few hours and
+# sends a close frame; the SDK's manager thread then exits without reconnecting.
+# Recovery used to wait out INACTIVITY_TIMEOUT_SEC, costing ~1.8% of the CASHCAT
+# tape in clockwork 3.1-3.5 min gaps.
+# --------------------------------------------------------------------------
+
+
+class _FakeSock:
+    def __init__(self, connected: bool):
+        self.connected = connected
+
+
+class _FakeWs:
+    def __init__(self, sock):
+        self.sock = sock
+
+
+class _FakeManager:
+    def __init__(self, alive: bool, ws):
+        self._alive = alive
+        self.ws = ws
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
+class _FakeInfo:
+    def __init__(self, ws_manager):
+        self.ws_manager = ws_manager
+
+
+def _probe(ws_manager):
+    collector = HyperliquidDataCollector.__new__(HyperliquidDataCollector)
+    collector.info = _FakeInfo(ws_manager)
+    return collector._websocket_is_down()
+
+
+def test_healthy_socket_is_not_down():
+    assert _probe(_FakeManager(True, _FakeWs(_FakeSock(True)))) is False
+
+
+def test_dead_manager_thread_is_down():
+    """The observed failure: the close frame ends WebsocketManager.run()."""
+    assert _probe(_FakeManager(False, _FakeWs(_FakeSock(True)))) is True
+
+
+def test_missing_socket_is_down():
+    assert _probe(_FakeManager(True, _FakeWs(None))) is True
+
+
+def test_disconnected_socket_is_down():
+    assert _probe(_FakeManager(True, _FakeWs(_FakeSock(False)))) is True
+
+
+def test_skip_ws_mode_is_never_down():
+    """Without a ws_manager there is no socket to watch; must not reconnect-loop."""
+    collector = HyperliquidDataCollector.__new__(HyperliquidDataCollector)
+    collector.info = _FakeInfo(None)
+    collector.info.ws_manager = None
+    assert collector._websocket_is_down() is False

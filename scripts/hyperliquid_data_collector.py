@@ -140,6 +140,15 @@ class HyperliquidDataCollector:
             self.reconnect_backoff_sec = float(os.getenv("RECONNECT_BACKOFF_SEC", "5"))
         except ValueError:
             self.reconnect_backoff_sec = 5.0
+        # How long after a (re)connect to ignore a "socket is down" reading. The SDK
+        # starts its websocket thread before the socket finishes connecting, so a
+        # probe fired immediately would see a healthy startup as a failure and
+        # reconnect in a loop.
+        try:
+            self.ws_health_grace_sec = float(os.getenv("WS_HEALTH_GRACE_SEC", "20"))
+        except ValueError:
+            self.ws_health_grace_sec = 20.0
+        self._last_connect_time = time.time()
         # Flush cadence. The market-making strategy rejects collector data older
         # than max_collector_age_seconds (30s by default), so the flush interval
         # must stay comfortably below that window or quotes get rejected as
@@ -602,15 +611,73 @@ class HyperliquidDataCollector:
             time.sleep(self.reconnect_backoff_sec)
             self.info = Info(constants.MAINNET_API_URL, skip_ws=False)
             self._subscribe_all()
+            self._last_connect_time = time.time()
             print("Reconnected successfully.")
         finally:
             self._reconnecting = False
 
+    def _websocket_is_down(self) -> bool:
+        """True when the SDK's websocket is provably gone.
+
+        Hyperliquid expires a websocket session every few hours and sends a close
+        frame ("Expired"); the SDK logs it and its manager thread exits. Nothing in
+        the SDK reconnects. Before this probe existed, the only recovery was the
+        inactivity timer below, so every routine server-side expiry cost a full
+        INACTIVITY_TIMEOUT_SEC of missing data -- measured at 20 gaps of 3.1-3.5
+        min over 60 h of CASHCAT, about 1.8% of the tape, on a clockwork ~3 h
+        cadence. The close is knowable within seconds, so act on it.
+        """
+        manager = getattr(self.info, "ws_manager", None)
+        if manager is None:
+            return False  # skip_ws mode; nothing to watch
+        if not manager.is_alive():
+            return True
+        ws = getattr(manager, "ws", None)
+        sock = getattr(ws, "sock", None) if ws is not None else None
+        return sock is None or not getattr(sock, "connected", False)
+
     def _watchdog_inactivity(self):
-        """Watch for long periods with no data and attempt to recover."""
+        """Watch for a dead socket or a long silence, and recover from either."""
         stale_attempts = 0
+        down_readings = 0
         while self.running:
             time.sleep(5)
+
+            # Fast path: the socket itself is closed. Require two consecutive
+            # readings and a grace period since the last connect so a slow
+            # handshake is never mistaken for a failure.
+            socket_down = False
+            if not self._reconnecting and (time.time() - self._last_connect_time) > self.ws_health_grace_sec:
+                try:
+                    socket_down = self._websocket_is_down()
+                except Exception as e:
+                    print(f"Websocket health probe failed: {e}")
+                    socket_down = False
+            down_readings = down_readings + 1 if socket_down else 0
+            if down_readings >= 2:
+                down_readings = 0
+                stale_attempts += 1
+                print(
+                    f"Websocket closed. Reconnect attempt "
+                    f"{stale_attempts}/{self.max_reconnect_attempts}..."
+                )
+                try:
+                    self._reconnect()
+                    stale_attempts = 0
+                    self.stats.last_update = time.time()
+                    continue
+                except Exception as e:
+                    print(f"Reconnect attempt failed: {e}")
+                    if stale_attempts >= self.max_reconnect_attempts:
+                        print("Max reconnect attempts reached. Flushing buffers and exiting for Docker restart.")
+                        try:
+                            self._flush_buffers()
+                        except Exception as flush_e:
+                            print(f"Flush before exit failed: {flush_e}")
+                        os._exit(1)
+                    continue
+
+            # Slow path, unchanged: the socket looks fine but nothing is arriving.
             since_last = time.time() - self.stats.last_update
             if since_last <= self.inactivity_timeout_sec:
                 stale_attempts = 0
