@@ -1,63 +1,69 @@
 {
-  "accepted_order_attempts": 16,
-  "accepted_quotes": 20,
-  "conclusion": "dry_run_quotes_sizing_and_bounded_loss_evidence_with_fills",
+  "accepted_order_attempts": 34,
+  "accepted_quotes": 52,
+  "conclusion": "dry_run_quality_gate_not_passed",
   "criteria": {
     "event_span_tolerance_seconds": 1.0,
     "max_collector_read_errors": 2,
     "max_loss_rate_usdc_per_hour": 6.0,
     "max_loss_usdc": 1.0,
-    "max_order_amount_units": 0.01,
-    "max_order_notional_usdc": 25.0,
+    "max_order_amount_units": 8000.0,
+    "max_order_notional_usdc": 750.0,
     "max_quote_depth_bps": 80.0,
     "max_quote_distance_ratio": 0.01,
     "min_accepted_quotes": 2,
     "min_event_span_seconds": 300.0,
     "min_final_total_pnl_usdc": -1.0,
     "min_order_attempts": 2,
-    "min_quote_depth_bps": 3.0,
+    "min_quote_depth_bps": 1.5,
     "min_runtime_seconds": 540.0
   },
-  "dry_run_fills": 7,
+  "dry_run_fills": 4,
   "error_events": {},
-  "event_count": 102,
-  "event_span_seconds": 575.087,
+  "event_count": 337,
+  "event_span_seconds": 588.362,
   "gate_report": {
     "passed": true,
     "path": "docs\\dry_run_enabled_gate.json",
     "reason": "ok",
-    "runtime_seconds": 600.016,
-    "started_at": "2026-06-11T16:36:24.634058Z"
+    "runtime_seconds": 600.0,
+    "started_at": "2026-08-20T22:01:06.186556Z"
   },
-  "generated_at": "2026-06-11T16:49:16Z",
-  "health_events": 9,
-  "loss_velocity_usdc_per_hour": 0.16819754228490644,
-  "ok": true,
+  "generated_at": "2026-08-20T22:11:08Z",
+  "health_events": 30,
+  "inventory_residual": {
+    "max_abs_q_residual": 0.2038825675675675,
+    "mean_abs_q_residual": 0.09429956684362929,
+    "reasons": [],
+    "samples": 56
+  },
+  "loss_velocity_usdc_per_hour": 1225.5155014769819,
+  "ok": false,
   "order_sizing": {
-    "avg_notional_usdc": 16.418136250000003,
+    "avg_notional_usdc": 85.82138352941176,
     "failures": {},
     "ignored": {},
-    "max_amount": 0.010000000000000002,
-    "max_notional_usdc": 16.464000000000002
+    "max_amount": 2340.0,
+    "max_notional_usdc": 295.07399999999996
   },
   "pnl": {
-    "final_realized_pnl_usdc": -0.0267957,
-    "final_total_pnl_usdc": -0.0267957,
-    "final_unrealized_pnl_usdc": 0.0,
-    "max_total_pnl_usdc": 0.0,
-    "min_realized_pnl_usdc": -0.02686895,
-    "min_total_pnl_usdc": -0.02686895,
-    "min_unrealized_pnl_usdc": -0.014500000000000455,
-    "samples": 9
+    "final_realized_pnl_usdc": -2.00112127,
+    "final_total_pnl_usdc": -2.025001269999991,
+    "final_unrealized_pnl_usdc": -0.023879999999990742,
+    "max_total_pnl_usdc": 0.0866799999999992,
+    "min_realized_pnl_usdc": -212.90403026,
+    "min_total_pnl_usdc": -200.2907643,
+    "min_unrealized_pnl_usdc": -1.9890000000000407,
+    "samples": 30
   },
   "quality_verdict": {
     "break_even_or_profitable": false,
-    "conclusion": "dry_run_quotes_sizing_and_bounded_loss_evidence_with_fills",
+    "conclusion": "dry_run_quality_gate_not_passed",
     "dry_run_alone_is_live_safe": false,
     "dry_run_fill_profit_evidence": false,
     "event_span_ok": true,
-    "health_fresh": true,
-    "loss_bounded": true,
+    "health_fresh": false,
+    "loss_bounded": false,
     "order_attempt_count_ok": true,
     "order_size_reasonable": true,
     "quote_count_ok": true,
@@ -65,22 +71,28 @@
     "runtime_ok": true,
     "small_profit_observed": false
   },
-  "quote_decisions": 20,
+  "quote_decisions": 52,
   "quote_quality": {
-    "avg_depth_bps": 2.9999999999999996,
-    "avg_distance_ratio": 0.0002646062057582631,
+    "avg_depth_bps": 14.348378336415246,
+    "avg_distance_ratio": 0.0010984074889666003,
     "clamp_counts": {
       "cap": 0,
-      "floor": 20
+      "floor": 5
     },
     "failures": {},
-    "max_depth_bps": 2.9999999999999996,
-    "max_distance_ratio": 0.0004265171825493818,
-    "min_depth_bps": 2.9999999999999996,
-    "outside_calibrated_range_count": 20,
-    "outside_calibrated_range_fraction": 1.0
+    "max_depth_bps": 24.242449309880573,
+    "max_distance_ratio": 0.0025230623669477803,
+    "min_depth_bps": 1.4999999999999998,
+    "outside_calibrated_range_count": 31,
+    "outside_calibrated_range_fraction": 0.5961538461538461
   },
-  "reasons": [],
+  "reasons": [
+    "health_collector_stale:2",
+    "health_trading_not_enabled:20",
+    "loss_too_large:-200.290764<min_-1.000000",
+    "final_pnl_below_threshold:-2.025001<min_-1.000000",
+    "loss_rate_too_fast:1225.515501>max_6.000000_usdc_per_hour"
+  ],
   "tolerated_error_events": {},
-  "total_order_attempts": 16
+  "total_order_attempts": 34
 }

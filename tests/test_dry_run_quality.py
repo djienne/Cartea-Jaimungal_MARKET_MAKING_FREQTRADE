@@ -197,7 +197,10 @@ def test_dry_run_quality_rejects_quote_tighter_than_floor():
     start = datetime(2026, 5, 25, tzinfo=timezone.utc)
     events = dry_run_events(start)
     quote = next(event for event in events if event["event"] == "quote_decision")
-    quote["bps"] = 1.5  # below the 3 bps floor: clamps not applied / fee-losing
+    # Below the 1.5 bps floor, which is Market_Making.min_half_spread_bps since
+    # 2026-08-17 (it was 3.0, and the fixture used to sit at exactly 1.5 --
+    # which the strategy is now entitled to post).
+    quote["bps"] = 0.9
 
     report = build_dry_run_quality_report(events, gate_report=gate_report(start))
 

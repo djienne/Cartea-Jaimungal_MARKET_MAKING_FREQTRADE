@@ -11,9 +11,11 @@
     "unexpected_blockers": []
   },
   "gates_path": "docs\\last_safety_gates.json",
-  "generated_at": "2026-08-19T11:40:12Z",
+  "generated_at": "2026-08-20T22:11:13Z",
   "local_gates": {
-    "failed": [],
+    "failed": [
+      "dry_run_quality_report"
+    ],
     "missing": [],
     "present": [
       "adapter_plans",
@@ -37,6 +39,7 @@
       "replay_latest_data_smoke",
       "replay_log_calibration_artifact",
       "replay_smoke",
+      "strategy_attribute_report",
       "strategy_safety_report"
     ],
     "required": [
@@ -61,6 +64,7 @@
       "replay_latest_data_smoke",
       "replay_log_calibration_artifact",
       "replay_smoke",
+      "strategy_attribute_report",
       "strategy_safety_report"
     ]
   },
@@ -85,12 +89,17 @@
       "multi_day_event_replay"
     ]
   },
-  "ok": true,
+  "ok": false,
   "pytest_count": {
-    "latest_gates": 424,
+    "latest_gates": 503,
     "status": 424
   },
-  "reasons": [],
+  "reasons": [
+    "latest_safety_gates_not_all_passed",
+    "latest_automated_gates_not_all_passed",
+    "local_gate_not_passed:dry_run_quality_report",
+    "pytest_count_mismatch:424!=503"
+  ],
   "status_path": "docs\\PLAN_IMPLEMENTATION_STATUS.md",
   "status_phrases": {
     "missing": []

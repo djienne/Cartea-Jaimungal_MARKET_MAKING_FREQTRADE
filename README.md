@@ -454,8 +454,8 @@ and over that burst the profit curve read +$4,117/h).
 python scripts/run_safety_gates.py --markdown-output docs/LAST_SAFETY_GATES.md
 
 # full battery (~17 min): adds docker probes + both dry-run smokes
-# STALE: the docker gates still name the `freqtrade` and `hl-collector2` compose
-# services and the `MM_ADV` container, none of which exist since 2026-08-16
+# full battery incl. the docker gates and both dry-run smokes, ~17 min. Repaired
+# 2026-08-19; it runs under MM_GATE_SMOKE and does not touch the live legs.
 python scripts/run_safety_gates.py --include-runtime --json-output docs/last_safety_gates.json --markdown-output docs/LAST_SAFETY_GATES.md
 
 # rerun: everything cheap re-runs live, smoke results reused from the last battery (<=6h old), ~4 min

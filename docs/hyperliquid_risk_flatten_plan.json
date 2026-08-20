@@ -7,7 +7,7 @@
   ],
   "cloid_format": "0x + 16-byte hex",
   "component": "direct_hyperliquid_risk_executor",
-  "generated_at": "2026-08-19T11:25:46Z",
+  "generated_at": "2026-08-20T21:55:02Z",
   "not_maker_strategy": true,
   "order_type": {
     "limit": {

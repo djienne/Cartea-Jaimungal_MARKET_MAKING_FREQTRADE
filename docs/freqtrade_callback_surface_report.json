@@ -430,13 +430,13 @@
       "current_time"
     ]
   },
-  "generated_at": "2026-06-11T16:48:51Z",
+  "generated_at": "2026-08-20T21:55:59Z",
   "ok": true,
   "reasons": [],
   "runtime": {
     "ccxt": "4.5.22",
-    "freqtrade": "2025.4",
-    "python": "3.12.10"
+    "freqtrade": "2025.10",
+    "python": "3.13.8"
   },
   "strategy_path": "/freqtrade/user_data/strategies/Market_Making.py"
 }

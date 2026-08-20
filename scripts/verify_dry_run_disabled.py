@@ -44,6 +44,11 @@ FATAL_PATTERNS = (
 )
 
 
+# A name that collides with neither live leg (MM_ADV_LONG / MM_ADV_SHORT).
+GATE_CONTAINER = "MM_GATE_SMOKE"
+# `compose run` on this service starts a NEW ephemeral container.
+DEFAULT_FREQTRADE_SERVICE = "mm-long"
+
 def run(command: Sequence[str], *, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(command),
@@ -241,7 +246,8 @@ def run_gate(
     require_health: bool,
     *,
     start_collector: bool = False,
-    collector_service: str = "hl-collector2",
+    collector_service: str | None = None,
+    freqtrade_service: str = DEFAULT_FREQTRADE_SERVICE,
     collector_warmup_seconds: int = 70,
 ) -> dict:
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -271,7 +277,11 @@ def run_gate(
     )
 
     started_at = datetime.now(timezone.utc)
-    cleanup_before = run(["docker", "rm", "-f", "MM_ADV"], timeout=60)
+    # Throwaway name, NOT a live leg. This used to be `MM_ADV`, so running the
+    # battery destroyed the production bot and needed a restore step; and once
+    # the deployment split into MM_ADV_LONG / MM_ADV_SHORT the name matched
+    # nothing at all and the gate simply stopped working.
+    cleanup_before = run(["docker", "rm", "-f", GATE_CONTAINER], timeout=60)
     start = run(
         [
             "docker",
@@ -279,9 +289,9 @@ def run_gate(
             "run",
             "-d",
             "--name",
-            "MM_ADV",
+            GATE_CONTAINER,
             "--no-deps",
-            "freqtrade",
+            freqtrade_service,
             "trade",
             "--logfile",
             container_log_path,
@@ -295,9 +305,9 @@ def run_gate(
         timeout=180,
     )
     time.sleep(seconds)
-    logs = run(["docker", "logs", "MM_ADV"], timeout=60)
-    stop = run(["docker", "stop", "MM_ADV"], timeout=60)
-    if start_collector:
+    logs = run(["docker", "logs", GATE_CONTAINER], timeout=60)
+    stop = run(["docker", "stop", GATE_CONTAINER], timeout=60)
+    if start_collector and collector_service:
         collector_stop = run(["docker", "compose", "stop", collector_service], timeout=60)
     log_text = logs.stdout or ""
     log_path.write_text(log_text, encoding="utf-8")
@@ -348,7 +358,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mm-debug-path", type=Path, default=DEFAULT_MM_DEBUG_PATH)
     parser.add_argument("--require-health", action="store_true")
     parser.add_argument("--start-collector", action="store_true")
-    parser.add_argument("--collector-service", default="hl-collector2")
+    # The collectors moved to HYPERLIQUID_DATA/docker-compose.yml and run under
+    # restart: unless-stopped, so they are always up. Managing them from here
+    # would punch a hole in the tape every consumer reads. Off unless asked.
+    parser.add_argument("--collector-service", default=None)
+    parser.add_argument("--freqtrade-service", default=DEFAULT_FREQTRADE_SERVICE)
     parser.add_argument("--collector-warmup-seconds", type=int, default=70)
     parser.add_argument("--json-output", type=Path, default=None)
     return parser.parse_args()

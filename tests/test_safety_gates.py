@@ -218,9 +218,12 @@ def test_dry_run_quality_gate_checks_quotes_amounts_and_pnl():
     assert command[command.index("--min-accepted-quotes") + 1] == "2"
     assert command[command.index("--min-order-attempts") + 1] == "2"
     assert "--max-order-notional-usdc" in command
-    assert command[command.index("--max-order-notional-usdc") + 1] == "25"
+    # CASHCAT scale since 2026-08-19. The old 25 / 0.01 were ETH-era -- 0.01 was
+    # inventory_unit_base in ETH -- and flagged all 22 orders of a healthy smoke
+    # once the traded symbol became CASHCAT, whose unit is 2430 base at ~0.095.
+    assert command[command.index("--max-order-notional-usdc") + 1] == "750"
     assert "--max-order-amount-units" in command
-    assert command[command.index("--max-order-amount-units") + 1] == "0.01"
+    assert command[command.index("--max-order-amount-units") + 1] == "8000"
     assert "--max-loss-usdc" in command
     assert command[command.index("--max-loss-usdc") + 1] == "1"
     assert "--max-loss-rate-usdc-per-hour" in command
@@ -347,6 +350,10 @@ from datetime import datetime, timedelta, timezone  # noqa: E402
 
 from run_safety_gates import (  # noqa: E402
     production_restore_commands,
+    restore_production_container,
+    GATE_SMOKE_CONTAINER,
+    FREQTRADE_SERVICE,
+    COLLECTOR_SERVICE,
     reused_smoke_results,
 )
 
@@ -455,15 +462,28 @@ def test_reused_smoke_results_fail_closed_on_failed_artifact(tmp_path, monkeypat
     assert all("artifact_passed_not_true" in entry["stderr_tail"] for entry in entries)
 
 
-def test_production_restore_commands_match_documented_recovery():
-    commands = production_restore_commands()
+def test_runtime_gates_never_name_a_live_leg():
+    """The invariant that replaced the restore step.
 
-    # The smokes replace MM_ADV and stop the collector on teardown; restore
-    # brings both back.
-    assert commands == [
-        ["docker", "rm", "-f", "MM_ADV"],
-        ["docker", "compose", "up", "-d", "freqtrade", "hl-collector2"],
-    ]
+    The battery used to run its smoke as `MM_ADV`, so it killed the production
+    bot and needed recovery afterwards -- and when the deployment split into two
+    legs the name matched nothing and every runtime gate silently stopped
+    working. Nothing the battery runs may name a live container now.
+    """
+    live = {"MM_ADV", "MM_ADV_LONG", "MM_ADV_SHORT", "mm-param-estimator"}
+
+    assert production_restore_commands() == [], "nothing is torn down, so nothing needs restoring"
+
+    result = restore_production_container()
+    assert result["attempted"] is False
+    assert result["ok"] is True
+
+    for _name, command, _expected in local_gates(include_runtime=True):
+        assert not (live & set(command)), f"gate command names a live container: {command}"
+
+    assert GATE_SMOKE_CONTAINER not in live
+    assert FREQTRADE_SERVICE == "mm-long"
+    assert COLLECTOR_SERVICE is None, "collectors are operated from HYPERLIQUID_DATA"
 
 
 def test_reuse_mode_can_point_quality_gate_at_archived_audit_log():

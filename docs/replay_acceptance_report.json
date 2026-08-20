@@ -2,7 +2,7 @@
   "acceptance": {
     "max_directional_drift_ratio": 0.75,
     "max_post_only_reject_ratio": 0.8,
-    "max_price_gap_seconds": 300.0,
+    "max_price_gap_seconds": 3600.0,
     "max_stale_quote_cancel_ratio": 0.99,
     "min_days": 3.0,
     "min_maker_ratio": 0.99,
@@ -11,6 +11,7 @@
     "min_price_events_per_day": 1000.0,
     "min_quote_attempts": 1000,
     "q_max": 3,
+    "q_min": 0,
     "require_fill_calibration": false
   },
   "base_params": {
@@ -26,8 +27,18 @@
     "cancel_latency_ms": 250,
     "data_dir": "C:\\Users\\david\\Desktop\\freqtrade\\Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\\scripts\\HL_data",
     "decision_latency_ms": 250,
+    "event_clock": "exchange",
     "fill_calibration_path": "docs\\replay_log_calibration.json",
     "funding_rate_per_hour": 0.0,
+    "hjb_alpha": 0.001,
+    "hjb_alpha_kappa": 0.0,
+    "hjb_horizon_seconds": 60.0,
+    "hjb_phi": 0.0001,
+    "hjb_phi_kappa_t": 0.0,
+    "hjb_phi_kappa_t_max": 50.0,
+    "hjb_q_min": null,
+    "hjb_time_mode": "episodic",
+    "inventory_unit_base": 0.01,
     "leverage": 1.0,
     "maintenance_margin_rate": 0.05,
     "maker_fee": 0.00015,
@@ -35,37 +46,42 @@
     "newest_per_stream": 25,
     "order_ack_latency_ms": 250,
     "price_tick_size": 0.0,
+    "q_max": 3,
+    "q_min": 0,
     "queue_decay_per_second": 0.05,
     "quote_refresh_interval_ms": 1000,
+    "sigma2_per_sec": null,
     "starting_equity_usdc": 1000.0,
-    "taker_fee": 0.00045
+    "taker_fee": 0.00045,
+    "tape_pinned": true,
+    "total_quote_latency_ms": 500
   },
-  "generated_at": "2026-06-11T16:49:30Z",
+  "generated_at": "2026-08-20T22:11:13Z",
   "ok": false,
   "reasons": [
     "baseline:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "baseline:insufficient_coverage_days:0.002953<min_3.000000",
-    "baseline:insufficient_quote_attempts:198<min_1000",
+    "baseline:insufficient_coverage_days:0.016841<min_3.000000",
+    "baseline:insufficient_quote_attempts:155<min_1000",
     "baseline:no_maker_fills",
     "fee_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "fee_2x:insufficient_coverage_days:0.002953<min_3.000000",
-    "fee_2x:insufficient_quote_attempts:198<min_1000",
+    "fee_2x:insufficient_coverage_days:0.016841<min_3.000000",
+    "fee_2x:insufficient_quote_attempts:155<min_1000",
     "fee_2x:no_maker_fills",
     "latency_2x:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "latency_2x:insufficient_coverage_days:0.002953<min_3.000000",
-    "latency_2x:insufficient_quote_attempts:198<min_1000",
+    "latency_2x:insufficient_coverage_days:0.016841<min_3.000000",
+    "latency_2x:insufficient_quote_attempts:155<min_1000",
     "latency_2x:no_maker_fills",
     "params_soft:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "params_soft:insufficient_coverage_days:0.002953<min_3.000000",
-    "params_soft:insufficient_quote_attempts:198<min_1000",
+    "params_soft:insufficient_coverage_days:0.016841<min_3.000000",
+    "params_soft:insufficient_quote_attempts:155<min_1000",
     "params_soft:no_maker_fills",
     "params_hard:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "params_hard:insufficient_coverage_days:0.002953<min_3.000000",
-    "params_hard:insufficient_quote_attempts:198<min_1000",
+    "params_hard:insufficient_coverage_days:0.016841<min_3.000000",
+    "params_hard:insufficient_quote_attempts:155<min_1000",
     "params_hard:no_maker_fills",
     "widened_tick:stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-    "widened_tick:insufficient_coverage_days:0.002953<min_3.000000",
-    "widened_tick:insufficient_quote_attempts:198<min_1000",
+    "widened_tick:insufficient_coverage_days:0.016841<min_3.000000",
+    "widened_tick:insufficient_quote_attempts:155<min_1000",
     "widened_tick:no_maker_fills"
   ],
   "refusal_checks": [
@@ -103,10 +119,10 @@
       "reason": "missing_collector_streams:trades"
     }
   ],
-  "symbol": "ETH",
+  "symbol": "CASHCAT",
   "variants": [
     {
-      "coverage_days": 0.002952566898148148,
+      "coverage_days": 0.01684128472222222,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -118,43 +134,58 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-06-11T16:49:17.122631788+00:00",
-        "data_span_seconds": 255.10178,
-        "data_start": "2026-06-11T16:45:02.020851135+00:00",
+        "data_end": "2026-08-20T22:11:06.175000+00:00",
+        "data_span_seconds": 1455.087,
+        "data_start": "2026-08-20T21:46:51.088000+00:00",
+        "episodes": 28,
         "equity_usdc": 1000.0,
+        "event_clock": "exchange",
+        "event_clock_by_stream": {
+          "orderbooks": "exchange",
+          "prices": "exchange",
+          "trades": "exchange"
+        },
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 33,
+          "accepted_quotes": 52,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "ask:2.00-3.00bps": 0.13636363636363635,
-            "ask:3.00-4.00bps": 1.0,
-            "bid:2.00-3.00bps": 0.4444444444444444,
-            "bid:5.00-6.00bps": 0.0
+            "ask:1.00-2.00bps": 0.2,
+            "bid:10.00-11.00bps": 1.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:15.00-16.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.15384615384615385,
+            "bid:24.00-25.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "ask": 0.17391304347826086,
-            "bid": 0.4
+            "ask": 0.2,
+            "bid": 0.06382978723404255
           },
-          "generated_at": "2026-06-11T16:49:17Z",
+          "generated_at": "2026-08-20T22:11:08Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
-            "insufficient_accepted_quotes:33<min_100",
+            "insufficient_accepted_quotes:52<min_100",
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:8"
+            "unknown_liquidity_fills:4"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:11.27bps": 0.0,
-          "bid:11.28bps": 0.0
+          "bid:80.00bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 1640.55,
+        "fills_by_side": {
+          "ask": 0,
+          "bid": 0
+        },
+        "final_mid": 0.12523,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -162,13 +193,22 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 420,
-          "prices": 2000,
-          "trades": 297
+          "orderbooks": 103,
+          "prices": 450,
+          "trades": 220
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 450
+        },
+        "latency": {
+          "below_tape_resolution": false,
+          "cancel_latency_ms": 250,
+          "decision_latency_ms": 250,
+          "order_ack_latency_ms": 250,
+          "quote_exposure_ms": 750,
+          "quote_refresh_interval_ms": 1000,
+          "total_quote_latency_ms": 500
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -176,17 +216,68 @@
         "maker_ratio": 0.0,
         "margin_used_usdc": 0.0,
         "mark_to_market_pnl_usdc": 0.0,
+        "markout_by_side": {
+          "ask": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          },
+          "bid": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          }
+        },
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 29.49861145,
+        "max_price_gap_seconds": 923.602,
+        "mean_abs_q_residual": 0.0,
+        "mean_fill_depth_bps_by_side": {
+          "ask": null,
+          "bid": null
+        },
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.4008573291999998,
+        "p95_price_gap_seconds": 5.983399999999984,
         "parameter_series": [
           {
-            "data_end": "2026-06-11T16:49:17.122631788+00:00",
-            "data_start": "2026-06-11T16:45:02.020851135+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "epsilon_minus": 0.0,
             "epsilon_plus": 0.0,
             "kappa_minus": 2.0,
@@ -195,8 +286,8 @@
             "lambda_plus": 0.1,
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
-            "ts": "2026-06-11T16:45:02.020851135+00:00",
+            "symbol": "CASHCAT",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -210,38 +301,42 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 677376.6925499304,
+        "price_event_cadence_ms": {
+          "p10": 68.80000000000001,
+          "p50": 333.0,
+          "p90": 2637.9999999999995
+        },
+        "price_event_count": 450,
+        "price_events_per_day": 26720.05179071767,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 198,
+        "quote_attempts": 155,
         "quote_attempts_by_depth": {
-          "bid:11.27bps": 79,
-          "bid:11.28bps": 119
+          "bid:80.00bps": 155
         },
-        "quote_decision_events": 198,
+        "quote_decision_events": 155,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 198,
+        "stale_quote_cancels": 155,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 450
         },
         "toxicity_series": [
           {
-            "data_end": "2026-06-11T16:49:17.122631788+00:00",
-            "data_start": "2026-06-11T16:45:02.020851135+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
+            "symbol": "CASHCAT",
             "toxicity_minus": 0.0,
             "toxicity_plus": 0.0,
-            "ts": "2026-06-11T16:45:02.020851135+00:00",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -250,12 +345,13 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.002953<min_3.000000",
-        "insufficient_quote_attempts:198<min_1000",
+        "insufficient_coverage_days:0.016841<min_3.000000",
+        "insufficient_quote_attempts:155<min_1000",
         "no_maker_fills"
       ],
       "variant": {
         "epsilon_add": 0.0,
+        "epsilon_multiplier": 1.0,
         "latency_multiplier": 1.0,
         "maker_fee_multiplier": 1.0,
         "name": "baseline",
@@ -265,7 +361,7 @@
       }
     },
     {
-      "coverage_days": 0.002952566898148148,
+      "coverage_days": 0.01684128472222222,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -277,43 +373,58 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-06-11T16:49:17.122631788+00:00",
-        "data_span_seconds": 255.10178,
-        "data_start": "2026-06-11T16:45:02.020851135+00:00",
+        "data_end": "2026-08-20T22:11:06.175000+00:00",
+        "data_span_seconds": 1455.087,
+        "data_start": "2026-08-20T21:46:51.088000+00:00",
+        "episodes": 28,
         "equity_usdc": 1000.0,
+        "event_clock": "exchange",
+        "event_clock_by_stream": {
+          "orderbooks": "exchange",
+          "prices": "exchange",
+          "trades": "exchange"
+        },
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 33,
+          "accepted_quotes": 52,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "ask:2.00-3.00bps": 0.13636363636363635,
-            "ask:3.00-4.00bps": 1.0,
-            "bid:2.00-3.00bps": 0.4444444444444444,
-            "bid:5.00-6.00bps": 0.0
+            "ask:1.00-2.00bps": 0.2,
+            "bid:10.00-11.00bps": 1.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:15.00-16.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.15384615384615385,
+            "bid:24.00-25.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "ask": 0.17391304347826086,
-            "bid": 0.4
+            "ask": 0.2,
+            "bid": 0.06382978723404255
           },
-          "generated_at": "2026-06-11T16:49:17Z",
+          "generated_at": "2026-08-20T22:11:08Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
-            "insufficient_accepted_quotes:33<min_100",
+            "insufficient_accepted_quotes:52<min_100",
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:8"
+            "unknown_liquidity_fills:4"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:12.77bps": 0.0,
-          "bid:12.78bps": 0.0
+          "bid:80.00bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 1640.55,
+        "fills_by_side": {
+          "ask": 0,
+          "bid": 0
+        },
+        "final_mid": 0.12523,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -321,13 +432,22 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 420,
-          "prices": 2000,
-          "trades": 297
+          "orderbooks": 103,
+          "prices": 450,
+          "trades": 220
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 450
+        },
+        "latency": {
+          "below_tape_resolution": false,
+          "cancel_latency_ms": 250,
+          "decision_latency_ms": 250,
+          "order_ack_latency_ms": 250,
+          "quote_exposure_ms": 750,
+          "quote_refresh_interval_ms": 1000,
+          "total_quote_latency_ms": 500
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -335,17 +455,68 @@
         "maker_ratio": 0.0,
         "margin_used_usdc": 0.0,
         "mark_to_market_pnl_usdc": 0.0,
+        "markout_by_side": {
+          "ask": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          },
+          "bid": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          }
+        },
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 29.49861145,
+        "max_price_gap_seconds": 923.602,
+        "mean_abs_q_residual": 0.0,
+        "mean_fill_depth_bps_by_side": {
+          "ask": null,
+          "bid": null
+        },
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.4008573291999998,
+        "p95_price_gap_seconds": 5.983399999999984,
         "parameter_series": [
           {
-            "data_end": "2026-06-11T16:49:17.122631788+00:00",
-            "data_start": "2026-06-11T16:45:02.020851135+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "epsilon_minus": 0.0,
             "epsilon_plus": 0.0,
             "kappa_minus": 2.0,
@@ -354,8 +525,8 @@
             "lambda_plus": 0.1,
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
-            "ts": "2026-06-11T16:45:02.020851135+00:00",
+            "symbol": "CASHCAT",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -369,38 +540,42 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 677376.6925499304,
+        "price_event_cadence_ms": {
+          "p10": 68.80000000000001,
+          "p50": 333.0,
+          "p90": 2637.9999999999995
+        },
+        "price_event_count": 450,
+        "price_events_per_day": 26720.05179071767,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 198,
+        "quote_attempts": 155,
         "quote_attempts_by_depth": {
-          "bid:12.77bps": 79,
-          "bid:12.78bps": 119
+          "bid:80.00bps": 155
         },
-        "quote_decision_events": 198,
+        "quote_decision_events": 155,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 198,
+        "stale_quote_cancels": 155,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 450
         },
         "toxicity_series": [
           {
-            "data_end": "2026-06-11T16:49:17.122631788+00:00",
-            "data_start": "2026-06-11T16:45:02.020851135+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
+            "symbol": "CASHCAT",
             "toxicity_minus": 0.0,
             "toxicity_plus": 0.0,
-            "ts": "2026-06-11T16:45:02.020851135+00:00",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -409,12 +584,13 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.002953<min_3.000000",
-        "insufficient_quote_attempts:198<min_1000",
+        "insufficient_coverage_days:0.016841<min_3.000000",
+        "insufficient_quote_attempts:155<min_1000",
         "no_maker_fills"
       ],
       "variant": {
         "epsilon_add": 0.0,
+        "epsilon_multiplier": 1.0,
         "latency_multiplier": 1.0,
         "maker_fee_multiplier": 2.0,
         "name": "fee_2x",
@@ -424,7 +600,7 @@
       }
     },
     {
-      "coverage_days": 0.002952566898148148,
+      "coverage_days": 0.01684128472222222,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -436,43 +612,58 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-06-11T16:49:17.122631788+00:00",
-        "data_span_seconds": 255.10178,
-        "data_start": "2026-06-11T16:45:02.020851135+00:00",
+        "data_end": "2026-08-20T22:11:06.175000+00:00",
+        "data_span_seconds": 1455.087,
+        "data_start": "2026-08-20T21:46:51.088000+00:00",
+        "episodes": 28,
         "equity_usdc": 1000.0,
+        "event_clock": "exchange",
+        "event_clock_by_stream": {
+          "orderbooks": "exchange",
+          "prices": "exchange",
+          "trades": "exchange"
+        },
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 33,
+          "accepted_quotes": 52,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "ask:2.00-3.00bps": 0.13636363636363635,
-            "ask:3.00-4.00bps": 1.0,
-            "bid:2.00-3.00bps": 0.4444444444444444,
-            "bid:5.00-6.00bps": 0.0
+            "ask:1.00-2.00bps": 0.2,
+            "bid:10.00-11.00bps": 1.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:15.00-16.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.15384615384615385,
+            "bid:24.00-25.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "ask": 0.17391304347826086,
-            "bid": 0.4
+            "ask": 0.2,
+            "bid": 0.06382978723404255
           },
-          "generated_at": "2026-06-11T16:49:17Z",
+          "generated_at": "2026-08-20T22:11:08Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
-            "insufficient_accepted_quotes:33<min_100",
+            "insufficient_accepted_quotes:52<min_100",
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:8"
+            "unknown_liquidity_fills:4"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:11.27bps": 0.0,
-          "bid:11.28bps": 0.0
+          "bid:80.00bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 1640.55,
+        "fills_by_side": {
+          "ask": 0,
+          "bid": 0
+        },
+        "final_mid": 0.12523,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -480,13 +671,22 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 420,
-          "prices": 2000,
-          "trades": 297
+          "orderbooks": 103,
+          "prices": 450,
+          "trades": 220
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 450
+        },
+        "latency": {
+          "below_tape_resolution": false,
+          "cancel_latency_ms": 500,
+          "decision_latency_ms": 500,
+          "order_ack_latency_ms": 500,
+          "quote_exposure_ms": 500,
+          "quote_refresh_interval_ms": 1000,
+          "total_quote_latency_ms": 1000
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -494,17 +694,68 @@
         "maker_ratio": 0.0,
         "margin_used_usdc": 0.0,
         "mark_to_market_pnl_usdc": 0.0,
+        "markout_by_side": {
+          "ask": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          },
+          "bid": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          }
+        },
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 29.49861145,
+        "max_price_gap_seconds": 923.602,
+        "mean_abs_q_residual": 0.0,
+        "mean_fill_depth_bps_by_side": {
+          "ask": null,
+          "bid": null
+        },
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.4008573291999998,
+        "p95_price_gap_seconds": 5.983399999999984,
         "parameter_series": [
           {
-            "data_end": "2026-06-11T16:49:17.122631788+00:00",
-            "data_start": "2026-06-11T16:45:02.020851135+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "epsilon_minus": 0.0,
             "epsilon_plus": 0.0,
             "kappa_minus": 2.0,
@@ -513,8 +764,8 @@
             "lambda_plus": 0.1,
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
-            "ts": "2026-06-11T16:45:02.020851135+00:00",
+            "symbol": "CASHCAT",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -528,38 +779,42 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 677376.6925499304,
+        "price_event_cadence_ms": {
+          "p10": 68.80000000000001,
+          "p50": 333.0,
+          "p90": 2637.9999999999995
+        },
+        "price_event_count": 450,
+        "price_events_per_day": 26720.05179071767,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 198,
+        "quote_attempts": 155,
         "quote_attempts_by_depth": {
-          "bid:11.27bps": 79,
-          "bid:11.28bps": 119
+          "bid:80.00bps": 155
         },
-        "quote_decision_events": 198,
+        "quote_decision_events": 155,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 198,
+        "stale_quote_cancels": 155,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 450
         },
         "toxicity_series": [
           {
-            "data_end": "2026-06-11T16:49:17.122631788+00:00",
-            "data_start": "2026-06-11T16:45:02.020851135+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
+            "symbol": "CASHCAT",
             "toxicity_minus": 0.0,
             "toxicity_plus": 0.0,
-            "ts": "2026-06-11T16:45:02.020851135+00:00",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -568,12 +823,13 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.002953<min_3.000000",
-        "insufficient_quote_attempts:198<min_1000",
+        "insufficient_coverage_days:0.016841<min_3.000000",
+        "insufficient_quote_attempts:155<min_1000",
         "no_maker_fills"
       ],
       "variant": {
         "epsilon_add": 0.0,
+        "epsilon_multiplier": 1.0,
         "latency_multiplier": 2.0,
         "maker_fee_multiplier": 1.0,
         "name": "latency_2x",
@@ -583,7 +839,7 @@
       }
     },
     {
-      "coverage_days": 0.002952566898148148,
+      "coverage_days": 0.01684128472222222,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -595,44 +851,58 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-06-11T16:49:17.122631788+00:00",
-        "data_span_seconds": 255.10178,
-        "data_start": "2026-06-11T16:45:02.020851135+00:00",
+        "data_end": "2026-08-20T22:11:06.175000+00:00",
+        "data_span_seconds": 1455.087,
+        "data_start": "2026-08-20T21:46:51.088000+00:00",
+        "episodes": 28,
         "equity_usdc": 1000.0,
+        "event_clock": "exchange",
+        "event_clock_by_stream": {
+          "orderbooks": "exchange",
+          "prices": "exchange",
+          "trades": "exchange"
+        },
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 33,
+          "accepted_quotes": 52,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "ask:2.00-3.00bps": 0.13636363636363635,
-            "ask:3.00-4.00bps": 1.0,
-            "bid:2.00-3.00bps": 0.4444444444444444,
-            "bid:5.00-6.00bps": 0.0
+            "ask:1.00-2.00bps": 0.2,
+            "bid:10.00-11.00bps": 1.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:15.00-16.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.15384615384615385,
+            "bid:24.00-25.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "ask": 0.17391304347826086,
-            "bid": 0.4
+            "ask": 0.2,
+            "bid": 0.06382978723404255
           },
-          "generated_at": "2026-06-11T16:49:17Z",
+          "generated_at": "2026-08-20T22:11:08Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
-            "insufficient_accepted_quotes:33<min_100",
+            "insufficient_accepted_quotes:52<min_100",
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:8"
+            "unknown_liquidity_fills:4"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:13.78bps": 0.0,
-          "bid:13.79bps": 0.0,
-          "bid:13.80bps": 0.0
+          "bid:80.00bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 1640.55,
+        "fills_by_side": {
+          "ask": 0,
+          "bid": 0
+        },
+        "final_mid": 0.12523,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -640,13 +910,22 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 420,
-          "prices": 2000,
-          "trades": 297
+          "orderbooks": 103,
+          "prices": 450,
+          "trades": 220
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 450
+        },
+        "latency": {
+          "below_tape_resolution": false,
+          "cancel_latency_ms": 250,
+          "decision_latency_ms": 250,
+          "order_ack_latency_ms": 250,
+          "quote_exposure_ms": 750,
+          "quote_refresh_interval_ms": 1000,
+          "total_quote_latency_ms": 500
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -654,27 +933,78 @@
         "maker_ratio": 0.0,
         "margin_used_usdc": 0.0,
         "mark_to_market_pnl_usdc": 0.0,
+        "markout_by_side": {
+          "ask": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          },
+          "bid": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          }
+        },
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 29.49861145,
+        "max_price_gap_seconds": 923.602,
+        "mean_abs_q_residual": 0.0,
+        "mean_fill_depth_bps_by_side": {
+          "ask": null,
+          "bid": null
+        },
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.4008573291999998,
+        "p95_price_gap_seconds": 5.983399999999984,
         "parameter_series": [
           {
-            "data_end": "2026-06-11T16:49:17.122631788+00:00",
-            "data_start": "2026-06-11T16:45:02.020851135+00:00",
-            "epsilon_minus": 0.01,
-            "epsilon_plus": 0.01,
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
+            "epsilon_minus": 0.0,
+            "epsilon_plus": 0.0,
             "kappa_minus": 1.6,
             "kappa_plus": 1.6,
             "lambda_minus": 0.08000000000000002,
             "lambda_plus": 0.08000000000000002,
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
-            "ts": "2026-06-11T16:45:02.020851135+00:00",
+            "symbol": "CASHCAT",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -688,39 +1018,42 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 677376.6925499304,
+        "price_event_cadence_ms": {
+          "p10": 68.80000000000001,
+          "p50": 333.0,
+          "p90": 2637.9999999999995
+        },
+        "price_event_count": 450,
+        "price_events_per_day": 26720.05179071767,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 198,
+        "quote_attempts": 155,
         "quote_attempts_by_depth": {
-          "bid:13.78bps": 42,
-          "bid:13.79bps": 103,
-          "bid:13.80bps": 53
+          "bid:80.00bps": 155
         },
-        "quote_decision_events": 198,
+        "quote_decision_events": 155,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 198,
+        "stale_quote_cancels": 155,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 450
         },
         "toxicity_series": [
           {
-            "data_end": "2026-06-11T16:49:17.122631788+00:00",
-            "data_start": "2026-06-11T16:45:02.020851135+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
-            "toxicity_minus": 0.016,
-            "toxicity_plus": 0.016,
-            "ts": "2026-06-11T16:45:02.020851135+00:00",
+            "symbol": "CASHCAT",
+            "toxicity_minus": 0.0,
+            "toxicity_plus": 0.0,
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -729,12 +1062,13 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.002953<min_3.000000",
-        "insufficient_quote_attempts:198<min_1000",
+        "insufficient_coverage_days:0.016841<min_3.000000",
+        "insufficient_quote_attempts:155<min_1000",
         "no_maker_fills"
       ],
       "variant": {
-        "epsilon_add": 0.01,
+        "epsilon_add": 0.0,
+        "epsilon_multiplier": 2.0,
         "latency_multiplier": 1.0,
         "maker_fee_multiplier": 1.0,
         "name": "params_soft",
@@ -744,7 +1078,7 @@
       }
     },
     {
-      "coverage_days": 0.0029530691203703704,
+      "coverage_days": 0.01684128472222222,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -756,43 +1090,58 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-06-11T16:49:27.106274605+00:00",
-        "data_span_seconds": 255.145172,
-        "data_start": "2026-06-11T16:45:11.961102486+00:00",
+        "data_end": "2026-08-20T22:11:06.175000+00:00",
+        "data_span_seconds": 1455.087,
+        "data_start": "2026-08-20T21:46:51.088000+00:00",
+        "episodes": 28,
         "equity_usdc": 1000.0,
+        "event_clock": "exchange",
+        "event_clock_by_stream": {
+          "orderbooks": "exchange",
+          "prices": "exchange",
+          "trades": "exchange"
+        },
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 33,
+          "accepted_quotes": 52,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "ask:2.00-3.00bps": 0.13636363636363635,
-            "ask:3.00-4.00bps": 1.0,
-            "bid:2.00-3.00bps": 0.4444444444444444,
-            "bid:5.00-6.00bps": 0.0
+            "ask:1.00-2.00bps": 0.2,
+            "bid:10.00-11.00bps": 1.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:15.00-16.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.15384615384615385,
+            "bid:24.00-25.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "ask": 0.17391304347826086,
-            "bid": 0.4
+            "ask": 0.2,
+            "bid": 0.06382978723404255
           },
-          "generated_at": "2026-06-11T16:49:17Z",
+          "generated_at": "2026-08-20T22:11:08Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
-            "insufficient_accepted_quotes:33<min_100",
+            "insufficient_accepted_quotes:52<min_100",
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:8"
+            "unknown_liquidity_fills:4"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:10.04bps": 0.0,
-          "bid:10.05bps": 0.0
+          "bid:80.00bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 1640.35,
+        "fills_by_side": {
+          "ask": 0,
+          "bid": 0
+        },
+        "final_mid": 0.12523,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -800,13 +1149,22 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 420,
-          "prices": 2000,
-          "trades": 274
+          "orderbooks": 103,
+          "prices": 450,
+          "trades": 220
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 450
+        },
+        "latency": {
+          "below_tape_resolution": false,
+          "cancel_latency_ms": 250,
+          "decision_latency_ms": 250,
+          "order_ack_latency_ms": 250,
+          "quote_exposure_ms": 750,
+          "quote_refresh_interval_ms": 1000,
+          "total_quote_latency_ms": 500
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -814,27 +1172,78 @@
         "maker_ratio": 0.0,
         "margin_used_usdc": 0.0,
         "mark_to_market_pnl_usdc": 0.0,
+        "markout_by_side": {
+          "ask": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          },
+          "bid": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          }
+        },
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 29.49861145,
+        "max_price_gap_seconds": 923.602,
+        "mean_abs_q_residual": 0.0,
+        "mean_fill_depth_bps_by_side": {
+          "ask": null,
+          "bid": null
+        },
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.39393842219999986,
+        "p95_price_gap_seconds": 5.983399999999984,
         "parameter_series": [
           {
-            "data_end": "2026-06-11T16:49:27.106274605+00:00",
-            "data_start": "2026-06-11T16:45:11.961102486+00:00",
-            "epsilon_minus": 0.02,
-            "epsilon_plus": 0.02,
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
+            "epsilon_minus": 0.0,
+            "epsilon_plus": 0.0,
             "kappa_minus": 2.4,
             "kappa_plus": 2.4,
             "lambda_minus": 0.12,
             "lambda_plus": 0.12,
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
-            "ts": "2026-06-11T16:45:11.961102486+00:00",
+            "symbol": "CASHCAT",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -848,38 +1257,42 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 677261.4925278695,
+        "price_event_cadence_ms": {
+          "p10": 68.80000000000001,
+          "p50": 333.0,
+          "p90": 2637.9999999999995
+        },
+        "price_event_count": 450,
+        "price_events_per_day": 26720.05179071767,
         "price_rounding_adjustments": 0,
         "price_tick_size": 0.0,
         "queue_decay_base": 0.0,
-        "quote_attempts": 198,
+        "quote_attempts": 155,
         "quote_attempts_by_depth": {
-          "bid:10.04bps": 33,
-          "bid:10.05bps": 165
+          "bid:80.00bps": 155
         },
-        "quote_decision_events": 198,
+        "quote_decision_events": 155,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 198,
+        "stale_quote_cancels": 155,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 450
         },
         "toxicity_series": [
           {
-            "data_end": "2026-06-11T16:49:27.106274605+00:00",
-            "data_start": "2026-06-11T16:45:11.961102486+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
-            "toxicity_minus": 0.048,
-            "toxicity_plus": 0.048,
-            "ts": "2026-06-11T16:45:11.961102486+00:00",
+            "symbol": "CASHCAT",
+            "toxicity_minus": 0.0,
+            "toxicity_plus": 0.0,
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -888,12 +1301,13 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.002953<min_3.000000",
-        "insufficient_quote_attempts:198<min_1000",
+        "insufficient_coverage_days:0.016841<min_3.000000",
+        "insufficient_quote_attempts:155<min_1000",
         "no_maker_fills"
       ],
       "variant": {
-        "epsilon_add": 0.02,
+        "epsilon_add": 0.0,
+        "epsilon_multiplier": 4.0,
         "latency_multiplier": 1.0,
         "maker_fee_multiplier": 1.0,
         "name": "params_hard",
@@ -903,7 +1317,7 @@
       }
     },
     {
-      "coverage_days": 0.0029530691203703704,
+      "coverage_days": 0.01684128472222222,
       "directional_drift_ratio": 0.0,
       "directional_pnl_proxy_usdc": 0.0,
       "markout_summary": {},
@@ -915,67 +1329,150 @@
         "calibration_rejected_fills": 0,
         "cash_usdc": 0.0,
         "consumed_trade_events": 0,
-        "data_end": "2026-06-11T16:49:27.106274605+00:00",
-        "data_span_seconds": 255.145172,
-        "data_start": "2026-06-11T16:45:11.961102486+00:00",
+        "data_end": "2026-08-20T22:11:06.175000+00:00",
+        "data_span_seconds": 1455.087,
+        "data_start": "2026-08-20T21:46:51.088000+00:00",
+        "episodes": 28,
         "equity_usdc": 1000.0,
+        "event_clock": "exchange",
+        "event_clock_by_stream": {
+          "orderbooks": "exchange",
+          "prices": "exchange",
+          "trades": "exchange"
+        },
         "fees_usdc": 0.0,
         "fill_calibration": {
-          "accepted_quotes": 33,
+          "accepted_quotes": 52,
           "applied": false,
           "bucket_bps": 1.0,
           "fill_probability_by_depth": {
-            "ask:2.00-3.00bps": 0.13636363636363635,
-            "ask:3.00-4.00bps": 1.0,
-            "bid:2.00-3.00bps": 0.4444444444444444,
-            "bid:5.00-6.00bps": 0.0
+            "ask:1.00-2.00bps": 0.2,
+            "bid:10.00-11.00bps": 1.0,
+            "bid:11.00-12.00bps": 0.0,
+            "bid:13.00-14.00bps": 0.0,
+            "bid:14.00-15.00bps": 0.0,
+            "bid:15.00-16.00bps": 0.0,
+            "bid:16.00-17.00bps": 0.15384615384615385,
+            "bid:24.00-25.00bps": 0.0,
+            "bid:9.00-10.00bps": 0.0
           },
           "fill_probability_by_side": {
-            "ask": 0.17391304347826086,
-            "bid": 0.4
+            "ask": 0.2,
+            "bid": 0.06382978723404255
           },
-          "generated_at": "2026-06-11T16:49:17Z",
+          "generated_at": "2026-08-20T22:11:08Z",
           "maker_fills": 0,
           "maker_ratio": 0.0,
           "path": "docs\\replay_log_calibration.json",
           "provided": true,
           "reasons": [
-            "insufficient_accepted_quotes:33<min_100",
+            "insufficient_accepted_quotes:52<min_100",
             "insufficient_maker_fills:0<min_10",
-            "unknown_liquidity_fills:8"
+            "unknown_liquidity_fills:4"
           ],
           "usable": false
         },
         "fill_ratio_by_depth": {
-          "bid:11.41bps": 0.0,
-          "bid:11.65bps": 0.0,
-          "bid:11.77bps": 0.0,
-          "bid:12.01bps": 0.0,
-          "bid:12.26bps": 0.0,
-          "bid:12.38bps": 0.0,
-          "bid:12.62bps": 0.0,
-          "bid:12.87bps": 0.0,
-          "bid:12.99bps": 0.0,
-          "bid:13.48bps": 0.0,
-          "bid:13.60bps": 0.0,
-          "bid:14.08bps": 0.0,
-          "bid:14.20bps": 0.0,
-          "bid:14.45bps": 0.0,
-          "bid:14.81bps": 0.0,
-          "bid:15.42bps": 0.0,
-          "bid:15.79bps": 0.0,
-          "bid:16.03bps": 0.0,
-          "bid:16.27bps": 0.0,
-          "bid:16.40bps": 0.0,
-          "bid:16.64bps": 0.0,
-          "bid:17.00bps": 0.0,
-          "bid:17.25bps": 0.0,
-          "bid:17.49bps": 0.0,
-          "bid:17.55bps": 0.0,
-          "bid:17.61bps": 0.0
+          "bid:80.01bps": 0.0,
+          "bid:80.10bps": 0.0,
+          "bid:80.22bps": 0.0,
+          "bid:80.32bps": 0.0,
+          "bid:80.34bps": 0.0,
+          "bid:80.46bps": 0.0,
+          "bid:80.47bps": 0.0,
+          "bid:80.53bps": 0.0,
+          "bid:80.55bps": 0.0,
+          "bid:80.61bps": 0.0,
+          "bid:80.62bps": 0.0,
+          "bid:80.64bps": 0.0,
+          "bid:80.65bps": 0.0,
+          "bid:80.76bps": 0.0,
+          "bid:80.77bps": 0.0,
+          "bid:80.81bps": 0.0,
+          "bid:80.83bps": 0.0,
+          "bid:80.85bps": 0.0,
+          "bid:80.86bps": 0.0,
+          "bid:80.92bps": 0.0,
+          "bid:80.94bps": 0.0,
+          "bid:80.99bps": 0.0,
+          "bid:81.08bps": 0.0,
+          "bid:81.09bps": 0.0,
+          "bid:81.10bps": 0.0,
+          "bid:81.15bps": 0.0,
+          "bid:81.16bps": 0.0,
+          "bid:81.17bps": 0.0,
+          "bid:81.24bps": 0.0,
+          "bid:81.25bps": 0.0,
+          "bid:81.30bps": 0.0,
+          "bid:81.31bps": 0.0,
+          "bid:81.35bps": 0.0,
+          "bid:81.41bps": 0.0,
+          "bid:81.42bps": 0.0,
+          "bid:81.47bps": 0.0,
+          "bid:81.49bps": 0.0,
+          "bid:81.50bps": 0.0,
+          "bid:81.63bps": 0.0,
+          "bid:81.68bps": 0.0,
+          "bid:81.81bps": 0.0,
+          "bid:81.85bps": 0.0,
+          "bid:81.87bps": 0.0,
+          "bid:81.92bps": 0.0,
+          "bid:81.94bps": 0.0,
+          "bid:81.96bps": 0.0,
+          "bid:82.08bps": 0.0,
+          "bid:82.11bps": 0.0,
+          "bid:82.13bps": 0.0,
+          "bid:82.17bps": 0.0,
+          "bid:82.20bps": 0.0,
+          "bid:82.21bps": 0.0,
+          "bid:82.27bps": 0.0,
+          "bid:82.29bps": 0.0,
+          "bid:82.31bps": 0.0,
+          "bid:82.36bps": 0.0,
+          "bid:82.41bps": 0.0,
+          "bid:82.50bps": 0.0,
+          "bid:82.52bps": 0.0,
+          "bid:82.60bps": 0.0,
+          "bid:82.62bps": 0.0,
+          "bid:82.66bps": 0.0,
+          "bid:82.70bps": 0.0,
+          "bid:82.75bps": 0.0,
+          "bid:82.80bps": 0.0,
+          "bid:82.90bps": 0.0,
+          "bid:82.99bps": 0.0,
+          "bid:83.01bps": 0.0,
+          "bid:83.06bps": 0.0,
+          "bid:83.10bps": 0.0,
+          "bid:83.17bps": 0.0,
+          "bid:83.20bps": 0.0,
+          "bid:83.22bps": 0.0,
+          "bid:83.26bps": 0.0,
+          "bid:83.38bps": 0.0,
+          "bid:83.40bps": 0.0,
+          "bid:83.45bps": 0.0,
+          "bid:83.54bps": 0.0,
+          "bid:83.57bps": 0.0,
+          "bid:83.59bps": 0.0,
+          "bid:83.66bps": 0.0,
+          "bid:83.70bps": 0.0,
+          "bid:83.75bps": 0.0,
+          "bid:83.77bps": 0.0,
+          "bid:83.80bps": 0.0,
+          "bid:83.82bps": 0.0,
+          "bid:83.89bps": 0.0,
+          "bid:83.93bps": 0.0,
+          "bid:83.96bps": 0.0,
+          "bid:83.98bps": 0.0,
+          "bid:83.99bps": 0.0,
+          "bid:84.01bps": 0.0,
+          "bid:84.03bps": 0.0
         },
         "fills_by_depth": {},
-        "final_mid": 1640.35,
+        "fills_by_side": {
+          "ask": 0,
+          "bid": 0
+        },
+        "final_mid": 0.12523,
         "funding_usdc": 0.0,
         "input_files": {
           "orderbooks": 25,
@@ -983,13 +1480,22 @@
           "trades": 25
         },
         "input_rows": {
-          "orderbooks": 420,
-          "prices": 2000,
-          "trades": 274
+          "orderbooks": 103,
+          "prices": 450,
+          "trades": 220
         },
         "inventory_base": 0.0,
         "inventory_histogram": {
-          "0": 2000
+          "0": 450
+        },
+        "latency": {
+          "below_tape_resolution": false,
+          "cancel_latency_ms": 250,
+          "decision_latency_ms": 250,
+          "order_ack_latency_ms": 250,
+          "quote_exposure_ms": 750,
+          "quote_refresh_interval_ms": 1000,
+          "total_quote_latency_ms": 500
         },
         "liquidation_breach_events": 0,
         "maintenance_margin_usdc": 0.0,
@@ -997,17 +1503,68 @@
         "maker_ratio": 0.0,
         "margin_used_usdc": 0.0,
         "mark_to_market_pnl_usdc": 0.0,
+        "markout_by_side": {
+          "ask": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          },
+          "bid": {
+            "100": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "1000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "30000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            },
+            "5000": {
+              "count": 0,
+              "mean_usdc": null,
+              "sum_usdc": 0.0
+            }
+          }
+        },
         "markout_samples": [],
         "max_margin_used_usdc": 0.0,
-        "max_price_gap_seconds": 29.49861145,
+        "max_price_gap_seconds": 923.602,
+        "mean_abs_q_residual": 0.0,
+        "mean_fill_depth_bps_by_side": {
+          "ask": null,
+          "bid": null
+        },
         "min_equity_usdc": 1000.0,
         "min_liquidation_buffer_usdc": 1000.0,
         "notional_exposure_usdc": 0.0,
-        "p95_price_gap_seconds": 0.39393842219999986,
+        "p95_price_gap_seconds": 5.983399999999984,
         "parameter_series": [
           {
-            "data_end": "2026-06-11T16:49:27.106274605+00:00",
-            "data_start": "2026-06-11T16:45:11.961102486+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "epsilon_minus": 0.0,
             "epsilon_plus": 0.0,
             "kappa_minus": 2.0,
@@ -1016,8 +1573,8 @@
             "lambda_plus": 0.1,
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
-            "ts": "2026-06-11T16:45:11.961102486+00:00",
+            "symbol": "CASHCAT",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": {
               "epsilon": "USDC",
               "kappa": "1/USDC",
@@ -1031,62 +1588,134 @@
         },
         "post_only_reject_ratio": 0.0,
         "post_only_rejects": 0,
-        "price_event_count": 2000,
-        "price_events_per_day": 677261.4925278695,
-        "price_rounding_adjustments": 198,
-        "price_tick_size": 1.058475,
-        "queue_decay_base": 0.0,
-        "quote_attempts": 198,
-        "quote_attempts_by_depth": {
-          "bid:11.41bps": 1,
-          "bid:11.65bps": 2,
-          "bid:11.77bps": 4,
-          "bid:12.01bps": 6,
-          "bid:12.26bps": 7,
-          "bid:12.38bps": 13,
-          "bid:12.62bps": 18,
-          "bid:12.87bps": 3,
-          "bid:12.99bps": 8,
-          "bid:13.48bps": 14,
-          "bid:13.60bps": 7,
-          "bid:14.08bps": 1,
-          "bid:14.20bps": 12,
-          "bid:14.45bps": 1,
-          "bid:14.81bps": 9,
-          "bid:15.42bps": 7,
-          "bid:15.79bps": 11,
-          "bid:16.03bps": 9,
-          "bid:16.27bps": 2,
-          "bid:16.40bps": 11,
-          "bid:16.64bps": 9,
-          "bid:17.00bps": 24,
-          "bid:17.25bps": 2,
-          "bid:17.49bps": 3,
-          "bid:17.55bps": 1,
-          "bid:17.61bps": 13
+        "price_event_cadence_ms": {
+          "p10": 68.80000000000001,
+          "p50": 333.0,
+          "p90": 2637.9999999999995
         },
-        "quote_decision_events": 198,
+        "price_event_count": 450,
+        "price_events_per_day": 26720.05179071767,
+        "price_rounding_adjustments": 155,
+        "price_tick_size": 5.075000000000001e-05,
+        "queue_decay_base": 0.0,
+        "quote_attempts": 155,
+        "quote_attempts_by_depth": {
+          "bid:80.01bps": 3,
+          "bid:80.10bps": 2,
+          "bid:80.22bps": 3,
+          "bid:80.32bps": 1,
+          "bid:80.34bps": 1,
+          "bid:80.46bps": 1,
+          "bid:80.47bps": 1,
+          "bid:80.53bps": 1,
+          "bid:80.55bps": 1,
+          "bid:80.61bps": 1,
+          "bid:80.62bps": 2,
+          "bid:80.64bps": 1,
+          "bid:80.65bps": 1,
+          "bid:80.76bps": 1,
+          "bid:80.77bps": 1,
+          "bid:80.81bps": 1,
+          "bid:80.83bps": 1,
+          "bid:80.85bps": 1,
+          "bid:80.86bps": 1,
+          "bid:80.92bps": 2,
+          "bid:80.94bps": 1,
+          "bid:80.99bps": 1,
+          "bid:81.08bps": 2,
+          "bid:81.09bps": 1,
+          "bid:81.10bps": 1,
+          "bid:81.15bps": 2,
+          "bid:81.16bps": 1,
+          "bid:81.17bps": 1,
+          "bid:81.24bps": 1,
+          "bid:81.25bps": 2,
+          "bid:81.30bps": 1,
+          "bid:81.31bps": 1,
+          "bid:81.35bps": 2,
+          "bid:81.41bps": 3,
+          "bid:81.42bps": 2,
+          "bid:81.47bps": 1,
+          "bid:81.49bps": 2,
+          "bid:81.50bps": 1,
+          "bid:81.63bps": 3,
+          "bid:81.68bps": 2,
+          "bid:81.81bps": 9,
+          "bid:81.85bps": 1,
+          "bid:81.87bps": 1,
+          "bid:81.92bps": 1,
+          "bid:81.94bps": 1,
+          "bid:81.96bps": 1,
+          "bid:82.08bps": 1,
+          "bid:82.11bps": 2,
+          "bid:82.13bps": 1,
+          "bid:82.17bps": 4,
+          "bid:82.20bps": 8,
+          "bid:82.21bps": 2,
+          "bid:82.27bps": 2,
+          "bid:82.29bps": 1,
+          "bid:82.31bps": 1,
+          "bid:82.36bps": 1,
+          "bid:82.41bps": 1,
+          "bid:82.50bps": 1,
+          "bid:82.52bps": 2,
+          "bid:82.60bps": 1,
+          "bid:82.62bps": 2,
+          "bid:82.66bps": 2,
+          "bid:82.70bps": 1,
+          "bid:82.75bps": 1,
+          "bid:82.80bps": 3,
+          "bid:82.90bps": 2,
+          "bid:82.99bps": 5,
+          "bid:83.01bps": 1,
+          "bid:83.06bps": 2,
+          "bid:83.10bps": 1,
+          "bid:83.17bps": 2,
+          "bid:83.20bps": 1,
+          "bid:83.22bps": 2,
+          "bid:83.26bps": 1,
+          "bid:83.38bps": 1,
+          "bid:83.40bps": 1,
+          "bid:83.45bps": 3,
+          "bid:83.54bps": 2,
+          "bid:83.57bps": 2,
+          "bid:83.59bps": 1,
+          "bid:83.66bps": 1,
+          "bid:83.70bps": 1,
+          "bid:83.75bps": 2,
+          "bid:83.77bps": 2,
+          "bid:83.80bps": 1,
+          "bid:83.82bps": 1,
+          "bid:83.89bps": 1,
+          "bid:83.93bps": 3,
+          "bid:83.96bps": 2,
+          "bid:83.98bps": 1,
+          "bid:83.99bps": 1,
+          "bid:84.01bps": 2,
+          "bid:84.03bps": 1
+        },
+        "quote_decision_events": 155,
         "quote_refresh_interval_ms": 1000,
         "realized_spread_usdc": 0.0,
         "stale_quote_cancel_ratio": 1.0,
-        "stale_quote_cancels": 198,
+        "stale_quote_cancels": 155,
         "starting_equity_usdc": 1000.0,
         "taker_fills": 0,
         "time_at_q_boundary": {
           "q_max": 0,
-          "q_min": 2000
+          "q_min": 450
         },
         "toxicity_series": [
           {
-            "data_end": "2026-06-11T16:49:27.106274605+00:00",
-            "data_start": "2026-06-11T16:45:11.961102486+00:00",
+            "data_end": "2026-08-20T22:11:06.175000+00:00",
+            "data_start": "2026-08-20T21:46:51.088000+00:00",
             "formula": "kappa * epsilon",
             "schema_version": 1,
             "source": "static_replay_params",
-            "symbol": "ETH",
+            "symbol": "CASHCAT",
             "toxicity_minus": 0.0,
             "toxicity_plus": 0.0,
-            "ts": "2026-06-11T16:45:11.961102486+00:00",
+            "ts": "2026-08-20T21:46:51.088000+00:00",
             "unit": "kappa_times_epsilon"
           }
         ]
@@ -1095,12 +1724,13 @@
       "ok": false,
       "reasons": [
         "stale_quote_cancel_ratio_above_threshold:1.000000>max_0.990000",
-        "insufficient_coverage_days:0.002953<min_3.000000",
-        "insufficient_quote_attempts:198<min_1000",
+        "insufficient_coverage_days:0.016841<min_3.000000",
+        "insufficient_quote_attempts:155<min_1000",
         "no_maker_fills"
       ],
       "variant": {
         "epsilon_add": 0.0,
+        "epsilon_multiplier": 1.0,
         "latency_multiplier": 1.0,
         "maker_fee_multiplier": 1.0,
         "name": "widened_tick",

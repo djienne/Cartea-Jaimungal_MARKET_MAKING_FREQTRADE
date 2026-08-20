@@ -25,6 +25,10 @@ DEFAULT_WORK_DIR = Path("user_data/logs/freqtrade_tif_runtime")
 DEFAULT_VARIANTS = ("GTC", "PO", "Alo")
 
 
+# The compose service; `compose run` on it starts a NEW ephemeral container.
+# Was "freqtrade", which stopped existing when the deployment split into two legs.
+FREQTRADE_SERVICE = "mm-long"
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -90,7 +94,7 @@ def freqtrade_list_strategies_command(container_config: str) -> list[str]:
         "run",
         "--rm",
         "--no-deps",
-        "freqtrade",
+        FREQTRADE_SERVICE,
         "list-strategies",
         "--config",
         container_config,

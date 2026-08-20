@@ -53,12 +53,28 @@ SMOKE_GATE_ARTIFACTS: dict[str, Path] = {
 # battery's quality result, validated against this report.
 QUALITY_REPORT_ARTIFACT = Path("docs/dry_run_quality_report.json")
 
-# The disabled smoke runs its gate container under the production name and the
-# smokes stop the collector on teardown, so a runtime battery leaves both
-# stopped; the runner restores them afterwards.
-PRODUCTION_FREQTRADE_CONTAINER = "MM_ADV"
-PRODUCTION_FREQTRADE_SERVICE = "freqtrade"
-COLLECTOR_SERVICE = "hl-collector2"
+# THE RUNTIME BATTERY NO LONGER TOUCHES THE LIVE BOT. It used to run its smoke
+# container under the production name -- `docker rm -f MM_ADV`, then
+# `compose run --name MM_ADV` -- so a battery killed the running bot and needed a
+# restore step afterwards to put it back. That was always a sharp edge, and it
+# became a dead one: the names were never updated when the deployment split into
+# two legs on 2026-08-16, so every runtime gate failed on a missing service
+# instead of running. `docs/last_safety_gates.json` has been stuck at
+# 2026-06-11T16:49:31Z ever since.
+#
+# The smoke now runs under its own throwaway name, which collides with nothing,
+# so the battery is safe to run while both legs are quoting.
+GATE_SMOKE_CONTAINER = "MM_GATE_SMOKE"
+
+# `compose run` on this service builds a NEW ephemeral container; it does not
+# attach to or disturb the running MM_ADV_LONG.
+FREQTRADE_SERVICE = "mm-long"
+
+# The collectors moved to HYPERLIQUID_DATA/docker-compose.yml on 2026-08-16 and
+# run under `restart: unless-stopped`, so they are always up and this project's
+# gates must not manage their lifecycle. Stopping one mid-battery would punch a
+# hole in the very tape the sweeps and the replay acceptance gate read.
+COLLECTOR_SERVICE = None
 
 
 @dataclass
@@ -246,7 +262,7 @@ def freqtrade_callback_surface_command() -> list[str]:
         "--no-deps",
         "--entrypoint",
         "python",
-        "freqtrade",
+        FREQTRADE_SERVICE,
         "/freqtrade/scripts/verify_freqtrade_callback_surface.py",
         "--strategy-path",
         "/freqtrade/user_data/strategies/Market_Making.py",
@@ -543,7 +559,7 @@ def local_gates(
                         "run",
                         "--rm",
                         "--no-deps",
-                        "freqtrade",
+                        FREQTRADE_SERVICE,
                         "list-strategies",
                         "--config",
                         "/freqtrade/user_data/config.json",
@@ -568,9 +584,6 @@ def local_gates(
                         "--seconds",
                         "150",
                         "--require-health",
-                        "--start-collector",
-                        "--collector-warmup-seconds",
-                        "70",
                         "--json-output",
                         "docs/dry_run_disabled_gate.json",
                     ],
@@ -583,8 +596,6 @@ def local_gates(
                         "scripts/verify_dry_run_enabled.py",
                         "--seconds",
                         str(enabled_dry_run_seconds),
-                        "--collector-warmup-seconds",
-                        "70",
                         "--json-output",
                         "docs/dry_run_enabled_gate.json",
                     ],
@@ -614,11 +625,24 @@ def local_gates(
                         "--max-quote-depth-bps",
                         "80",
                         "--min-quote-depth-bps",
-                        "3",
+                        "1.5",
+                        # ETH-era caps until 2026-08-19: 25 USDC and 0.01 units,
+                        # where 0.01 was literally inventory_unit_base in ETH.
+                        # CASHCAT's unit is 2430 base at ~0.095, so one correctly
+                        # sized order is ~5.2k base and ~495 USDC of notional at
+                        # 2x leverage -- the old caps flagged all 22 orders of a
+                        # healthy smoke. These are set at roughly 1.5x the
+                        # observed one-unit order, so they still catch an order
+                        # that is a MULTIPLE of the intended size, which is what
+                        # the check is for.
+                        #
+                        # Note the gate config's stake_amount is inert here:
+                        # custom_stake_amount re-derives size from
+                        # inventory_unit_base * rate, so it does not bound this.
                         "--max-order-notional-usdc",
-                        "25",
+                        "750",
                         "--max-order-amount-units",
-                        "0.01",
+                        "8000",
                         "--max-loss-usdc",
                         "1",
                         "--max-loss-rate-usdc-per-hour",
@@ -1010,16 +1034,27 @@ def reused_quality_result(
 
 
 def production_restore_commands() -> list[list[str]]:
-    """The exact documented manual recovery for the post-battery stopped stack."""
-    return [
-        ["docker", "rm", "-f", PRODUCTION_FREQTRADE_CONTAINER],
-        ["docker", "compose", "up", "-d", PRODUCTION_FREQTRADE_SERVICE, COLLECTOR_SERVICE],
-    ]
+    """Empty by design: nothing to restore, because nothing is torn down.
+
+    Kept as a function rather than deleted so the payload, the markdown report
+    and the operator message all keep a single place to ask the question. If a
+    future gate ever does stop something the live stack depends on, put its
+    recovery here and `restore_production_container` will run it.
+    """
+    return []
 
 
 def restore_production_container() -> dict:
+    commands = production_restore_commands()
+    if not commands:
+        return {
+            "attempted": False,
+            "ok": True,
+            "reason": "runtime gates run under " + GATE_SMOKE_CONTAINER + " and never stop the live legs",
+            "commands": [],
+        }
     outcomes: list[dict] = []
-    for command in production_restore_commands():
+    for command in commands:
         try:
             proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
             outcomes.append({"command": command, "returncode": proc.returncode, "stderr_tail": tail(proc.stderr, 500)})

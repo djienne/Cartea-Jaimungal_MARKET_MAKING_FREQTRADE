@@ -241,7 +241,10 @@ def build_dry_run_quality_report(
     min_order_attempts: int = 1,
     max_quote_distance_ratio: float = 0.01,
     max_quote_depth_bps: float = 80.0,
-    min_quote_depth_bps: float = 3.0,
+    # Tracks Market_Making.min_half_spread_bps, which moved 3.0 -> 1.5 on
+    # 2026-08-17 when the floor was anchored to the maker fee. A 3.0 default
+    # here would fail quotes the strategy is entitled to post.
+    min_quote_depth_bps: float = 1.5,
     max_order_notional_usdc: float = 25.0,
     max_order_amount_units: float = 1.0,
     max_loss_usdc: float = 1.0,

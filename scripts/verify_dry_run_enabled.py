@@ -48,6 +48,10 @@ RATE_LIMIT_PATTERNS = (
 )
 
 
+# `compose run` on this service starts a NEW ephemeral container; it does not
+# disturb the running MM_ADV_LONG.
+DEFAULT_FREQTRADE_SERVICE = "mm-long"
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -283,7 +287,9 @@ def _run_gate_once(
     )
 
     run(["docker", "rm", "-f", container_name], timeout=60)
-    collector_start = run(["docker", "compose", "up", "-d", "--no-deps", "hl-collector2"], timeout=180)
+    # The collectors are operated from HYPERLIQUID_DATA and always up; this gate
+    # no longer starts or stops them. See run_safety_gates.COLLECTOR_SERVICE.
+    collector_start = None
     time.sleep(max(0, int(collector_warmup_seconds)))
     write_gate_params(param_dir)
 
@@ -297,7 +303,7 @@ def _run_gate_once(
             "--name",
             container_name,
             "--no-deps",
-            "freqtrade",
+            DEFAULT_FREQTRADE_SERVICE,
             "trade",
             "--logfile",
             "/freqtrade/user_data/logs/freqtrade_gate_enabled.log",
@@ -322,7 +328,7 @@ def _run_gate_once(
     )
     logs = run(["docker", "logs", container_name], timeout=60)
     stop = run(["docker", "rm", "-f", container_name], timeout=60)
-    collector_stop = run(["docker", "compose", "stop", "hl-collector2"], timeout=60)
+    collector_stop = None
 
     log_text = logs.stdout or ""
     log_path.write_text(log_text, encoding="utf-8")
@@ -344,8 +350,10 @@ def _run_gate_once(
     return {
         "passed": (
             ok
-            and collector_start.returncode == 0
-            and collector_stop.returncode == 0
+            # collector_* are None now that this gate does not manage the
+            # externally-operated collectors; a skipped step is not a failure.
+            and (collector_start is None or collector_start.returncode == 0)
+            and (collector_stop is None or collector_stop.returncode == 0)
             and start.returncode == 0
             and stop.returncode == 0
         ),
@@ -353,8 +361,9 @@ def _run_gate_once(
         "started_at": started_at.isoformat().replace("+00:00", "Z"),
         "duration_seconds": seconds,
         "collector_warmup_seconds": collector_warmup_seconds,
-        "collector_start_returncode": collector_start.returncode,
-        "collector_stop_returncode": collector_stop.returncode,
+        "collector_start_returncode": None if collector_start is None else collector_start.returncode,
+        "collector_stop_returncode": None if collector_stop is None else collector_stop.returncode,
+        "collector_managed_by_gate": False,
         "docker_start_returncode": start.returncode,
         "docker_stop_returncode": stop.returncode,
         "container_wait": wait_state,

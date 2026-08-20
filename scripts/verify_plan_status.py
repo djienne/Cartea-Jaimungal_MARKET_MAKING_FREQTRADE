@@ -21,6 +21,10 @@ REQUIRED_LOCAL_GATES = {
     "pytest_core",
     "config_safety_report",
     "strategy_safety_report",
+    # Added 2026-08-19 with scripts/verify_strategy_attributes.py. It runs and
+    # passes; without it listed here the audit would not notice the gate
+    # disappearing, which is the whole job of this set.
+    "strategy_attribute_report",
     "compute_spreads_boundary_smoke",
     "replay_smoke",
     # adapter_plans consolidates the former post_only_probe_plan,

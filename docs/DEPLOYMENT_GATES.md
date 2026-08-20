@@ -19,18 +19,24 @@ python scripts/run_safety_gates.py --markdown-output docs/LAST_SAFETY_GATES.md
   dry-run smokes (disabled + enabled), then the post-run plan-status audit. Use
   pre-merge / pre-promotion.
 
-  **Stale since 2026-08-16 and not yet repaired.** Every Docker gate addresses a
-  compose service named `freqtrade` and a collector service named
-  `hl-collector2`, and the disabled smoke runs its container under the name
-  `MM_ADV` (`PRODUCTION_FREQTRADE_CONTAINER` / `PRODUCTION_FREQTRADE_SERVICE` /
-  `COLLECTOR_SERVICE` in `scripts/run_safety_gates.py`). This compose file now
-  defines `mm-long` (container MM_ADV_LONG), `mm-short` (MM_ADV_SHORT),
-  `param-estimator` and `redis`, and the collectors were moved to
-  `HYPERLIQUID_DATA`. So the runtime gates fail on a missing service rather than
-  running — and, unlike before, they no longer replace the production bot while
-  they do it. `docs/last_safety_gates.json` still carries
-  `generated_at: 2026-06-11T16:49:31Z`, which is the last time this profile
-  completed:
+  **Repaired 2026-08-19, and it no longer touches the live bot.** From 2026-08-16
+  every Docker gate addressed a compose service named `freqtrade` and a collector
+  named `hl-collector2`, and the disabled smoke ran its container as `MM_ADV` —
+  none of which existed after the deployment split into `mm-long` (MM_ADV_LONG)
+  and `mm-short` (MM_ADV_SHORT) and the collectors moved to `HYPERLIQUID_DATA`.
+  Every runtime gate failed on a missing service instead of running, which is why
+  `docs/last_safety_gates.json` sat at `generated_at: 2026-06-11T16:49:31Z` for
+  two months.
+
+  They now address `mm-long` via `docker compose run`, which builds a *new*
+  ephemeral container, and the disabled smoke runs under its own throwaway name
+  `MM_GATE_SMOKE`. The old design deliberately reused the production container
+  name — `docker rm -f MM_ADV`, then `compose run --name MM_ADV` — so a battery
+  killed the running bot and needed a restore step afterwards. That step is gone:
+  `production_restore` now reports `attempted: false`, and the battery is safe to
+  run while both legs are quoting. The collectors are never started or stopped
+  from here; they run under `restart: unless-stopped` in `HYPERLIQUID_DATA`, and
+  stopping one mid-battery would punch a hole in the tape the sweeps read.
 
 ```bash
 python scripts/run_safety_gates.py --include-runtime --json-output docs/last_safety_gates.json --markdown-output docs/LAST_SAFETY_GATES.md

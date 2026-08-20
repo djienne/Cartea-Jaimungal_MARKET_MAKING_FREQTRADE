@@ -9,34 +9,14 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from verify_plan_status import build_plan_status_audit  # noqa: E402
+from verify_plan_status import REQUIRED_LOCAL_GATES, build_plan_status_audit  # noqa: E402
 
 
 def gate_payload(pytest_count: int = 173) -> dict:
-    required_local = [
-        "compileall",
-        "pytest_core",
-        "config_safety_report",
-        "strategy_safety_report",
-        "compute_spreads_boundary_smoke",
-        "replay_smoke",
-        "adapter_plans",
-        "post_only_evidence_report",
-        "promotion_evidence_manifest",
-        "docker_compose_config",
-        "freqtrade_runtime_load",
-        "freqtrade_callback_surface",
-        "freqtrade_tif_runtime",
-        "dry_run_disabled_smoke",
-        "dry_run_enabled_smoke",
-        "dry_run_quality_report",
-        "replay_log_calibration_artifact",
-        "fee_evidence_report",
-        "hl_data_validation_report",
-        "replay_latest_data_smoke",
-        "replay_acceptance_report_artifact",
-        "live_canary_evidence_report",
-    ]
+    # Derived, never re-typed: a hand-copied duplicate of this set is exactly
+    # how strategy_attribute_report came to be missing here while the gate ran
+    # and passed in production.
+    required_local = sorted(REQUIRED_LOCAL_GATES)
     manual_gates = [
         {"name": "hyperliquid_post_only_mapping", "passed": False},
         {"name": "multi_day_event_replay", "passed": False},
