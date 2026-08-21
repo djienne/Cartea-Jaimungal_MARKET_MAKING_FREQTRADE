@@ -1,0 +1,875 @@
+# Hyperliquid live execution connector reference
+
+Research and local-code audit date: **2026-08-21**. Target runtime:
+`rust_live`, initially validated only for **CASHCAT**.
+
+This is the single implementation reference for a future real-money Hyperliquid
+connector. It deliberately stops short of enabling live trading. Hyperliquid's
+API changes over time, so every implementation pass must recheck the linked
+official documentation and pin the exact SDK/protocol fixtures used for release.
+
+## 1. Decision summary
+
+The recommended implementation is:
+
+1. Keep the existing Cartea–Jaimungal calibration, HJB, quote policy, risk
+   decisions, public market feed, and lock-free hot thread unchanged.
+2. Add a cold-path `HyperliquidExecutionBackend` behind the existing execution
+   boundary. It owns signing, WebSocket `post` requests, private/account
+   subscriptions, order state, reconciliation, and authoritative account state.
+3. Use a dedicated Hyperliquid API/agent wallet for one dedicated account or
+   subaccount. Never put the master wallet key in the bot.
+4. Use WebSocket action posts for normal order/cancel flow, but retain `/info`
+   REST queries as the authoritative recovery and reconciliation path.
+5. Give every order a unique 128-bit `cloid`. A timeout or disconnect after a
+   send is an **unknown outcome**, never permission to submit another order
+   blindly.
+6. Pin and audit the current Hyperliquid Rust SDK from the Hyperliquid GitHub
+   organization for action types/signing, while retaining our own transport and
+   lifecycle state machine. As of this audit the crate line is `hl_sdk` 0.12.10.
+   It must pass the signing fixtures in this document and compile with the pinned
+   project toolchain before adoption. The official Python SDK remains the
+   independent wire oracle.
+7. Use the useful local implementations as test material and design evidence,
+   not as a complete connector. No local project contains the whole required
+   maker-order + private-WebSocket + reconciliation path.
+
+The general API index currently points to the official Python SDK and a community
+Rust SDK; the Hyperliquid GitHub organization also maintains a Rust SDK. See the
+[API index](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api),
+[official Python SDK](https://github.com/hyperliquid-dex/hyperliquid-python-sdk),
+[Hyperliquid Rust SDK](https://github.com/hyperliquid-dex/hyperliquid-rust-sdk),
+and [Infinite Field hypersdk](https://github.com/infinitefield/hypersdk).
+
+## 2. Network and transport endpoints
+
+| Purpose | Mainnet | Testnet |
+| --- | --- | --- |
+| Info REST | `https://api.hyperliquid.xyz/info` | `https://api.hyperliquid-testnet.xyz/info` |
+| Exchange REST | `https://api.hyperliquid.xyz/exchange` | `https://api.hyperliquid-testnet.xyz/exchange` |
+| WebSocket | `wss://api.hyperliquid.xyz/ws` | `wss://api.hyperliquid-testnet.xyz/ws` |
+
+The same WebSocket supports subscriptions, unsigned info posts, and signed action
+posts. Explorer requests are not supported over WebSocket. See
+[WebSocket post requests](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/post-requests).
+
+Use three logical tasks even if two share a physical WebSocket initially:
+
+- public market-data task: `bbo`, `l2Book`, and `trades` for CASHCAT;
+- private/account task: order, fill, funding, position, and open-order streams;
+- execution task: signed action posts and response correlation.
+
+Separating them prevents a slow signer or account parser from delaying the
+allocation-free quote thread. A private socket should serve one actual account
+address because some order/user messages do not carry an account identifier.
+
+## 3. Account identities and credentials
+
+Hyperliquid has three identities that must never be conflated:
+
+| Identity | Purpose | Used where |
+| --- | --- | --- |
+| master account | owns funds and approves agents/subaccounts | offline/UI setup only |
+| API/agent wallet | private key used by the bot to sign | signer and nonce namespace |
+| traded account/subaccount | positions, orders, fills, fees, margin | `/info` queries and user subscriptions |
+
+An API wallet is a signer, not the address whose positions should be queried.
+Querying the agent address commonly returns an empty account. API-wallet nonces
+are tracked by signer address, so one agent reused across processes or
+subaccounts creates a shared nonce namespace. The official guidance is one API
+wallet per trading process, preferably one per subaccount. See
+[Nonces and API wallets](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/nonces-and-api-wallets).
+
+For a master account, `vaultAddress` is absent. For a subaccount or vault, the
+signed hash and the outer request both include that subaccount/vault address.
+Subaccounts and vaults do not have independent private keys. See
+[Exchange endpoint: subaccounts and vaults](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint).
+
+### Required credential configuration
+
+The future live-only configuration should distinguish these values explicitly:
+
+```text
+HYPERLIQUID_NETWORK = mainnet | testnet
+HYPERLIQUID_AGENT_PRIVATE_KEY = dedicated API/agent key
+HYPERLIQUID_EXPECTED_AGENT_ADDRESS = 0x...
+HYPERLIQUID_ACCOUNT_ADDRESS = 0x...       # actual master/subaccount queried
+HYPERLIQUID_VAULT_ADDRESS = empty | 0x... # only for a subaccount/vault
+HYPERLIQUID_SYMBOL = CASHCAT
+HYPERLIQUID_DEX = ""
+```
+
+The tracked [`hyperliquid.env.example`](hyperliquid.env.example) contains these
+exact keys with deliberately invalid dummy values. Copy it to
+`rust_live/hyperliquid.env`; the real file is ignored by Git. Network, symbol,
+and DEX values must agree with the validated TOML profile rather than silently
+overriding it.
+
+Startup must derive the agent address from the key and compare it to
+`expected_agent_address`. It must query `userRole`, `extraAgents`, metadata,
+account state, and user fees before enabling orders. A mismatch is fatal.
+
+### Security requirements
+
+- Never accept a master private key in the trading process.
+- Never accept a key on a command line; process listings and shell history can
+  expose it.
+- Do not log keys, signed payloads containing unexpected sensitive fields, or
+  unredacted environment dumps.
+- Put key material in a zeroizing type and keep it out of crash reports.
+- Compile transfer, withdrawal, staking, agent-approval, and builder-fee approval
+  actions out of the trading adapter. It needs order/cancel/modify/leverage only.
+- Use a dedicated subaccount so the dead-man switch cannot cancel another bot's
+  orders and a strategy fault cannot access unrelated positions.
+- Keep dry-run and live binaries/features distinct. `live` must continue to fail
+  before loading secrets until all acceptance gates in section 16 pass.
+
+API wallets can be deregistered, expire, or be pruned when the owning account has
+no funds. The documentation warns against reusing a deregistered agent address
+because its stored nonce history may be pruned, allowing old signed actions to
+be replayed. Generate a new API wallet after deregistration.
+
+## 4. CASHCAT instrument facts and startup validation
+
+A public mainnet `meta` query on 2026-08-21T21:44:02Z returned:
+
+| Field | Observed value |
+| --- | ---: |
+| perp DEX | first/default DEX, `""` |
+| universe index / current asset ID | `231` |
+| `szDecimals` | `0` |
+| maximum leverage | `3` |
+| `marginTableId` | `3` |
+| `onlyIsolated` | `true` |
+
+These are observations, not constants. The connector must discover and validate
+them at every startup. In particular, CASHCAT currently requires isolated
+margin: an `updateLeverage` action must use `isCross=false`. The present
+`InstrumentSpec` must be extended before live trading to include at least
+`only_isolated`/`margin_mode` and `margin_table_id`.
+
+Perp asset IDs are the positions in the requested `meta.universe`. Spot and
+builder-deployed perp IDs use different formulas; do not generalize the CASHCAT
+index. See [Asset IDs](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/asset-ids).
+
+### Price and size encoding
+
+- Prices: at most five significant figures and at most
+  `6 - szDecimals` decimal places for perps. Integer prices are allowed even if
+  they contain more than five digits.
+- Sizes: at most `szDecimals` decimal places.
+- Wire numbers are decimal strings with trailing zeroes removed and no exponent
+  notation.
+- CASHCAT therefore currently uses integer base sizes and at most six price
+  decimals.
+- Perp orders below 10 USDC notional are rejected.
+
+See [Tick and lot size](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size)
+and [Error responses](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses).
+
+Use fixed-point integers or `rust_decimal` at the adapter boundary. Do not
+re-round the policy's already instrument-aware integer price and size through
+`f64`. For post-only orders, outward rounding remains mandatory: bids down, asks
+up.
+
+## 5. Exact L1 action signing
+
+Normal orders, cancels, modifies, leverage changes, `scheduleCancel`, and `noop`
+are L1 actions. They use the phantom-agent EIP-712 scheme. Human-readable
+transfers and agent approval use a different user-signed scheme and are outside
+this connector.
+
+### 5.1 Action hash
+
+For an action object, nonce, optional vault/subaccount, and optional expiry:
+
+```text
+packed = msgpack(action)                         # map/named encoding
+bytes  = packed
+       || nonce.to_be_bytes_u64()
+       || (0x00                                  # no vault
+           OR 0x01 || raw_20_byte_vault_address)
+       || (nothing                               # no expiresAfter
+           OR 0x00 || expires_after.to_be_bytes_u64())
+connection_id = keccak256(bytes)
+```
+
+The vault address bytes are essential. Appending only the `0x01` marker is
+wrong. The `expiresAfter` separator byte is also essential. The current official
+Python implementation is the oracle; see
+[`action_hash` and `sign_l1_action`](https://github.com/hyperliquid-dex/hyperliquid-python-sdk/blob/master/hyperliquid/utils/signing.py).
+
+MessagePack map order affects the hash. Use typed Rust structs with declaration
+order matching the wire schema and `rmp_serde::to_vec_named`; do not construct
+actions from an unordered map. Golden tests must pin the exact MessagePack bytes.
+
+### 5.2 Phantom agent EIP-712 message
+
+```text
+domain:
+  name              = "Exchange"
+  version           = "1"
+  chainId           = 1337
+  verifyingContract = 0x0000000000000000000000000000000000000000
+
+primary type: Agent
+fields:
+  source       : string   # "a" mainnet, "b" testnet
+  connectionId : bytes32  # action hash above
+```
+
+Sign the EIP-712 digest with secp256k1 and serialize `{r, s, v}`, with `r` and
+`s` as 32-byte `0x` hex strings and `v` in the form accepted by the SDK/API.
+
+### 5.3 Outer action envelope
+
+```json
+{
+  "action": { "type": "..." },
+  "nonce": 1700000000000,
+  "signature": { "r": "0x...", "s": "0x...", "v": 27 },
+  "vaultAddress": "0x... optional ...",
+  "expiresAfter": 1700000003000
+}
+```
+
+`vaultAddress` and `expiresAfter` must be identical to the values folded into
+the action hash. `expiresAfter` is an absolute Unix-millisecond deadline. An
+action rejected because it arrived after that deadline consumes five times the
+normal address-based rate-limit budget, so expiry is a safety device rather than
+a substitute for reconciliation.
+
+## 6. Nonce manager
+
+Hyperliquid stores the highest 100 nonces per signer. A new nonce must be unique,
+larger than the smallest retained nonce, and within `(block_time - 2 days,
+block_time + 1 day)`. Transactions can arrive out of order.
+
+Implement one atomic nonce allocator per API wallet:
+
+```text
+next = max(current_unix_ms, previous + 1)
+```
+
+Persist the last issued nonce atomically so a local clock rollback plus restart
+cannot reuse one. Never allow two processes to share an agent key. Batch orders
+and cancels roughly every 100 ms when useful, and keep ALO-only batches separate
+from IOC/GTC batches because validators prioritize ALO-only batches.
+
+The nonce belongs to the signer, not the traded subaccount. Sending actions for
+two subaccounts through one agent shares the same 100-nonce window and is not an
+approved architecture for this bot.
+
+## 7. Trading actions required by the maker
+
+Only the following exchange actions are needed initially. Full payload details
+remain authoritative in the
+[Exchange endpoint documentation](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint).
+
+### 7.1 Place batch of post-only orders
+
+```text
+action.type     = "order"
+action.orders[] = {
+  a: asset_id,
+  b: is_buy,
+  p: decimal_price_string,
+  s: decimal_size_string,
+  r: reduce_only,
+  t: { limit: { tif: "Alo" } },
+  c: optional_cloid
+}
+action.grouping = "na"
+```
+
+ALO is the only normal maker TIF. If it would match immediately, Hyperliquid
+cancels/rejects it rather than taking liquidity. A `BadAloPx` result is an
+expected post-only refusal and must not be interpreted as a fill.
+
+Use one batch for the bid and ask generated by the same quote revision when both
+sides are present. Parse every element in the returned status vector. A batch
+can also fail with one pre-validation error applying to the whole batch.
+
+### 7.2 Cancel by CLOID
+
+Preferred cancellation form:
+
+```text
+action.type      = "cancelByCloid"
+action.cancels[] = { asset: asset_id, cloid: "0x + 32 hex digits" }
+```
+
+The OID form is also required for foreign/recovered orders:
+
+```text
+action.type      = "cancel"
+action.cancels[] = { a: asset_id, o: oid }
+```
+
+A missing order can mean it already filled or was already canceled. Resolve it
+from fills/order status; do not assume cancel success.
+
+There is no ordinary unsigned `cancelAll` shortcut. For controlled shutdown,
+fetch `openOrders`, select the bot/account scope, and send batched OID/CLOID
+cancels. `scheduleCancel` is the separate emergency dead-man mechanism.
+
+### 7.3 Modify
+
+Hyperliquid supports `modify` and `batchModify` by OID or CLOID. The initial
+implementation should retain the dry-run model's explicit cancel-and-replace
+semantics with a new CLOID and overlapping in-flight orders. That makes partial
+fills and uncertainty visible. Native modify can be added later only after its
+queue and partial-fill behavior is measured.
+
+### 7.4 Leverage
+
+```text
+action = {
+  type: "updateLeverage",
+  asset: asset_id,
+  isCross: false,
+  leverage: 2
+}
+```
+
+For current CASHCAT metadata, `isCross=true` is invalid because
+`onlyIsolated=true`. Confirm the resulting position/account state before quoting.
+
+### 7.5 Dead-man switch
+
+```text
+action = { type: "scheduleCancel", time: future_unix_ms }
+```
+
+Omitting `time` clears the schedule. The deadline must be at least five seconds
+ahead. A triggered schedule cancels all open orders for the account, increments
+a daily counter, and can trigger at most ten times per UTC day. A dedicated
+account is therefore mandatory.
+
+Recommended policy: refresh a deadline around 30 seconds ahead every 10 seconds.
+On a graceful stop, explicitly cancel all bot orders, reconcile an empty open
+order set, then clear the schedule. On a process/network failure, let it fire.
+
+### 7.6 No-op nonce invalidation
+
+`{type:"noop"}` can consume a pending nonce and is documented as an alternative
+to cancel spam for invalidating an in-flight action. Do not use it in the first
+live version; first establish a correct CLOID/status reconciliation model.
+
+## 8. WebSocket protocol
+
+### 8.1 Application heartbeat
+
+The server closes a connection if it has sent no message to the client for 60
+seconds. Send the documented application message periodically:
+
+```json
+{ "method": "ping" }
+```
+
+and expect `{ "channel": "pong" }`. Protocol-level WebSocket ping frames are
+not a substitute for this documented heartbeat. See
+[Timeouts and heartbeats](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/timeouts-and-heartbeats).
+
+Track last inbound frame, last pong, connection generation, and subscription
+acknowledgements. Force reconnect on staleness even if writes still succeed.
+
+### 8.2 Subscriptions needed
+
+Subscription wrapper:
+
+```json
+{
+  "method": "subscribe",
+  "subscription": { "type": "..." }
+}
+```
+
+Required public subscriptions for CASHCAT:
+
+```text
+{ type: "bbo",    coin: "CASHCAT" }
+{ type: "l2Book", coin: "CASHCAT" }
+{ type: "trades", coin: "CASHCAT" }
+```
+
+Required account subscriptions, using the **actual account/subaccount address**:
+
+```text
+{ type: "orderUpdates",       user: account }
+{ type: "userFills",          user: account, aggregateByTime: false }
+{ type: "userFundings",       user: account }
+{ type: "clearinghouseState", user: account, dex: "" }
+{ type: "openOrders",         user: account, dex: "" }
+```
+
+There is no private-session authentication handshake for these subscriptions;
+the address selects the onchain account data. Authentication is required for
+actions through their signatures, not for reading an address's streams.
+
+Recommended additional subscriptions:
+
+```text
+{ type: "activeAssetData", user: account, coin: "CASHCAT" }
+{ type: "userNonFundingLedgerUpdates", user: account }
+{ type: "notification", user: account }
+```
+
+The complete current list and message types are in
+[WebSocket subscriptions](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions).
+
+Do not subscribe to both generic `userEvents` fills and dedicated `userFills`
+unless all events are deduplicated. Dedicated streams are clearer and include
+snapshot markers.
+
+### 8.3 Essential incoming fields
+
+Order update:
+
+```text
+order: coin, side, limitPx, sz_remaining, oid, timestamp, origSz, cloid?
+status: open | filled | canceled | triggered | rejected | ...Canceled | ...Rejected
+statusTimestamp
+```
+
+Fill:
+
+```text
+coin, px, sz, side, time, startPosition, closedPnl, oid, tid,
+crossed, fee, feeToken, builderFee?, hash
+```
+
+Funding:
+
+```text
+time, coin, usdc, szi, fundingRate
+```
+
+For `userFills` and `userFundings`, the first message can be a snapshot with
+`isSnapshot=true`; later messages use `false`. Store a durable fill/funding key
+and process the initial snapshot with an overlap checkpoint rather than simply
+discarding it. Public trade `tid` is only globally unique together with block
+time and coin; use a composite key where appropriate.
+
+### 8.4 Posting actions over WebSocket
+
+```json
+{
+  "method": "post",
+  "id": 12345,
+  "request": {
+    "type": "action",
+    "payload": {
+      "action": { "type": "order", "orders": [], "grouping": "na" },
+      "nonce": 1700000000000,
+      "signature": { "r": "0x...", "s": "0x...", "v": 27 },
+      "vaultAddress": null,
+      "expiresAfter": 1700000003000
+    }
+  }
+}
+```
+
+Every post gets a unique transport `id`, separate from the order CLOID. Maintain
+a bounded in-flight map keyed by `id`. Response wrapper:
+
+```text
+channel = "post"
+data.id = request id
+data.response.type = "action" | "info" | "error"
+data.response.payload = normal HTTP-equivalent response
+```
+
+A `post` response confirms what the API returned, not that the local account
+state is fully reconciled. The private order/fill streams and `/info` recovery
+remain authoritative.
+
+## 9. Authoritative `/info` calls
+
+Use unsigned `/info` POSTs for startup and recovery. The minimum required set is:
+
+| Request type | Purpose |
+| --- | --- |
+| `meta` | universe, `szDecimals`, leverage, margin mode/table, delisting |
+| `metaAndAssetCtxs` | mark/oracle/mid, current funding, open interest |
+| `clearinghouseState` | signed positions, entry/liquidation price, margin/equity |
+| `openOrders` | authoritative currently working orders |
+| `frontendOpenOrders` | richer diagnostics when needed |
+| `orderStatus` | resolve OID/CLOID after uncertainty |
+| `userFills` / `userFillsByTime` | fill recovery and exact fees/PnL |
+| `userFunding` | funding recovery by time range |
+| `userFees` | actual maker/taker rate for the account |
+| `userRateLimit` | action budget monitoring |
+| `activeAssetData` | available-to-trade and maximum sizes |
+| `userRole` / `extraAgents` | startup identity validation |
+
+Use the actual account/subaccount address, never the agent address. Time-range
+responses paginate; the current general rule is at most 500 elements/distinct
+blocks per page, while fill endpoints additionally have their documented 2,000
+item response and recent-history limits. See the
+[Info endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint)
+and [perpetual-specific info calls](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals).
+
+Maker fee must come from `userFees` and each fill's `fee`, not from the current
+0.00015 profile assumption. Fee tiers, staking discounts, maker rebates, aligned
+collateral, and HIP-3 deployer settings can change the effective rate. See
+[Fees](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees).
+
+Funding is paid hourly. The connector records the authoritative `usdc` funding
+events rather than recomputing them. See
+[Funding](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/funding).
+
+## 10. Order lifecycle and reconciliation
+
+### 10.1 CLOID
+
+A Hyperliquid CLOID is exactly 128 bits encoded as `0x` plus 32 hexadecimal
+digits. Generate it deterministically from stable identity fields such as:
+
+```text
+hash128(config_fingerprint, session_id, quote_generation, side, order_sequence)
+```
+
+Persist the mapping from CLOID to quote revision, side, intended price/size,
+reduce-only flag, send nonce, transport request ID, and local timestamps. Never
+reuse a CLOID for a different economic intent.
+
+### 10.2 State machine
+
+At minimum, track:
+
+```text
+Prepared
+  -> Sent
+  -> Resting | Filled | Rejected | UnknownOutcome
+Resting
+  -> CancelPending | PartiallyFilled | Filled | VenueCanceled
+CancelPending
+  -> Canceled | PartiallyFilled | Filled | UnknownOutcome
+UnknownOutcome
+  -> Resting | PartiallyFilled | Filled | Rejected | Canceled
+```
+
+`PartiallyFilled` is derived from unique fills and remaining size; never infer a
+fill merely because an order disappeared. Order updates and fill events can be
+duplicated or reordered relative to action responses.
+
+### 10.3 Unknown outcomes
+
+If a socket closes, a timeout fires, JSON parsing fails, or the response is lost
+after the request may have been written:
+
+1. mark the order/CLOID unknown;
+2. suppress new inventory-increasing orders on the affected side;
+3. query `orderStatus` by CLOID;
+4. query `openOrders` and overlapping `userFillsByTime`;
+5. only then decide whether no order exists and a replacement is safe.
+
+Never retry with a new CLOID or nonce solely because an action response timed
+out. This is the primary double-order/double-position prevention invariant.
+
+### 10.4 Reconnect procedure
+
+On any private or execution connection loss:
+
+1. mark execution unhealthy and withdraw desired quotes;
+2. stop all new order actions, but allow bounded cancel/recovery actions;
+3. reconnect with capped exponential backoff and resubscribe;
+4. require subscription acknowledgements and a fresh heartbeat;
+5. fetch metadata fingerprint, `clearinghouseState`, `openOrders`, user fills
+   with a checkpoint overlap, funding, and relevant unknown CLOID statuses;
+6. rebuild local order/account state and deduplicate all events;
+7. cancel stale or foreign bot orders according to the dedicated-account policy;
+8. require consistency across position, fills, and open orders before quoting.
+
+No virtual/live order or queue priority is restored from disk after restart.
+Only durable identifiers, account checkpoints, and unresolved actions are
+restored, then reconciled against the venue.
+
+## 11. Account and risk semantics
+
+Hyperliquid perps use one-way signed positions. In account state, positive `szi`
+is long and negative is short. The connector publishes physical base inventory
+to the existing one-engine signed-inventory policy.
+
+Before accepting an order intent, combine model risk with venue state:
+
+- current signed position and working-order worst-case fills;
+- `availableToTrade`/`maxTradeSzs` where available;
+- actual account equity, margin used, withdrawable balance, and liquidation
+  price;
+- current asset margin mode/table and maximum leverage;
+- actual fee schedule and funding events;
+- prospective notional and margin if every overlapping order fills;
+- order minimum notional and instrument precision;
+- account abstraction mode. Fail closed on an unvalidated portfolio/unified
+  mode.
+
+CASHCAT's current `onlyIsolated=true` means the existing generic dry-run margin
+assumptions are not enough to authorize live orders. Venue account state is the
+source of truth; local formulas are conservative prechecks.
+
+The fill field `crossed` verifies maker/taker status. A normal ALO fill should be
+maker (`crossed=false`). A crossed fill, unknown liquidity flag, or effective fee
+inconsistent with the expected maker schedule must disable quoting and trigger
+reconciliation.
+
+## 12. Responses and errors
+
+Successful order action elements normally contain one of:
+
+- `resting { oid }`;
+- `filled { totalSz, avgPx, oid }`;
+- `error: "..."`.
+
+Batch errors are usually parallel to the input array, but some payload-level
+pre-validation errors return one error for the whole batch. The parser must
+support both shapes.
+
+Important order errors include invalid tick, minimum notional, insufficient
+margin, reduce-only violation, post-only crossing (`BadAloPx`), IOC no-fill,
+invalid trigger, no liquidity, oracle deviation, open-interest limits, maximum
+position, and insufficient spot balance. Cancel can return missing order. Treat
+each as a typed result and retain the raw string for diagnostics.
+
+`orderStatus` exposes terminal causes including user cancel, margin cancel,
+self-trade cancel, reduce-only cancel, liquidation, delisting, scheduled cancel,
+and specific rejection variants. Do not collapse them all into `Canceled` when
+evaluating risk or scientific execution evidence.
+
+## 13. Rate limits and batching
+
+Current documented limits per IP include:
+
+- 1,200 aggregate REST weight per minute;
+- 10 simultaneous WebSocket connections;
+- 30 new WebSocket connections per minute;
+- 1,000 subscriptions and 10 unique users across user-specific subscriptions;
+- 2,000 client-to-server WebSocket messages per minute;
+- 100 simultaneous in-flight WebSocket post messages.
+
+Exchange actions cost `1 + floor(batch_length / 40)` IP weight. Common light
+info calls such as `l2Book`, `allMids`, `clearinghouseState`, and `orderStatus`
+cost weight 2; most other info calls cost 20, with additional response-size
+weights on history endpoints.
+
+Address limits are separate. An address begins with a 10,000-request buffer and
+earns roughly one action request per cumulative USDC traded. Cancels receive a
+larger allowance. A batch counts once for IP weight but each contained action
+counts toward the address limit. During congestion, block share also depends on
+maker share. See
+[Rate limits and user limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits).
+
+Implementation consequences:
+
+- rate-limit before serializing/signing where possible;
+- coalesce superseded quote revisions;
+- batch bid/ask ALO orders and batch cancels;
+- do not repeatedly cancel an order after a confirmed result;
+- reserve capacity for emergency cancels and reconciliation;
+- record REST weight, action count, WebSocket messages, in-flight posts, and
+  address budget from `userRateLimit`.
+
+## 14. Required changes to `rust_live`
+
+The present boundaries are a good start, but a real connector requires these
+explicit extensions:
+
+1. Extend `InstrumentSpec` with margin mode/`only_isolated`, margin table ID,
+   delisting status, and a metadata revision/fingerprint.
+2. Replace or generalize `DryRunAccountState` into an account state usable by
+   both execution backends, while preserving all current dry-run fields.
+3. Expand `ExecutionEvent` with at least:
+   `OrderResting`, `OrderRejected`, `CancelAcknowledged`, `OrderUnknown`,
+   `Fill`, `Funding`, `AccountSnapshot`, `Connected`, `Disconnected`, and
+   `Invalidated`.
+4. Add a bounded private/execution event ring so authenticated WebSocket events
+   arrive independently of public market events. The live backend should not
+   wait for the next BBO to notice a fill.
+5. Add `ExecutionHealth` and a reconciliation state. The hot path can quote only
+   when public market data, calibration, private stream, account snapshot, and
+   order reconciliation are all fresh.
+6. Add live-only signer, nonce, action encoder, WebSocket post correlator,
+   subscription manager, rate limiter, and order map modules.
+7. Keep signing/HTTP/JSON allocation off the hot thread. Desired quotes remain
+   integer, venue-neutral `OrderIntent`s.
+8. Keep `LiveExecutionUnavailable` as the default until a build feature and
+   explicit runtime gate select the tested backend.
+
+Suggested module layout:
+
+```text
+src/execution/hyperliquid/
+  mod.rs
+  backend.rs          # ExecutionBackend + AccountStateProvider
+  signer.rs           # API-wallet signer abstraction
+  nonce.rs            # atomic + persisted monotonic nonce
+  actions.rs          # typed wire structs and rounding-free conversion
+  ws_post.rs          # request IDs, inflight map, heartbeat, reconnect
+  private_stream.rs   # order/fill/funding/account subscriptions
+  order_state.rs      # CLOID/OID lifecycle and deduplication
+  reconcile.rs        # /info snapshots and unknown-outcome recovery
+  rate_limit.rs
+  errors.rs
+```
+
+## 15. Audit of existing projects under `C:\Users\david\Desktop\freqtrade`
+
+The audit searched Rust, Python, JavaScript, and TypeScript sources while
+excluding build/dependency directories. Read-only collectors, strategies that
+delegate to CCXT/Freqtrade, SDK documentation copies, and duplicate project
+copies were separated from actual connector implementations.
+
+### 15.1 Rust implementations
+
+| Local implementation | What is useful | Why it is not a drop-in live maker connector |
+| --- | --- | --- |
+| `XEMM_CROSS_EXCHANGE_MARKET_MAKING_PACIFICA_HYPERLIQUID\src\connector\hyperliquid\` (line-identical duplicate under `XEMM\XEMM_CROSS_...`) | EIP-712 domain/digest, monotonic atomic nonce, metadata cache, public L2 WS, REST IOC submission with CLOID, order-status/fill/account parsing, timeout-aware unknown outcome comments | Only builds IOC market orders; no maker ALO lifecycle, cancel/modify/dead-man switch, or private WS. `construct_connection_id` appends a vault marker but **not the 20 vault address bytes** and has no expiry encoding. Its tests cover only `vault=None`. Uses `f64`, stores key as `String`, and uses the large deprecated-style `ethers` stack. Do not copy its signer. |
+| `OLD\XEMM_dry_run_evaluator\src\livebot\exec\{hyperliquid,crypto,sign,creds}.rs` plus `src\connectors\hyperliquid.rs` | Best local low-level reference: typed MessagePack wire structs, correct vault marker + address bytes, correct expiry separator, main/test phantom agent, secp256k1 signatures, monotonic nonce, golden vectors, ALO/IOC construction, OID cancel, leverage action, open orders/account reads, robust public `bbo`/book/trade WS heartbeat and reconnect | Retired project, not a maintained Git repository. Assumes a subaccount/vault on every live path, has no master-account/no-vault mode, cancel-by-CLOID, modify/batch, `scheduleCancel`, private/account WS, durable fill deduplication, or complete reconciliation. Key bytes are retained without a zeroizing secret type. Port fixtures/ideas only. |
+| Current `rust_live` | Generic instrument, public CASHCAT feed, fixed-point price/size, lock-free publications, execution/account traits, dry-run lifecycle and reports | Deliberately has no signer, private stream, action encoder, or order transport. This is the correct host architecture, not an existing live connector. |
+
+Conclusion: the older Rust signer contains valuable byte-level work, but no local
+Rust implementation is complete enough to enable real money safely.
+
+### 15.2 JavaScript implementations
+
+| Local implementation | Reuse assessment |
+| --- | --- |
+| `DELTA_NEUTRAL\DELTA_NEUTRAL_HYPERLIQUID_PERP_SPOT\hyperliquid.js` and `tests\unit\hyperliquid-conformance.test.js` | Valuable independent fixtures: correct vault bytes and expiry separator, strict CLOID validation, monotonic nonce, application ping, WS post correlation, timeouts classified as unknown outcomes, REST rate limiting, stale-book refusal. It mainly implements aggressive market orders and lacks maker cancel/order/private-stream reconciliation. Use its conformance tests as behavioral references. |
+| `XEMM\standalone-utils\connectors\hyperliquid.js` and older copies | Public WS and WS action-post examples, but the signer omits vault address bytes and the expiry separator. Do not reuse signing code. |
+
+### 15.3 Python implementations
+
+| Local implementation | Reuse assessment |
+| --- | --- |
+| `XEMM\hyperliquid-python-sdk-master` | A local official-SDK copy and the best language-independent signing/API oracle, but it is version 0.19.0. The current published line observed during this audit is 0.24.0, so refresh/pin it before generating fixtures. Do not import Python at Rust runtime. |
+| Current `scripts\hyperliquid_alo_executor.py` and `hyperliquid_risk_executor.py` | Good ALO/IOC intent, outward rounding, CLOID, response classification, cancel-after-probe, and explicit real-order guard references. They are guarded command tools using the official SDK, not persistent account WebSocket connectors. Also avoid their optional command-line private-key input in production. |
+| `passivbot_real_run\src\exchanges\hyperliquid.py` and related Passivbot copies | Operational lifecycle evidence through CCXT Pro: `watch_orders`, REST open-order/position recovery, ALO parameters, vault handling, error retries, and minimum-notional adaptation. Useful for behavior, but CCXT hides signing/wire details and its state model should not be transplanted into the Rust engine. |
+| `DELTA_NEUTRAL\CROSS_EXCHANGE_DELTA_NEUTRAL_HL_PAC\hyperliquid_connector.py` | Small official-Python-SDK example for market IOC, leverage, position, balance, and funding. Not a maker or private-WS connector. |
+| Freqtrade copy/volume/vault diagnostics and data collectors | Mostly public/read-only, CCXT/Freqtrade delegated, or strategy-specific. They do not add a lower-level authenticated connector. |
+
+### 15.4 Recommended reuse order
+
+1. Current official documentation and current official SDK sources.
+2. Official Python SDK 0.24.x as the independent signing/response oracle.
+3. `hl_sdk` pinned and audited for typed actions/signing only.
+4. Golden vectors and correct vault/expiry encoding from the retired Rust stack.
+5. Unknown-outcome, heartbeat, and conformance cases from the newer JavaScript
+   connector.
+6. CLOID/ALO/risk response semantics from this project's Python tools.
+7. Passivbot only as an operational comparison.
+
+## 16. Test and release gates
+
+### 16.1 Offline deterministic tests
+
+Generate fixtures with a known throwaway key using the current official Python
+SDK. Rust must match exactly for both networks and for:
+
+- order action with no vault/no expiry;
+- order action with subaccount/vault;
+- order action with vault and expiry;
+- ALO bid/ask, IOC reduce-only, cancel OID, cancel CLOID, batch order/cancel,
+  leverage, and schedule-cancel actions;
+- exact MessagePack bytes, action hash, EIP-712 digest, recovered signer, and
+  `{r,s,v}`;
+- CASHCAT integer size and outward price formatting;
+- whole-batch and per-element response errors;
+- all order-status variants and duplicated/reordered private events.
+
+Use at least two independent implementations for cryptographic parity: current
+official Python and pinned Rust SDK/manual implementation. A local old fixture is
+supporting evidence, not ground truth.
+
+### 16.2 Mock transport and fault injection
+
+- action response before/after order update;
+- fill before/after resting acknowledgement;
+- partial fill during cancel;
+- duplicate fill/order/funding snapshots;
+- socket loss before write, during write, and after write;
+- action timeout followed by CLOID reconciliation;
+- REST response loss and malformed JSON;
+- clock rollback and multiple actions in one millisecond;
+- bounded-ring saturation;
+- reconnect/resubscribe with snapshot overlap;
+- rate-limit exhaustion with emergency cancel reserve;
+- dead-man refresh failure;
+- stale metadata or unexpected CASHCAT margin-mode change;
+- process restart with unresolved actions and working venue orders.
+
+### 16.3 Read-only network validation
+
+On testnet, then mainnet public/read-only:
+
+- discover metadata and compare fingerprints;
+- verify API wallet role/approval and actual account address separation;
+- stream all required subscriptions for hours with reconnect injection;
+- reconcile WebSocket snapshots against `/info` positions/open orders/fills;
+- query actual fees, funding, and rate budget;
+- submit no action.
+
+### 16.4 Testnet trading validation
+
+Use a dedicated testnet API wallet/account. CASHCAT need not exist on testnet;
+connector mechanics can be validated on another test instrument without claiming
+CASHCAT strategy validation.
+
+1. Place one far passive ALO above minimum notional; prove it rests and is maker.
+2. Cancel by CLOID; prove empty open orders and terminal status.
+3. Submit a deliberately crossing ALO; prove `BadAloPx`/cancel and no fill.
+4. Exercise partial fills, cancel races, unknown outcomes, and restart recovery.
+5. Exercise isolated leverage and reduce-only IOC flattening.
+6. Exercise and clear the dead-man switch without exceeding its daily trigger
+   allowance.
+7. Run a long canary with forced socket/process/network failures.
+
+### 16.5 Mainnet canary prerequisites
+
+Mainnet remains unavailable until all prior gates pass and a human explicitly
+authorizes a bounded canary. The canary must use a dedicated low-balance
+subaccount/API wallet, CASHCAT only, minimum possible valid notional, one passive
+order, immediate cancel/reconciliation, a hard daily loss cap, and the dead-man
+switch. No automated promotion follows a successful canary.
+
+## 17. Implementation checklist
+
+- [ ] Recheck all official links and API announcement channel immediately before coding.
+- [ ] Decide and pin the Rust signing SDK after toolchain/dependency audit.
+- [ ] Refresh the Python oracle to a pinned current release.
+- [ ] Extend `InstrumentSpec` for isolated/margin metadata.
+- [ ] Implement zeroizing API-wallet signer and persisted atomic nonce.
+- [ ] Add exact signing golden fixtures for vault and expiry.
+- [ ] Add live-only action types for order/cancel/cancel-by-CLOID/leverage/dead-man.
+- [ ] Add WebSocket post request correlation and unknown-outcome handling.
+- [ ] Add one-account private subscriptions and durable deduplication.
+- [ ] Add startup/reconnect/restart reconciliation.
+- [ ] Add actual fee/funding/account-state ingestion.
+- [ ] Add rate-limit accounting and emergency cancel reserve.
+- [ ] Keep `live` failing before credentials until every testnet gate passes.
+- [ ] Perform a separately authorized, bounded mainnet canary last.
+
+## 18. Primary references
+
+- [Hyperliquid API index](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api)
+- [Exchange endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint)
+- [Info endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint)
+- [Perpetual info endpoints](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals)
+- [Asset IDs](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/asset-ids)
+- [Tick and lot size](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size)
+- [Nonces and API wallets](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/nonces-and-api-wallets)
+- [Error responses](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses)
+- [Rate and user limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits)
+- [WebSocket subscriptions](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions)
+- [WebSocket post requests](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/post-requests)
+- [WebSocket heartbeat](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/timeouts-and-heartbeats)
+- [Fees](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees)
+- [Funding](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/funding)
+- [Contract specifications](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/contract-specifications)
+- [Official Python SDK](https://github.com/hyperliquid-dex/hyperliquid-python-sdk)
+- [Official Python signing source](https://github.com/hyperliquid-dex/hyperliquid-python-sdk/blob/master/hyperliquid/utils/signing.py)
+- [Official Python exchange source](https://github.com/hyperliquid-dex/hyperliquid-python-sdk/blob/master/hyperliquid/exchange.py)
+- [Official Python WebSocket source](https://github.com/hyperliquid-dex/hyperliquid-python-sdk/blob/master/hyperliquid/websocket_manager.py)
+- [Hyperliquid Rust SDK](https://github.com/hyperliquid-dex/hyperliquid-rust-sdk)
+- [`hl_sdk` API documentation](https://docs.rs/hl_sdk/latest/hl_sdk/)
+- [Community hypersdk](https://github.com/infinitefield/hypersdk)
