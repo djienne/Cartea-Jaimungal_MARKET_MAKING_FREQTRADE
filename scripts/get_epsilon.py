@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Event-level epsilon (adverse-selection impact) estimation (schema v3).
+"""Event-level epsilon (adverse-selection impact) estimation (schema v4).
 
 Methodology:
 - Impacts are measured per MARKET ORDER (prints sharing side + exchange
@@ -21,15 +21,13 @@ Methodology:
   understates the mean, i.e. understates adverse selection.
 - The C-J model defines epsilon >= 0; slightly negative means
   (mean-reversion noise) floor at 0.
-- Primary epsilon± values are EMA-smoothed across estimator cycles
-  (time-aware, tau via --ema-tau / PARAM_EMA_TAU_SECONDS, default 300 s);
-  unsmoothed values live in epsilon±_raw.
+- Primary epsilon± values are the direct validated arrival-jump estimates from
+  the selected market-data window; no temporal smoothing is applied.
 """
 
 import argparse
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -41,9 +39,7 @@ from estimator_common import (
     aggregate_market_orders,
     attach_pre_mid,
     build_emit_window_block,
-    ema_update,
     load_market_window,
-    resolve_ema_tau,
     write_emit_payload,
 )
 from param_utils import (
@@ -368,11 +364,11 @@ def build_epsilon_entry(eps_plus: float, eps_minus: float, metadata: dict | None
 
 def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filename: str = "epsilon.json",
                          metadata: dict | None = None, raw_values: dict | None = None):
-    """Save epsilon estimates to JSON. Primary keys are EMA-smoothed; *_raw
-    holds this window's unsmoothed means -- 3-sigma-clipped and floored at zero,
+    """Save direct epsilon estimates to JSON. *_raw aliases hold the same
+    per-window means -- 3-sigma-clipped and floored at zero,
     NOT trimmed. The trimmed mean is computed alongside but deliberately not
     shipped: trimming a right-skewed jump distribution understates adverse
-    selection. *_raw defaults to the primaries when not supplied, so every v3
+    selection. *_raw defaults to the primaries when not supplied, so every v4
     snapshot carries the full key set."""
     entry = build_epsilon_entry(eps_plus, eps_minus, metadata=metadata, raw_values=raw_values)
     data = load_json_object(filename)
@@ -396,7 +392,7 @@ def load_mid_price_from_json(crypto: str, filename: str = 'mid_price.json') -> f
 
 
 def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int | None = None,
-                           ema_tau: float | None = None, epsilon_file: str = "epsilon.json",
+                           epsilon_file: str = "epsilon.json",
                            data_dir=None, window=None,
                            post_horizon_ms_plus: int | None = None,
                            post_horizon_ms_minus: int | None = None,
@@ -540,28 +536,13 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
     else:
         status = "ok"
 
-    generated_at_dt = datetime.now(timezone.utc)
-    generated_at = generated_at_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
-    tau = resolve_ema_tau(ema_tau)
+    generated_at = utc_now_iso()
 
     raw_values = {
         "epsilon+_raw": finite_or_none(eps_plus_raw),
         "epsilon-_raw": finite_or_none(eps_minus_raw),
     }
-    if status == "ok" and not emitting:
-        prev_entry = load_json_object(epsilon_file).get(crypto)
-        prev_entry = prev_entry if isinstance(prev_entry, dict) else None
-        eps_plus_out, meta_plus = ema_update(eps_plus_raw, prev_entry, "epsilon+", tau, now=generated_at_dt)
-        eps_minus_out, meta_minus = ema_update(eps_minus_raw, prev_entry, "epsilon-", tau, now=generated_at_dt)
-        ema_seeded = bool(meta_plus["ema_seeded"]) and bool(meta_minus["ema_seeded"])
-    else:
-        # Emit mode never blends against the live snapshot: a sweep result has to
-        # be a pure function of its own slice and settings, and reading the live
-        # file would make the same slice give different answers depending on what
-        # the running container last wrote. Bad windows also ship raw (consumers
-        # reject on status) so the next ok cycle re-seeds.
-        eps_plus_out, eps_minus_out = eps_plus_raw, eps_minus_raw
-        ema_seeded = True
+    eps_plus_out, eps_minus_out = eps_plus_raw, eps_minus_raw
 
     metadata = {
         "status": status,
@@ -587,8 +568,6 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
         "toxicity_minus": finite_or_none(toxicity_minus),
         "mid_source": window.mid_source,
         "ts_source": window.ts_source,
-        "ema_tau_seconds": float(tau),
-        "ema_seeded": ema_seeded,
         **diagnostics,
     }
 
@@ -605,8 +584,6 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
             "calibration": {
                 "epsilon_post_horizon_ms_plus": int(horizon_plus_ms),
                 "epsilon_post_horizon_ms_minus": int(horizon_minus_ms),
-                "ema_tau_seconds": float(tau),
-                "ema_applied": False,
             },
             "epsilon": entry,
         }
@@ -655,9 +632,6 @@ if __name__ == "__main__":
                              f'i.e. fills on our resting bid). Overrides --post-horizon-ms. '
                              f'(default: {POST_HORIZON_ENV_VAR_MINUS} env, then {POST_HORIZON_ENV_VAR}, '
                              f'then {DEFAULT_POST_HORIZON_MS})')
-    parser.add_argument('--ema-tau', type=float, default=None,
-                        help='EMA time constant in seconds for smoothing primary values '
-                             '(default: PARAM_EMA_TAU_SECONDS env or 300; 0 disables smoothing)')
     parser.add_argument('--window-start', type=str, default=None,
                         help='ISO-8601 (or epoch) start of the window; selects a historical slice '
                              'instead of the trailing --minutes window')
@@ -706,7 +680,6 @@ if __name__ == "__main__":
                 post_horizon_ms=args.post_horizon_ms,
                 post_horizon_ms_plus=args.post_horizon_ms_plus,
                 post_horizon_ms_minus=args.post_horizon_ms_minus,
-                ema_tau=args.ema_tau,
                 window_start=args.window_start,
                 window_end=args.window_end,
                 emit_params_json=emit_path,

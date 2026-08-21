@@ -416,7 +416,7 @@ widening quotes defensively never inflates the fee compensation.
 - `hjb_phi_kappa_t` / `hjb_phi_kappa_t_max` (shipped 200 / 300; strategy defaults 10 / 50): the dimensionless running inventory penalty `φκT` and its ceiling. `φ` is not κ-invariant (eq. 10.28), so the raw value is meaningless across symbols and the solver derives `φ` from live κ at every refresh. Until 2026-08-18 the ceiling was never passed through from config, so any `hjb_phi_kappa_t` above `QuoteConfig`'s default of 50 was silently clamped back to 50. At 200 the flat-inventory half-spread is ~39 bps rather than 15-18; the 23.1 h empirical profit curve put the optimum at 45 bps on the bid and 60 on the ask, so the previous setting was quoting inside the region where measured edge is negative.
 - `gamma_inventory_risk` (default 0.05): volatility-aware inventory penalty. The HJB running penalty becomes `phi_effective = hjb_phi + gamma * sigma2_per_sec * inventory_unit_base` using the realized mid variance published by the estimator; missing sigma2 falls back to the static `hjb_phi`.
 - `min_kappa_fit_points` / `min_kappa_r2` / `min_epsilon_events` (defaults 6 / 0.30 / 50): validation floors on the estimator fit diagnostics; snapshots below them are rejected (fail-closed).
-- `PARAM_EMA_TAU_SECONDS` (environment, estimator-side, default 300): time constant of the EMA smoothing applied to the primary κ/ε/λ values across estimator cycles (0 disables; raw per-window values are kept in the `*_raw` keys).
+- Parameter snapshots publish the direct validated estimates from each configured market-data window; no temporal smoothing is applied.
 - `REDIS_URL` (environment, set in `docker-compose.yml`): enables the atomic Redis snapshot transport; without it the strategy uses the JSON files guarded by `param_update.lock`.
 
 ## Usage Examples
@@ -480,9 +480,9 @@ The main strategy implementing:
 ### Parameter Calculation Scripts
 
 - **get_kappa.py**: κ± from a survival-function fit of market-order depths measured from the mid (BBO stream, exchange timestamps, prints aggregated per MO); λ± is the raw per-side MO arrival rate. Also publishes `sigma2_per_sec` (realized mid variance) and `depth_p95` calibration diagnostics.
-- **get_epsilon.py**: Event-level ε± per market order from the BBO mid stream; primary horizon 5 s (permanent impact), with 200 ms / 1 s diagnostics showing the decay profile.
+- **get_epsilon.py**: Event-level ε± per market order from the BBO mid stream; primary horizon 200 ms (the arrival jump in eq. 10.22), with 1 s / 5 s diagnostics showing the decay profile.
 - **get_lambda.py**: Trades/sec sanity check from raw trade counts (per-symbol); writes `lambda_trades.json`
-- All primary κ/ε/λ values are EMA-smoothed across estimator cycles (`PARAM_EMA_TAU_SECONDS`, default 300 s); unsmoothed values live in the `*_raw` keys. Snapshot schema version: 3.
+- All primary κ/ε/λ values are direct validated rolling-window estimates without temporal smoothing. Snapshot schema version: 4.
 - **compute_spreads.py**: Refreshes κ/ε/λ then prints bid/ask prices and spreads (bps) across inventory levels
 - **periodic_test_runner.py**: Orchestrates continuous parameter updates
 
@@ -506,6 +506,12 @@ ONLY USE IN DRY-RUN
 
 This project implements academic market making models and is intended for research and educational use.
 
+## Standalone Rust Cartea–Jaimungal runtime
 
+The Freqtrade/Python implementation in this repository remains the reference
+strategy and numerical oracle. A separate Rust dry-run and replay engine lives in
+[`rust_live/`](rust_live/README.md). It is validated for CASHCAT, calibrates the
+same asymmetric Cartea–Jaimungal model directly from the existing Parquet data,
+and deliberately contains no real-order submission path yet.
 
 

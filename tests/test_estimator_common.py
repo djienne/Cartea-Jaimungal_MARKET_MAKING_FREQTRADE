@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -17,16 +16,11 @@ from estimator_common import (  # noqa: E402
     attach_pre_mid,
     build_bbo_mid,
     choose_time_source,
-    ema_update,
     fit_kappa_survival,
     load_market_window,
     mo_depths,
     realized_sigma2_per_sec,
-    resolve_ema_tau,
 )
-from param_utils import PARAM_SCHEMA_VERSION  # noqa: E402
-
-
 def test_aggregate_market_orders_collapses_same_timestamp_prints():
     trades = pd.DataFrame(
         {
@@ -139,52 +133,6 @@ def test_realized_sigma2_drops_increments_across_gaps():
 def test_realized_sigma2_requires_min_samples():
     mids = pd.DataFrame({"ts_ms": np.arange(10) * 1000.0, "mid": np.full(10, 4000.0)})
     assert realized_sigma2_per_sec(mids) is None
-
-
-def test_ema_update_blends_with_time_aware_alpha():
-    now = datetime(2026, 6, 11, 12, 0, 30, tzinfo=timezone.utc)
-    prev = {
-        "status": "ok",
-        "schema_version": PARAM_SCHEMA_VERSION,
-        "generated_at": "2026-06-11T12:00:00Z",
-        "kappa+": 4.0,
-    }
-    smoothed, meta = ema_update(6.0, prev, "kappa+", tau_seconds=300.0, now=now)
-    alpha = 1.0 - np.exp(-30.0 / 300.0)
-    assert meta["ema_seeded"] is False
-    assert abs(meta["ema_alpha"] - alpha) < 1e-12
-    assert abs(smoothed - (alpha * 6.0 + (1 - alpha) * 4.0)) < 1e-12
-
-
-def test_ema_update_seeds_when_no_previous_or_bad_status():
-    smoothed, meta = ema_update(6.0, None, "kappa+", tau_seconds=300.0)
-    assert smoothed == 6.0 and meta["ema_seeded"] is True
-
-    prev_bad = {"status": "insufficient_data", "schema_version": PARAM_SCHEMA_VERSION, "generated_at": "2026-06-11T12:00:00Z", "kappa+": 4.0}
-    smoothed, meta = ema_update(6.0, prev_bad, "kappa+", tau_seconds=300.0)
-    assert smoothed == 6.0 and meta["ema_seeded"] is True
-
-
-def test_ema_update_never_blends_across_schema_versions():
-    prev_v2 = {"status": "ok", "schema_version": 2, "generated_at": "2026-06-11T12:00:00Z", "kappa+": 4.0}
-    smoothed, meta = ema_update(6.0, prev_v2, "kappa+", tau_seconds=300.0)
-    assert smoothed == 6.0
-    assert meta["ema_seeded"] is True
-
-
-def test_ema_update_disabled_with_zero_tau():
-    prev = {"status": "ok", "schema_version": PARAM_SCHEMA_VERSION, "generated_at": "2026-06-11T12:00:00Z", "kappa+": 4.0}
-    smoothed, meta = ema_update(6.0, prev, "kappa+", tau_seconds=0.0)
-    assert smoothed == 6.0
-    assert meta["ema_seeded"] is True
-
-
-def test_resolve_ema_tau_priority(monkeypatch):
-    monkeypatch.setenv("PARAM_EMA_TAU_SECONDS", "120")
-    assert resolve_ema_tau(60.0) == 60.0
-    assert resolve_ema_tau(None) == 120.0
-    monkeypatch.delenv("PARAM_EMA_TAU_SECONDS")
-    assert resolve_ema_tau(None) == 300.0
 
 
 def test_choose_time_source_requires_full_coverage():
@@ -328,7 +276,7 @@ def _write_synthetic_market(
     _write_parquet(data_dir / symbol / "trades" / "t.parquet", pd.DataFrame(trade_rows).sort_values("timestamp"))
 
 
-def test_kappa_pipeline_recovers_params_and_ema_smooths_across_runs(tmp_path):
+def test_kappa_pipeline_publishes_direct_window_estimates(tmp_path):
     rng = np.random.default_rng(5)
     kappa_file = tmp_path / "kappa.json"
     lambda_file = tmp_path / "lambda.json"
@@ -346,15 +294,14 @@ def test_kappa_pipeline_recovers_params_and_ema_smooths_across_runs(tmp_path):
     first = json.loads(kappa_file.read_text(encoding="utf-8"))["SYN"]
     assert first["status"] == "ok"
     assert first["lambda_source"] == "mo_survival_fit"
-    assert first["ema_seeded"] is True
-    assert first["kappa+"] == first["kappa+_raw"]  # first run seeds
+    assert first["kappa+"] == first["kappa+_raw"]
     assert 7.0 < first["kappa+"] < 13.0
     assert 0.4 < first["lambda+"] < 0.65  # ~300 MOs / ~582s
     assert first["depth_p95_plus"] > 0
     assert first["sigma2_per_sec"] is not None
 
-    # Second run with kappa ~= 20 raw: primary must stay near the previous
-    # smoothed value (dt of a few seconds against tau=300 -> tiny alpha).
+    # Second run with kappa ~= 20: the primary must move directly to this
+    # window's estimate rather than blending with the first run.
     ds2 = tmp_path / "run2"
     _write_synthetic_market(
         ds2,
@@ -363,15 +310,9 @@ def test_kappa_pipeline_recovers_params_and_ema_smooths_across_runs(tmp_path):
     )
     run_kappa_for_crypto("SYN", minutes=10, kappa_file=str(kappa_file), lambda_file=str(lambda_file), data_dir=ds2)
     second = json.loads(kappa_file.read_text(encoding="utf-8"))["SYN"]
-    assert second["ema_seeded"] is False
     assert second["kappa+_raw"] > 15.0
-    assert abs(second["kappa+"] - first["kappa+"]) < 0.5
-    assert second["kappa+"] != second["kappa+_raw"]
-
-    # tau=0 disables smoothing entirely.
-    run_kappa_for_crypto("SYN", minutes=10, ema_tau=0.0, kappa_file=str(kappa_file), lambda_file=str(lambda_file), data_dir=ds2)
-    third = json.loads(kappa_file.read_text(encoding="utf-8"))["SYN"]
-    assert third["kappa+"] == third["kappa+_raw"]
+    assert second["kappa+"] == second["kappa+_raw"]
+    assert abs(second["kappa+"] - first["kappa+"]) > 2.0
 
 
 def test_epsilon_pipeline_distinguishes_permanent_from_transient_impact(tmp_path):

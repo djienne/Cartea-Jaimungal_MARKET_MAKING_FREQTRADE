@@ -46,7 +46,7 @@ def test_atomic_write_json_round_trip(tmp_path):
     assert not path.with_suffix(".json.tmp").exists()
 
 
-def test_kappa_lambda_writer_uses_schema_v3_and_mo_survival_fit(tmp_path):
+def test_kappa_lambda_writer_uses_schema_v4_and_mo_survival_fit(tmp_path):
     kappa_path = tmp_path / "kappa.json"
     lambda_path = tmp_path / "lambda.json"
 

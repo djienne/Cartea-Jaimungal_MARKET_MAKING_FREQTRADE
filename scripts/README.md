@@ -17,14 +17,14 @@ A comprehensive Python suite for collecting real-time tick data from Hyperliquid
 - **Asynchronous data writing** to minimize performance impact
 - **Graceful shutdown** with data preservation
 
-### Parameter Estimation (aligned with Cartea-Jaimungal model, snapshot schema v3)
+### Parameter Estimation (aligned with Cartea-Jaimungal model, snapshot schema v4)
 - **Market-order aggregation**: trade prints sharing side + exchange timestamp are ONE market order; depths and impacts are measured per MO, not per print
 - **Mid-relative coordinates**: depths are measured from the prevailing mid (last BBO update strictly before the MO, exchange-timestamp aligned via merge_asof) — the same coordinate the strategy quotes in; negative depths are truncated to 0, not dropped
 - **κ± (Kappa)**: survival-function fit — weighted log-linear regression of P(depth ≥ δ); saved to `kappa.json` with `depth_p95`/`depth_max_fitted` calibration diagnostics
 - **λ± (Lambda)**: raw per-side MO arrival rate — the survival-consistent fill rate the HJB needs (`lambda_source: mo_survival_fit`); the old binned-density intercept was bin-width dependent and ~3× too small (kept as `lambda0_intercept_±` diagnostic). Since 2026-08-19 the denominator is *observed* seconds, not wall clock: time when the collector was down (no print in the union of the price and trade streams) is subtracted, because dividing by wall clock understated λ by exactly the missing fraction. Both halves are published as `lambda_covered_seconds` / `lambda_outage_seconds_excluded` so the denominator is auditable. Measured effect on real windows: +1.2% to +6.0%; inside the 1 h price gap the replay now tolerates it would have been 50%
 - **ε± (Epsilon)**: per-MO mid impact at a 5 s primary horizon (permanent impact), with 200 ms and 1 s trimmed means recorded as diagnostics (`epsilon_200ms_±`, `epsilon_1s_±`); floor at 0 (C-J defines ε ≥ 0); saved to `epsilon.json`
 - **σ² (`sigma2_per_sec`)**: realized mid variance (USDC²/s from 1 s increments, gap-tolerant), feeding the strategy's volatility-aware inventory penalty
-- **EMA smoothing**: primary κ/ε/λ values are time-aware EMA-smoothed across cycles (`--ema-tau` / `PARAM_EMA_TAU_SECONDS`, default 300 s; 0 disables); per-window raw values live in the `*_raw` keys; the EMA never blends across schema versions or non-ok snapshots
+- **Direct model parameters**: primary κ/ε/λ values are the validated estimates from the selected market-data window; no temporal smoothing is applied
 - **λ_trades± (Lambda trades)**: unconditional trade-print rates from raw counts; saved to `lambda_trades.json` (monitoring only)
 - **Status gating**: snapshots ship `status: ok` only when fit points ≥ 6, R² ≥ 0.30 and ε events ≥ 50 per side (mirrored by the strategy's validation floors)
 - **Market toxicity assessment** based on ε×κ product
@@ -56,7 +56,7 @@ python hyperliquid_data_collector.py
 python get_kappa.py --crypto CASHCAT --minutes 30
 
 # Event-level ε per MO at the 5s permanent-impact horizon, saves epsilon.json
-python get_epsilon.py --crypto CASHCAT --minutes 30 [--post-horizon-ms 5000] [--ema-tau 300]
+python get_epsilon.py --crypto CASHCAT --minutes 30 [--post-horizon-ms 5000]
 
 # Optional raw trades/sec sanity check (writes lambda_trades.json)
 python get_lambda.py --crypto CASHCAT --minutes 30

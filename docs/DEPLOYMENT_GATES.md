@@ -173,7 +173,7 @@ Optional Docker runtime gates:
   line appears.
 - `dry_run_enabled_smoke`: starts the public collector, writes temporary
   OK parameter snapshots under `user_data/logs` at the current
-  `PARAM_SCHEMA_VERSION` (3), starts Freqtrade with
+  `PARAM_SCHEMA_VERSION` (4), starts Freqtrade with
   `dry_run=true` and `trading_enabled=true` through a temporary config for a
   10-minute enabled window, and
   requires fresh collector data, fresh params, fresh HJB, an accepted quote
@@ -537,8 +537,8 @@ half-spread (including fees) lands inside the strategy's clamp band:
 ## Current Safety Posture
 
 - The strategy default is `trading_enabled = False`.
-- Parameter snapshots must be schema v3 (`lambda_source = "mo_survival_fit"`,
-  EMA-smoothed primaries with `*_raw` companions); v2 snapshots are rejected
+- Parameter snapshots must be schema v4 (`lambda_source = "mo_survival_fit"`,
+  direct per-window primaries with no temporal smoothing); older snapshots are rejected
   fail-closed by both the estimator runner and the strategy.
 - A real estimator run must atomically replace the snapshots with
   `status = "ok"`, current timestamps, and sufficient diagnostics before any

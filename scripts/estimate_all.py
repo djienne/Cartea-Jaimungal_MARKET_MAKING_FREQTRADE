@@ -83,7 +83,6 @@ def run_all(
     crypto: str,
     *,
     minutes: int = 30,
-    ema_tau: float | None = None,
     post_horizon_ms: int | None = None,
     data_dir: str | None = None,
     post_horizon_ms_plus: int | None = None,
@@ -123,7 +122,6 @@ def run_all(
     run_kappa_for_crypto(
         crypto,
         minutes=minutes,
-        ema_tau=ema_tau,
         window=window,
         support_quantile_plus=support_quantile_plus,
         support_quantile_minus=support_quantile_minus,
@@ -148,7 +146,6 @@ def run_all(
         post_horizon_ms=post_horizon_ms,
         post_horizon_ms_plus=post_horizon_ms_plus,
         post_horizon_ms_minus=post_horizon_ms_minus,
-        ema_tau=ema_tau,
         window=window,
         emit_sink=epsilon_sink,
         kappa_override=kappa_override,
@@ -194,7 +191,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--crypto", "-c", default=os.getenv("CRYPTO_NAME", "CASHCAT"))
     parser.add_argument("--minutes", "-m", type=int, default=30)
-    parser.add_argument("--ema-tau", type=float, default=None)
     parser.add_argument("--post-horizon-ms", type=int, default=None,
                         help="Shorthand: epsilon post-trade horizon in ms for BOTH sides")
     parser.add_argument("--post-horizon-ms-plus", type=int, default=None,
@@ -228,7 +224,6 @@ def main() -> int:
     run_all(
         str(args.crypto).strip().upper(),
         minutes=args.minutes,
-        ema_tau=args.ema_tau,
         post_horizon_ms=args.post_horizon_ms,
         post_horizon_ms_plus=args.post_horizon_ms_plus,
         post_horizon_ms_minus=args.post_horizon_ms_minus,

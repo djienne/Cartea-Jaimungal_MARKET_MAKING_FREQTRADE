@@ -27,7 +27,7 @@ from hjb import compute_h_asymmetric  # noqa: E402
 from replay_market_maker import assemble_half_spread as replay_assemble  # noqa: E402
 
 # Installs the freqtrade stubs as an import side effect and provides the bot
-# factory with a schema-v3 parameter snapshot.
+# factory with a schema-v4 direct-parameter snapshot.
 from test_strategy_guards import make_bot  # noqa: E402
 
 SPREAD_MULTIPLIER = 3.0

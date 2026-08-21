@@ -51,7 +51,7 @@ from hjb import compute_h_asymmetric, compute_h_symmetric
 from hyperliquid_alo_executor import round_amount_down, round_price_for_side
 
 # Parameter snapshot schema this module consumes (scripts/param_utils.py).
-SUPPORTED_PARAM_SCHEMA_VERSION = 3
+SUPPORTED_PARAM_SCHEMA_VERSION = 4
 
 # Keys every snapshot must carry before a quote may be built from it.
 REQUIRED_PARAM_KEYS = ("kappa+", "kappa-", "lambda+", "lambda-", "epsilon+", "epsilon-")

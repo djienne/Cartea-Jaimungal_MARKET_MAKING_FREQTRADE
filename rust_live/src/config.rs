@@ -1,0 +1,478 @@
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Network {
+    #[default]
+    Mainnet,
+    Testnet,
+}
+
+impl Network {
+    pub const fn ws_url(self) -> &'static str {
+        match self {
+            Self::Mainnet => "wss://api.hyperliquid.xyz/ws",
+            Self::Testnet => "wss://api.hyperliquid-testnet.xyz/ws",
+        }
+    }
+
+    pub const fn info_url(self) -> &'static str {
+        match self {
+            Self::Mainnet => "https://api.hyperliquid.xyz/info",
+            Self::Testnet => "https://api.hyperliquid-testnet.xyz/info",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppConfig {
+    pub instrument: InstrumentProfile,
+    pub runtime: RuntimeConfig,
+    pub storage: StorageConfig,
+    pub calibration: CalibrationConfig,
+    pub model: ModelConfig,
+    pub quoting: QuotingConfig,
+    pub risk: RiskConfig,
+    pub dry_run: DryRunConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InstrumentProfile {
+    pub profile: String,
+    pub symbol: String,
+    pub dex: String,
+    pub validated: bool,
+    pub expected_sz_decimals: u32,
+    pub max_significant_figures: u32,
+    pub minimum_notional: f64,
+    pub evidence_path: PathBuf,
+}
+
+impl Default for InstrumentProfile {
+    fn default() -> Self {
+        Self {
+            profile: "cashcat".to_owned(),
+            symbol: "CASHCAT".to_owned(),
+            dex: String::new(),
+            validated: true,
+            expected_sz_decimals: 0,
+            max_significant_figures: 5,
+            minimum_notional: 10.0,
+            evidence_path: PathBuf::from("cashcat.validation.json"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RuntimeConfig {
+    pub network: Network,
+    pub hot_path_cpu: Option<usize>,
+    pub market_stale_ms: u64,
+    pub ws_ping_interval_ms: u64,
+    pub ws_idle_timeout_ms: u64,
+    pub market_event_capacity: usize,
+    pub execution_event_capacity: usize,
+    pub stats_interval_ms: u64,
+    pub log_json: bool,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            network: Network::Mainnet,
+            hot_path_cpu: None,
+            market_stale_ms: 5_000,
+            ws_ping_interval_ms: 30_000,
+            ws_idle_timeout_ms: 45_000,
+            market_event_capacity: 65_536,
+            execution_event_capacity: 16_384,
+            stats_interval_ms: 5_000,
+            log_json: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageConfig {
+    pub data_dir: PathBuf,
+    pub state_path: PathBuf,
+    pub calibration_path: PathBuf,
+    pub report_dir: PathBuf,
+    pub writer_lock_path: PathBuf,
+    pub flush_interval_seconds: u64,
+    pub compact_after_minutes: u64,
+    pub retention_minutes: u64,
+    pub write_parquet: bool,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: PathBuf::from("../scripts/HL_data"),
+            state_path: PathBuf::from("run/cashcat-dry-state.json"),
+            calibration_path: PathBuf::from("run/cashcat-calibration.json"),
+            report_dir: PathBuf::from("reports"),
+            writer_lock_path: PathBuf::from("run/cashcat-collector.lock"),
+            flush_interval_seconds: 10,
+            compact_after_minutes: 15,
+            retention_minutes: 180,
+            write_parquet: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CalibrationConfig {
+    pub window_minutes: u64,
+    pub interval_seconds: u64,
+    pub epsilon_horizon_ms_plus: u64,
+    pub epsilon_horizon_ms_minus: u64,
+    pub support_quantile_lower_plus: f64,
+    pub support_quantile_lower_minus: f64,
+    pub support_quantile_upper_plus: f64,
+    pub support_quantile_upper_minus: f64,
+    pub outage_threshold_seconds: f64,
+    pub max_age_seconds: u64,
+    pub max_data_age_seconds: u64,
+    pub max_future_skew_seconds: u64,
+    pub min_kappa_fit_points: usize,
+    pub min_kappa_r2: f64,
+    pub min_epsilon_events: usize,
+    pub max_toxicity: f64,
+    pub shard_window_margin_seconds: u64,
+    pub max_shard_failure_rate: f64,
+}
+
+impl Default for CalibrationConfig {
+    fn default() -> Self {
+        Self {
+            window_minutes: 120,
+            interval_seconds: 30,
+            epsilon_horizon_ms_plus: 200,
+            epsilon_horizon_ms_minus: 200,
+            support_quantile_lower_plus: 0.0,
+            support_quantile_lower_minus: 0.0,
+            support_quantile_upper_plus: 0.99,
+            support_quantile_upper_minus: 0.99,
+            outage_threshold_seconds: 60.0,
+            max_age_seconds: 120,
+            max_data_age_seconds: 120,
+            max_future_skew_seconds: 10,
+            min_kappa_fit_points: 6,
+            min_kappa_r2: 0.30,
+            min_epsilon_events: 50,
+            max_toxicity: 1.5,
+            shard_window_margin_seconds: 120,
+            max_shard_failure_rate: 0.05,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelConfig {
+    pub q_max: i64,
+    pub horizon_seconds: f64,
+    pub phi_kappa_t: f64,
+    pub phi_kappa_t_max: f64,
+    pub alpha_kappa: f64,
+    pub raw_phi_fallback: f64,
+    pub raw_alpha_fallback: f64,
+    pub gamma_inventory_risk: f64,
+    pub max_dt_seconds: f64,
+    pub min_steps: usize,
+    pub max_steps: usize,
+    pub newton_max_iterations: usize,
+    pub newton_tolerance: f64,
+    pub newton_damping: f64,
+    pub episode_reset_on_flat: bool,
+    pub episode_min_elapsed_fraction: f64,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            q_max: 6,
+            horizon_seconds: 150.0,
+            phi_kappa_t: 200.0,
+            phi_kappa_t_max: 300.0,
+            alpha_kappa: 0.05,
+            raw_phi_fallback: 0.0001,
+            raw_alpha_fallback: 0.001,
+            gamma_inventory_risk: 0.05,
+            max_dt_seconds: 0.25,
+            min_steps: 200,
+            max_steps: 2_000,
+            newton_max_iterations: 50,
+            newton_tolerance: 1.0e-8,
+            newton_damping: 0.7,
+            episode_reset_on_flat: true,
+            episode_min_elapsed_fraction: 0.25,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct QuotingConfig {
+    pub available_capital_usdc: f64,
+    pub target_capital_utilisation: f64,
+    pub leverage: f64,
+    pub maker_fee_rate: f64,
+    pub spread_multiplier: f64,
+    pub extra_cushion_bps: f64,
+    pub min_half_spread_bps: f64,
+    pub max_half_spread_bps: f64,
+    pub replace_threshold_ticks: i64,
+    pub min_order_lifetime_ms: u64,
+    pub reduce_only_threshold_q: f64,
+}
+
+impl Default for QuotingConfig {
+    fn default() -> Self {
+        Self {
+            available_capital_usdc: 1_000.0,
+            target_capital_utilisation: 0.74,
+            leverage: 2.0,
+            maker_fee_rate: 0.00015,
+            spread_multiplier: 1.0,
+            extra_cushion_bps: 0.0,
+            min_half_spread_bps: 1.5,
+            max_half_spread_bps: 80.0,
+            replace_threshold_ticks: 1,
+            min_order_lifetime_ms: 75,
+            reduce_only_threshold_q: 5.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RiskConfig {
+    pub kill_switch: bool,
+    pub max_notional_usdc: f64,
+    pub max_margin_usdc: f64,
+    pub min_liquidation_buffer_usdc: f64,
+    pub maintenance_margin_rate: f64,
+    pub max_daily_loss_usdc: f64,
+    pub max_consecutive_losses: u32,
+    pub max_market_spread_bps: f64,
+}
+
+impl Default for RiskConfig {
+    fn default() -> Self {
+        Self {
+            kill_switch: false,
+            max_notional_usdc: 3_200.0,
+            max_margin_usdc: 1_600.0,
+            min_liquidation_buffer_usdc: 100.0,
+            maintenance_margin_rate: 0.05,
+            max_daily_loss_usdc: 200.0,
+            max_consecutive_losses: 25,
+            max_market_spread_bps: 100.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DryRunConfig {
+    pub starting_equity_usdc: f64,
+    pub decision_latency_ms: u64,
+    pub acknowledgement_latency_ms: u64,
+    pub cancel_latency_ms: u64,
+    pub queue_decay_per_second: f64,
+    pub funding_rate_per_hour: f64,
+    pub markout_horizons_ms: Vec<u64>,
+}
+
+impl Default for DryRunConfig {
+    fn default() -> Self {
+        Self {
+            starting_equity_usdc: 1_000.0,
+            decision_latency_ms: 250,
+            acknowledgement_latency_ms: 250,
+            cancel_latency_ms: 250,
+            queue_decay_per_second: 0.05,
+            funding_rate_per_hour: 0.0,
+            markout_horizons_ms: vec![100, 1_000, 5_000, 30_000],
+        }
+    }
+}
+
+impl AppConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read config {}", path.display()))?;
+        let mut config: Self = toml::from_str(&raw)
+            .with_context(|| format!("cannot parse TOML config {}", path.display()))?;
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        for value in [
+            &mut config.storage.data_dir,
+            &mut config.storage.state_path,
+            &mut config.storage.calibration_path,
+            &mut config.storage.report_dir,
+            &mut config.storage.writer_lock_path,
+            &mut config.instrument.evidence_path,
+        ] {
+            if value.is_relative() {
+                *value = base.join(&*value);
+            }
+        }
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_profile()?;
+        for (name, capacity) in [
+            (
+                "runtime.market_event_capacity",
+                self.runtime.market_event_capacity,
+            ),
+            (
+                "runtime.execution_event_capacity",
+                self.runtime.execution_event_capacity,
+            ),
+        ] {
+            if capacity == 0 || !capacity.is_power_of_two() {
+                bail!("{name} must be a positive power of two");
+            }
+        }
+        if self.runtime.market_stale_ms < 50 {
+            bail!("runtime.market_stale_ms must be >= 50");
+        }
+        if self.runtime.ws_ping_interval_ms < 1_000 {
+            bail!("runtime.ws_ping_interval_ms must be >= 1000");
+        }
+        if self.runtime.ws_idle_timeout_ms <= self.runtime.ws_ping_interval_ms {
+            bail!("runtime.ws_idle_timeout_ms must exceed ws_ping_interval_ms");
+        }
+        if self.storage.retention_minutes < self.calibration.window_minutes + 30 {
+            bail!("storage retention must exceed the calibration window by at least 30 minutes");
+        }
+        if self.model.q_max < 1 || self.model.q_max > 1_000 {
+            bail!("model.q_max must be in 1..=1000");
+        }
+        if !self.model.horizon_seconds.is_finite() || self.model.horizon_seconds <= 0.0 {
+            bail!("model.horizon_seconds must be finite and positive");
+        }
+        if self.quoting.min_half_spread_bps >= self.quoting.max_half_spread_bps {
+            bail!("minimum half-spread must be below maximum half-spread");
+        }
+        if !(0.0..=1.0).contains(&self.quoting.target_capital_utilisation) {
+            bail!("target_capital_utilisation must be in [0,1]");
+        }
+        if !self.quoting.leverage.is_finite() || self.quoting.leverage <= 0.0 {
+            bail!("quoting.leverage must be finite and positive");
+        }
+        for (lower, upper, side) in [
+            (
+                self.calibration.support_quantile_lower_plus,
+                self.calibration.support_quantile_upper_plus,
+                "plus",
+            ),
+            (
+                self.calibration.support_quantile_lower_minus,
+                self.calibration.support_quantile_upper_minus,
+                "minus",
+            ),
+        ] {
+            if !(0.0 <= lower && lower < upper && upper <= 1.0) {
+                bail!("invalid {side} calibration support quantiles");
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_profile(&self) -> Result<()> {
+        if !self.instrument.validated {
+            bail!("instrument profile is not scientifically validated");
+        }
+        let raw = std::fs::read_to_string(&self.instrument.evidence_path).with_context(|| {
+            format!(
+                "cannot read instrument validation evidence {}",
+                self.instrument.evidence_path.display()
+            )
+        })?;
+        let evidence: ValidationEvidence = serde_json::from_str(&raw)?;
+        if evidence.schema_version != 1
+            || evidence.profile != self.instrument.profile
+            || evidence.symbol != self.instrument.symbol
+            || !evidence.scientifically_valid
+            || !evidence.rounded_quotes_exact
+            || evidence.parameter_relative_tolerance > 0.001
+            || evidence.hjb_relative_tolerance > 0.001
+        {
+            bail!("instrument validation evidence does not satisfy the release contract");
+        }
+        Ok(())
+    }
+
+    pub fn fingerprint(&self) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        Ok(hex::encode(Sha256::digest(serde_json::to_vec(self)?)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validated_cashcat_defaults_pass() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat.toml");
+        assert!(AppConfig::load(&path).is_ok());
+    }
+
+    #[test]
+    fn unvalidated_symbol_fails_closed() {
+        let mut config = AppConfig::default();
+        config.instrument.profile = "synthetic".to_owned();
+        config.instrument.symbol = "SYN".to_owned();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn future_symbol_needs_only_matching_evidence_and_profile_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let evidence = directory.path().join("synthetic.validation.json");
+        std::fs::write(
+            &evidence,
+            r#"{
+                "schema_version": 1,
+                "profile": "synthetic",
+                "symbol": "SYN",
+                "scientifically_valid": true,
+                "parameter_relative_tolerance": 0.00001,
+                "hjb_relative_tolerance": 0.00001,
+                "rounded_quotes_exact": true
+            }"#,
+        )
+        .unwrap();
+        let mut config = AppConfig::default();
+        config.instrument.profile = "synthetic".to_owned();
+        config.instrument.symbol = "SYN".to_owned();
+        config.instrument.expected_sz_decimals = 3;
+        config.instrument.evidence_path = evidence;
+        assert!(config.validate().is_ok());
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ValidationEvidence {
+    schema_version: u32,
+    profile: String,
+    symbol: String,
+    scientifically_valid: bool,
+    parameter_relative_tolerance: f64,
+    hjb_relative_tolerance: f64,
+    rounded_quotes_exact: bool,
+}

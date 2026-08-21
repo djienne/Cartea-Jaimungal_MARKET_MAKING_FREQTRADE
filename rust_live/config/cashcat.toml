@@ -1,0 +1,100 @@
+[instrument]
+profile = "cashcat"
+symbol = "CASHCAT"
+dex = ""
+validated = true
+expected_sz_decimals = 0
+max_significant_figures = 5
+minimum_notional = 10.0
+evidence_path = "cashcat.validation.json"
+
+[runtime]
+network = "mainnet"
+market_stale_ms = 5000
+ws_ping_interval_ms = 30000
+ws_idle_timeout_ms = 45000
+market_event_capacity = 65536
+execution_event_capacity = 16384
+stats_interval_ms = 5000
+log_json = false
+
+[storage]
+data_dir = "../../scripts/HL_data"
+state_path = "../run/cashcat-dry-state.json"
+calibration_path = "../run/cashcat-calibration.json"
+report_dir = "../reports"
+writer_lock_path = "../run/cashcat-collector.lock"
+flush_interval_seconds = 10
+compact_after_minutes = 15
+retention_minutes = 180
+write_parquet = true
+
+[calibration]
+window_minutes = 120
+interval_seconds = 30
+epsilon_horizon_ms_plus = 200
+epsilon_horizon_ms_minus = 200
+support_quantile_lower_plus = 0.0
+support_quantile_lower_minus = 0.0
+support_quantile_upper_plus = 0.99
+support_quantile_upper_minus = 0.99
+outage_threshold_seconds = 60.0
+max_age_seconds = 120
+max_data_age_seconds = 120
+max_future_skew_seconds = 10
+min_kappa_fit_points = 6
+min_kappa_r2 = 0.30
+min_epsilon_events = 50
+max_toxicity = 1.5
+shard_window_margin_seconds = 120
+max_shard_failure_rate = 0.05
+
+[model]
+q_max = 6
+horizon_seconds = 150.0
+phi_kappa_t = 200.0
+phi_kappa_t_max = 300.0
+alpha_kappa = 0.05
+raw_phi_fallback = 0.0001
+raw_alpha_fallback = 0.001
+gamma_inventory_risk = 0.05
+max_dt_seconds = 0.25
+min_steps = 200
+max_steps = 2000
+newton_max_iterations = 50
+newton_tolerance = 1e-8
+newton_damping = 0.7
+episode_reset_on_flat = true
+episode_min_elapsed_fraction = 0.25
+
+[quoting]
+available_capital_usdc = 1000.0
+target_capital_utilisation = 0.74
+leverage = 2.0
+maker_fee_rate = 0.00015
+spread_multiplier = 1.0
+extra_cushion_bps = 0.0
+min_half_spread_bps = 1.5
+max_half_spread_bps = 80.0
+replace_threshold_ticks = 1
+min_order_lifetime_ms = 75
+reduce_only_threshold_q = 5.0
+
+[risk]
+kill_switch = false
+max_notional_usdc = 3200.0
+max_margin_usdc = 1600.0
+min_liquidation_buffer_usdc = 100.0
+maintenance_margin_rate = 0.05
+max_daily_loss_usdc = 200.0
+max_consecutive_losses = 25
+max_market_spread_bps = 100.0
+
+[dry_run]
+starting_equity_usdc = 1000.0
+decision_latency_ms = 250
+acknowledgement_latency_ms = 250
+cancel_latency_ms = 250
+queue_decay_per_second = 0.05
+funding_rate_per_hour = 0.0
+markout_horizons_ms = [100, 1000, 5000, 30000]

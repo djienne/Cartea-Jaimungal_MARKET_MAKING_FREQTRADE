@@ -196,18 +196,18 @@ def write_param_snapshot_files(directory: Path) -> Path:
     """
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "kappa.json").write_text(
-        json.dumps({"ETH": {"schema_version": 3, "status": "ok", "kappa+": 2.0, "kappa-": 2.0}}),
+        json.dumps({"ETH": {"schema_version": 4, "status": "ok", "kappa+": 2.0, "kappa-": 2.0}}),
         encoding="utf-8",
     )
     (directory / "epsilon.json").write_text(
-        json.dumps({"ETH": {"schema_version": 3, "status": "ok", "epsilon+": 0.0, "epsilon-": 0.0}}),
+        json.dumps({"ETH": {"schema_version": 4, "status": "ok", "epsilon+": 0.0, "epsilon-": 0.0}}),
         encoding="utf-8",
     )
     (directory / "lambda.json").write_text(
         json.dumps(
             {
                 "ETH": {
-                    "schema_version": 3,
+                    "schema_version": 4,
                     "status": "ok",
                     "lambda+": 0.2,
                     "lambda-": 0.2,
@@ -252,7 +252,7 @@ def make_bot() -> Market_Making:
     bot._hjb_last_refresh_dt = datetime.now(timezone.utc)
     bot.kappas = {
         "ETH": {
-            "schema_version": 3,
+            "schema_version": 4,
             "status": "ok",
             "kappa+": 2.0,
             "kappa-": 2.0,
@@ -274,7 +274,7 @@ def make_bot() -> Market_Making:
     }
     bot.epsilons = {
         "ETH": {
-            "schema_version": 3,
+            "schema_version": 4,
             "status": "ok",
             "epsilon+": 0.0,
             "epsilon-": 0.0,
@@ -287,7 +287,7 @@ def make_bot() -> Market_Making:
     }
     bot.lambdas = {
         "ETH": {
-            "schema_version": 3,
+            "schema_version": 4,
             "status": "ok",
             "lambda+": 0.1,
             "lambda-": 0.1,
@@ -2764,7 +2764,7 @@ def test_quote_decision_logs_freshness_age_fields():
     assert payload["trading_enabled"] is False
     assert payload["dry_run"] is True
     assert payload["hjb_param_fingerprint"] == bot._hjb_param_fingerprint
-    assert payload["hjb_params"]["sources"]["kappa"]["schema_version"] == 3
+    assert payload["hjb_params"]["sources"]["kappa"]["schema_version"] == 4
     assert payload["hjb_params"]["sources"]["kappa"]["generated_at"] == bot.kappas["ETH"]["generated_at"]
     assert payload["hjb_params"]["sources"]["lambda"]["lambda_source"] == "mo_survival_fit"
     assert payload["params"]["sources"]["epsilon"]["n_buy_events"] == 60
@@ -2816,7 +2816,7 @@ def test_hjb_refresh_logs_parameter_fingerprint():
 
     refresh = [payload for event, payload in events if event == "hjb_refresh"][0]
     assert refresh["param_fingerprint"] == bot._hjb_param_fingerprint
-    assert refresh["params"]["sources"]["kappa"]["schema_version"] == 3
+    assert refresh["params"]["sources"]["kappa"]["schema_version"] == 4
     assert refresh["params"]["sources"]["epsilon"]["n_sell_events"] == 60
     assert bot._hjb_params_snapshot == refresh["params"]
 

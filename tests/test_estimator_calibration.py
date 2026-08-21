@@ -123,8 +123,8 @@ def test_default_kappa_fit_is_bit_identical_to_the_old_implementation(seed):
     """The live estimator calls fit_kappa_survival(depths) with no support args.
 
     Every one of those calls must return exactly the float it returned before
-    the lower bound existed -- not "close", the same bits: kappa is EMA-blended
-    across cycles, so even a last-place difference would propagate.
+    the lower bound existed -- not "close", the same bits, so the direct
+    per-window model input is reproducible.
     """
     rng = np.random.default_rng(seed)
     # A mixture, so the fit is not trivially well conditioned: most MOs are
@@ -361,7 +361,7 @@ def test_explicit_200ms_flags_reproduce_the_default_entry(tmp_path, monkeypatch)
     ds = tmp_path / "data"
     _write_market(ds, buy_impact=0.5, sell_impact=0.25)
 
-    volatile = {"generated_at", "ema_seeded"}
+    volatile = {"generated_at"}
 
     def _run(name: str, **kwargs) -> dict:
         path = tmp_path / name
@@ -401,7 +401,7 @@ def test_kappa_support_flags_are_applied_per_side(tmp_path):
     lambda_file = tmp_path / "lambda.json"
     run_kappa_for_crypto(
         "SYN", minutes=10, kappa_file=str(kappa_file), lambda_file=str(lambda_file), data_dir=ds,
-        support_quantile_lower_plus=0.5, ema_tau=0.0,
+        support_quantile_lower_plus=0.5,
     )
     entry = json.loads(kappa_file.read_text(encoding="utf-8"))["SYN"]
     assert entry["support_quantile_lower_plus"] == 0.5
@@ -530,7 +530,7 @@ def test_duplicated_shards_do_not_inflate_n_trades_or_lambda(tmp_path):
         kappa_file = tmp_path / f"kappa_{name}.json"
         run_kappa_for_crypto(
             "SYN", minutes=10, kappa_file=str(kappa_file),
-            lambda_file=str(tmp_path / f"lambda_{name}.json"), data_dir=data_dir, ema_tau=0.0,
+            lambda_file=str(tmp_path / f"lambda_{name}.json"), data_dir=data_dir,
         )
         return json.loads(kappa_file.read_text(encoding="utf-8"))["SYN"]
 
@@ -558,9 +558,9 @@ def _assert_unchanged(before: dict[Path, tuple[bytes, float]]) -> None:
 
 def _seed_live_snapshots(tmp_path: Path) -> list[Path]:
     live = {
-        "kappa.json": {"SYN": {"kappa+": 1.0, "kappa-": 2.0, "status": "ok", "schema_version": 3}},
-        "lambda.json": {"SYN": {"lambda+": 0.1, "lambda-": 0.2, "status": "ok", "schema_version": 3}},
-        "epsilon.json": {"SYN": {"epsilon+": 0.01, "epsilon-": 0.02, "status": "ok", "schema_version": 3}},
+        "kappa.json": {"SYN": {"kappa+": 1.0, "kappa-": 2.0, "status": "ok", "schema_version": 4}},
+        "lambda.json": {"SYN": {"lambda+": 0.1, "lambda-": 0.2, "status": "ok", "schema_version": 4}},
+        "epsilon.json": {"SYN": {"epsilon+": 0.01, "epsilon-": 0.02, "status": "ok", "schema_version": 4}},
     }
     paths = []
     for name, payload in live.items():
@@ -586,12 +586,11 @@ def test_emit_mode_writes_only_the_emit_file_epsilon(tmp_path):
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["crypto"] == "SYN"
     assert payload["calibration"]["epsilon_post_horizon_ms_minus"] == 5000
-    assert payload["calibration"]["ema_applied"] is False
     entry = payload["epsilon"]
     # The emitted block is the entry that would have been written, key for key.
-    assert entry["epsilon+"] == entry["epsilon+_raw"]  # no EMA against live state
+    assert entry["epsilon+"] == entry["epsilon+_raw"]
     assert entry["window_ms_minus"] == 5000
-    assert entry["schema_version"] == 3
+    assert entry["schema_version"] == 4
 
 
 def test_emit_mode_writes_only_the_emit_file_kappa(tmp_path):

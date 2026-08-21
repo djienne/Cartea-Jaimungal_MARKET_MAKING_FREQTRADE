@@ -1,6 +1,6 @@
 """Shared data pipeline for the kappa/lambda/epsilon estimators.
 
-Methodology (schema v3):
+Methodology (schema v4):
 - Mid series comes from the dense BBO ``prices/`` stream (one row per side per
   update), falling back to ``orderbooks/`` top-of-book for old datasets.
 - Trades and mids are aligned on exchange timestamps (ms) when both streams
@@ -27,7 +27,6 @@ Methodology (schema v3):
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +35,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from param_utils import PARAM_SCHEMA_VERSION, atomic_write_json
+from param_utils import atomic_write_json
 
 
 # Validation floors shared with the strategy (Market_Making.py mirrors these as
@@ -44,9 +43,6 @@ from param_utils import PARAM_SCHEMA_VERSION, atomic_write_json
 MIN_KAPPA_FIT_POINTS = 6
 MIN_KAPPA_R2 = 0.30
 MIN_EPSILON_EVENTS = 50
-
-DEFAULT_EMA_TAU_SECONDS = 300.0
-EMA_TAU_ENV_VAR = "PARAM_EMA_TAU_SECONDS"
 
 # Fraction of rows that must carry a finite exchange_timestamp before a stream
 # is trusted to be on exchange time.
@@ -61,22 +57,6 @@ SHARD_WINDOW_MARGIN_MS = 120_000.0
 # Above this share of unreadable shards in one stream, fail the cycle instead of
 # returning short data. Post-atomic-write any failure means real corruption.
 MAX_SHARD_READ_FAILURE_RATE = 0.05
-
-
-def resolve_ema_tau(cli_value: float | None = None) -> float:
-    """CLI flag > PARAM_EMA_TAU_SECONDS env > default. tau <= 0 disables."""
-    if cli_value is not None:
-        try:
-            return float(cli_value)
-        except (TypeError, ValueError):
-            pass
-    env_value = os.getenv(EMA_TAU_ENV_VAR)
-    if env_value is not None:
-        try:
-            return float(env_value)
-        except (TypeError, ValueError):
-            pass
-    return DEFAULT_EMA_TAU_SECONDS
 
 
 class ShardReadError(RuntimeError):
@@ -886,66 +866,3 @@ def realized_sigma2_per_sec(
     if not np.isfinite(sigma2) or sigma2 < 0:
         return None
     return sigma2
-
-
-def _parse_generated_at(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-def ema_update(
-    raw: float | None,
-    prev_entry: dict[str, Any] | None,
-    key: str,
-    tau_seconds: float,
-    now: datetime | None = None,
-) -> tuple[float | None, dict[str, Any]]:
-    """Time-aware EMA of one parameter against the previous snapshot entry.
-
-    Seeds from raw (no blending) when: tau disabled, no/invalid previous entry,
-    previous status != ok, previous schema_version != current (NEVER blend
-    across the v2->v3 semantic change), non-finite previous value, or
-    unparsable previous generated_at.
-    """
-    meta: dict[str, Any] = {
-        "ema_tau_seconds": float(tau_seconds),
-        "ema_seeded": True,
-        "ema_alpha": None,
-    }
-    if raw is None or not np.isfinite(float(raw)):
-        return None, meta
-    raw = float(raw)
-
-    if tau_seconds <= 0:
-        return raw, meta
-    if not isinstance(prev_entry, dict):
-        return raw, meta
-    if prev_entry.get("status") != "ok":
-        return raw, meta
-    if prev_entry.get("schema_version") != PARAM_SCHEMA_VERSION:
-        return raw, meta
-    try:
-        prev_value = float(prev_entry.get(key))
-    except (TypeError, ValueError):
-        return raw, meta
-    if not np.isfinite(prev_value):
-        return raw, meta
-    prev_dt = _parse_generated_at(prev_entry.get("generated_at"))
-    if prev_dt is None:
-        return raw, meta
-
-    if now is None:
-        now = datetime.now(timezone.utc)
-    delta_t = max(0.0, (now - prev_dt).total_seconds())
-    alpha = 1.0 - math.exp(-delta_t / float(tau_seconds))
-    smoothed = alpha * raw + (1.0 - alpha) * prev_value
-    meta["ema_seeded"] = False
-    meta["ema_alpha"] = alpha
-    return float(smoothed), meta

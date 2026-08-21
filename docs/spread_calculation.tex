@@ -1020,7 +1020,7 @@ Without it, a collector outage would appear as a single enormous price jump and
 read as a volatility spike -- which, through \eqref{eq:phigamma}, would widen
 every quote in response to a \emph{data} problem.
 
-\subsection{Smoothing, gating and transport}
+\subsection{Gating and transport}
 
 \begin{table}[htbp]
 \centering\small
@@ -1030,7 +1030,7 @@ every quote in response to a \emph{data} problem.
 \midrule
 Window          & trailing data used per fit    & 120 minutes \\
 Cadence         & re-fit interval               & 30 s \\
-Smoothing       & time-aware EMA, $\alpha = 1-e^{-\Delta t/\tau}$ & $\tau = 300$ s \\
+Model input     & direct validated rolling-window estimate & no temporal smoothing \\
 Transport       & one atomic Redis blob per symbol & \code{mm:params:<SYM>} \\
 Max age         & strategy refuses older params & 120 s$^{\dagger}$ \\
 \bottomrule
@@ -1040,8 +1040,8 @@ is 90~s; \code{user\_data/config.json} raises it to 120~s, so a reader checking
 \code{Market\_Making.py} alone will find the smaller number.}
 \end{table}
 
-A cycle that fails its own quality checks ships \emph{raw} values and does not
-blend, so one bad window cannot poison the EMA. The strategy then re-checks
+A cycle that fails its own quality checks is rejected, so one bad window cannot
+replace the last valid model. The strategy then re-checks
 everything independently on every single quote: schema version, status,
 freshness, $\kappa>0$, $\lambda\ge0$, $\epsb\ge0$, fit quality
 ($R^2 \ge 0.30$, $\ge 6$ fit points, $\ge 50$ impact events), and a
@@ -2151,7 +2151,7 @@ risk aversion.
 \textbf{File} & \textbf{Role} \\
 \midrule
 \code{scripts/hyperliquid\_data\_collector.py} & L2 book and trade capture to Parquet \\
-\code{scripts/estimator\_common.py} & window loading, $\kappa$, $\sigma^2$, EMA \\
+\code{scripts/estimator\_common.py} & window loading, $\kappa$, $\sigma^2$ \\
 \code{scripts/get\_kappa.py} & $\kappa^{\pm}$, $\lambda^{\pm}$, $\sigma^2$ driver \\
 \code{scripts/get\_epsilon.py} & $\epsb^{\pm}$ driver \\
 \code{scripts/hjb.py} & the two solvers, (10.26)--(10.29) \\

@@ -27,7 +27,7 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
             tmp_path / "kappa.json",
             {
                 "ETH": {
-                    "schema_version": 3,
+                    "schema_version": 4,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
                     "window_start": "2026-05-25T09:30:00Z",
@@ -58,7 +58,7 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
             tmp_path / "lambda.json",
             {
                 "ETH": {
-                    "schema_version": 3,
+                    "schema_version": 4,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
                     "window_start": "2026-05-25T09:30:00Z",
@@ -76,7 +76,7 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
             tmp_path / "epsilon.json",
             {
                 "ETH": {
-                    "schema_version": 3,
+                    "schema_version": 4,
                     "status": "ok",
                     "generated_at": "2026-05-25T10:00:00Z",
                     "window_start": "2026-05-25T09:30:00Z",
@@ -98,7 +98,7 @@ def valid_snapshots(tmp_path: Path) -> dict[str, Path]:
     }
 
 
-def test_runner_accepts_valid_schema_v3_snapshots(tmp_path):
+def test_runner_accepts_valid_schema_v4_snapshots(tmp_path):
     assert _validate_symbol_snapshot(valid_snapshots(tmp_path), "ETH") == (True, "ok")
 
 

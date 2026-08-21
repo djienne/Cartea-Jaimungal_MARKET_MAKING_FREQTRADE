@@ -411,7 +411,7 @@ def _validate_symbol_snapshot(config_paths: Dict[str, Optional[Path]], crypto: s
         entry = payload.get(crypto)
         if not isinstance(entry, dict):
             return False, f"missing_symbol_{crypto}_in_{name}"
-        if int(entry.get("schema_version", 0) or 0) != 3:
+        if int(entry.get("schema_version", 0) or 0) != 4:
             return False, f"unsupported_schema_{name}"
         if str(entry.get("status", "")).lower() != "ok":
             return False, f"status_not_ok_{name}:{entry.get('status')}"

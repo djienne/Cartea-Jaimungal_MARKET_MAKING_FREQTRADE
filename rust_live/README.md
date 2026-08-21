@@ -56,8 +56,14 @@ edit only the ignored copy:
 Copy-Item rust_live/hyperliquid.env.example rust_live/hyperliquid.env
 ```
 
-The template deliberately contains an invalid all-zero agent key. The current
-`live` command still refuses before reading this file.
+The dotenv template has the same four fields used by Passivbot:
+`exchange`, `wallet_address`, `private_key`, and `is_vault`. It deliberately
+contains an invalid all-zero API/agent key. The current `live` command still
+refuses before reading this file.
+
+The shared field names do not create a runtime dependency: both dry-run and the
+future live connector are pure Rust. Python SDK, Passivbot, and CCXT are allowed
+only as offline test-oracle references.
 
 ## Commands
 

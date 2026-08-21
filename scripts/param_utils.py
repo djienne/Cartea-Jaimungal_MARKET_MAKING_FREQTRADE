@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any
 
 
-# v3: lambda± is the raw per-side market-order arrival rate (survival-based, not
-# the binned-density intercept), kappa± is fitted on mid-relative depths from the
-# BBO stream, and primary kappa/epsilon/lambda keys are EMA-smoothed (raw values
-# in *_raw). v3 snapshots are not comparable to v2 — consumers fail-closed on
-# mismatch and the EMA never seeds across versions.
-PARAM_SCHEMA_VERSION = 3
+# v4: lambda± is the direct per-side market-order arrival rate (survival-based,
+# not the binned-density intercept), kappa± is fitted on mid-relative depths from
+# the BBO stream, and epsilon± is the direct validated arrival-jump estimate.
+# No temporal smoothing is applied to model parameters. Consumers fail closed on
+# older schemas because the primary-value semantics changed from v3.
+PARAM_SCHEMA_VERSION = 4
 
 
 def utc_now_iso() -> str:

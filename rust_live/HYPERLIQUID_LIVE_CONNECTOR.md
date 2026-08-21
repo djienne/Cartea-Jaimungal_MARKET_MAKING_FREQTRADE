@@ -8,6 +8,10 @@ connector. It deliberately stops short of enabling live trading. Hyperliquid's
 API changes over time, so every implementation pass must recheck the linked
 official documentation and pin the exact SDK/protocol fixtures used for release.
 
+**Runtime invariant:** the live and dry-run traders are pure Rust. They must not
+import, launch, or depend on Python, the Hyperliquid Python SDK, Passivbot, or
+CCXT. Python/JavaScript implementations may generate offline test fixtures only.
+
 ## 1. Decision summary
 
 The recommended implementation is:
@@ -28,8 +32,8 @@ The recommended implementation is:
    organization for action types/signing, while retaining our own transport and
    lifecycle state machine. As of this audit the crate line is `hl_sdk` 0.12.10.
    It must pass the signing fixtures in this document and compile with the pinned
-   project toolchain before adoption. The official Python SDK remains the
-   independent wire oracle.
+   project toolchain before adoption. The official Python SDK remains an
+   offline, test-only independent wire oracle and is absent from runtime.
 7. Use the useful local implementations as test material and design evidence,
    not as a complete connector. No local project contains the whole required
    maker-order + private-WebSocket + reconciliation path.
@@ -87,27 +91,34 @@ Subaccounts and vaults do not have independent private keys. See
 
 ### Required credential configuration
 
-The future live-only configuration should distinguish these values explicitly:
+Keep the secret file compatible with the four entries in Passivbot's
+`api-keys.json`, expressed in dotenv syntax:
 
-```text
-HYPERLIQUID_NETWORK = mainnet | testnet
-HYPERLIQUID_AGENT_PRIVATE_KEY = dedicated API/agent key
-HYPERLIQUID_EXPECTED_AGENT_ADDRESS = 0x...
-HYPERLIQUID_ACCOUNT_ADDRESS = 0x...       # actual master/subaccount queried
-HYPERLIQUID_VAULT_ADDRESS = empty | 0x... # only for a subaccount/vault
-HYPERLIQUID_SYMBOL = CASHCAT
-HYPERLIQUID_DEX = ""
+```dotenv
+exchange=hyperliquid
+wallet_address=0x...
+private_key=0x...
+is_vault=true
 ```
+
+Only the field names are shared with Passivbot. The Rust connector parses this
+file itself and does not call Passivbot or CCXT.
 
 The tracked [`hyperliquid.env.example`](hyperliquid.env.example) contains these
 exact keys with deliberately invalid dummy values. Copy it to
-`rust_live/hyperliquid.env`; the real file is ignored by Git. Network, symbol,
-and DEX values must agree with the validated TOML profile rather than silently
-overriding it.
+`rust_live/hyperliquid.env`; the real file is ignored by Git.
 
-Startup must derive the agent address from the key and compare it to
-`expected_agent_address`. It must query `userRole`, `extraAgents`, metadata,
-account state, and user fees before enabling orders. A mismatch is fatal.
+When `is_vault=true`, `wallet_address` is also folded into the signed action hash
+and sent as `vaultAddress`. When false, `vaultAddress` is absent. In both cases
+`private_key` is the API/agent signer, not the master wallet key. Network,
+symbol, DEX, risk, and live-enable values remain in validated TOML rather than
+the secret file.
+
+Startup must derive the agent address from `private_key` and verify that it is an
+approved API/agent wallet for the account (resolving the master through
+`userRole` when `wallet_address` is a subaccount). It must also query metadata,
+account state, and user fees before enabling orders. A mismatch is fatal; no
+extra credential field is required.
 
 ### Security requirements
 

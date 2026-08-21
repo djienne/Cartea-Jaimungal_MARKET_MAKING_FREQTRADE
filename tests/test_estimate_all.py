@@ -159,10 +159,10 @@ def test_run_all_loads_the_window_once_and_shares_it(monkeypatch):
         loads.append((crypto, minutes))
         return window
 
-    def fake_kappa(crypto, minutes=30, ema_tau=None, window=None, **kwargs):
+    def fake_kappa(crypto, minutes=30, window=None, **kwargs):
         seen["kappa"] = window
 
-    def fake_epsilon(crypto, minutes=30, post_horizon_ms=None, ema_tau=None, window=None, **kwargs):
+    def fake_epsilon(crypto, minutes=30, post_horizon_ms=None, window=None, **kwargs):
         seen["epsilon"] = window
 
     monkeypatch.setattr(estimate_all, "load_market_window", fake_load)

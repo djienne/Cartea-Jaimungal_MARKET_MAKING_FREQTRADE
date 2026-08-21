@@ -32,9 +32,9 @@ from importlib import import_module
 logger = logging.getLogger(__name__)
 
 # Parameter snapshot schema this strategy consumes (see scripts/param_utils.py).
-# v3: survival-based lambda (mo_survival_fit), mid-relative kappa, EMA-smoothed
-# primaries with *_raw companions, depth_p95 calibration diagnostics, sigma2.
-SUPPORTED_PARAM_SCHEMA_VERSION = 3
+# v4: survival-based lambda (mo_survival_fit), mid-relative kappa and direct
+# per-window primary estimates with no temporal smoothing.
+SUPPORTED_PARAM_SCHEMA_VERSION = 4
 
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)

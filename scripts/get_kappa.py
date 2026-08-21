@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Joint kappa/lambda estimation from Hyperliquid market data (schema v3).
+"""Joint kappa/lambda estimation from Hyperliquid market data (schema v4).
 
 Methodology:
 - Trade prints are aggregated into market orders (same side + same exchange
@@ -23,9 +23,8 @@ Methodology:
   seconds). The old binned-density regression intercept equals
   lambda*kappa*binwidth (bin-width dependent) and is kept only as the
   lambda0_intercept_± diagnostic.
-- Primary kappa±/lambda± values are EMA-smoothed across estimator cycles
-  (time-aware, tau via --ema-tau / PARAM_EMA_TAU_SECONDS, default 300 s);
-  unsmoothed values are stored in the *_raw keys.
+- Primary kappa±/lambda± values are the direct validated estimates from the
+  selected market-data window; no temporal smoothing is applied.
 - Realized mid variance sigma2_per_sec (USDC^2/s) is published for the
   strategy's volatility-aware inventory penalty.
 """
@@ -33,7 +32,6 @@ Methodology:
 import argparse
 import os
 import warnings
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -51,8 +49,6 @@ from estimator_common import (
     load_market_window,
     mo_depths,
     realized_sigma2_per_sec,
-    resolve_ema_tau,
-    ema_update,
     write_emit_payload,
 )
 from param_utils import (
@@ -160,9 +156,8 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
                               metadata: dict | None = None, raw_values: dict | None = None):
     """Persist kappa and per-side MO arrival rates (per second) to JSON files.
 
-    Primary keys hold the EMA-smoothed values; *_raw keys hold this window's
-    unsmoothed estimates (defaulting to the primaries when not supplied so
-    every v3 snapshot carries the full key set).
+    Primary keys hold the direct per-window estimates. *_raw aliases are retained
+    for diagnostic/backward tooling and are identical to the primaries in v4.
     """
     kappa_entry, lambda_entry = build_kappa_lambda_entries(
         kappa_plus, kappa_minus, lambda_plus, lambda_minus,
@@ -180,7 +175,7 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
     print(f"[save] lambda (MO arrival rate) -> {lambda_file}")
 
 
-def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None = None,
+def run_kappa_for_crypto(crypto: str, minutes: int = 30,
                          kappa_file: str = "kappa.json", lambda_file: str = "lambda.json",
                          data_dir=None, window=None,
                          support_quantile_plus: float | None = None,
@@ -318,8 +313,7 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
     if sigma2 is not None:
         print(f"  sigma2_per_sec: {sigma2:.6f} USDC^2/s")
 
-    generated_at_dt = datetime.now(timezone.utc)
-    generated_at = generated_at_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+    generated_at = utc_now_iso()
 
     metadata = {
         "window_start": window.window_start_iso(),
@@ -398,34 +392,8 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
         "lambda-_raw": finite_or_none(lambda_minus_raw),
     }
 
-    tau = resolve_ema_tau(ema_tau)
-    metadata["ema_tau_seconds"] = float(tau)
-    if metadata["status"] == "ok" and not emitting:
-        prev_entry = load_json_object(kappa_file).get(crypto)
-        prev_entry = prev_entry if isinstance(prev_entry, dict) else None
-        smoothed = {}
-        seeded_flags = []
-        for key, raw_value in (
-            ("kappa+", kappa_plus_raw),
-            ("kappa-", kappa_minus_raw),
-            ("lambda+", lambda_plus_raw),
-            ("lambda-", lambda_minus_raw),
-        ):
-            value, ema_meta = ema_update(raw_value, prev_entry, key, tau, now=generated_at_dt)
-            smoothed[key] = value
-            seeded_flags.append(bool(ema_meta["ema_seeded"]))
-        metadata["ema_seeded"] = all(seeded_flags)
-        kappa_plus_out, kappa_minus_out = smoothed["kappa+"], smoothed["kappa-"]
-        lambda_plus_out, lambda_minus_out = smoothed["lambda+"], smoothed["lambda-"]
-    else:
-        # Bad windows ship raw (consumers reject on status); the next ok cycle
-        # re-seeds rather than blending across the bad snapshot. Emit mode also
-        # lands here on purpose: a sweep result must be a pure function of its
-        # slice and settings, and blending against whatever the live container
-        # last wrote would make the same slice give different answers.
-        metadata["ema_seeded"] = True
-        kappa_plus_out, kappa_minus_out = raw_values["kappa+_raw"], raw_values["kappa-_raw"]
-        lambda_plus_out, lambda_minus_out = raw_values["lambda+_raw"], raw_values["lambda-_raw"]
+    kappa_plus_out, kappa_minus_out = kappa_plus_raw, kappa_minus_raw
+    lambda_plus_out, lambda_minus_out = lambda_plus_raw, lambda_minus_raw
 
     if emitting:
         kappa_entry, lambda_entry = build_kappa_lambda_entries(
@@ -443,8 +411,6 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30, ema_tau: float | None =
                 "kappa_support_quantile_lower_minus": float(support_lower_minus),
                 "kappa_support_quantile_upper_plus": float(support_upper_plus),
                 "kappa_support_quantile_upper_minus": float(support_upper_minus),
-                "ema_tau_seconds": float(tau),
-                "ema_applied": False,
             },
             "kappa": kappa_entry,
             "lambda": lambda_entry,
@@ -476,9 +442,6 @@ if __name__ == "__main__":
                         help='Cryptocurrency symbol (e.g., ETH) or ALL to process every symbol in HL_data')
     parser.add_argument('--minutes', '-m', type=int, default=30,
                         help='Number of minutes from most recent data to analyze')
-    parser.add_argument('--ema-tau', type=float, default=None,
-                        help='EMA time constant in seconds for smoothing primary values '
-                             '(default: PARAM_EMA_TAU_SECONDS env or 300; 0 disables smoothing)')
     parser.add_argument('--support-quantile', type=float, default=None,
                         help='Shorthand: upper quantile of the kappa fit support on BOTH sides '
                              f'(default {DEFAULT_SUPPORT_QUANTILE_UPPER})')
@@ -553,7 +516,6 @@ if __name__ == "__main__":
             run_kappa_for_crypto(
                 sym,
                 minutes=args.minutes,
-                ema_tau=args.ema_tau,
                 support_quantile_plus=support_upper_plus,
                 support_quantile_minus=support_upper_minus,
                 support_quantile_lower_plus=support_lower_plus,
