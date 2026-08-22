@@ -8,6 +8,7 @@ scripts/HL_data
 user_data/logs
 user_data/*.sqlite*
 rust_live/target
+rust_live/fuzz/target
 rust_live/run
 rust_live/reports
 *.zip

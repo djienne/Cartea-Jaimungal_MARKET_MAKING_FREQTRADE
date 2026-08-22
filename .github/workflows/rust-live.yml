@@ -1,0 +1,89 @@
+name: Rust live engine quality
+
+on:
+  push:
+    paths:
+      - "rust_live/**"
+      - "tests/**"
+      - "user_data/**"
+      - ".github/workflows/rust-live.yml"
+  pull_request:
+    paths:
+      - "rust_live/**"
+      - "tests/**"
+      - "user_data/**"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+          components: clippy,rustfmt,llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_live
+      - run: cargo fmt --manifest-path rust_live/Cargo.toml --all -- --check
+      - run: cargo clippy --locked --manifest-path rust_live/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --manifest-path rust_live/Cargo.toml --workspace --all-targets --all-features
+      - run: cargo install cargo-llvm-cov --version 0.9.0 --locked
+      - run: cargo llvm-cov --manifest-path rust_live/Cargo.toml --workspace --all-features --lcov --output-path rust_live/target/lcov.info
+      - run: cargo llvm-cov --manifest-path rust_live/Cargo.toml -p cj-core --fail-under-lines 90 --summary-only
+      - run: cargo llvm-cov --manifest-path rust_live/Cargo.toml -p mm-execution --fail-under-lines 85 --summary-only
+      - run: cargo llvm-cov --manifest-path rust_live/Cargo.toml -p mm-runtime --fail-under-lines 80 --summary-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: rust_live/target/lcov.info
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - run: cargo install cargo-deny --version 0.20.2 --locked
+      - run: cargo deny --manifest-path rust_live/Cargo.toml check advisories bans sources
+
+  python-oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install pytest -r scripts/requirements.txt
+      - run: python -m pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build --build-arg MM_GIT_REVISION=${{ github.sha }} -f rust_live/Dockerfile -t cashcat-cj-rust:portable-o3 .
+      - run: docker build --build-arg "MM_RUSTFLAGS=-C target-cpu=native" --build-arg MM_BUILD_FLAVOR=native-o3 --build-arg MM_GIT_REVISION=${{ github.sha }} -f rust_live/Dockerfile -t cashcat-cj-rust:native-o3 .
+
+  scheduled-concurrency-and-fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - run: cargo +nightly miri test --manifest-path rust_live/Cargo.toml -p cj-core
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo +nightly fuzz run account_decoders -- -max_total_time=30
+        working-directory: rust_live
+      - run: cargo +nightly fuzz run public_wire_decoders -- -max_total_time=30
+        working-directory: rust_live

@@ -51,31 +51,39 @@ What that costs, measured rather than assumed: adverse selection roughly
 **doubles** between a 200 ms and a 5 s markout (ε went 1.98→3.98 bps on the ask
 and 3.53→6.14 bps on the bid). Your quotes are exposed for *seconds*.
 
-**And cutting the cadence did not make it pay.** The current evidence is a staged
-parameter sweep on a pinned **60.32 h** CASHCAT tape (296,286 price rows, 127,196
-trades, train/held-out split at 2026-08-18T16:11, 0.7 train) — `docs/cashcat_sweep.md`:
+**And cutting the cadence only makes it pay in the colocated scenario.** The
+current evidence is a staged parameter sweep on a pinned **95.23 h** CASHCAT
+tape (546,818 price rows, 243,653 trades, 0.7 train/held-out split) —
+`docs/cashcat_sweep.md`:
 
-- **Every finalist loses out of sample**: −3.68 / −0.78 / −3.68 USDC, 4 of 10
-  six-hour windows positive, worst window −8.63.
-- **The whole latency ladder is negative**: colocated (50 ms) −7.32, good
-  (100 ms) −3.68, mid (200 ms) −17.76, this_stack (500 ms) −9.26, reality
-  (500 ms / 30 s refresh) −11.39. Non-monotonic, for the third tape in a row, so
-  the latency *ordering* is noise rather than signal.
-- **The spread is earned; the direction gives it back.** Net realized spread
-  after fees is positive in every row of every table and the directional term is
-  negative in every row — on the held-out slice, +73.49 against −77.16.
-- **The loss scales with activity.** The busiest six-hour window (254 fills) is
-  the worst at −8.63; windows under 20 fills sit near zero. That is adverse
-  selection, not a mis-set knob: each fill earns slightly less spread than its
-  expected markout costs, so trading more loses more.
+- **Every finalist still loses out of sample**: −10.24 USDC, only 5 of 16
+  six-hour windows positive, worst window −13.55.
+- **Latency is economically decisive in this tape.** The complete infrastructure
+  ladder reads: colocated (50 ms latency / 100 ms refresh) **+23.07**, good
+  (100/250 ms) −10.24, mid (200/500 ms) −16.49, this stack (500/1000 ms)
+  −49.19, and the slow-refresh reality case (500 ms / 30 s) −148.60. Latency and
+  requote cadence move together in this ladder, so it compares plausible
+  machines rather than claiming a pure one-variable latency experiment.
+- **The spread is earned; the direction gives it back.** At 100 ms the net
+  realized spread after fees is +273.91 USDC, but the directional/adverse term
+  is −284.15, leaving −10.24. At 50 ms, +301.16 of net spread barely outruns
+  −278.10 of directional loss.
+- **Performance is unstable across time.** Only 5/16 held-out windows are
+  positive. The same selected configuration ranges from +7.63 to −13.55 USDC
+  over six-hour windows despite 1,135 held-out maker fills in aggregate.
 - Stage A, which holds the risk knobs at the strategy default
   `hjb_phi_kappa_t = 10`, loses on **all 81 calibrations**, on every tape measured.
 
+`docs/replay_acceptance_report.*` is an older 24-minute fail-closed gate smoke
+with `ok=false`; it is retained as evidence but must not be mistaken for the
+95-hour staged sweep above.
+
 Shorter tapes read positive out of sample — +1.18 on 24.8 h, +1.56 on 31.23 h
-(`docs/cashcat_sweep_phitail.md`), +1.37 on 44.97 h — and 60.32 h reads negative.
-The winning calibration also *moved* between the 44.97 h and 60.32 h tapes, so
-nothing here supports a claim of calibration stability. An earlier live dry run
-on CASHCAT lost **64 USDC over 16 trades** while the price ran +10%.
+(`docs/cashcat_sweep_phitail.md`), +1.37 on 44.97 h — while both the 60.32 h and
+95.23 h tapes read negative. The winning calibration also moved between tapes,
+so nothing here supports a claim of calibration stability. The later Rust
+direct-window replay independently lost 17.43 USDC over 112 fills and showed
+positive 100 ms markout turning sharply negative by 1–30 seconds.
 
 **If you intend to trade this seriously you need a co-located VPS** — an AWS
 instance in the region nearest the exchange (Tokyo is the usual choice for
@@ -169,6 +177,12 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │   ├── mid_price.py
 │   └── HL_data/                           # junction -> HYPERLIQUID_DATA/data/eth_mm
 ├── tests/                                 # pytest suite (strategy guards, runner, gates, replay)
+├── rust_live/                             # Pure-Rust CASHCAT runtime workspace
+│   ├── crates/cj-core/                    # HJB, quote policy, instrument math
+│   ├── crates/cj-data/                    # Parquet calibration and replay
+│   ├── crates/mm-execution/               # Execution traits and dry-run simulator
+│   ├── crates/mm-runtime/                 # Hot thread, atomics, latency observer
+│   └── crates/hyperliquid/                # Signing, transport, state, live backend
 ├── docker-compose.yml                     # mm-long + mm-short + estimator + redis (collectors live elsewhere)
 ├── Dockerfile.technical                   # Freqtrade image (adds deps + pinned ccxt)
 ├── analyze_trades.py
@@ -512,6 +526,10 @@ The Freqtrade/Python implementation in this repository remains the reference
 strategy and numerical oracle. A separate Rust dry-run and replay engine lives in
 [`rust_live/`](rust_live/README.md). It is validated for CASHCAT, calibrates the
 same asymmetric Cartea–Jaimungal model directly from the existing Parquet data,
-and deliberately contains no real-order submission path yet.
-
-
+and now contains a stateful pure-Rust Hyperliquid live backend. The tracked
+profile keeps `live.enabled=false`; production live additionally enforces the
+rolling p95 latency gate. Real-account acceptance code is feature-gated into a
+separate binary and is absent from the production image. See
+[`rust_live/VALIDATION.md`](rust_live/VALIDATION.md) for the bounded connector
+evidence and [`rust_live/PERFORMANCE.md`](rust_live/PERFORMANCE.md) for measured
+hot-path and network latency.

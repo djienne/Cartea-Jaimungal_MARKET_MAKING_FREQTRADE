@@ -12,6 +12,17 @@ runtime uses the full episodic `(t,q)` surface, fractional-inventory depth
 interpolation, one maker-fee cushion per side, bps clamps, and venue-aware price
 rounding.
 
+The Cargo workspace enforces dependency direction:
+
+- `cj-core` contains the model, HJB, instrument math, and quote policy and has
+  no Tokio, Arrow/Parquet, HTTP, redb, or JSON dependency;
+- `cj-data` owns calibration, Parquet collection, and replay;
+- `mm-execution` owns venue-neutral interfaces and dry-run simulation;
+- `mm-runtime` owns bounded publications, the hot thread, and latency
+  observation;
+- `hyperliquid-connector` owns transport, signing, account state, and live
+  execution; `mm-live` is only the CLI/orchestrator.
+
 ## Safety boundary
 
 - `dry-run` consumes real public Hyperliquid data and simulates orders locally.
@@ -24,9 +35,9 @@ rounding.
 - `connector-check` loads the ignored four-key credential file but is read-only:
   it exercises account `/info` calls and all account WebSocket subscriptions
   while sending zero actions.
-- `live-canary` is a separately guarded connector test, not a trading mode. It
-  requires explicit real-money confirmation, a dedicated flat/order-free
-  subaccount, CASHCAT, and a hard maximum of 12 USDC.
+- Real-account acceptance/canary code is compiled only into the separately
+  feature-gated `mm-live-acceptance` artifact and is absent from the production
+  image.
 - Any causal event loss or reconnect invalidates the dry-run evidence and
   withdraws quotes.
 - An active legacy collector is detected before Rust becomes a Parquet writer.
@@ -48,11 +59,13 @@ are behind `AccountStateProvider`; replay market data is behind
 `HyperliquidLiveBackend`.
 
 The pure-Rust live path provides secret-safe credentials, vault-aware signing,
-fixed-point actions, crash-safe nonce ranges, ACID order/fill/funding state,
+fixed-point actions, crash-safe nonce ranges, normalized transactional
+order/fill/funding state,
 WebSocket action posts, REST emergency cancels, typed account subscriptions,
 unknown-outcome reconciliation, account-aware sizing, actual fees, rate
 reserves, ALO batches, and reduce-only IOC market close. Network and persistence
-work stay off the hot thread.
+work stay off the hot thread. Lifecycle persistence is coalesced on a dedicated
+single-writer thread; only a newly reserved nonce range is fsynced before use.
 
 Normal shutdown, latency refusal, and risk kills cancel orders but retain known
 inventory. `live-flatten` is the explicit CASHCAT-only reduce-only maintenance
@@ -85,7 +98,7 @@ only as offline test-oracle references.
 The hot thread samples one in every 16 decision cycles. The timestamp is taken
 only after the quote has already been published, and four samples are batched in
 thread-local storage before one lock-free queue publication. A separate observer
-thread calculates rolling five-minute `last/min/p50/p95/p99/p99.9/max`
+thread calculates rolling 10-second and 60-second `last/min/p50/p95/p99/p99.9/max`
 distributions and sample age every five seconds. It performs all sorting, JSON
 serialization, file I/O, and fsync work off the hot and execution threads.
 
@@ -105,16 +118,19 @@ The same snapshot is embedded in the final session report. It distinguishes:
 - decision start to backend start;
 - backend reconciliation processing;
 - decision start to backend completion;
+- execution-queue wait, action preparation, signing, socket write, and complete
+  decision-to-wire timing;
 - submit/cancel acknowledgements, fill-to-close-send, close-to-fill, and
   fill-to-flat distributions.
 
 The central `[latency]` configuration enables the production gate and sets
-its default maximum acceptable rolling p99 to 150 ms. Monitoring always runs,
+its default maximum acceptable rolling p95 to 150 ms. Monitoring always runs,
 but enforcement is bypassed for validation, API/WebSocket probes, replay,
-dry-run, `live-canary`, and `acceptance_test`. Production `live` always enables
-enforcement and requires 20 fresh samples from both sockets. Warm-up,
-stale/dropped samples, observer failures, or a breached p99 withdraw both quotes
-with reason `latency_limit`.
+dry-run, and the feature-gated acceptance runner. Production `live` always
+enables enforcement and requires 20 fresh samples from both sockets plus three
+healthy observer windows before reopening. Warm-up, stale/dropped samples,
+observer failures, or a breached rolling p95 withdraw both quotes with reason
+`latency_limit`.
 
 `window_samples` must be inspected before interpreting tail percentiles. The
 dry-run backend's configured 250 ms decision/ack/cancel delays are simulation
@@ -126,44 +142,65 @@ publishes real venue acknowledgement and close timings into the same observer.
 Run from the repository root:
 
 ```powershell
-cargo run --manifest-path rust_live/Cargo.toml -- `
+cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
+  build-info
+
+cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml validate
 
-cargo run --manifest-path rust_live/Cargo.toml -- `
+cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml calibrate
 
-cargo run --manifest-path rust_live/Cargo.toml -- `
+cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml replay
 
-cargo run --manifest-path rust_live/Cargo.toml -- `
+cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml dry-run --no-write-parquet
 
-cargo run --manifest-path rust_live/Cargo.toml -- `
+cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml connector-check `
   --credentials rust_live/hyperliquid.env --duration-seconds 65
 
 # Requires [live].enabled=true; production latency cannot be bypassed.
-cargo run --manifest-path rust_live/Cargo.toml -- `
+cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml live
 
 # Explicit reduce-only maintenance close.
-cargo run --manifest-path rust_live/Cargo.toml -- `
+cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml live-flatten
 ```
 
 Linux shells use the same arguments without PowerShell backticks.
-`live-canary` is intentionally omitted from routine commands because it sends
-real orders and is only for an expressly authorized, bounded dedicated-account
-test.
+Real-account acceptance code is excluded from the production binary. It is
+available only through the separately feature-gated `mm-live-acceptance` binary.
+Build it explicitly only for an authorized dedicated-account campaign:
+
+```powershell
+cargo build --locked --release --manifest-path rust_live/Cargo.toml `
+  --features live-acceptance --bin mm-live-acceptance
+```
 
 ## Validation
 
 ```powershell
 cargo fmt --manifest-path rust_live/Cargo.toml --all -- --check
-cargo clippy --manifest-path rust_live/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path rust_live/Cargo.toml --all-targets
-cargo build --manifest-path rust_live/Cargo.toml --release --bins
-cargo run --manifest-path rust_live/Cargo.toml --release --bin hot-path-bench
+cargo clippy --locked --manifest-path rust_live/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --manifest-path rust_live/Cargo.toml --workspace --all-targets --all-features
+cargo build --locked --manifest-path rust_live/Cargo.toml --release --bins
+cargo run --locked --manifest-path rust_live/Cargo.toml --release --bin hot-path-bench
+cargo fmt --manifest-path rust_live/fuzz/Cargo.toml --all -- --check
+cargo check --locked --manifest-path rust_live/fuzz/Cargo.toml --all-targets
+cargo deny --manifest-path rust_live/Cargo.toml check advisories bans sources
+```
+
+The portable Docker image uses O3/fat LTO. Build a host-specific image only on
+the intended production CPU:
+
+```powershell
+docker build --build-arg "MM_RUSTFLAGS=-C target-cpu=native" `
+  --build-arg MM_BUILD_FLAVOR=native-o3 `
+  --build-arg MM_GIT_REVISION=<commit-or-build-id> `
+  -f rust_live/Dockerfile -t cashcat-cj-rust:native .
 ```
 
 `tests/python_parity.rs` pins deterministic outputs from the Python reference for

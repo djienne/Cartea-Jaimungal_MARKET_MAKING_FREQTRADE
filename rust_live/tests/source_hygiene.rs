@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 
 #[test]
 fn rust_model_contains_only_the_cartea_jaimungal_policy() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    collect_rs_files(&source, &mut files);
+    collect_rs_files(&workspace.join("src"), &mut files);
+    collect_rs_files(&workspace.join("crates"), &mut files);
     let forbidden = [
         "avellaneda",
         "stoikov",

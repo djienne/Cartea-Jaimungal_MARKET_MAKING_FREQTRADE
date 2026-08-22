@@ -20,12 +20,12 @@ log_json = false
 
 [latency]
 gate_enabled = true
-max_acceptable_p99_ms = 150.0
+max_acceptable_p95_ms = 150.0
 minimum_samples = 20
 minimum_network_samples = 20
 max_sample_age_ms = 15000
 hot_sample_every = 16
-window_seconds = 300
+window_seconds = 60
 queue_capacity = 4096
 
 [storage]

@@ -1,5 +1,17 @@
 # Local performance characterization
 
+The post-hardening unpinned Windows release run on 2026-08-22 measured an
+89.22 ns paired quote-loop median. Independent 64-decision batches reported
+p50/p95/p99 of 87.50/132.81/146.88 ns per decision. One-in-16 latency sampling
+raised the paired median to 93.58 ns, or 4.88%. The HJB solve distribution was
+0.698/0.976/1.120 ms at p50/p95/p99. This is a large improvement over the
+pre-change 143–156 ns quote range, chiefly from eliminating two inventory-grid
+allocations per decision and selecting both depths in one lookup. Because this
+run was not CPU-pinned, it remains informational rather than an approved gate
+baseline.
+
+## Historical pre-hardening measurements
+
 Measured on 2026-08-21 with an AMD Ryzen 9 7900 using the locked Rust 1.92
 release profile (`opt-level=3`, fat LTO, one codegen unit). These are computation
 benchmarks, not exchange-latency measurements.
@@ -25,7 +37,7 @@ larger than compute latency: `/info` p99 was about 324 ms, account WebSocket pin
 p99 about 561 ms, passive submit acknowledgement about 695 ms, passive cancel
 acknowledgement about 931-961 ms, and the final IOC submit acknowledgements about
 959-976 ms. These are end-to-end development-host measurements, not production
-benchmarks. They exceed the configured 150 ms production p99 gate and therefore
+benchmarks. They exceed the configured 150 ms production p95 gate and therefore
 support refusing production trading from this machine.
 
 The stateful-backend acceptance campaign measured WebSocket order
@@ -54,3 +66,10 @@ Run it with:
 cargo run --locked --manifest-path rust_live/Cargo.toml `
   --release --bin hot-path-bench
 ```
+
+Set `MM_BENCH_CPU` to pin the benchmark and `MM_BENCH_OUTPUT` to persist its
+JSON report. On a designated same-machine runner, compare against an approved
+baseline with `rust_live/scripts/check-performance.ps1`; the gate permits at
+most 5% p50 and 10% p99 quote regression and 5% monitoring overhead. Unpinned
+results remain informational and are never compared to an absolute nanosecond
+threshold.

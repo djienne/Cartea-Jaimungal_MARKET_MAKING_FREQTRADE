@@ -11,10 +11,22 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::thread::{self, JoinHandle};
+
+const EVENT_LOG_QUEUE_CAPACITY: usize = 8_192;
+type EventWrite = Box<dyn FnOnce(&mut BufWriter<File>) -> Result<()> + Send>;
+
+enum WriterMessage {
+    Event(EventWrite),
+    Flush(SyncSender<std::result::Result<(), String>>),
+    Shutdown,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionReport {
     pub schema_version: u32,
+    pub build: crate::BuildInfo,
     pub session_id: String,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
@@ -36,6 +48,7 @@ pub struct SessionReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct LiveSessionReport {
     pub schema_version: u32,
+    pub build: crate::BuildInfo,
     pub session_id: String,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
@@ -85,7 +98,8 @@ impl ModelReport {
 
 pub struct JsonlEventLogger {
     path: PathBuf,
-    writer: BufWriter<File>,
+    sender: SyncSender<WriterMessage>,
+    writer_thread: Option<JoinHandle<()>>,
 }
 
 impl JsonlEventLogger {
@@ -93,33 +107,89 @@ impl JsonlEventLogger {
         std::fs::create_dir_all(directory)?;
         let path = directory.join(format!("{mode}-{started_at_ms}.jsonl"));
         let writer = BufWriter::new(File::create(&path)?);
-        Ok(Self { path, writer })
+        let (sender, receiver) = mpsc::sync_channel(EVENT_LOG_QUEUE_CAPACITY);
+        let writer_thread = thread::Builder::new()
+            .name("jsonl-event-writer".to_owned())
+            .spawn(move || run_event_writer(writer, &receiver))?;
+        Ok(Self {
+            path,
+            sender,
+            writer_thread: Some(writer_thread),
+        })
     }
 
-    pub fn log<T: Serialize>(
-        &mut self,
-        event_type: &str,
-        exchange_ms: Option<u64>,
-        payload: &T,
-    ) -> Result<()> {
-        let envelope = serde_json::json!({
-            "event": event_type,
-            "logged_at_ms": crate::types::unix_ms(),
-            "exchange_ms": exchange_ms,
-            "payload": serde_json::to_value(payload)?,
+    pub fn log<T>(&self, event_type: &str, exchange_ms: Option<u64>, payload: &T) -> Result<()>
+    where
+        T: Serialize + Clone + Send + 'static,
+    {
+        let event_type = event_type.to_owned();
+        let payload = payload.clone();
+        let logged_at_ms = crate::types::unix_ms();
+        let job: EventWrite = Box::new(move |writer| {
+            let envelope = serde_json::json!({
+                "event": event_type,
+                "logged_at_ms": logged_at_ms,
+                "exchange_ms": exchange_ms,
+                "payload": payload,
+            });
+            serde_json::to_writer(&mut *writer, &envelope)?;
+            writer.write_all(b"\n")?;
+            Ok(())
         });
-        serde_json::to_writer(&mut self.writer, &envelope)?;
-        self.writer.write_all(b"\n")?;
-        Ok(())
+        self.sender
+            .try_send(WriterMessage::Event(job))
+            .map_err(|error| {
+                anyhow::anyhow!(match error {
+                    TrySendError::Full(_) => {
+                        "event-log queue saturated; refusing an incomplete scientific run"
+                    }
+                    TrySendError::Disconnected(_) => "event-log writer stopped unexpectedly",
+                })
+            })
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        self.writer.flush()?;
-        Ok(())
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::Flush(reply_tx))
+            .map_err(|_| anyhow::anyhow!("event-log writer stopped before flush"))?;
+        reply_rx
+            .recv()
+            .map_err(|_| anyhow::anyhow!("event-log writer dropped flush acknowledgement"))?
+            .map_err(anyhow::Error::msg)
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+impl Drop for JsonlEventLogger {
+    fn drop(&mut self) {
+        let _ = self.sender.send(WriterMessage::Shutdown);
+        if let Some(handle) = self.writer_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn run_event_writer(mut writer: BufWriter<File>, receiver: &mpsc::Receiver<WriterMessage>) {
+    while let Ok(message) = receiver.recv() {
+        match message {
+            WriterMessage::Event(write) => {
+                if write(&mut writer).is_err() {
+                    break;
+                }
+            }
+            WriterMessage::Flush(reply) => {
+                let result = writer.flush().map_err(|error| error.to_string());
+                let _ = reply.send(result);
+            }
+            WriterMessage::Shutdown => {
+                let _ = writer.flush();
+                break;
+            }
+        }
     }
 }
 
@@ -152,5 +222,34 @@ impl LiveSessionReport {
             .persist(path)
             .map_err(|error| anyhow::anyhow!(error.error))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asynchronous_event_writer_preserves_order_and_flushes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path;
+        {
+            let mut logger = JsonlEventLogger::create(directory.path(), "test", 1).unwrap();
+            path = logger.path().to_owned();
+            for sequence in 0..1_000_u64 {
+                logger.log("sequence", Some(sequence), &sequence).unwrap();
+            }
+            logger.flush().unwrap();
+        }
+        let rows = std::fs::read_to_string(path).unwrap();
+        let parsed = rows
+            .lines()
+            .map(|row| serde_json::from_str::<serde_json::Value>(row).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(parsed.len(), 1_000);
+        for (sequence, row) in parsed.into_iter().enumerate() {
+            assert_eq!(row["payload"], sequence as u64);
+            assert_eq!(row["exchange_ms"], sequence as u64);
+        }
     }
 }

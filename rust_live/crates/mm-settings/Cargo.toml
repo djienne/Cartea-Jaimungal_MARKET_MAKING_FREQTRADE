@@ -1,0 +1,18 @@
+[package]
+name = "mm-settings"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.92"
+license = "MIT"
+description = "Dependency-light configuration value types shared by runtime layers"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"

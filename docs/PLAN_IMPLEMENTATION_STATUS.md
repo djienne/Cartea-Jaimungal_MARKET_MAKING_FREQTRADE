@@ -6,12 +6,13 @@ Generated from the local worktree after a safety-gate run.
 fails this document if its test count disagrees with the `pytest_core` evidence
 in `docs/last_safety_gates.json`, and that artifact still carries
 `generated_at: 2026-06-11T16:49:31Z` — so the 424 below is the count from that
-run, not the current one. `python -m pytest tests` reports **727 passed** today
-(measured 2026-08-19; keep this line moving with the suite). The
-number here can only be corrected by a full `--include-runtime` battery that
-rewrites both files, and that profile is itself broken: every Docker gate
-addresses compose services (`freqtrade`, `hl-collector2`) and a container
-(`MM_ADV`) that stopped existing on 2026-08-16. See `docs/DEPLOYMENT_GATES.md`.
+run, not the current one. `python -m pytest -q` reports **722 passed** today
+(measured 2026-08-22; keep this line moving with the suite). The pinned number
+can only be corrected by a full `--include-runtime` battery that rewrites both
+files. That profile was repaired on 2026-08-19 to use `mm-long`/`mm-short` and
+the external collectors without stopping the running bots; see
+`docs/DEPLOYMENT_GATES.md`. The old June artifact remains stale until that full
+battery is deliberately rerun.
 
 ## Automated Evidence
 
@@ -53,7 +54,8 @@ addresses compose services (`freqtrade`, `hl-collector2`) and a container
   `freqtrade_callback_surface` runs
   `scripts/verify_freqtrade_callback_surface.py` and writes
   `docs/freqtrade_callback_surface_report.json` from inside the
-  `freqtradeorg/freqtrade:2025.4` Docker service. It imports the actual mounted
+  `ft-cartea-jaimungal_market_making_freqtrade:2025.10` Docker service. It
+  imports the actual mounted
   strategy module and verifies the callback signatures Freqtrade sees for
   `custom_entry_price`, `custom_exit_price`, `custom_stake_amount`,
   `confirm_trade_entry`, `confirm_trade_exit`, `adjust_entry_price`,

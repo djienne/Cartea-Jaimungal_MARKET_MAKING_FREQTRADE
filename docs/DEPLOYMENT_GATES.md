@@ -373,7 +373,7 @@ These gates require the real Freqtrade/Hyperliquid runtime:
   locked.
 - `hyperliquid_post_only_mapping`: Freqtrade `PO` is currently not verified for
   Hyperliquid live execution. Current local runtime evidence shows that
-  Freqtrade 2025.4 accepts generated `GTC` and `PO` configs at startup, while
+  Freqtrade 2025.10 accepts generated `GTC` and `PO` configs at startup, while
   native `Alo` is rejected by Freqtrade config validation. The checked-in
   dry-run harness still uses `GTC` for research startup compatibility and live
   trading remains blocked. Even if `post_only_verified=true` is supplied, live

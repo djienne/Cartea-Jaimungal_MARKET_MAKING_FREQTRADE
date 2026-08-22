@@ -4,10 +4,55 @@ use mm_live::instrument::InstrumentSpec;
 use mm_live::latency::{HotLatencySampler, LatencyKind, LatencyMonitor};
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
 use mm_live::types::{Bbo, ProcessClock, QuoteReason};
+use serde::Serialize;
 use std::hint::black_box;
+use std::path::Path;
 use std::time::Instant;
 
+#[derive(Debug, Serialize)]
+struct Distribution {
+    p50: f64,
+    p95: f64,
+    p99: f64,
+    min: f64,
+    max: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchmarkReport {
+    schema_version: u32,
+    build: mm_live::BuildInfo,
+    pinned_cpu: Option<usize>,
+    iterations_per_run: u64,
+    repetitions: usize,
+    quote_batch_ns_per_decision: Distribution,
+    baseline_run_ns_per_decision: Distribution,
+    monitored_run_ns_per_decision: Distribution,
+    monitoring_overhead_percent: f64,
+    hjb_solve_ms: Distribution,
+    guard: i64,
+}
+
 fn main() {
+    mm_live::BuildInfo::current()
+        .ensure_optimized()
+        .expect("benchmark must be compiled at opt-level=3");
+    let pinned_cpu = std::env::var("MM_BENCH_CPU").ok().map(|value| {
+        value
+            .parse::<usize>()
+            .expect("MM_BENCH_CPU must be an integer")
+    });
+    if let Some(cpu) = pinned_cpu {
+        let cores = core_affinity::get_core_ids().expect("cannot enumerate benchmark CPUs");
+        let core = cores
+            .into_iter()
+            .find(|core| core.id == cpu)
+            .expect("MM_BENCH_CPU is not available");
+        assert!(
+            core_affinity::set_for_current(core),
+            "cannot pin benchmark thread"
+        );
+    }
     let parameters = CjParameters {
         lambda_plus: 0.135,
         lambda_minus: 0.174,
@@ -79,21 +124,13 @@ fn main() {
     let monitored_median = median(&monitored);
     let overhead_ns = monitored_median - baseline_median;
     let overhead_percent = overhead_ns / baseline_median * 100.0;
-    println!(
-        "benchmark=cj_quote_compute_paired iterations_per_run={iterations} repetitions={repetitions} baseline_median_ns={baseline_median:.2} baseline_min_ns={:.2} baseline_max_ns={:.2} guard={guard}",
-        baseline.iter().copied().fold(f64::INFINITY, f64::min),
-        baseline.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-    );
-    println!(
-        "benchmark=latency_monitor_producer iterations_per_run={iterations} repetitions={repetitions} hot_sample_every={sample_every} monitored_median_ns={monitored_median:.2} monitored_min_ns={:.2} monitored_max_ns={:.2} incremental_median_ns={overhead_ns:.2} incremental_median_percent={overhead_percent:.2}",
-        monitored.iter().copied().fold(f64::INFINITY, f64::min),
-        monitored.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-    );
+    let quote_batches = quote_batch_distribution(&policy, &surface, bbo, 20_000, 64);
 
     let solve_iterations = 100_u64;
-    let started = Instant::now();
+    let mut solve_samples = Vec::with_capacity(solve_iterations as usize);
     let mut solve_guard = 0_usize;
     for revision in 0..solve_iterations {
+        let started = Instant::now();
         let solved = solve_asymmetric(
             black_box(parameters),
             black_box(&model_config),
@@ -101,13 +138,63 @@ fn main() {
             revision,
         )
         .expect("benchmark HJB must solve");
+        solve_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
         solve_guard ^= solved.n_steps;
     }
-    let total_ns = started.elapsed().as_nanos();
-    println!(
-        "benchmark=cj_hjb_solve iterations={solve_iterations} total_ns={total_ns} ms_per_solve={:.3} guard={solve_guard}",
-        total_ns as f64 / solve_iterations as f64 / 1_000_000.0
-    );
+    guard ^= solve_guard as i64;
+    let report = BenchmarkReport {
+        schema_version: 2,
+        build: mm_live::BuildInfo::current(),
+        pinned_cpu,
+        iterations_per_run: iterations,
+        repetitions,
+        quote_batch_ns_per_decision: distribution(&quote_batches),
+        baseline_run_ns_per_decision: distribution(&baseline),
+        monitored_run_ns_per_decision: distribution(&monitored),
+        monitoring_overhead_percent: overhead_percent,
+        hjb_solve_ms: distribution(&solve_samples),
+        guard,
+    };
+    let encoded = serde_json::to_string_pretty(&report).expect("benchmark report must serialize");
+    println!("{encoded}");
+    if let Ok(path) = std::env::var("MM_BENCH_OUTPUT") {
+        std::fs::write(Path::new(&path), encoded).expect("cannot write MM_BENCH_OUTPUT");
+    }
+}
+
+fn quote_batch_distribution(
+    policy: &CarteaJaimungalPolicy,
+    surface: &HjbSurface,
+    bbo: Bbo,
+    batches: u64,
+    batch_size: u64,
+) -> Vec<f64> {
+    let mut samples = Vec::with_capacity(batches as usize);
+    let mut sequence = 0_u64;
+    for _ in 0..batches {
+        let started = Instant::now();
+        for _ in 0..batch_size {
+            let q = (sequence as i64 % 11 - 5) * 1_868;
+            let decision = policy.compute(
+                black_box(surface),
+                black_box(bbo),
+                black_box(q),
+                1_868,
+                black_box(75.0),
+                sequence,
+                sequence,
+                QuoteReason::Market,
+                RiskState {
+                    equity_usdc: 1_000.0,
+                    ..RiskState::default()
+                },
+            );
+            black_box(decision);
+            sequence = sequence.wrapping_add(1);
+        }
+        samples.push(started.elapsed().as_nanos() as f64 / batch_size as f64);
+    }
+    samples
 }
 
 fn run_quote_loop(
@@ -193,4 +280,24 @@ fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
     sorted[sorted.len() / 2]
+}
+
+fn distribution(values: &[f64]) -> Distribution {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    Distribution {
+        p50: percentile(&sorted, 0.50),
+        p95: percentile(&sorted, 0.95),
+        p99: percentile(&sorted, 0.99),
+        min: sorted.first().copied().unwrap_or_default(),
+        max: sorted.last().copied().unwrap_or_default(),
+    }
+}
+
+fn percentile(sorted: &[f64], quantile: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let index = ((sorted.len() - 1) as f64 * quantile).ceil() as usize;
+    sorted[index]
 }

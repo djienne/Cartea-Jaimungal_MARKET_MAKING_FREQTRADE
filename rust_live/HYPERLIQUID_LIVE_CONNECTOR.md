@@ -23,10 +23,14 @@ fail-closed while `[live].enabled=false`. Implemented and exercised pieces are:
   emergency cancel;
 - all eight account subscriptions, application heartbeat with measured RTT,
   protocol pong, bounded delivery, reconnect, and health metrics;
-- ACID order/fill/funding state, typed partial-fill lifecycle, account-aware
-  sizing, rate reserves, restart reconciliation, and explicit market close;
-- production-only latency enforcement with probe/dry-run/acceptance bypass;
-- an explicitly guarded 12-directional/24-gross/60-turnover/0.5-loss campaign.
+- normalized transactional order/fill/funding tables with coalesced background
+  persistence, typed partial-fill lifecycle, account-aware sizing, rate
+  reserves, restart reconciliation, and explicit market close; nonce ranges are
+  fsynced before use while lifecycle telemetry never blocks the socket task;
+- production-only rolling-p95 latency enforcement with probe, dry-run, replay,
+  and feature-gated acceptance bypass;
+- an explicitly guarded 12-directional/24-gross/60-turnover/0.5-loss campaign
+  compiled into `mm-live-acceptance`, not the production binary.
 
 Real evidence covers two-sided ALO, both cancel identifiers, post-only refusal,
 response loss, hard restarts with order and position, a genuine maker fill, and
@@ -41,13 +45,15 @@ CCXT. Python/JavaScript implementations may generate offline test fixtures only.
 
 ## 1. Decision summary
 
-The recommended implementation is:
+The implemented design is:
 
-1. Keep the existing Cartea–Jaimungal calibration, HJB, quote policy, risk
-   decisions, public market feed, and lock-free hot thread unchanged.
-2. Add a cold-path `HyperliquidExecutionBackend` behind the existing execution
-   boundary. It owns signing, WebSocket `post` requests, private/account
-   subscriptions, order state, reconciliation, and authoritative account state.
+1. `cj-core` owns the Cartea–Jaimungal HJB and quote policy without Tokio,
+   Arrow/Parquet, HTTP, redb, or JSON dependencies. `mm-runtime` owns the
+   dedicated hot thread, coherent atomics, and latency sampling.
+2. `hyperliquid-connector` is the cold-path live boundary. It owns signing,
+   WebSocket `post` requests, account subscriptions, order state,
+   reconciliation, and authoritative account projection behind the generic
+   execution traits.
 3. Use a dedicated Hyperliquid API/agent wallet for one dedicated account or
    subaccount. Never put the master wallet key in the bot.
 4. Use WebSocket action posts for normal order/cancel flow, but retain `/info`
@@ -55,15 +61,11 @@ The recommended implementation is:
 5. Give every order a unique 128-bit `cloid`. A timeout or disconnect after a
    send is an **unknown outcome**, never permission to submit another order
    blindly.
-6. Pin and audit the current Hyperliquid Rust SDK from the Hyperliquid GitHub
-   organization for action types/signing, while retaining our own transport and
-   lifecycle state machine. As of this audit the crate line is `hl_sdk` 0.12.10.
-   It must pass the signing fixtures in this document and compile with the pinned
-   project toolchain before adoption. The official Python SDK remains an
-   offline, test-only independent wire oracle and is absent from runtime.
-7. Use the useful local implementations as test material and design evidence,
-   not as a complete connector. No local project contains the whole required
-   maker-order + private-WebSocket + reconciliation path.
+6. The runtime uses its pinned pure-Rust typed signer and golden wire fixtures.
+   The official Python SDK is an independent offline oracle only and is absent
+   from runtime; adopting another SDK later requires the same fixtures to pass.
+7. Useful older local implementations remain comparison/test material, not
+   runtime dependencies.
 
 The general API index currently points to the official Python SDK and a community
 Rust SDK; the Hyperliquid GitHub organization also maintains a Rust SDK. See the
@@ -710,49 +712,54 @@ Implementation consequences:
 
 ## 14. Implemented architecture in `rust_live`
 
-The live backend implements the following extensions:
+The live backend now has these boundaries:
 
-1. Extend `InstrumentSpec` with margin mode/`only_isolated`, margin table ID,
-   delisting status, and a metadata revision/fingerprint.
-2. Replace or generalize `DryRunAccountState` into an account state usable by
-   both execution backends, while preserving all current dry-run fields.
-3. Expand `ExecutionEvent` with at least:
-   `OrderResting`, `OrderRejected`, `CancelAcknowledged`, `OrderUnknown`,
-   `Fill`, `Funding`, `AccountSnapshot`, `Connected`, `Disconnected`, and
-   `Invalidated`.
-4. Add a bounded private/execution event ring so authenticated WebSocket events
-   arrive independently of public market events. The live backend should not
-   wait for the next BBO to notice a fill.
-5. Add `ExecutionHealth` and a reconciliation state. The hot path can quote only
-   when public market data, calibration, private stream, account snapshot, and
-   order reconciliation are all fresh.
-6. Add live-only signer, nonce, action encoder, WebSocket post correlator,
-   subscription manager, rate limiter, and order map modules.
-7. Keep signing/HTTP/JSON allocation off the hot thread. Desired quotes remain
-   integer, venue-neutral `OrderIntent`s.
-8. Keep `[live].enabled=false` in the tracked profile; enabling that flag selects
-   the backend, while production mode always enforces latency.
-9. Reuse the Rust `LatencyMonitor`: record the monotonic timestamp immediately
-   before socket write and on authoritative order/fill events, then publish
-   `submit_to_ack`, `cancel_to_ack`, and `ack_to_fill`. The backend only enqueues
-   raw samples; the existing observer thread owns rolling percentiles and I/O.
-   Never calculate histograms or format metrics on the execution socket task.
+1. `InstrumentSpec` carries margin mode/`only_isolated`, margin table ID,
+   delisting status, and a metadata revision/fingerprint discovered from the
+   venue.
+2. The shared account state preserves the dry-run accounting fields while the
+   live projection is rebuilt from authoritative account/order/fill messages.
+3. `ExecutionEvent` distinguishes acknowledgements, rejections, cancels, fills,
+   funding, account reconciliation, unknown outcomes, connection state, and
+   invalidation.
+4. Authenticated events use bounded delivery independently of public market
+   events; fills trigger execution processing without waiting for another BBO.
+5. Quoting requires fresh public data, calibration, latency eligibility, account
+   state, and reconciliation. Queue saturation or causal event loss fails
+   closed.
+6. Signing, nonce leases, fixed-point actions, WebSocket post correlation,
+   subscriptions, rate limits, order state, and reconciliation are separate
+   connector modules or clearly isolated responsibilities.
+7. Signing/HTTP/JSON and persistence remain off the hot thread. Desired quotes
+   stay integer, venue-neutral `OrderIntent`s.
+8. `[live].enabled=false` remains tracked; enabling it selects the live backend,
+   while production mode always enforces the latency gate.
+9. `LatencyMonitor` records queue wait, action preparation, signing, socket
+   write, submit/cancel acknowledgement, and fill/close stages using monotonic
+   timestamps. The socket and hot tasks enqueue raw samples only; the observer
+   thread owns rolling percentiles and I/O.
 
-Suggested module layout:
+Current workspace/module layout:
 
 ```text
-src/execution/hyperliquid/
-  mod.rs
-  backend.rs          # ExecutionBackend + AccountStateProvider
-  signer.rs           # API-wallet signer abstraction
-  nonce.rs            # atomic + persisted monotonic nonce
-  actions.rs          # typed wire structs and rounding-free conversion
-  ws_post.rs          # request IDs, inflight map, heartbeat, reconnect
-  private_stream.rs   # order/fill/funding/account subscriptions
-  order_state.rs      # CLOID/OID lifecycle and deduplication
-  reconcile.rs        # /info snapshots and unknown-outcome recovery
-  rate_limit.rs
-  errors.rs
+rust_live/
+  crates/cj-core/                    # HJB, policy, instrument and shared types
+  crates/cj-data/                    # calibration, Parquet and replay
+  crates/mm-execution/               # generic traits and dry-run simulator
+  crates/mm-runtime/                 # hot thread, atomics, metrics and latency
+  crates/mm-config/                  # validated central TOML schema
+  crates/mm-settings/                # dependency-light setting value types
+  crates/hyperliquid/src/
+    execution/hyperliquid_live.rs    # live backend and reconciliation policy
+    session.rs                       # action/account WebSocket actor
+    transport.rs                     # shared subscriptions and heartbeat wire
+    signing.rs                       # fixed-point actions, CLOIDs and signer
+    live_state.rs                    # normalized redb state and nonce leases
+    exchange.rs                      # authoritative REST client
+    account_types.rs                 # typed account/order/fill payloads
+    market.rs / wire.rs / meta.rs    # public feed and metadata
+  src/main.rs                        # production CLI/orchestration only
+  src/bin/mm_live_acceptance.rs      # feature-gated real-account acceptance
 ```
 
 ## 15. Audit of existing projects under `C:\Users\david\Desktop\freqtrade`
@@ -770,8 +777,10 @@ copies were separated from actual connector implementations.
 | `OLD\XEMM_dry_run_evaluator\src\livebot\exec\{hyperliquid,crypto,sign,creds}.rs` plus `src\connectors\hyperliquid.rs` | Best local low-level reference: typed MessagePack wire structs, correct vault marker + address bytes, correct expiry separator, main/test phantom agent, secp256k1 signatures, monotonic nonce, golden vectors, ALO/IOC construction, OID cancel, leverage action, open orders/account reads, robust public `bbo`/book/trade WS heartbeat and reconnect | Retired project, not a maintained Git repository. Assumes a subaccount/vault on every live path, has no master-account/no-vault mode, cancel-by-CLOID, modify/batch, `scheduleCancel`, private/account WS, durable fill deduplication, or complete reconciliation. Key bytes are retained without a zeroizing secret type. Port fixtures/ideas only. |
 | Current `rust_live` | Generic instrument, lock-free CJ hot path, zeroizing signer, exact fixed-point actions, persisted nonce/order/fill/funding state, WebSocket posts/account streams, REST recovery, rate reserves, account-aware risk, explicit market close, and guarded acceptance tooling | Continuous live is implemented but tracked off. Current development latency fails the production gate, and the present low-volume account is ineligible for the venue dead-man feature. |
 
-Conclusion: the older Rust signer contains valuable byte-level work, but no local
-Rust implementation is complete enough to enable real money safely.
+Conclusion: the older Rust signer contains valuable byte-level work, but none of
+the pre-existing local projects was complete enough to enable real money safely.
+The current `rust_live` connector fills that lifecycle gap, remains tracked off,
+and still refuses production trading on this development machine's latency.
 
 ### 15.2 JavaScript implementations
 

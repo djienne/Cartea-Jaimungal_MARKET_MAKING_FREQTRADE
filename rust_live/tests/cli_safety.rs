@@ -14,6 +14,7 @@ fn live_command_fails_before_credentials_or_order_transport() {
 }
 
 #[test]
+#[cfg(feature = "live-acceptance")]
 fn live_canary_fails_before_network_or_credentials_without_explicit_confirmation() {
     let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat.toml");
     let output = Command::new(env!("CARGO_BIN_EXE_mm-live"))
@@ -33,18 +34,44 @@ fn live_canary_fails_before_network_or_credentials_without_explicit_confirmation
 }
 
 #[test]
-fn acceptance_and_flatten_commands_share_the_default_off_live_gate() {
+fn flatten_command_uses_the_default_off_live_gate() {
     let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat.toml");
-    for command in [["live-flatten", ""], ["live-acceptance", "--phase"]] {
-        let mut args = vec!["--config", config.to_str().unwrap(), command[0]];
-        if !command[1].is_empty() {
-            args.extend([command[1], "verify"]);
-        }
-        let output = Command::new(env!("CARGO_BIN_EXE_mm-live"))
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("live.enabled=false"));
-    }
+    let output = Command::new(env!("CARGO_BIN_EXE_mm-live"))
+        .args(["--config", config.to_str().unwrap(), "live-flatten"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("live.enabled=false"));
+}
+
+#[test]
+#[cfg(feature = "live-acceptance")]
+fn acceptance_command_uses_the_default_off_live_gate() {
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_mm-live"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "live-acceptance",
+            "--phase",
+            "verify",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("live.enabled=false"));
+}
+
+#[test]
+#[cfg(not(feature = "live-acceptance"))]
+fn production_binary_omits_real_account_acceptance_commands() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mm-live"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("live-canary"));
+    assert!(!stdout.contains("live-acceptance"));
+    assert!(!stdout.contains("live-gate-smoke"));
 }

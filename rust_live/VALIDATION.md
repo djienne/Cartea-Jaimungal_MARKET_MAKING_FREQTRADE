@@ -5,13 +5,71 @@ implemented but the tracked CASHCAT profile ships with `live.enabled=false`.
 An explicitly authorized acceptance campaign exercised minimum-notional real
 actions on a dedicated CASHCAT subaccount and ended flat with zero open orders.
 
+## Hot/cold-path hardening
+
+- The optimized workspace and all-feature suite cover allocation, Loom
+  interleavings, contention, properties, mock WebSockets, persistence migration,
+  lifecycle reordering, and Python parity.
+- `cj-core` HJB and quote-policy line coverage is above 92%; calibration is
+  above 91%, dry-run execution above 88%, latency aggregation above 92%, live
+  state above 87%, signing above 89%, and public wire decoding above 90%.
+- The all-feature workspace line total is about 52%. This lower aggregate is
+  reported rather than hidden: real-account acceptance, CLI orchestration, and
+  much of the network-backed live backend are intentionally not executed by
+  normal CI. CI hard-gates the pure core, dry-run execution, and runtime crates
+  while publishing the complete connector report for review.
+- An in-process live lifecycle exercises fill-before-ack, duplicate fill, stale
+  acknowledgement, partial-fill cancellation, foreign-fill refusal, action
+  refusal, and ambiguous-write reconciliation without touching a real account.
+- Final portable and host-native O3/fat-LTO Docker images built successfully.
+  A 15-second credential-free public-feed dry-run in the portable image exited
+  successfully with `scientifically_valid=true`; no order channel was opened.
+
+## Current data and replay status
+
+Checked on 2026-08-22 around 17:30 UTC:
+
+- `hl-cashcat-collector` had run for about 28 hours and was still writing
+  non-empty price, trade, and 20-level order-book Parquet shards every ten
+  seconds. Its running counters were about 180,314 BBO updates, 38,931 trades,
+  and 18,596 order-book updates. The multi-day CASHCAT store reaches back to
+  2026-08-16/17 and remains the replay source.
+- The collector experienced repeated DNS/WebSocket interruptions but recovered.
+  The current 120-minute estimator correctly excluded about 331 seconds of
+  outage and still returned `status=ok` from 11,409 mids and 4,046 trade prints,
+  with zero unreadable shards, R-squared about 0.951/0.953, and toxicity about
+  0.20/0.33. Collection is usable, but the network interruptions remain visible
+  evidence rather than being hidden.
+- The latest staged Python sweep is a completed 95.23-hour pinned-tape result,
+  not a continuously updating job. Its selected configuration earned +7.55 USDC
+  on train but lost 10.24 USDC held out; only 5/16 six-hour windows were
+  positive. The infrastructure ladder was +23.07 at 50 ms/100 ms refresh,
+  -10.24 at 100/250 ms, -16.49 at 200/500 ms, -49.19 at 500/1000 ms, and
+  -148.60 at 500 ms/30 s. Latency and refresh move together, so these are
+  machine scenarios rather than a pure latency-only causal sweep.
+- That sweep tape ends at 2026-08-20T21:11:41Z and therefore does not contain
+  the newest August 22 volatility. Two abandoned August 17 sweep processes and
+  their scratch trees were removed after confirming no CPU or file progress;
+  completed reports were preserved.
+- The newer Rust two-hour replay (`replay-1787353244623.json`) is scientifically
+  valid but also negative: 112 fills, -17.43 USDC mark-to-market, and markout
+  moving from +2.22 USDC at 100 ms to -10.79/-17.96/-18.98 at 1/5/30 seconds.
+- The concurrently running Freqtrade processes are dry-run forward tests, not
+  historical backtests. Since their current restart, the long database records
+  seven closed trades for -241.09 USDC; the short database records 30 closed
+  trades for -66.27 USDC plus an open simulated short carrying -230.85 USDC of
+  realized partial-exit loss. These dry-run fills include an extreme CASHCAT
+  price dislocation and are operational warnings, not substitutes for the queue
+  replay.
+
 ## Deterministic gates
 
 - `cargo fmt --check`: passed.
 - strict Clippy over all targets with warnings denied: passed.
-- Rust tests: 80 passed across unit and integration targets.
+- Rust tests: 110 passed across optimized unit and integration targets.
 - Python/Freqtrade reference tests: 722 passed.
-- locked optimized build of both binaries: passed.
+- locked optimized builds of the production and feature-gated acceptance
+  binaries: passed.
 - Docker image build with the bounded context: passed; containerized metadata
   validation resolved CASHCAT correctly, and disabled `live` refused before
   credential or network access.
@@ -70,7 +128,7 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
   books, 14/14 heartbeat replies, two calibrations, and zero reconnects,
   causal drops, or calibration failures. Dispatch p99 was 0.078 ms,
   hot-decision p99 25.861 us, and public WebSocket RTT p99 529.733 ms.
-- The final rebuilt image (`sha256:952970ff...`) repeated a bounded dry-run in
+- The final rebuilt portable image repeated a bounded dry-run in
   `dry_run-1787407198386.json`: scientifically valid with clean shutdown and no
   reconnect or causal-drop warning; it processed 36 messages and completed 6/6
   heartbeat RTTs.
@@ -156,7 +214,7 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
 - On this development machine, the read-only probe measured `/info` p99 around
   324 ms and WebSocket ping p99 around 561 ms; the final action canary measured
   submit acknowledgements around 959-976 ms. These exceed the configured 150 ms
-  production p99 threshold, so an enforced production gate would refuse to
+  production p95 threshold, so an enforced production gate would refuse to
   quote. Probe, dry-run, and canary enforcement was intentionally bypassed.
 - The already-running Python estimator and both Freqtrade dry-run consumers were
   restarted so their in-memory schema guards also use v4. The estimator now
@@ -173,15 +231,16 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
   mark-to-market PnL. Markout was +2.2175 USDC at 100 ms but -10.7904, -17.9604,
   and -18.9831 USDC at 1 s, 5 s, and 30 s: direct adverse-selection evidence.
   The loss is retained; validation does not require profitability.
-- The quote kernel measured 152.34 ns per decision and a 600-step HJB solve
-  measured 0.322 ms in the current Linux verification container. See
-  `PERFORMANCE.md` for benchmark scope.
+- The pre-hardening Linux verification measured 152.34 ns per decision and a
+  0.322 ms 600-step HJB solve. The post-hardening unpinned Windows run measured
+  an 89.22 ns paired quote-loop median; see `PERFORMANCE.md` for the complete
+  distributions and benchmark scope.
 
 ## Remaining boundary
 
 Continuous live trading is implemented and selected by one central TOML flag,
 which remains off in the tracked profile. This development machine is not a
-production host: measured API/action latency exceeds the enforced 150-ms p99
+production host: measured API/action latency exceeds the enforced 150-ms p95
 limit. The current low-volume subaccount also cannot use Hyperliquid's dead-man
 feature. Production activation therefore requires suitable infrastructure and
 either an eligible account with dead-man enabled or an explicit decision to run

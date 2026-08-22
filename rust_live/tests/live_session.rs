@@ -215,6 +215,8 @@ impl Fixture {
             latency,
             events: events_tx,
             shutdown: shutdown_rx,
+            ping_interval: Duration::from_millis(50),
+            idle_timeout: Duration::from_secs(2),
         });
         Self {
             _directory: directory,

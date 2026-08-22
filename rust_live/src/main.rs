@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+#[cfg(feature = "live-acceptance")]
+use clap::ValueEnum;
+use clap::{Parser, Subcommand};
 use mm_live::calibration::{CalibrationSnapshot, Calibrator};
 use mm_live::config::AppConfig;
 use mm_live::execution::{
@@ -9,11 +11,12 @@ use mm_live::hjb::{solve_asymmetric, HjbSurface};
 use mm_live::hot_path::{spawn_hot_path, AtomicRiskState, HotPathInputs, ModelBundle};
 use mm_live::hyperliquid::market::{run_market_stream, MarketStreamArgs};
 use mm_live::hyperliquid::meta::discover_instrument;
+#[cfg(feature = "live-acceptance")]
+use mm_live::hyperliquid::signing::{make_cloid, parse_fixed, LiveOrderRequest, TimeInForce};
 use mm_live::hyperliquid::{
     account::{run_account_stream, AccountStreamArgs, AccountStreamEvent, AccountStreamMetrics},
     auth::HyperliquidCredentials,
     exchange::HyperliquidExchangeClient,
-    signing::{make_cloid, parse_fixed, LiveOrderRequest, TimeInForce},
 };
 use mm_live::latency::{LatencyKind, LatencyMonitor, LatencyObserver, LatencySnapshot};
 use mm_live::lockfree::{
@@ -38,7 +41,8 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-mod live_acceptance;
+#[cfg(feature = "live-acceptance")]
+use hyperliquid_connector::acceptance as live_acceptance;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -55,6 +59,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Print embedded optimization, target, toolchain, and revision metadata.
+    BuildInfo,
     /// Validate configuration and current Hyperliquid metadata.
     Validate,
     /// Run one all-Rust calibration and HJB solve over Parquet history.
@@ -82,6 +88,7 @@ enum Command {
         #[arg(long, default_value_t = 65)]
         duration_seconds: u64,
     },
+    #[cfg(feature = "live-acceptance")]
     /// Explicitly bounded real-money connector canary; never used by the strategy runtime.
     LiveCanary {
         #[arg(long, default_value = "rust_live/hyperliquid.env")]
@@ -102,11 +109,13 @@ enum Command {
     },
     /// Cancel bot orders and reduce-only IOC the configured CASHCAT account to flat.
     LiveFlatten,
+    #[cfg(feature = "live-acceptance")]
     /// Run one persisted phase of the bounded real-account acceptance campaign.
     LiveAcceptance {
         #[arg(long, value_enum)]
         phase: AcceptancePhase,
     },
+    #[cfg(feature = "live-acceptance")]
     /// Bounded production-gate smoke; the short duration cannot satisfy network warm-up.
     LiveGateSmoke {
         #[arg(long, default_value_t = 15)]
@@ -114,12 +123,14 @@ enum Command {
     },
 }
 
+#[cfg(feature = "live-acceptance")]
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum CanaryPhase {
     Passive,
     RoundTrip,
 }
 
+#[cfg(feature = "live-acceptance")]
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum AcceptancePhase {
     Verify,
@@ -138,22 +149,24 @@ enum AcceptancePhase {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    mm_live::BuildInfo::current().ensure_optimized()?;
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| anyhow::anyhow!("cannot install rustls ring crypto provider"))?;
     let cli = Cli::parse();
+    if matches!(&cli.command, Command::BuildInfo) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&mm_live::BuildInfo::current())?
+        );
+        return Ok(());
+    }
     let config = AppConfig::load(&cli.config)?;
     init_tracing(config.runtime.log_json);
-    if matches!(
-        &cli.command,
-        Command::Live { .. }
-            | Command::LiveFlatten
-            | Command::LiveAcceptance { .. }
-            | Command::LiveGateSmoke { .. }
-    ) && !config.live.enabled
-    {
+    if command_requires_live(&cli.command) && !config.live.enabled {
         bail!("live.enabled=false; refusing before credentials or order transport");
     }
+    #[cfg(feature = "live-acceptance")]
     if matches!(
         &cli.command,
         Command::LiveCanary {
@@ -172,6 +185,7 @@ async fn main() -> Result<()> {
         );
     }
     match cli.command {
+        Command::BuildInfo => unreachable!("build-info returned before configuration loading"),
         Command::Validate => {
             println!("{}", serde_json::to_string_pretty(&instrument)?);
             Ok(())
@@ -219,6 +233,7 @@ async fn main() -> Result<()> {
             credentials,
             duration_seconds,
         } => run_connector_check(&config, instrument, &credentials, duration_seconds).await,
+        #[cfg(feature = "live-acceptance")]
         Command::LiveCanary {
             credentials,
             phase,
@@ -240,7 +255,11 @@ async fn main() -> Result<()> {
             duration_seconds,
         } => run_live(&config, instrument, report.as_deref(), duration_seconds).await,
         Command::LiveFlatten => run_live_flatten(&config, instrument).await,
-        Command::LiveAcceptance { phase } => live_acceptance::run(&config, instrument, phase).await,
+        #[cfg(feature = "live-acceptance")]
+        Command::LiveAcceptance { phase } => {
+            live_acceptance::run(&config, instrument, acceptance_phase(phase)).await
+        }
+        #[cfg(feature = "live-acceptance")]
         Command::LiveGateSmoke { duration_seconds } => {
             let mut smoke = config.clone();
             smoke.live.mode = mm_live::config::LiveMode::Production;
@@ -252,6 +271,36 @@ async fn main() -> Result<()> {
                 .with_file_name("cashcat-live-gate-smoke.redb");
             run_live(&smoke, instrument, None, duration_seconds.min(30)).await
         }
+    }
+}
+
+fn command_requires_live(command: &Command) -> bool {
+    match command {
+        Command::Live { .. } | Command::LiveFlatten => true,
+        #[cfg(feature = "live-acceptance")]
+        Command::LiveAcceptance { .. } | Command::LiveGateSmoke { .. } => true,
+        _ => false,
+    }
+}
+
+#[cfg(feature = "live-acceptance")]
+const fn acceptance_phase(
+    phase: AcceptancePhase,
+) -> hyperliquid_connector::acceptance::AcceptancePhase {
+    use hyperliquid_connector::acceptance::AcceptancePhase as Target;
+    match phase {
+        AcceptancePhase::Verify => Target::Verify,
+        AcceptancePhase::Leverage => Target::Leverage,
+        AcceptancePhase::TwoSided => Target::TwoSided,
+        AcceptancePhase::CrossingAlo => Target::CrossingAlo,
+        AcceptancePhase::UnknownOutcome => Target::UnknownOutcome,
+        AcceptancePhase::RestartOrderPrepare => Target::RestartOrderPrepare,
+        AcceptancePhase::RestartOrderRecover => Target::RestartOrderRecover,
+        AcceptancePhase::Deadman => Target::Deadman,
+        AcceptancePhase::MakerFill => Target::MakerFill,
+        AcceptancePhase::RestartPositionPrepare => Target::RestartPositionPrepare,
+        AcceptancePhase::RestartPositionRecover => Target::RestartPositionRecover,
+        AcceptancePhase::Final => Target::Final,
     }
 }
 
@@ -416,6 +465,7 @@ async fn run_connector_check(
     Ok(())
 }
 
+#[cfg(feature = "live-acceptance")]
 async fn run_live_canary(
     config: &AppConfig,
     instrument: mm_live::InstrumentSpec,
@@ -672,6 +722,7 @@ async fn run_live_canary(
     Ok(())
 }
 
+#[cfg(feature = "live-acceptance")]
 async fn run_passive_canary(
     client: &HyperliquidExchangeClient,
     instrument: &mm_live::InstrumentSpec,
@@ -717,6 +768,7 @@ async fn run_passive_canary(
     }))
 }
 
+#[cfg(feature = "live-acceptance")]
 async fn run_round_trip_canary(
     client: &HyperliquidExchangeClient,
     instrument: &mm_live::InstrumentSpec,
@@ -757,6 +809,7 @@ async fn run_round_trip_canary(
     }))
 }
 
+#[cfg(feature = "live-acceptance")]
 async fn cleanup_canary(
     client: &HyperliquidExchangeClient,
     instrument: &mm_live::InstrumentSpec,
@@ -832,6 +885,7 @@ async fn cleanup_canary(
     )
 }
 
+#[cfg(feature = "live-acceptance")]
 fn best_book_prices(book: &serde_json::Value) -> Result<(f64, f64)> {
     let parse = |side: usize| -> Result<f64> {
         book.get("levels")
@@ -851,6 +905,7 @@ fn best_book_prices(book: &serde_json::Value) -> Result<(f64, f64)> {
     Ok((bid, ask))
 }
 
+#[cfg(feature = "live-acceptance")]
 fn rounded_price_units(
     instrument: &mm_live::InstrumentSpec,
     price: f64,
@@ -870,6 +925,7 @@ fn rounded_price_units(
     Ok(rounded)
 }
 
+#[cfg(feature = "live-acceptance")]
 fn minimum_canary_quantity(
     instrument: &mm_live::InstrumentSpec,
     px_units: i64,
@@ -886,10 +942,12 @@ fn minimum_canary_quantity(
     Ok(qty_units)
 }
 
+#[cfg(feature = "live-acceptance")]
 fn order_notional(instrument: &mm_live::InstrumentSpec, px_units: i64, qty_units: i64) -> f64 {
     instrument.price_from_units(px_units) * instrument.size_from_units(qty_units)
 }
 
+#[cfg(feature = "live-acceptance")]
 fn cashcat_position_units(
     state: &mm_live::hyperliquid::exchange::ClearinghouseState,
     instrument: &mm_live::InstrumentSpec,
@@ -903,6 +961,7 @@ fn cashcat_position_units(
         })
 }
 
+#[cfg(feature = "live-acceptance")]
 fn ensure_top_level_action_ok(body: &serde_json::Value) -> Result<()> {
     if body.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
         bail!("Hyperliquid action failed: {body}");
@@ -910,6 +969,7 @@ fn ensure_top_level_action_ok(body: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "live-acceptance")]
 fn first_action_status(body: &serde_json::Value) -> Result<&serde_json::Value> {
     body.pointer("/response/data/statuses/0")
         .context("Hyperliquid action response has no first status")
@@ -1046,11 +1106,15 @@ async fn run_live(
         )?;
     }
     backend.persist_inventory_unit(inventory_unit)?;
-    let model = Arc::new(arc_swap::ArcSwapOption::from(Some(Arc::new(ModelBundle {
-        surface: initial_surface,
-        inventory_unit,
-        generated_at_ms: initial_snapshot.generated_at_ms,
-    }))));
+    let model = Arc::new(arc_swap::ArcSwapOption::from(Some(Arc::new(
+        prepare_model_bundle(
+            initial_surface,
+            inventory_unit,
+            initial_snapshot.generated_at_ms,
+            &effective_config,
+            &clock,
+        ),
+    ))));
     let mut calibration_snapshot = Some(initial_snapshot);
 
     let metrics = Arc::new(Metrics::default());
@@ -1094,8 +1158,6 @@ async fn run_live(
         risk_state: risk_state.clone(),
         scientifically_valid: quote_enabled.clone(),
         market_stale_ms: effective_config.runtime.market_stale_ms,
-        calibration_max_age_seconds: effective_config.calibration.max_age_seconds,
-        calibration_max_future_skew_seconds: effective_config.calibration.max_future_skew_seconds,
         clock: clock.clone(),
         metrics: metrics.clone(),
         latency: latency.clone(),
@@ -1163,7 +1225,7 @@ async fn run_live(
                 match result {
                     Ok(snapshot) => {
                         backend.apply_reconciliation(snapshot)?;
-                        let execution_events = backend.maintenance(unix_ms()).await?;
+                        let execution_events = backend.maintenance(unix_ms())?;
                         apply_live_execution_events(
                             &execution_events,
                             &mut event_logger,
@@ -1241,7 +1303,7 @@ async fn run_live(
                     signal.notify(HOT_SIGNAL_EXECUTION);
                     info!(mode = ?config.live.mode, "live backend armed after all startup gates");
                 }
-                let execution_events = backend.maintenance(unix_ms()).await?;
+                let execution_events = backend.maintenance(unix_ms())?;
                 apply_live_execution_events(
                     &execution_events,
                     &mut event_logger,
@@ -1275,11 +1337,13 @@ async fn run_live(
                             )?;
                         }
                         backend.persist_inventory_unit(next_unit)?;
-                        model.store(Some(Arc::new(ModelBundle {
+                        model.store(Some(Arc::new(prepare_model_bundle(
                             surface,
-                            inventory_unit: next_unit,
-                            generated_at_ms: next.generated_at_ms,
-                        })));
+                            next_unit,
+                            next.generated_at_ms,
+                            &effective_config,
+                            &clock,
+                        ))));
                         calibration_snapshot = Some(next.clone());
                         metrics.calibration_runs.fetch_add(1, Ordering::Relaxed);
                         event_logger.log("calibration", None, &next)?;
@@ -1325,6 +1389,7 @@ async fn run_live(
     latency_observer.stop()?;
     let report = LiveSessionReport {
         schema_version: 3,
+        build: mm_live::BuildInfo::current(),
         session_id: format!("{}-{started_at_ms}", instrument.symbol),
         started_at_ms,
         finished_at_ms: unix_ms(),
@@ -1482,6 +1547,24 @@ fn calibrate_model(
         snapshot.write_atomic(&config.storage.calibration_path)?;
     }
     Ok((data, snapshot, surface, inventory_unit))
+}
+
+fn prepare_model_bundle(
+    surface: HjbSurface,
+    inventory_unit: i64,
+    generated_at_ms: u64,
+    config: &AppConfig,
+    clock: &ProcessClock,
+) -> ModelBundle {
+    ModelBundle::prepare(
+        surface,
+        inventory_unit,
+        generated_at_ms,
+        unix_ms(),
+        clock.now_ns(),
+        config.calibration.max_age_seconds,
+        config.calibration.max_future_skew_seconds,
+    )
 }
 
 async fn run_replay_command(
@@ -1736,11 +1819,13 @@ async fn run_public_dry_run(
                 )?;
             }
             snapshot = Some(initial_snapshot.clone());
-            Some(Arc::new(ModelBundle {
+            Some(Arc::new(prepare_model_bundle(
                 surface,
                 inventory_unit,
-                generated_at_ms: initial_snapshot.generated_at_ms,
-            }))
+                initial_snapshot.generated_at_ms,
+                config,
+                &clock,
+            )))
         } else {
             None
         };
@@ -1768,8 +1853,6 @@ async fn run_public_dry_run(
         risk_state: risk_state.clone(),
         scientifically_valid: scientifically_valid.clone(),
         market_stale_ms: config.runtime.market_stale_ms,
-        calibration_max_age_seconds: config.calibration.max_age_seconds,
-        calibration_max_future_skew_seconds: config.calibration.max_future_skew_seconds,
         clock: clock.clone(),
         metrics: metrics.clone(),
         latency: latency.clone(),
@@ -1890,11 +1973,13 @@ async fn run_public_dry_run(
                         next.revision,
                     )?;
                 }
-                model.store(Some(Arc::new(ModelBundle {
-                    surface: next_surface,
-                    inventory_unit: next_inventory_unit,
-                    generated_at_ms: next.generated_at_ms,
-                })));
+                model.store(Some(Arc::new(prepare_model_bundle(
+                    next_surface,
+                    next_inventory_unit,
+                    next.generated_at_ms,
+                    config,
+                    &clock,
+                ))));
                 snapshot = Some(next.clone());
                 event_logger.log("calibration", None, &next)?;
                 metrics.calibration_runs.fetch_add(1, Ordering::Relaxed);
@@ -2025,6 +2110,7 @@ fn write_report(
     let has_calibration = calibration.is_some();
     let report = SessionReport {
         schema_version: 2,
+        build: mm_live::BuildInfo::current(),
         session_id: format!("{}-{started_at_ms}", instrument.symbol),
         started_at_ms,
         finished_at_ms,
@@ -2106,7 +2192,7 @@ async fn wait_for_shutdown_signal() -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "live-acceptance"))]
 mod tests {
     use super::*;
 
