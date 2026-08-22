@@ -99,6 +99,7 @@ pub struct HyperliquidLiveBackend {
     reconcile_requested: bool,
     last_inventory_update_ms: u64,
     last_quote_action_ms: u64,
+    inventory_at_last_quote_action: i64,
     deferred_desired: Option<DesiredQuotes>,
 }
 
@@ -202,6 +203,7 @@ impl HyperliquidLiveBackend {
         });
         let maker_fee_rate = account.maker_fee_rate;
         let taker_fee_rate = account.taker_fee_rate;
+        let initial_inventory_units = account.inventory_units;
         let mut backend = Self {
             instrument,
             live: config.live.clone(),
@@ -241,6 +243,7 @@ impl HyperliquidLiveBackend {
             reconcile_requested: false,
             last_inventory_update_ms: unix_ms(),
             last_quote_action_ms: 0,
+            inventory_at_last_quote_action: initial_inventory_units,
             deferred_desired: None,
         };
         backend.initialize_campaign()?;
@@ -1451,13 +1454,18 @@ fn live_directional_notional_cap(
     account_cap.min(allocation_cap).min(configured_cap)
 }
 
+const fn quote_replacement_may_wait(reason: QuoteReason, inventory_changed: bool) -> bool {
+    matches!(
+        reason,
+        QuoteReason::Market | QuoteReason::Calibration | QuoteReason::Episode
+    ) || (matches!(reason, QuoteReason::Fill) && !inventory_changed)
+}
+
 #[async_trait]
 impl ExecutionBackend for HyperliquidLiveBackend {
     async fn reconcile(&mut self, desired: DesiredQuotes, now_ms: u64) -> Result<()> {
-        let replacement_may_wait = matches!(
-            desired.reason,
-            QuoteReason::Market | QuoteReason::Calibration | QuoteReason::Episode
-        );
+        let inventory_changed = self.account.inventory_units != self.inventory_at_last_quote_action;
+        let replacement_may_wait = quote_replacement_may_wait(desired.reason, inventory_changed);
         if replacement_may_wait
             && self.last_quote_action_ms != 0
             && now_ms.saturating_sub(self.last_quote_action_ms) < self.quoting.min_order_lifetime_ms
@@ -1539,6 +1547,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
         }
         if action_submitted {
             self.last_quote_action_ms = now_ms;
+            self.inventory_at_last_quote_action = self.account.inventory_units;
         }
         Ok(())
     }
@@ -1851,6 +1860,7 @@ mod tests {
             reconcile_requested: false,
             last_inventory_update_ms: 0,
             last_quote_action_ms: 0,
+            inventory_at_last_quote_action: 0,
             deferred_desired: None,
         };
         (directory, backend, cloid)
@@ -2149,6 +2159,15 @@ mod tests {
         assert_eq!(backend.diagnostics.orders_submitted, 1);
         assert_eq!(backend.diagnostics.cancels_submitted, 1);
         assert_eq!(backend.diagnostics.address_requests_used, 2);
+    }
+
+    #[test]
+    fn only_real_inventory_changes_bypass_replacement_cooldown() {
+        assert!(quote_replacement_may_wait(QuoteReason::Market, false));
+        assert!(quote_replacement_may_wait(QuoteReason::Fill, false));
+        assert!(!quote_replacement_may_wait(QuoteReason::Fill, true));
+        assert!(!quote_replacement_may_wait(QuoteReason::RiskLimit, false));
+        assert!(!quote_replacement_may_wait(QuoteReason::Shutdown, false));
     }
 
     proptest! {

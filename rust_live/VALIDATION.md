@@ -23,9 +23,10 @@ actions on a dedicated CASHCAT subaccount and ended flat with zero open orders.
   refusal, historical foreign-fill snapshot filtering, and ambiguous-write
   reconciliation without touching a real account.
 - Live replacement tests prove superseded market revisions coalesce until the
-  minimum order lifetime, fill/risk actions remain immediate, local address
-  request usage advances per action batch, and allocated-capital limits are
-  independent of the account liquidation-buffer reserve.
+  minimum order lifetime, acknowledgement/cancel wakes cannot masquerade as
+  fills, genuine inventory changes and risk actions remain immediate, local
+  address request usage advances per action batch, and allocated-capital limits
+  are independent of the account liquidation-buffer reserve.
 - Order-expiry tests pin `expiresAfter` to the actual send clock rather than the
   start of a durable nonce lease, preventing warm-up from expiring the first
   live action before transmission.
@@ -74,7 +75,7 @@ Checked on 2026-08-22 around 17:30 UTC:
 
 - `cargo fmt --check`: passed.
 - strict Clippy over all targets with warnings denied: passed.
-- Rust tests: 114 passed across optimized unit and integration targets.
+- Rust tests: 115 passed across optimized unit and integration targets.
 - Python/Freqtrade reference tests: 722 passed.
 - locked optimized builds of the production and feature-gated acceptance
   binaries: passed.
