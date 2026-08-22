@@ -25,8 +25,9 @@ actions on a dedicated CASHCAT subaccount and ended flat with zero open orders.
 - Live replacement tests prove superseded market revisions coalesce until the
   minimum order lifetime, acknowledgement/cancel wakes cannot masquerade as
   fills, genuine inventory changes and risk actions remain immediate, local
-  address request usage advances per action batch, and allocated-capital limits
-  are independent of the account liquidation-buffer reserve.
+  address request usage advances for every action within each batch, and
+  allocated-capital limits are independent of the account liquidation-buffer
+  reserve.
 - Order-expiry tests pin `expiresAfter` to the actual send clock rather than the
   start of a durable nonce lease, preventing warm-up from expiring the first
   live action before transmission.

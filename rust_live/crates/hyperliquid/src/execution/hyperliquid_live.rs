@@ -1523,6 +1523,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
         }
         let mut action_submitted = false;
         if !cancel.is_empty() {
+            let canceled_actions = cancel.len() as u64;
             if self.session.healthy() {
                 self.session.enqueue_cancel_cloids(cancel)?;
             } else {
@@ -1530,19 +1531,24 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 require_action_known(&outcome)?;
             }
             self.diagnostics.cancels_submitted += 1;
-            self.diagnostics.address_requests_used =
-                self.diagnostics.address_requests_used.saturating_add(1);
+            self.diagnostics.address_requests_used = self
+                .diagnostics
+                .address_requests_used
+                .saturating_add(canceled_actions);
             action_submitted = true;
         }
         if !place.is_empty() {
+            let placed_actions = place.len() as u64;
             let bbo = self
                 .latest_bbo
                 .context("cannot place live quote without BBO")?;
             self.validate_new_orders(&place, bbo)?;
             self.session.enqueue_orders(desired.quote_seq, place)?;
             self.diagnostics.orders_submitted += 1;
-            self.diagnostics.address_requests_used =
-                self.diagnostics.address_requests_used.saturating_add(1);
+            self.diagnostics.address_requests_used = self
+                .diagnostics
+                .address_requests_used
+                .saturating_add(placed_actions);
             action_submitted = true;
         }
         if action_submitted {
@@ -2125,6 +2131,22 @@ mod tests {
     #[tokio::test]
     async fn market_replacements_coalesce_until_minimum_order_lifetime() {
         let (_directory, mut backend, _) = lifecycle_backend();
+        backend
+            .state
+            .update(|state| {
+                let mut ask = state
+                    .orders
+                    .values()
+                    .next()
+                    .context("test backend has no seed order")?
+                    .clone();
+                ask.cloid = make_cloid(unix_ms(), 1, Side::Sell, 2);
+                ask.side = Side::Sell;
+                ask.px_units = 103_000;
+                state.orders.insert(ask.cloid.clone(), ask);
+                Ok(())
+            })
+            .unwrap();
         backend.quoting.min_order_lifetime_ms = 2_000;
         backend.last_quote_action_ms = 1_000;
         backend.latest_bbo = Some(Bbo {
@@ -2139,6 +2161,13 @@ mod tests {
             bid: Some(crate::types::OrderIntent {
                 side: Side::Buy,
                 px: 101_000,
+                qty_units: 100,
+                post_only: true,
+                reduce_only: false,
+            }),
+            ask: Some(crate::types::OrderIntent {
+                side: Side::Sell,
+                px: 103_000,
                 qty_units: 100,
                 post_only: true,
                 reduce_only: false,
@@ -2158,7 +2187,7 @@ mod tests {
         assert_eq!(backend.last_quote_action_ms, 3_000);
         assert_eq!(backend.diagnostics.orders_submitted, 1);
         assert_eq!(backend.diagnostics.cancels_submitted, 1);
-        assert_eq!(backend.diagnostics.address_requests_used, 2);
+        assert_eq!(backend.diagnostics.address_requests_used, 4);
     }
 
     #[test]
