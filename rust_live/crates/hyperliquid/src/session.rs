@@ -724,7 +724,11 @@ fn signed_action_envelope(
     nonce: u64,
 ) -> Result<serde_json::Value> {
     let expires = match action {
-        SessionAction::Orders { .. } => Some(nonce.saturating_add(args.config.action_expiry_ms)),
+        SessionAction::Orders { .. } => Some(order_expires_after(
+            nonce,
+            unix_ms(),
+            args.config.action_expiry_ms,
+        )),
         _ => None,
     };
     let body = match action {
@@ -750,6 +754,14 @@ fn signed_action_envelope(
         }
     };
     Ok(body)
+}
+
+const fn order_expires_after(nonce: u64, now_ms: u64, ttl_ms: u64) -> u64 {
+    if now_ms > nonce {
+        now_ms.saturating_add(ttl_ms)
+    } else {
+        nonce.saturating_add(ttl_ms)
+    }
 }
 
 fn prepare_action_state(
@@ -947,5 +959,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(command.action.purpose(), ActionPurpose::Cancel);
+    }
+
+    #[test]
+    fn order_expiry_uses_send_time_when_nonce_lease_is_old() {
+        assert_eq!(order_expires_after(1_000, 50_000, 5_000), 55_000);
+        assert_eq!(order_expires_after(50_000, 1_000, 5_000), 55_000);
     }
 }
