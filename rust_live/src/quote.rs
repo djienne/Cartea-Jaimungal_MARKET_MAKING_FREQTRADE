@@ -97,10 +97,14 @@ impl CarteaJaimungalPolicy {
         reason: QuoteReason,
         risk_state: RiskState,
     ) -> QuoteDecision {
-        let empty = |reason| QuoteDecision {
-            quotes: DesiredQuotes::empty(reason, quote_seq, now_ns),
-            bid_spread: None,
-            ask_spread: None,
+        let empty = |reason| {
+            let mut quotes = DesiredQuotes::empty(reason, quote_seq, now_ns);
+            quotes.source_recv_ns = bbo.recv_ns;
+            QuoteDecision {
+                quotes,
+                bid_spread: None,
+                ask_spread: None,
+            }
         };
         if self.risk.kill_switch || !bbo.is_valid() || inventory_unit <= 0 {
             return empty(QuoteReason::RiskLimit);
@@ -174,6 +178,7 @@ impl CarteaJaimungalPolicy {
                 quote_seq,
                 model_revision: surface.revision,
                 generated_ns: now_ns,
+                source_recv_ns: bbo.recv_ns,
                 reason,
                 mid,
                 q_exact,

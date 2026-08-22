@@ -171,6 +171,7 @@ struct AtomicDesiredQuotes {
     quote_seq: AtomicU64,
     model_revision: AtomicU64,
     generated_ns: AtomicU64,
+    source_recv_ns: AtomicU64,
     reason: AtomicU8,
     mid: AtomicU64,
     q_exact: AtomicU64,
@@ -187,6 +188,7 @@ impl Default for AtomicDesiredQuotes {
             quote_seq: AtomicU64::new(0),
             model_revision: AtomicU64::new(0),
             generated_ns: AtomicU64::new(0),
+            source_recv_ns: AtomicU64::new(0),
             reason: AtomicU8::new(reason_to_u8(QuoteReason::Startup)),
             mid: AtomicU64::new(0.0_f64.to_bits()),
             q_exact: AtomicU64::new(0.0_f64.to_bits()),
@@ -206,6 +208,8 @@ impl AtomicDesiredQuotes {
             .store(value.model_revision, Ordering::Relaxed);
         self.generated_ns
             .store(value.generated_ns, Ordering::Relaxed);
+        self.source_recv_ns
+            .store(value.source_recv_ns, Ordering::Relaxed);
         self.reason
             .store(reason_to_u8(value.reason), Ordering::Relaxed);
         self.mid.store(value.mid.to_bits(), Ordering::Relaxed);
@@ -230,6 +234,7 @@ impl AtomicDesiredQuotes {
                 quote_seq: self.quote_seq.load(Ordering::Relaxed),
                 model_revision: self.model_revision.load(Ordering::Relaxed),
                 generated_ns: self.generated_ns.load(Ordering::Relaxed),
+                source_recv_ns: self.source_recv_ns.load(Ordering::Relaxed),
                 reason: reason_from_u8(self.reason.load(Ordering::Relaxed)),
                 mid: f64::from_bits(self.mid.load(Ordering::Relaxed)),
                 q_exact: f64::from_bits(self.q_exact.load(Ordering::Relaxed)),
@@ -451,6 +456,7 @@ const fn reason_to_u8(reason: QuoteReason) -> u8 {
         QuoteReason::StaleMarket => 5,
         QuoteReason::StaleCalibration => 6,
         QuoteReason::RiskLimit => 7,
+        QuoteReason::LatencyLimit => 10,
         QuoteReason::InvalidRun => 8,
         QuoteReason::Shutdown => 9,
     }
@@ -465,6 +471,7 @@ const fn reason_from_u8(value: u8) -> QuoteReason {
         5 => QuoteReason::StaleMarket,
         6 => QuoteReason::StaleCalibration,
         7 => QuoteReason::RiskLimit,
+        10 => QuoteReason::LatencyLimit,
         8 => QuoteReason::InvalidRun,
         9 => QuoteReason::Shutdown,
         _ => QuoteReason::Startup,
@@ -495,9 +502,25 @@ mod tests {
         let shared = SharedQuotes::default();
         shared.publish(DesiredQuotes {
             quote_seq: 2,
+            generated_ns: 11,
+            source_recv_ns: 7,
             ..DesiredQuotes::default()
         });
-        assert_eq!(shared.changed_after(0).await.quote_seq, 2);
+        let observed = shared.changed_after(0).await;
+        assert_eq!(observed.quote_seq, 2);
+        assert_eq!(observed.generated_ns, 11);
+        assert_eq!(observed.source_recv_ns, 7);
+    }
+
+    #[test]
+    fn latency_limit_reason_survives_atomic_publication() {
+        let shared = SharedQuotes::default();
+        shared.publish(DesiredQuotes {
+            quote_seq: 1,
+            reason: QuoteReason::LatencyLimit,
+            ..DesiredQuotes::default()
+        });
+        assert_eq!(shared.load().reason, QuoteReason::LatencyLimit);
     }
 
     #[tokio::test]

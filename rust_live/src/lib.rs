@@ -7,6 +7,7 @@ pub mod hjb;
 pub mod hot_path;
 pub mod hyperliquid;
 pub mod instrument;
+pub mod latency;
 pub mod lockfree;
 pub mod metrics;
 pub mod parquet_io;

@@ -22,8 +22,6 @@ pub struct Metrics {
     pub calibration_runs: AtomicU64,
     pub calibration_failures: AtomicU64,
     pub inventory_units: AtomicI64,
-    pub last_hot_latency_ns: AtomicU64,
-    pub max_hot_latency_ns: AtomicU64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,16 +45,9 @@ pub struct MetricsSnapshot {
     pub calibration_runs: u64,
     pub calibration_failures: u64,
     pub inventory_units: i64,
-    pub last_hot_latency_ns: u64,
-    pub max_hot_latency_ns: u64,
 }
 
 impl Metrics {
-    pub fn observe_hot_latency(&self, value: u64) {
-        self.last_hot_latency_ns.store(value, Ordering::Relaxed);
-        self.max_hot_latency_ns.fetch_max(value, Ordering::Relaxed);
-    }
-
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             market_messages: self.market_messages.load(Ordering::Relaxed),
@@ -80,8 +71,6 @@ impl Metrics {
             calibration_runs: self.calibration_runs.load(Ordering::Relaxed),
             calibration_failures: self.calibration_failures.load(Ordering::Relaxed),
             inventory_units: self.inventory_units.load(Ordering::Relaxed),
-            last_hot_latency_ns: self.last_hot_latency_ns.load(Ordering::Relaxed),
-            max_hot_latency_ns: self.max_hot_latency_ns.load(Ordering::Relaxed),
         }
     }
 }

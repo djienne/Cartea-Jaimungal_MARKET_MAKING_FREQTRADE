@@ -18,10 +18,21 @@ execution_event_capacity = 16384
 stats_interval_ms = 5000
 log_json = false
 
+[latency]
+gate_enabled = true
+max_acceptable_p99_ms = 150.0
+minimum_samples = 20
+minimum_network_samples = 1
+max_sample_age_ms = 45000
+hot_sample_every = 16
+window_seconds = 300
+queue_capacity = 4096
+
 [storage]
 data_dir = "../../scripts/HL_data"
 state_path = "../run/cashcat-dry-state.json"
 calibration_path = "../run/cashcat-calibration.json"
+latency_path = "../run/cashcat-latency.json"
 report_dir = "../reports"
 writer_lock_path = "../run/cashcat-collector.lock"
 flush_interval_seconds = 10
@@ -57,7 +68,7 @@ phi_kappa_t_max = 300.0
 alpha_kappa = 0.05
 raw_phi_fallback = 0.0001
 raw_alpha_fallback = 0.001
-gamma_inventory_risk = 0.05
+volatility_risk_coefficient = 0.05
 max_dt_seconds = 0.25
 min_steps = 200
 max_steps = 2000

@@ -1,6 +1,7 @@
 use crate::calibration::CalibrationSnapshot;
 use crate::execution::DryRunDiagnostics;
 use crate::instrument::InstrumentSpec;
+use crate::latency::LatencySnapshot;
 use crate::metrics::MetricsSnapshot;
 use crate::types::DryRunAccountState;
 use anyhow::Result;
@@ -24,6 +25,7 @@ pub struct SessionReport {
     pub account: DryRunAccountState,
     pub execution: DryRunDiagnostics,
     pub metrics: MetricsSnapshot,
+    pub latency: LatencySnapshot,
     pub scientifically_valid: bool,
     pub invalid_reasons: Vec<String>,
     pub event_log_path: String,

@@ -102,7 +102,7 @@ pub fn solve_asymmetric(
     let dt = (config.horizon_seconds / n_steps as f64).max(1.0e-6);
     let kappa_average = 0.5 * (parameters.kappa_plus + parameters.kappa_minus);
     let volatility_delta = parameters.sigma2_per_second.map_or(0.0, |sigma2| {
-        config.gamma_inventory_risk * sigma2 * inventory_unit_base
+        config.volatility_risk_coefficient * sigma2 * inventory_unit_base
     });
     let mut phi_effective = if config.phi_kappa_t > 0.0 {
         config.phi_kappa_t / (kappa_average * config.horizon_seconds) + volatility_delta
@@ -220,7 +220,10 @@ fn validate_model_config(config: &ModelConfig, inventory_unit_base: f64) -> Resu
         ("phi_kappa_t", config.phi_kappa_t),
         ("phi_kappa_t_max", config.phi_kappa_t_max),
         ("alpha_kappa", config.alpha_kappa),
-        ("gamma_inventory_risk", config.gamma_inventory_risk),
+        (
+            "volatility_risk_coefficient",
+            config.volatility_risk_coefficient,
+        ),
         ("max_dt_seconds", config.max_dt_seconds),
         ("newton_tolerance", config.newton_tolerance),
         ("newton_damping", config.newton_damping),

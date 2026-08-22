@@ -24,6 +24,13 @@ impl Network {
             Self::Testnet => "https://api.hyperliquid-testnet.xyz/info",
         }
     }
+
+    pub const fn api_url(self) -> &'static str {
+        match self {
+            Self::Mainnet => "https://api.hyperliquid.xyz",
+            Self::Testnet => "https://api.hyperliquid-testnet.xyz",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -31,6 +38,7 @@ impl Network {
 pub struct AppConfig {
     pub instrument: InstrumentProfile,
     pub runtime: RuntimeConfig,
+    pub latency: LatencyConfig,
     pub storage: StorageConfig,
     pub calibration: CalibrationConfig,
     pub model: ModelConfig,
@@ -99,10 +107,39 @@ impl Default for RuntimeConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct LatencyConfig {
+    pub gate_enabled: bool,
+    pub max_acceptable_p99_ms: f64,
+    pub minimum_samples: u64,
+    pub minimum_network_samples: u64,
+    pub max_sample_age_ms: u64,
+    pub hot_sample_every: u64,
+    pub window_seconds: u64,
+    pub queue_capacity: usize,
+}
+
+impl Default for LatencyConfig {
+    fn default() -> Self {
+        Self {
+            gate_enabled: true,
+            max_acceptable_p99_ms: 150.0,
+            minimum_samples: 20,
+            minimum_network_samples: 1,
+            max_sample_age_ms: 45_000,
+            hot_sample_every: 16,
+            window_seconds: 300,
+            queue_capacity: 4_096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     pub data_dir: PathBuf,
     pub state_path: PathBuf,
     pub calibration_path: PathBuf,
+    pub latency_path: PathBuf,
     pub report_dir: PathBuf,
     pub writer_lock_path: PathBuf,
     pub flush_interval_seconds: u64,
@@ -117,6 +154,7 @@ impl Default for StorageConfig {
             data_dir: PathBuf::from("../scripts/HL_data"),
             state_path: PathBuf::from("run/cashcat-dry-state.json"),
             calibration_path: PathBuf::from("run/cashcat-calibration.json"),
+            latency_path: PathBuf::from("run/cashcat-latency.json"),
             report_dir: PathBuf::from("reports"),
             writer_lock_path: PathBuf::from("run/cashcat-collector.lock"),
             flush_interval_seconds: 10,
@@ -185,7 +223,7 @@ pub struct ModelConfig {
     pub alpha_kappa: f64,
     pub raw_phi_fallback: f64,
     pub raw_alpha_fallback: f64,
-    pub gamma_inventory_risk: f64,
+    pub volatility_risk_coefficient: f64,
     pub max_dt_seconds: f64,
     pub min_steps: usize,
     pub max_steps: usize,
@@ -206,7 +244,7 @@ impl Default for ModelConfig {
             alpha_kappa: 0.05,
             raw_phi_fallback: 0.0001,
             raw_alpha_fallback: 0.001,
-            gamma_inventory_risk: 0.05,
+            volatility_risk_coefficient: 0.05,
             max_dt_seconds: 0.25,
             min_steps: 200,
             max_steps: 2_000,
@@ -318,6 +356,7 @@ impl AppConfig {
             &mut config.storage.data_dir,
             &mut config.storage.state_path,
             &mut config.storage.calibration_path,
+            &mut config.storage.latency_path,
             &mut config.storage.report_dir,
             &mut config.storage.writer_lock_path,
             &mut config.instrument.evidence_path,
@@ -354,6 +393,37 @@ impl AppConfig {
         }
         if self.runtime.ws_idle_timeout_ms <= self.runtime.ws_ping_interval_ms {
             bail!("runtime.ws_idle_timeout_ms must exceed ws_ping_interval_ms");
+        }
+        if self.runtime.stats_interval_ms < 100 {
+            bail!("runtime.stats_interval_ms must be >= 100");
+        }
+        if !self.latency.max_acceptable_p99_ms.is_finite()
+            || self.latency.max_acceptable_p99_ms <= 0.0
+        {
+            bail!("latency.max_acceptable_p99_ms must be finite and positive");
+        }
+        if self.latency.minimum_samples == 0 {
+            bail!("latency.minimum_samples must be positive");
+        }
+        if self.latency.minimum_network_samples == 0 {
+            bail!("latency.minimum_network_samples must be positive");
+        }
+        if self.latency.max_sample_age_ms
+            < self
+                .runtime
+                .stats_interval_ms
+                .max(self.runtime.ws_ping_interval_ms)
+        {
+            bail!("latency.max_sample_age_ms must cover stats_interval_ms and ws_ping_interval_ms");
+        }
+        if self.latency.hot_sample_every == 0 || !self.latency.hot_sample_every.is_power_of_two() {
+            bail!("latency.hot_sample_every must be a positive power of two");
+        }
+        if self.latency.window_seconds == 0 {
+            bail!("latency.window_seconds must be positive");
+        }
+        if self.latency.queue_capacity == 0 || !self.latency.queue_capacity.is_power_of_two() {
+            bail!("latency.queue_capacity must be a positive power of two");
         }
         if self.storage.retention_minutes < self.calibration.window_minutes + 30 {
             bail!("storage retention must exceed the calibration window by at least 30 minutes");

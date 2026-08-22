@@ -107,6 +107,7 @@ pub enum QuoteReason {
     StaleMarket,
     StaleCalibration,
     RiskLimit,
+    LatencyLimit,
     InvalidRun,
     Shutdown,
 }
@@ -118,6 +119,8 @@ pub struct DesiredQuotes {
     pub quote_seq: u64,
     pub model_revision: u64,
     pub generated_ns: u64,
+    #[serde(default)]
+    pub source_recv_ns: u64,
     pub reason: QuoteReason,
     pub mid: f64,
     pub q_exact: f64,
@@ -133,6 +136,7 @@ impl DesiredQuotes {
             quote_seq,
             model_revision: 0,
             generated_ns,
+            source_recv_ns: 0,
             reason,
             mid: 0.0,
             q_exact: 0.0,

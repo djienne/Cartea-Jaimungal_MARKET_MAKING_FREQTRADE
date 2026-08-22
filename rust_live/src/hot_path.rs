@@ -1,6 +1,7 @@
 use crate::config::{ModelConfig, QuotingConfig, RiskConfig};
 use crate::hjb::HjbSurface;
 use crate::instrument::InstrumentSpec;
+use crate::latency::{HotLatencySampler, LatencyKind, LatencyMonitor};
 use crate::lockfree::{
     AtomicBbo, HotPathSignal, SharedQuotes, HOT_SIGNAL_EXECUTION, HOT_SIGNAL_MODEL,
     HOT_SIGNAL_SHUTDOWN,
@@ -67,6 +68,8 @@ pub struct HotPathInputs {
     pub calibration_max_future_skew_seconds: u64,
     pub clock: Arc<ProcessClock>,
     pub metrics: Arc<Metrics>,
+    pub latency: Arc<LatencyMonitor>,
+    pub latency_sample_every: u64,
     pub hot_path_cpu: Option<usize>,
 }
 
@@ -92,6 +95,10 @@ fn run_hot_path(inputs: &HotPathInputs) {
     let mut quote_seq = 0_u64;
     let mut last_quotes = DesiredQuotes::default();
     let mut episode_start_ns = inputs.clock.now_ns();
+    let latency_sample_mask = inputs.latency_sample_every.saturating_sub(1);
+    let mut latency_counter = 0_u64;
+    let mut latency_sampler = HotLatencySampler::default();
+    let mut unreported_quote_decisions = 0_u64;
     loop {
         let mut pending = inputs.signal.take_pending();
         if pending == 0 {
@@ -99,6 +106,13 @@ fn run_hot_path(inputs: &HotPathInputs) {
             pending = inputs.signal.take_pending();
         }
         if pending & HOT_SIGNAL_SHUTDOWN != 0 {
+            latency_sampler.flush(&inputs.latency);
+            if unreported_quote_decisions != 0 {
+                inputs
+                    .metrics
+                    .quote_decisions
+                    .fetch_add(unreported_quote_decisions, Ordering::Relaxed);
+            }
             quote_seq = quote_seq.wrapping_add(1);
             inputs.desired.publish(DesiredQuotes::empty(
                 QuoteReason::Shutdown,
@@ -114,7 +128,8 @@ fn run_hot_path(inputs: &HotPathInputs) {
         };
         quote_seq = quote_seq.wrapping_add(1);
         let Some(bundle) = inputs.model.load_full() else {
-            let next = DesiredQuotes::empty(QuoteReason::StaleCalibration, quote_seq, now_ns);
+            let mut next = DesiredQuotes::empty(QuoteReason::StaleCalibration, quote_seq, now_ns);
+            next.source_recv_ns = bbo.recv_ns;
             if quote_changed(last_quotes, next) {
                 inputs.desired.publish(next);
                 inputs
@@ -160,12 +175,14 @@ fn run_hot_path(inputs: &HotPathInputs) {
         } else {
             QuoteReason::Market
         };
-        let next = if !inputs.scientifically_valid.load(Ordering::Acquire) {
+        let mut next = if !inputs.scientifically_valid.load(Ordering::Acquire) {
             DesiredQuotes::empty(QuoteReason::InvalidRun, quote_seq, now_ns)
         } else if !calibration_fresh {
             DesiredQuotes::empty(QuoteReason::StaleCalibration, quote_seq, now_ns)
         } else if market_age_ns > market_stale_ns {
             DesiredQuotes::empty(QuoteReason::StaleMarket, quote_seq, now_ns)
+        } else if !inputs.latency.trading_allowed() {
+            DesiredQuotes::empty(QuoteReason::LatencyLimit, quote_seq, now_ns)
         } else {
             policy
                 .compute(
@@ -181,13 +198,20 @@ fn run_hot_path(inputs: &HotPathInputs) {
                 )
                 .quotes
         };
+        if next.source_recv_ns == 0 {
+            next.source_recv_ns = bbo.recv_ns;
+        }
         if next.reason == QuoteReason::RiskLimit {
             inputs.metrics.risk_refusals.fetch_add(1, Ordering::Relaxed);
         }
-        inputs
-            .metrics
-            .quote_decisions
-            .fetch_add(1, Ordering::Relaxed);
+        unreported_quote_decisions += 1;
+        if unreported_quote_decisions == 64 {
+            inputs
+                .metrics
+                .quote_decisions
+                .fetch_add(unreported_quote_decisions, Ordering::Relaxed);
+            unreported_quote_decisions = 0;
+        }
         if quote_changed(last_quotes, next) {
             inputs.desired.publish(next);
             inputs
@@ -196,9 +220,16 @@ fn run_hot_path(inputs: &HotPathInputs) {
                 .fetch_add(1, Ordering::Relaxed);
             last_quotes = next;
         }
-        inputs
-            .metrics
-            .observe_hot_latency(inputs.clock.now_ns().saturating_sub(started_ns));
+        latency_counter = latency_counter.wrapping_add(1);
+        if latency_counter & latency_sample_mask == 0 {
+            let finished_ns = inputs.clock.now_ns();
+            latency_sampler.record(
+                &inputs.latency,
+                LatencyKind::HotDecision,
+                finished_ns.saturating_sub(started_ns),
+                finished_ns,
+            );
+        }
     }
 }
 
@@ -223,7 +254,7 @@ fn pin_current_thread(cpu: Option<usize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ModelConfig, QuotingConfig, RiskConfig};
+    use crate::config::{LatencyConfig, ModelConfig, QuotingConfig, RiskConfig};
     use crate::instrument::InstrumentSpec;
     use crate::lockfree::HOT_SIGNAL_MARKET;
 
@@ -283,6 +314,17 @@ mod tests {
             calibration_max_future_skew_seconds: 10,
             clock: Arc::new(ProcessClock::default()),
             metrics: Arc::new(Metrics::default()),
+            latency: Arc::new(LatencyMonitor::new(
+                "SYN",
+                1,
+                &LatencyConfig {
+                    gate_enabled: false,
+                    hot_sample_every: 1,
+                    ..LatencyConfig::default()
+                },
+                false,
+            )),
+            latency_sample_every: 1,
             hot_path_cpu: None,
         })
         .unwrap();

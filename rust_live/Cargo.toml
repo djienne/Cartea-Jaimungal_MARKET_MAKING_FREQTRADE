@@ -32,18 +32,22 @@ crossbeam-queue = "=0.3.13"
 futures-util = "=0.3.34"
 fs2 = "=0.4.3"
 hex = "=0.4.3"
+k256 = { version = "=0.13.4", features = ["ecdsa"] }
 parquet = { version = "=59.2.0", default-features = false, features = ["arrow", "zstd"] }
 reqwest = { version = "=0.12.24", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+rmp-serde = "=1.3.1"
 rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["raw_value"] }
 sha2 = "=0.10.9"
 tempfile = "=3.27.0"
+tiny-keccak = { version = "=2.0.2", features = ["keccak"] }
 tokio = { version = "=1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "=0.30.0", features = ["rustls-tls-webpki-roots"] }
 toml = "=0.8.23"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt", "json"] }
+zeroize = "=1.9.0"
 
 [dev-dependencies]
 approx = "=0.5.1"

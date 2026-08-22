@@ -8,6 +8,28 @@ connector. It deliberately stops short of enabling live trading. Hyperliquid's
 API changes over time, so every implementation pass must recheck the linked
 official documentation and pin the exact SDK/protocol fixtures used for release.
 
+## Current implementation status (2026-08-22)
+
+The persistent strategy `live` command remains fail-closed. The following
+low-level pieces are now implemented in pure Rust and exercised against a
+dedicated mainnet CASHCAT subaccount:
+
+- zeroizing, non-debug four-key dotenv loading;
+- fixed-point price/size formatting and strict CLOIDs;
+- vault-aware MessagePack action hashing including the expiry separator;
+- phantom-agent EIP-712/secp256k1 signing with independent golden vectors;
+- monotonic in-process nonces and explicit transport-unknown outcomes;
+- account/open-order/fill/fee/role/active-asset/book `/info` reads;
+- ALO/IOC order batches and CLOID/OID cancellation;
+- all eight account subscriptions, application heartbeat with measured RTT,
+  protocol pong, bounded delivery, reconnect, and health metrics;
+- production-only latency-gate primitives with probe/dry-run/canary bypass;
+- explicitly guarded, at-most-12-USDC passive and reduce-only canaries.
+
+The canaries proved resting ALO placement/cancel, taker fill delivery, exact
+fees, and final flat/empty reconciliation. They do not promote the continuous
+`live` backend. Remaining production work is listed in section 17.
+
 **Runtime invariant:** the live and dry-run traders are pure Rust. They must not
 import, launch, or depend on Python, the Hyperliquid Python SDK, Passivbot, or
 CCXT. Python/JavaScript implementations may generate offline test fixtures only.
@@ -706,6 +728,11 @@ explicit extensions:
    integer, venue-neutral `OrderIntent`s.
 8. Keep `LiveExecutionUnavailable` as the default until a build feature and
    explicit runtime gate select the tested backend.
+9. Reuse the Rust `LatencyMonitor`: record the monotonic timestamp immediately
+   before socket write and on authoritative order/fill events, then publish
+   `submit_to_ack`, `cancel_to_ack`, and `ack_to_fill`. The backend only enqueues
+   raw samples; the existing observer thread owns rolling percentiles and I/O.
+   Never calculate histograms or format metrics on the execution socket task.
 
 Suggested module layout:
 
@@ -737,7 +764,7 @@ copies were separated from actual connector implementations.
 | --- | --- | --- |
 | `XEMM_CROSS_EXCHANGE_MARKET_MAKING_PACIFICA_HYPERLIQUID\src\connector\hyperliquid\` (line-identical duplicate under `XEMM\XEMM_CROSS_...`) | EIP-712 domain/digest, monotonic atomic nonce, metadata cache, public L2 WS, REST IOC submission with CLOID, order-status/fill/account parsing, timeout-aware unknown outcome comments | Only builds IOC market orders; no maker ALO lifecycle, cancel/modify/dead-man switch, or private WS. `construct_connection_id` appends a vault marker but **not the 20 vault address bytes** and has no expiry encoding. Its tests cover only `vault=None`. Uses `f64`, stores key as `String`, and uses the large deprecated-style `ethers` stack. Do not copy its signer. |
 | `OLD\XEMM_dry_run_evaluator\src\livebot\exec\{hyperliquid,crypto,sign,creds}.rs` plus `src\connectors\hyperliquid.rs` | Best local low-level reference: typed MessagePack wire structs, correct vault marker + address bytes, correct expiry separator, main/test phantom agent, secp256k1 signatures, monotonic nonce, golden vectors, ALO/IOC construction, OID cancel, leverage action, open orders/account reads, robust public `bbo`/book/trade WS heartbeat and reconnect | Retired project, not a maintained Git repository. Assumes a subaccount/vault on every live path, has no master-account/no-vault mode, cancel-by-CLOID, modify/batch, `scheduleCancel`, private/account WS, durable fill deduplication, or complete reconciliation. Key bytes are retained without a zeroizing secret type. Port fixtures/ideas only. |
-| Current `rust_live` | Generic instrument, public CASHCAT feed, fixed-point price/size, lock-free publications, execution/account traits, dry-run lifecycle and reports | Deliberately has no signer, private stream, action encoder, or order transport. This is the correct host architecture, not an existing live connector. |
+| Current `rust_live` | Generic instrument, public CASHCAT feed, fixed-point price/size, lock-free publications, execution/account traits, dry-run lifecycle/reports, zeroizing signer, exact action encoder, REST actions/reads, bounded account stream, latency monitoring, and guarded connector canaries | The continuous `live` backend still intentionally fails. Durable nonce/order persistence, restart reconciliation, deduplication, rate limiting, WS-post correlation, and dead-man control are not complete. |
 
 Conclusion: the older Rust signer contains valuable byte-level work, but no local
 Rust implementation is complete enough to enable real money safely.
@@ -849,16 +876,16 @@ switch. No automated promotion follows a successful canary.
 - [ ] Decide and pin the Rust signing SDK after toolchain/dependency audit.
 - [ ] Refresh the Python oracle to a pinned current release.
 - [ ] Extend `InstrumentSpec` for isolated/margin metadata.
-- [ ] Implement zeroizing API-wallet signer and persisted atomic nonce.
-- [ ] Add exact signing golden fixtures for vault and expiry.
-- [ ] Add live-only action types for order/cancel/cancel-by-CLOID/leverage/dead-man.
+- [ ] Persist the implemented zeroizing signer's atomic monotonic nonce across restarts.
+- [x] Add exact signing golden fixtures for vault and expiry.
+- [ ] Complete the implemented order/CLOID-cancel/OID-cancel action set with leverage and dead-man actions.
 - [ ] Add WebSocket post request correlation and unknown-outcome handling.
-- [ ] Add one-account private subscriptions and durable deduplication.
+- [ ] Add durable fill/funding deduplication to the implemented one-account subscription stream.
 - [ ] Add startup/reconnect/restart reconciliation.
 - [ ] Add actual fee/funding/account-state ingestion.
 - [ ] Add rate-limit accounting and emergency cancel reserve.
 - [ ] Keep `live` failing before credentials until every testnet gate passes.
-- [ ] Perform a separately authorized, bounded mainnet canary last.
+- [x] Perform separately authorized bounded mainnet passive and reduce-only canaries; both ended flat and empty without enabling `live`.
 
 ## 18. Primary references
 

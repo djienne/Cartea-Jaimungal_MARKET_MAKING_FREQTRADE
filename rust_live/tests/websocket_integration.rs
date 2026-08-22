@@ -1,6 +1,8 @@
 use futures_util::{SinkExt, StreamExt};
+use mm_live::config::LatencyConfig;
 use mm_live::hyperliquid::market::{run_market_stream, MarketStreamArgs};
 use mm_live::instrument::InstrumentSpec;
+use mm_live::latency::{LatencyMonitor, LatencyObserver};
 use mm_live::lockfree::{AsyncRing, AtomicBbo, HotPathSignal};
 use mm_live::metrics::Metrics;
 use mm_live::types::{MarketEvent, ProcessClock};
@@ -64,6 +66,7 @@ async fn public_adapter_parses_mock_cashcat_stream_without_loss() {
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
         metrics: metrics.clone(),
+        latency: None,
         scientifically_valid: valid.clone(),
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
@@ -135,6 +138,7 @@ async fn causal_ring_saturation_invalidates_the_session() {
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
         metrics: metrics.clone(),
+        latency: None,
         scientifically_valid: valid.clone(),
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
@@ -212,6 +216,25 @@ async fn application_ping_and_protocol_pong_are_exercised() {
 
     let metrics = Arc::new(Metrics::default());
     let valid = Arc::new(AtomicBool::new(true));
+    let clock = Arc::new(ProcessClock::default());
+    let latency_config = LatencyConfig {
+        gate_enabled: false,
+        queue_capacity: 16,
+        ..LatencyConfig::default()
+    };
+    let latency = Arc::new(LatencyMonitor::new("CASHCAT", 1, &latency_config, false));
+    let latency_dir = tempfile::tempdir().unwrap();
+    let latency_observer = LatencyObserver::spawn(
+        latency.clone(),
+        clock.clone(),
+        "CASHCAT".to_owned(),
+        1,
+        latency_config,
+        false,
+        std::time::Duration::from_secs(60),
+        latency_dir.path().join("latency.json"),
+    )
+    .unwrap();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let client = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: format!("ws://{address}"),
@@ -219,8 +242,9 @@ async fn application_ping_and_protocol_pong_are_exercised() {
         latest_bbo: Arc::new(AtomicBbo::default()),
         events: Arc::new(AsyncRing::new(16)),
         signal: Arc::new(HotPathSignal::default()),
-        clock: Arc::new(ProcessClock::default()),
+        clock,
         metrics: metrics.clone(),
+        latency: Some(latency.clone()),
         scientifically_valid: valid.clone(),
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_millis(20),
@@ -236,11 +260,19 @@ async fn application_ping_and_protocol_pong_are_exercised() {
         .unwrap()
         .unwrap();
     server.await.unwrap();
+    latency_observer.stop().unwrap();
     assert!(metrics.snapshot().market_messages >= 1);
     assert!(metrics.snapshot().application_pings_sent >= 1);
     assert!(metrics.snapshot().application_pongs_received >= 1);
     assert_eq!(metrics.snapshot().protocol_pings_received, 1);
     assert_eq!(metrics.snapshot().reconnects, 0);
+    assert_eq!(
+        latency.snapshot().distributions["ws_ping_rtt"].total_samples,
+        1
+    );
+    assert!(latency.snapshot().distributions["ws_ping_rtt"]
+        .last_ns
+        .is_some_and(|value| value > 0));
     assert!(valid.load(Ordering::Acquire));
 }
 
@@ -288,6 +320,7 @@ async fn idle_socket_reconnects_resubscribes_and_invalidates_evidence() {
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
         metrics: metrics.clone(),
+        latency: None,
         scientifically_valid: valid.clone(),
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_millis(20),
@@ -355,6 +388,7 @@ async fn initial_trade_snapshot_ignores_old_rows_in_any_order() {
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
         metrics: metrics.clone(),
+        latency: None,
         scientifically_valid: valid.clone(),
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),

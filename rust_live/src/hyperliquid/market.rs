@@ -1,4 +1,5 @@
 use crate::instrument::InstrumentSpec;
+use crate::latency::{LatencyKind, LatencyMonitor};
 use crate::lockfree::{AsyncRing, AtomicBbo, HotPathSignal, HOT_SIGNAL_MARKET};
 use crate::metrics::Metrics;
 use crate::types::{MarketEvent, ProcessClock};
@@ -20,6 +21,7 @@ pub struct MarketStreamArgs {
     pub signal: Arc<HotPathSignal>,
     pub clock: Arc<ProcessClock>,
     pub metrics: Arc<Metrics>,
+    pub latency: Option<Arc<LatencyMonitor>>,
     pub scientifically_valid: Arc<AtomicBool>,
     pub shutdown: watch::Receiver<bool>,
     pub ping_interval: Duration,
@@ -90,13 +92,13 @@ where
     }
     let mut ping = tokio::time::interval(args.ping_interval);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    ping.tick().await;
     let idle_check_period = args.idle_timeout.min(Duration::from_secs(1));
     let mut idle_check = tokio::time::interval(idle_check_period);
     idle_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     idle_check.tick().await;
     let mut last_inbound = tokio::time::Instant::now();
     let mut trade_stream_live = false;
+    let mut pending_application_ping_ns = None;
     loop {
         tokio::select! {
             incoming = read.next() => {
@@ -110,6 +112,16 @@ where
                             continue;
                         };
                         if root.get("channel").and_then(serde_json::Value::as_str) == Some("pong") {
+                            let pong_ns = args.clock.now_ns();
+                            if let (Some(sent_ns), Some(latency)) =
+                                (pending_application_ping_ns.take(), args.latency.as_ref())
+                            {
+                                latency.record(
+                                    LatencyKind::WsPingRtt,
+                                    pong_ns.saturating_sub(sent_ns),
+                                    pong_ns,
+                                );
+                            }
                             args.metrics
                                 .application_pongs_received
                                 .fetch_add(1, Ordering::Relaxed);
@@ -168,6 +180,7 @@ where
                 }
             }
             _ = ping.tick() => {
+                pending_application_ping_ns = Some(args.clock.now_ns());
                 write.send(Message::Text(json!({"method":"ping"}).to_string().into())).await?;
                 args.metrics
                     .application_pings_sent

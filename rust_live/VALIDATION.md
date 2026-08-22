@@ -1,13 +1,15 @@
 # Validation status
 
-Validated locally on 2026-08-22. No real order path exists and no real order was
-submitted.
+Validated locally on 2026-08-22. The persistent `live` strategy backend remains
+disabled. A separately guarded pure-Rust connector canary was explicitly
+authorized and exercised minimum-notional real actions on a dedicated CASHCAT
+subaccount; all canaries ended flat with zero open orders.
 
 ## Deterministic gates
 
 - `cargo fmt --check`: passed.
 - strict Clippy over all targets with warnings denied: passed.
-- Rust tests: 42 passed across unit and integration targets.
+- Rust tests: 62 passed across unit and integration targets.
 - Python/Freqtrade reference tests: 722 passed.
 - locked optimized build of both binaries: passed.
 - Docker image build with the bounded context: passed; containerized metadata
@@ -19,13 +21,15 @@ submitted.
   Cartea–Jaimungal policy.
 - live-command safety gate: passed; it exits before credentials or order
   transport.
-- mock Hyperliquid WebSocket tests: public parsing, application ping/pong,
-  protocol ping response, idle timeout, reconnect/resubscription, and mixed-age
-  initial trade snapshots all passed.
+- mock Hyperliquid WebSocket tests: public parsing, the eight account
+  subscriptions, application ping/pong with measured RTT, protocol ping
+  response, idle timeout, reconnect/resubscription, order/fill delivery, and
+  mixed-age initial trade snapshots all passed.
 - causal-ring saturation test: passed and invalidates the session.
-- independent offline connector evidence: 17 Rust signing/wire tests, nine Rust
-  execution-envelope/response tests, and 12 JavaScript conformance tests passed
-  with throwaway keys and mocked transports. None submitted an action.
+- exact connector tests cover secret-safe four-key dotenv parsing, fixed-point
+  wire numbers, CLOIDs, monotonic nonces, MessagePack bytes, vault/expiry action
+  hashes, both-network EIP-712 digests, secp256k1 signatures, and known versus
+  unknown outcomes. Golden values match the independent Python oracle fixtures.
 - runtime purity gate: the release image contains no Python, CCXT, credential
   file, or key material. Python and JavaScript were used only as test oracles.
 
@@ -45,6 +49,21 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
 - Current Hyperliquid metadata dynamically resolved CASHCAT as a perp with
   integer size units, six maximum price decimals, 3x maximum leverage,
   `onlyIsolated=true`, and margin table 3.
+- A 192.6-second containerized public-feed dry run
+  (`dry_run-1787384508441.json`) remained scientifically valid through five
+  background calibrations. It received 407 messages (261 BBO, 146 trade, 35 L2),
+  completed 5/5 application heartbeats, and had zero reconnects, invalid
+  messages, or causal drops. Moving the roughly 11-second desktop calibration
+  job off the async event loop reduced market-event dispatch p99 to 0.21 ms and
+  decision-to-backend-completion p99 to 0.71 ms during the observation.
+- The final minimal release-image smoke (`dry_run-1787387382194.json`) ran 78.7
+  seconds, processed 176 messages (117 BBO, 69 trade, 14 L2), completed three
+  heartbeat RTT measurements and two calibrations, and exited 0 scientifically
+  valid. It had zero reconnects, causal/latency drops, calibration failures, or
+  observer errors. Dispatch p99 was 0.103 ms, hot-decision p99 24.019 us,
+  decision-to-backend p99 0.487 ms, and WebSocket RTT p99 574.286 ms. The gate
+  remained visible but non-enforcing (`not_enforced_in_mode`) as required for
+  dry-run.
 - The EMA-free bounded public-feed canary
   `dry_run-1787346470124.json` connected successfully and received 13 BBO, six
   trade, and 12 L2 events. It made 573 quote decisions with zero invalid
@@ -72,14 +91,33 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
   (`dry_run-1787353638368.json`) then recorded three application pings and three
   pongs, no idle timeout, reconnect, invalid message, or causal drop, and was
   scientifically valid.
-- Read-only authenticated-account validation used the ignored credential file
-  without emitting its key: Hyperliquid identified the wallet as a subaccount,
-  the derived signer as its approved agent, and both mapped to the same master.
-  All required `/info` schemas returned successfully. A 65-second account
-  WebSocket observation acknowledged all six subscriptions and answered all
-  four application heartbeats, with no parse errors and a maximum inbound gap
-  of 6.076 seconds. No signed action, order, modify, cancel, leverage change, or
-  dead-man action was sent.
+- The current pure-Rust read-only connector check used the ignored credential
+  file without emitting its key. Hyperliquid reported a dedicated subaccount
+  with 299.8 USDC, zero position, zero open orders, isolated CASHCAT leverage,
+  and maker/taker rates 0.00015/0.00045. All seven `/info` calls succeeded. A
+  65-second account WebSocket observation acknowledged all eight subscriptions,
+  received 56 messages, completed 3/3 application heartbeats, and had no
+  reconnect, timeout, parse error, or dropped event. The latency gate reported
+  `enforced=false` as required for probes.
+- The authorized passive canary placed 89 CASHCAT at 0.114 (10.146 USDC) as
+  ALO, received resting OID 522935896688, canceled it by its own CLOID, and
+  finished with no fill, unchanged equity, zero position, and zero open orders.
+- The first IOC canary exposed an account-decimal compatibility bug: the venue
+  reports integer CASHCAT size as `88.0`. The entry bought 88 at 0.11507; after
+  fixing the exact parser, a reduce-only recovery sold all 88 at 0.11523. Fees
+  were 0.009119 USDC, closed PnL was +0.01408 USDC, and net equity rose
+  0.004961 USDC. The account was independently confirmed flat and empty. A
+  regression test now pins redundant trailing-zero parsing.
+- The corrected integrated round-trip then bought 88 at 0.11451 and closed all
+  88 reduce-only at 0.11436 about 1.82 seconds later. It lost 0.022262 USDC
+  including fees, received order and fill stream events, and again finished
+  flat with zero open orders. This is connector validation, not evidence of
+  strategy profitability.
+- On this development machine, the read-only probe measured `/info` p99 around
+  324 ms and WebSocket ping p99 around 561 ms; the final action canary measured
+  submit acknowledgements around 959-976 ms. These exceed the configured 150 ms
+  production p99 threshold, so an enforced production gate would refuse to
+  quote. Probe, dry-run, and canary enforcement was intentionally bypassed.
 - The already-running Python estimator and both Freqtrade dry-run consumers were
   restarted so their in-memory schema guards also use v4. The estimator now
   copies and publishes every cycle successfully; both consumers accepted the
@@ -101,7 +139,9 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
 
 ## Remaining boundary
 
-`live` is an intentional unavailable backend. Public metadata/market data,
-instrument-neutral order intents, execution events, account-state interfaces,
-and post-only semantics are present so a future authenticated adapter can be
-added and validated independently. This release is for replay and dry-run only.
+`live` is still an intentional unavailable backend. Low-level authenticated
+reads, private/account WebSocket listening, signing, ALO/IOC placement, and
+CLOID/OID cancellation are now pure Rust and empirically exercised. Production
+activation still requires durable nonce and order state, fill/funding
+deduplication, unknown-outcome restart reconciliation, rate limiting, and a
+dead-man policy. Replay and dry-run remain the only continuous strategy modes.
