@@ -67,7 +67,11 @@ tokio-tungstenite = { version = "=0.30.0", features = ["rustls-tls-webpki-roots"
 [profile.release]
 codegen-units = 1
 lto = "fat"
-panic = "abort"
+# Unwind, not abort: a panic in any task must not bypass the live teardown that
+# cancels resting orders. Abort would leave live exposure to the venue dead-man
+# deadline, and accounts below the venue's cumulative-volume threshold cannot
+# arm a dead-man at all.
+panic = "unwind"
 strip = "symbols"
 opt-level = 3
 

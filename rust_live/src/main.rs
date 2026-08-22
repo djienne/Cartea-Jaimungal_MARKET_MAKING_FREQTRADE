@@ -1140,10 +1140,11 @@ async fn run_live(
     }));
     let inventory_units = Arc::new(AtomicI64::new(account.inventory_units));
     let risk_state = Arc::new(AtomicRiskState::default());
+    let initial_risk = backend.risk_scalars()?;
     risk_state.store(RiskState {
         equity_usdc: account.equity_usdc,
-        daily_realized_pnl_usdc: backend.daily_realized_pnl_usdc()?,
-        consecutive_losses: account.consecutive_losses,
+        daily_realized_pnl_usdc: initial_risk.daily_realized_pnl_usdc,
+        consecutive_losses: initial_risk.consecutive_losses,
     });
     let hot_thread = spawn_hot_path(HotPathInputs {
         latest_bbo: latest_bbo.clone(),
@@ -1188,196 +1189,212 @@ async fn run_live(
     let deadline = (duration_seconds > 0)
         .then(|| tokio::time::Instant::now() + Duration::from_secs(duration_seconds));
 
-    loop {
-        tokio::select! {
-            biased;
-            result = &mut shutdown_signal => {
-                result?;
-                break;
-            }
-            () = async {
-                if let Some(deadline) = deadline {
-                    tokio::time::sleep_until(deadline).await;
-                } else {
-                    std::future::pending::<()>().await;
-                }
-            } => break,
-            event = session_events.recv() => {
-                let Some(event) = event else {
-                    backend.invalidate("live session event channel closed");
-                    break;
-                };
-                event_logger.log("live_session_event", None, &format!("{event:?}"))?;
-                let execution_events = backend.process_session_event(event)?;
-                apply_live_execution_events(
-                    &execution_events,
-                    &mut event_logger,
-                    &backend,
-                    &inventory_units,
-                    &risk_state,
-                    &metrics,
-                    &signal,
-                )?;
-            }
-            result = reconcile_rx.recv(), if reconcile_inflight => {
-                reconcile_inflight = false;
-                let Some(result) = result else { continue };
-                match result {
-                    Ok(snapshot) => {
-                        backend.apply_reconciliation(snapshot)?;
-                        let execution_events = backend.maintenance(unix_ms()).await?;
-                        apply_live_execution_events(
-                            &execution_events,
-                            &mut event_logger,
-                            &backend,
-                            &inventory_units,
-                            &risk_state,
-                            &metrics,
-                            &signal,
-                        )?;
-                    }
-                    Err(error) => {
-                        backend.invalidate(&format!("live reconciliation failed: {error}"));
-                        warn!(%error, "live reconciliation failed");
-                    }
-                }
-            }
-            event = events.pop() => {
-                let dispatch_ns = clock.now_ns();
-                latency.record(
-                    LatencyKind::MarketEventDispatch,
-                    dispatch_ns.saturating_sub(event_recv_ns(&event)),
-                    dispatch_ns,
-                );
-                event_logger.log("market_event", Some(event_ms(&event)), &event)?;
-                let execution_events = backend.on_market_event(&event).await?;
-                apply_live_execution_events(
-                    &execution_events,
-                    &mut event_logger,
-                    &backend,
-                    &inventory_units,
-                    &risk_state,
-                    &metrics,
-                    &signal,
-                )?;
-            }
-            next = desired.changed_after(observed_quote_seq) => {
-                observed_quote_seq = next.quote_seq;
-                let backend_started_ns = clock.now_ns();
-                latency.record(
-                    LatencyKind::DecisionToBackendStart,
-                    backend_started_ns.saturating_sub(next.generated_ns),
-                    backend_started_ns,
-                );
-                backend.reconcile(next, unix_ms()).await?;
-                let backend_done_ns = clock.now_ns();
-                latency.record(
-                    LatencyKind::DecisionToBackendDone,
-                    backend_done_ns.saturating_sub(next.generated_ns),
-                    backend_done_ns,
-                );
-                event_logger.log("quote_decision", None, &next)?;
-            }
-            _ = maintenance.tick() => {
-                let market_valid = market_evidence_valid.load(Ordering::Acquire);
-                if !market_valid {
-                    backend.invalidate("public market stream lost causal continuity");
-                    warn!("public market evidence invalidated; stopping live session");
+    // The loop lives inside an async block so a `?` in any branch body unwinds
+    // only to here. Every exit — clean break, shutdown signal, or error — must
+    // reach the teardown below, because that is what cancels resting orders.
+    // Returning early would abandon live exposure to the venue dead-man
+    // deadline, and an account under the venue's cumulative-volume threshold
+    // cannot arm a dead-man at all.
+    let loop_result: Result<()> = async {
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut shutdown_signal => {
+                    result?;
                     break;
                 }
-                let can_quote = armed
-                    && backend.operationally_healthy()
-                    && latency.trading_allowed();
-                let was_enabled = quote_enabled.swap(can_quote, Ordering::AcqRel);
-                if was_enabled != can_quote {
-                    signal.notify(HOT_SIGNAL_EXECUTION);
-                }
-                if !armed
-                    && tokio::time::Instant::now() >= warmup_deadline
-                    && backend.operationally_healthy()
-                    && latency.trading_allowed()
-                    && latest_bbo.load().is_some()
-                {
-                    backend.ensure_configured_leverage().await?;
-                    if config.live.deadman_enabled {
-                        backend.arm_or_refresh_deadman(unix_ms()).await?;
+                () = async {
+                    if let Some(deadline) = deadline {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
                     }
-                    armed = true;
-                    quote_enabled.store(true, Ordering::Release);
-                    signal.notify(HOT_SIGNAL_EXECUTION);
-                    info!(mode = ?config.live.mode, "live backend armed after all startup gates");
+                } => break,
+                event = session_events.recv() => {
+                    let Some(event) = event else {
+                        backend.invalidate("live session event channel closed");
+                        break;
+                    };
+                    event_logger.log("live_session_event", None, &format!("{event:?}"))?;
+                    let execution_events = backend.process_session_event(event)?;
+                    apply_live_execution_events(
+                        &execution_events,
+                        &mut event_logger,
+                        &backend,
+                        &inventory_units,
+                        &risk_state,
+                        &metrics,
+                        &signal,
+                    )?;
                 }
-                let execution_events = backend.maintenance(unix_ms()).await?;
-                apply_live_execution_events(
-                    &execution_events,
-                    &mut event_logger,
-                    &backend,
-                    &inventory_units,
-                    &risk_state,
-                    &metrics,
-                    &signal,
-                )?;
-                if backend.reconciliation_requested() && !reconcile_inflight {
-                    reconcile_inflight = true;
-                    backend.spawn_reconciliation(reconcile_tx.clone());
-                }
-            }
-            result = calibration_rx.recv() => {
-                calibration_inflight = false;
-                let Some(result) = result else { continue };
-                match result {
-                    Ok((next, mut surface, mut next_unit)) => {
-                        let account = backend.account_state();
-                        if account.inventory_units != 0 {
-                            next_unit = model
-                                .load_full()
-                                .context("live non-flat calibration lost inventory unit")?
-                                .inventory_unit;
-                            surface = solve_asymmetric(
-                                next.parameters,
-                                &effective_config.model,
-                                instrument.size_from_units(next_unit),
-                                next.revision,
+                result = reconcile_rx.recv(), if reconcile_inflight => {
+                    reconcile_inflight = false;
+                    let Some(result) = result else { continue };
+                    match result {
+                        Ok(snapshot) => {
+                            backend.apply_reconciliation(snapshot)?;
+                            let execution_events = backend.maintenance(unix_ms()).await?;
+                            apply_live_execution_events(
+                                &execution_events,
+                                &mut event_logger,
+                                &backend,
+                                &inventory_units,
+                                &risk_state,
+                                &metrics,
+                                &signal,
                             )?;
                         }
-                        backend.persist_inventory_unit(next_unit)?;
-                        model.store(Some(Arc::new(prepare_model_bundle(
-                            surface,
-                            next_unit,
-                            next.generated_at_ms,
-                            &effective_config,
-                            &clock,
-                        ))));
-                        calibration_snapshot = Some(next.clone());
-                        metrics.calibration_runs.fetch_add(1, Ordering::Relaxed);
-                        event_logger.log("calibration", None, &next)?;
-                        signal.notify(HOT_SIGNAL_MODEL);
-                    }
-                    Err(error) => {
-                        metrics.calibration_failures.fetch_add(1, Ordering::Relaxed);
-                        warn!(%error, "live calibration refresh failed; last model remains until stale");
+                        Err(error) => {
+                            backend.invalidate(&format!("live reconciliation failed: {error}"));
+                            warn!(%error, "live reconciliation failed");
+                        }
                     }
                 }
-            }
-            _ = calibration_interval.tick(), if !calibration_inflight => {
-                calibration_inflight = true;
-                let job_config = effective_config.clone();
-                let job_instrument = instrument.clone();
-                let result_tx = calibration_tx.clone();
-                tokio::spawn(async move {
-                    let result = tokio::task::spawn_blocking(move || {
-                        calibrate_model(&job_config, &job_instrument, true)
-                            .map(|(_, snapshot, surface, unit)| (snapshot, surface, unit))
-                    })
-                    .await
-                    .map_err(|error| anyhow::anyhow!("live calibration worker failed: {error}"))
-                    .and_then(|result| result);
-                    let _ = result_tx.send(result).await;
-                });
+                event = events.pop() => {
+                    let dispatch_ns = clock.now_ns();
+                    latency.record(
+                        LatencyKind::MarketEventDispatch,
+                        dispatch_ns.saturating_sub(event_recv_ns(&event)),
+                        dispatch_ns,
+                    );
+                    event_logger.log("market_event", Some(event_ms(&event)), &event)?;
+                    let execution_events = backend.on_market_event(&event).await?;
+                    apply_live_execution_events(
+                        &execution_events,
+                        &mut event_logger,
+                        &backend,
+                        &inventory_units,
+                        &risk_state,
+                        &metrics,
+                        &signal,
+                    )?;
+                }
+                next = desired.changed_after(observed_quote_seq) => {
+                    observed_quote_seq = next.quote_seq;
+                    let backend_started_ns = clock.now_ns();
+                    latency.record(
+                        LatencyKind::DecisionToBackendStart,
+                        backend_started_ns.saturating_sub(next.generated_ns),
+                        backend_started_ns,
+                    );
+                    backend.reconcile(next, unix_ms()).await?;
+                    let backend_done_ns = clock.now_ns();
+                    latency.record(
+                        LatencyKind::DecisionToBackendDone,
+                        backend_done_ns.saturating_sub(next.generated_ns),
+                        backend_done_ns,
+                    );
+                    event_logger.log("quote_decision", None, &next)?;
+                }
+                _ = maintenance.tick() => {
+                    let market_valid = market_evidence_valid.load(Ordering::Acquire);
+                    if !market_valid {
+                        backend.invalidate("public market stream lost causal continuity");
+                        warn!("public market evidence invalidated; stopping live session");
+                        break;
+                    }
+                    let can_quote = armed
+                        && backend.operationally_healthy()
+                        && latency.trading_allowed();
+                    let was_enabled = quote_enabled.swap(can_quote, Ordering::AcqRel);
+                    if was_enabled != can_quote {
+                        signal.notify(HOT_SIGNAL_EXECUTION);
+                    }
+                    if !armed
+                        && tokio::time::Instant::now() >= warmup_deadline
+                        && backend.operationally_healthy()
+                        && latency.trading_allowed()
+                        && latest_bbo.load().is_some()
+                    {
+                        backend.ensure_configured_leverage().await?;
+                        if config.live.deadman_enabled {
+                            backend.arm_or_refresh_deadman(unix_ms()).await?;
+                        }
+                        armed = true;
+                        quote_enabled.store(true, Ordering::Release);
+                        signal.notify(HOT_SIGNAL_EXECUTION);
+                        info!(mode = ?config.live.mode, "live backend armed after all startup gates");
+                    }
+                    let execution_events = backend.maintenance(unix_ms()).await?;
+                    apply_live_execution_events(
+                        &execution_events,
+                        &mut event_logger,
+                        &backend,
+                        &inventory_units,
+                        &risk_state,
+                        &metrics,
+                        &signal,
+                    )?;
+                    if backend.reconciliation_requested() && !reconcile_inflight {
+                        reconcile_inflight = true;
+                        backend.spawn_reconciliation(reconcile_tx.clone());
+                    }
+                }
+                result = calibration_rx.recv() => {
+                    calibration_inflight = false;
+                    let Some(result) = result else { continue };
+                    match result {
+                        Ok((next, mut surface, mut next_unit)) => {
+                            let account = backend.account_state();
+                            if account.inventory_units != 0 {
+                                next_unit = model
+                                    .load_full()
+                                    .context("live non-flat calibration lost inventory unit")?
+                                    .inventory_unit;
+                                surface = solve_asymmetric(
+                                    next.parameters,
+                                    &effective_config.model,
+                                    instrument.size_from_units(next_unit),
+                                    next.revision,
+                                )?;
+                            }
+                            backend.persist_inventory_unit(next_unit)?;
+                            model.store(Some(Arc::new(prepare_model_bundle(
+                                surface,
+                                next_unit,
+                                next.generated_at_ms,
+                                &effective_config,
+                                &clock,
+                            ))));
+                            calibration_snapshot = Some(next.clone());
+                            metrics.calibration_runs.fetch_add(1, Ordering::Relaxed);
+                            event_logger.log("calibration", None, &next)?;
+                            signal.notify(HOT_SIGNAL_MODEL);
+                        }
+                        Err(error) => {
+                            metrics.calibration_failures.fetch_add(1, Ordering::Relaxed);
+                            warn!(%error, "live calibration refresh failed; last model remains until stale");
+                        }
+                    }
+                }
+                _ = calibration_interval.tick(), if !calibration_inflight => {
+                    calibration_inflight = true;
+                    let job_config = effective_config.clone();
+                    let job_instrument = instrument.clone();
+                    let result_tx = calibration_tx.clone();
+                    tokio::spawn(async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            calibrate_model(&job_config, &job_instrument, true)
+                                .map(|(_, snapshot, surface, unit)| (snapshot, surface, unit))
+                        })
+                        .await
+                        .map_err(|error| anyhow::anyhow!("live calibration worker failed: {error}"))
+                        .and_then(|result| result);
+                        let _ = result_tx.send(result).await;
+                    });
+                }
             }
         }
+        Ok(())
     }
+    .await;
 
+    // Teardown. Nothing here may use `?` before the venue is flat of our orders,
+    // and logging must not be fatal: if the loop died because the log writer
+    // died, logging here fails too.
+    if let Err(error) = &loop_result {
+        backend.invalidate(&format!("live loop stopped: {error}"));
+    }
     quote_enabled.store(false, Ordering::Release);
     signal.notify(HOT_SIGNAL_EXECUTION);
     let shutdown_result = backend.shutdown(unix_ms()).await;
@@ -1388,14 +1405,16 @@ async fn run_live(
         .store(final_account.inventory_units, Ordering::Release);
     signal.notify(HOT_SIGNAL_SHUTDOWN);
     let _ = shutdown_tx.send(true);
-    event_logger.flush()?;
+    let flush_result = event_logger.flush();
     let _ = tokio::time::timeout(Duration::from_secs(5), market_task).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), session_task).await;
-    tokio::task::spawn_blocking(move || hot_thread.join())
+    let hot_join_result = tokio::task::spawn_blocking(move || hot_thread.join())
         .await
-        .context("cannot join live hot-path task")?
-        .map_err(|_| anyhow::anyhow!("live hot-path thread panicked"))?;
-    latency_observer.stop()?;
+        .context("cannot join live hot-path task")
+        .and_then(|joined| {
+            joined.map_err(|_| anyhow::anyhow!("live hot-path thread panicked"))
+        });
+    let observer_result = latency_observer.stop();
     let report = LiveSessionReport {
         schema_version: 3,
         build: mm_live::BuildInfo::current(),
@@ -1426,9 +1445,19 @@ async fn run_live(
         },
         Path::to_owned,
     );
-    report.write_atomic(&path)?;
-    println!("report={}", path.display());
+    let write_result = report.write_atomic(&path);
+    if write_result.is_ok() {
+        println!("report={}", path.display());
+    }
+
+    // Surface the original cause first: the loop's error explains why the
+    // session ended, while the teardown results only describe cleanup.
+    loop_result?;
     shutdown_result?;
+    flush_result?;
+    hot_join_result?;
+    observer_result?;
+    write_result?;
     Ok(())
 }
 
@@ -1457,10 +1486,13 @@ fn apply_live_execution_events(
     metrics
         .inventory_units
         .store(account.inventory_units, Ordering::Relaxed);
+    // The venue does not report a loss streak, so both risk scalars come from
+    // durable state rather than from `account_state()`.
+    let risk = backend.risk_scalars()?;
     risk_state.store(RiskState {
         equity_usdc: account.equity_usdc,
-        daily_realized_pnl_usdc: backend.daily_realized_pnl_usdc()?,
-        consecutive_losses: account.consecutive_losses,
+        daily_realized_pnl_usdc: risk.daily_realized_pnl_usdc,
+        consecutive_losses: risk.consecutive_losses,
     });
     if !events.is_empty() {
         signal.notify(HOT_SIGNAL_EXECUTION);

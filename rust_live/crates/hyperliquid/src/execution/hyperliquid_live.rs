@@ -7,7 +7,7 @@ use crate::hyperliquid::account_types::{
 use crate::hyperliquid::auth::HyperliquidCredentials;
 use crate::hyperliquid::exchange::{ActionOutcome, HyperliquidExchangeClient, OpenOrder, UserFill};
 use crate::hyperliquid::live_state::{
-    DurableNonceManager, LiveOrderStatus, LiveStateStore, PersistedLiveOrder,
+    DurableNonceManager, LiveOrderStatus, LiveStateStore, PersistedLiveOrder, RiskScalars,
 };
 use crate::hyperliquid::session::{
     spawn_session, AccountChannel, HyperliquidSessionHandle, SessionEvent, SessionSpawnArgs,
@@ -29,6 +29,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
+use tracing::warn;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct LiveExecutionDiagnostics {
@@ -262,22 +263,33 @@ impl HyperliquidLiveBackend {
         self.diagnostics.operationally_healthy
     }
 
+    /// Pause trading without ending the session.
+    ///
+    /// Transient conditions — a full command queue, a refused action — must not
+    /// unwind `run_live`, because that path abandons resting orders to the
+    /// dead-man deadline. Quoting stops because `run_live` gates on
+    /// `operationally_healthy`, and the next maintenance tick reconciles against
+    /// the venue before anything resumes. This mirrors how a
+    /// `SessionEvent::ActionRefused` is already handled.
+    fn degrade(&mut self, context: &str, error: &anyhow::Error) {
+        self.diagnostics.operationally_healthy = false;
+        self.diagnostics.invalid_reason = Some(format!("{context}: {error}"));
+        self.reconcile_requested = true;
+        warn!(%error, context, "live action degraded; quotes paused until reconciled");
+    }
+
     pub const fn deadman_armed(&self) -> bool {
         self.deadman_armed
     }
 
-    pub fn daily_realized_pnl_usdc(&self) -> Result<f64> {
-        let mut state = self.state.load_required()?;
-        let day = unix_ms() / 86_400_000;
-        if state.pnl_day != day {
-            self.state.update(|state| {
-                state.pnl_day = day;
-                state.daily_realized_pnl_usdc = 0.0;
-                Ok(())
-            })?;
-            state.daily_realized_pnl_usdc = 0.0;
-        }
-        Ok(state.daily_realized_pnl_usdc)
+    /// Scalar risk inputs for the hot path, rolling the P&L day when the
+    /// calendar has advanced.
+    ///
+    /// This runs on every execution event, so it deliberately avoids
+    /// `load_required` — cloning the durable order and dedup collections here is
+    /// what would make per-event cost grow with session length.
+    pub fn risk_scalars(&self) -> Result<RiskScalars> {
+        self.state.risk_scalars(unix_ms() / 86_400_000)
     }
 
     pub fn effective_quoting_config(&self) -> Result<QuotingConfig> {
@@ -613,9 +625,16 @@ impl HyperliquidLiveBackend {
             && now_ms.saturating_sub(self.last_deadman_refresh_ms) >= self.live.deadman_refresh_ms
         {
             let deadline = now_ms.saturating_add(self.live.deadman_deadline_ms);
-            self.session.enqueue_schedule_cancel(Some(deadline))?;
-            self.last_deadman_refresh_ms = now_ms;
-            self.diagnostics.deadman_refreshes += 1;
+            // Do not advance `last_deadman_refresh_ms` on failure: the refresh
+            // interval is well inside the deadline, so leaving the timestamp
+            // untouched retries on the next tick with time to spare.
+            match self.session.enqueue_schedule_cancel(Some(deadline)) {
+                Ok(()) => {
+                    self.last_deadman_refresh_ms = now_ms;
+                    self.diagnostics.deadman_refreshes += 1;
+                }
+                Err(error) => self.degrade("dead-man refresh enqueue refused", &error),
+            }
         }
         Ok(std::mem::take(&mut self.pending_events))
     }
@@ -1075,11 +1094,24 @@ impl HyperliquidLiveBackend {
                     state.pnl_day = day;
                     state.daily_realized_pnl_usdc = 0.0;
                 }
-                state.cumulative_realized_pnl_usdc += closed_pnl - fee;
+                let realized = closed_pnl - fee;
+                state.cumulative_realized_pnl_usdc += realized;
                 state.cumulative_fees_usdc += fee;
-                state.daily_realized_pnl_usdc += closed_pnl - fee;
+                state.daily_realized_pnl_usdc += realized;
                 state.campaign.turnover_usdc += px * size;
-                state.campaign.realized_pnl_usdc += closed_pnl - fee;
+                state.campaign.realized_pnl_usdc += realized;
+                // Hyperliquid reports a non-zero closedPnl only on reducing
+                // fills, so it is the live analogue of the dry-run backend's
+                // `reduced_existing_position` gate. Judge the streak on the same
+                // net figure the daily-loss switch uses, and — as in dry-run —
+                // let a streak span days rather than resetting with the P&L day.
+                if closed_pnl != 0.0 {
+                    if realized < 0.0 {
+                        state.consecutive_losses = state.consecutive_losses.saturating_add(1);
+                    } else if realized > 0.0 {
+                        state.consecutive_losses = 0;
+                    }
+                }
                 Ok(true)
             })?;
             if !fresh {
@@ -1525,7 +1557,14 @@ impl ExecutionBackend for HyperliquidLiveBackend {
         if !cancel.is_empty() {
             let canceled_actions = cancel.len() as u64;
             if self.session.healthy() {
-                self.session.enqueue_cancel_cloids(cancel)?;
+                // A momentarily full command queue is a transient condition, not
+                // a reason to stop trading. Degrade and let the maintenance tick
+                // retry; aborting here would tear down the session over
+                // backpressure.
+                if let Err(error) = self.session.enqueue_cancel_cloids(cancel) {
+                    self.degrade("cancel enqueue refused", &error);
+                    return Ok(());
+                }
             } else {
                 let outcome = self.cancel_cloids_resilient(cancel).await?;
                 require_action_known(&outcome)?;
@@ -1543,7 +1582,16 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 .latest_bbo
                 .context("cannot place live quote without BBO")?;
             self.validate_new_orders(&place, bbo)?;
-            self.session.enqueue_orders(desired.quote_seq, place)?;
+            if let Err(error) = self.session.enqueue_orders(desired.quote_seq, place) {
+                self.degrade("order enqueue refused", &error);
+                // Cancels above may already be in flight; leaving the book
+                // one-sided is safe, and the retry re-derives both sides.
+                if action_submitted {
+                    self.last_quote_action_ms = now_ms;
+                    self.inventory_at_last_quote_action = self.account.inventory_units;
+                }
+                return Ok(());
+            }
             self.diagnostics.orders_submitted += 1;
             self.diagnostics.address_requests_used = self
                 .diagnostics
@@ -1886,6 +1934,94 @@ mod tests {
             deferred_desired: None,
         };
         (directory, backend, cloid)
+    }
+
+    /// A full session command queue is backpressure, not a reason to end the
+    /// session. Before this, the `?` on `enqueue_cancel_cloids` unwound
+    /// `run_live` and abandoned resting orders to the dead-man deadline.
+    #[tokio::test]
+    async fn a_full_command_queue_degrades_instead_of_ending_the_session() {
+        let (_directory, mut backend, _cloid) = lifecycle_backend();
+        // `test_stub` backs both command queues with a capacity of one, so the
+        // first cancel fills the priority queue and the second is refused.
+        // `RiskLimit` withdraws both sides and bypasses the requote cooldown.
+        backend
+            .reconcile(DesiredQuotes::empty(QuoteReason::RiskLimit, 1, 0), 1_000)
+            .await
+            .expect("first cancel enqueues");
+        assert!(backend.operationally_healthy());
+
+        backend
+            .reconcile(DesiredQuotes::empty(QuoteReason::RiskLimit, 2, 0), 2_000)
+            .await
+            .expect("a refused enqueue must not end the session");
+        assert!(
+            !backend.operationally_healthy(),
+            "a refused action must pause quoting"
+        );
+        assert!(
+            backend.reconciliation_requested(),
+            "a refused action must schedule a reconcile"
+        );
+    }
+
+    /// The venue never reports a loss streak, so it is derived here from closing
+    /// fills. Before this was tracked, `RiskState.consecutive_losses` was pinned
+    /// at zero in live and `max_consecutive_losses` could never fire.
+    #[test]
+    fn consecutive_losses_track_closing_fills_and_reset_on_a_win() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
+        let mut tid = 0_u64;
+        let mut feed = |backend: &mut HyperliquidLiveBackend, closed_pnl: &str| {
+            tid += 1;
+            backend
+                .process_session_event(SessionEvent::AccountData {
+                    generation: 1,
+                    received_ns: 100 + tid,
+                    channel: AccountChannel::UserFills,
+                    data: serde_json::json!({
+                        "isSnapshot": false,
+                        "fills": [{
+                            "coin":"CASHCAT", "px":"0.1", "sz":"1", "side":"B",
+                            "time":checkpoint.saturating_add(10 * tid),
+                            "oid":7, "tid":tid, "cloid":cloid,
+                            "startPosition":"0", "crossed":false, "fee":"0.001",
+                            "closedPnl":closed_pnl, "hash":format!("0x{tid:x}")
+                        }]
+                    }),
+                })
+                .unwrap();
+        };
+
+        // Opening fills carry no closedPnl and must not count as losses, even
+        // though they do cost a fee.
+        feed(&mut backend, "0");
+        assert_eq!(backend.risk_scalars().unwrap().consecutive_losses, 0);
+
+        for expected in 1..=3 {
+            feed(&mut backend, "-1");
+            assert_eq!(
+                backend.risk_scalars().unwrap().consecutive_losses,
+                expected,
+                "a losing close must extend the streak"
+            );
+        }
+
+        feed(&mut backend, "5");
+        assert_eq!(
+            backend.risk_scalars().unwrap().consecutive_losses,
+            0,
+            "a winning close must reset the streak"
+        );
+
+        // Daily realized P&L is net of fees and feeds the daily-loss switch.
+        let expected_daily = -0.001 + 3.0 * (-1.0 - 0.001) + (5.0 - 0.001);
+        let daily = backend.risk_scalars().unwrap().daily_realized_pnl_usdc;
+        assert!(
+            (daily - expected_daily).abs() < 1.0e-9,
+            "daily realized pnl was {daily}, expected {expected_daily}"
+        );
     }
 
     #[test]

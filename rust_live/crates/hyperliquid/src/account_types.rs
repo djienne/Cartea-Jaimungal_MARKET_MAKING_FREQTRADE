@@ -214,6 +214,9 @@ impl LiveAccountSnapshot {
             margin_used_usdc: self.total_margin_used_usdc,
             maintenance_margin_usdc: 0.0,
             liquidation_buffer_usdc: self.withdrawable_usdc,
+            // The venue does not report a loss streak. The risk-bearing value is
+            // tracked durably and read via `HyperliquidLiveBackend::risk_scalars`;
+            // do not wire this field into `RiskState`.
             consecutive_losses: 0,
         }
     }

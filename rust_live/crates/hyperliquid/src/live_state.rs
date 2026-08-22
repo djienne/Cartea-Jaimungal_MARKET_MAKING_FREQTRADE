@@ -132,7 +132,22 @@ pub struct PersistedLiveState {
     pub pnl_day: u64,
     #[serde(default)]
     pub daily_realized_pnl_usdc: f64,
+    /// Consecutive losing closes. Streaks span days, matching `DryRunBackend`,
+    /// so the daily P&L roll deliberately leaves this alone.
+    #[serde(default)]
+    pub consecutive_losses: u32,
     pub campaign: AcceptanceBudgetState,
+}
+
+/// Scalar risk inputs the hot path needs every time execution state moves.
+///
+/// Read through [`LiveStateStore::risk_scalars`] rather than `load_required`:
+/// this is on a per-event path, and cloning the order and dedup collections
+/// there is what makes per-event cost grow with session length.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RiskScalars {
+    pub daily_realized_pnl_usdc: f64,
+    pub consecutive_losses: u32,
 }
 
 impl PersistedLiveState {
@@ -162,6 +177,7 @@ impl PersistedLiveState {
             cumulative_funding_usdc: 0.0,
             pnl_day: unix_ms() / 86_400_000,
             daily_realized_pnl_usdc: 0.0,
+            consecutive_losses: 0,
             campaign: AcceptanceBudgetState::default(),
         }
     }
@@ -289,14 +305,45 @@ impl LiveStateStore {
             .map_err(|_| anyhow::anyhow!("live-state memory lock poisoned"))?;
         let result = update(&mut state)?;
         drop(state);
+        self.signal_persistence()?;
+        Ok(result)
+    }
+
+    /// Read the scalar risk inputs, rolling the P&L day when the calendar has
+    /// advanced. Takes the lock once and clones nothing; the writer is woken
+    /// only when the day actually rolled.
+    pub fn risk_scalars(&self, day: u64) -> Result<RiskScalars> {
+        self.check_persistence_error()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("live-state memory lock poisoned"))?;
+        let rolled = state.pnl_day != day;
+        if rolled {
+            state.pnl_day = day;
+            state.daily_realized_pnl_usdc = 0.0;
+        }
+        let scalars = RiskScalars {
+            daily_realized_pnl_usdc: state.daily_realized_pnl_usdc,
+            consecutive_losses: state.consecutive_losses,
+        };
+        drop(state);
+        if rolled {
+            self.signal_persistence()?;
+        }
+        Ok(scalars)
+    }
+
+    /// Coalescing wake for the persistence writer. A full channel already means
+    /// a snapshot is pending, so dropping the signal is correct.
+    fn signal_persistence(&self) -> Result<()> {
         match self.persistence_tx.try_send(PersistCommand::Wake) {
-            Ok(()) | Err(TrySendError::Full(PersistCommand::Wake)) => {}
+            Ok(()) | Err(TrySendError::Full(PersistCommand::Wake)) => Ok(()),
             Err(TrySendError::Disconnected(_)) => {
-                bail!("live-state persistence writer stopped unexpectedly");
+                bail!("live-state persistence writer stopped unexpectedly")
             }
             Err(TrySendError::Full(_)) => unreachable!("only Wake uses try_send"),
         }
-        Ok(result)
     }
 
     pub fn flush(&self) -> Result<()> {

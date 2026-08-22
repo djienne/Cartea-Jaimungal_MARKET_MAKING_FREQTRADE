@@ -376,7 +376,12 @@ struct Inflight {
     purpose: ActionPurpose,
     sent_ns: u64,
     response: Option<oneshot::Sender<Result<ActionOutcome>>>,
-    cloids: Vec<String>,
+    /// Positionally aligned with the orders in the signed wire action: entry `i`
+    /// describes wire order `i`, and is `None` where the venue was asked to act
+    /// on a cloid we do not track locally. Venue status arrays are indexed by
+    /// wire position, so this alignment is what keeps a response attributed to
+    /// the order it actually describes.
+    cloids: Vec<Option<String>>,
 }
 
 struct InflightBook {
@@ -655,9 +660,21 @@ where
                 }
             }
             _ = ping.tick() => {
-                rate.consume(true)?;
-                pending_ping_ns = Some(args.clock.now_ns());
-                write.send(Message::Text(application_ping().into())).await?;
+                // An exhausted message budget must not cost us the socket:
+                // tearing it down turns every in-flight order into an unknown
+                // outcome and permanently invalidates the run on reconnect.
+                // Skip the ping, degrade health, and let the idle timeout act
+                // if the connection really is gone.
+                match rate.consume(true) {
+                    Ok(()) => {
+                        pending_ping_ns = Some(args.clock.now_ns());
+                        write.send(Message::Text(application_ping().into())).await?;
+                    }
+                    Err(error) => {
+                        healthy.store(false, Ordering::Release);
+                        warn!(%error, "skipping application ping: WebSocket message budget exhausted");
+                    }
+                }
             }
             () = tokio::time::sleep_until(last_inbound + args.idle_timeout) => {
                 bail!("live WebSocket idle timeout");
@@ -770,12 +787,19 @@ const fn order_expires_after(nonce: u64, now_ms: u64, ttl_ms: u64) -> u64 {
     }
 }
 
+/// Record local intent for an action and return per-wire-order tracking slots.
+///
+/// The returned vector is positionally aligned with the orders the signed action
+/// carries, so `result[i]` describes wire order `i`. Untracked entries are
+/// `None` rather than omitted: the venue answers with one status per wire order,
+/// and dropping entries here would shift every later status onto the wrong
+/// order.
 fn prepare_action_state(
     store: &LiveStateStore,
     action: &SessionAction,
     nonce: u64,
     transport_id: u64,
-) -> Result<Vec<String>> {
+) -> Result<Vec<Option<String>>> {
     let now_ms = unix_ms();
     match action {
         SessionAction::Orders {
@@ -784,7 +808,7 @@ fn prepare_action_state(
         } => store.update(|state| {
             let mut cloids = Vec::with_capacity(requests.len());
             for request in requests {
-                cloids.push(request.cloid.clone());
+                cloids.push(Some(request.cloid.clone()));
                 state.orders.insert(
                     request.cloid.clone(),
                     PersistedLiveOrder {
@@ -812,19 +836,23 @@ fn prepare_action_state(
             store.update(|state| {
                 let mut tracked = Vec::with_capacity(requested.len());
                 for cloid in &requested {
-                    if let Some(order) = state.orders.get_mut(cloid) {
+                    // The wire action cancels every requested cloid, including
+                    // ones we cannot transition locally, so every request
+                    // contributes exactly one slot here.
+                    let claimed = state.orders.get_mut(cloid).is_some_and(|order| {
                         if !order
                             .status
                             .can_transition_to(LiveOrderStatus::CancelPending)
                         {
-                            continue;
+                            return false;
                         }
                         order.status = LiveOrderStatus::CancelPending;
                         order.nonce = Some(nonce);
                         order.transport_id = Some(transport_id);
                         order.last_update_ms = now_ms;
-                        tracked.push(cloid.clone());
-                    }
+                        true
+                    });
+                    tracked.push(claimed.then(|| cloid.clone()));
                 }
                 Ok(tracked)
             })
@@ -835,20 +863,34 @@ fn prepare_action_state(
 
 fn apply_action_response(
     store: &LiveStateStore,
-    cloids: &[String],
+    cloids: &[Option<String>],
     purpose: ActionPurpose,
     body: &serde_json::Value,
     received_ns: u64,
 ) -> Result<()> {
-    if cloids.is_empty() {
+    if cloids.iter().all(Option::is_none) {
         return Ok(());
     }
     let now_ms = unix_ms();
     let statuses = body
         .pointer("/response/data/statuses")
         .and_then(serde_json::Value::as_array);
+    // Statuses are attributed by wire position, so a differently sized array
+    // cannot be matched to orders at all. Fail closed rather than guess: an
+    // unknown outcome blocks `operationally_healthy` until the next
+    // authoritative reconcile resolves each order against the venue.
+    if statuses.is_some_and(|values| values.len() != cloids.len()) {
+        return mark_unknown(
+            store,
+            cloids,
+            "venue status array length did not match the submitted action",
+        );
+    }
     store.update(|state| {
         for (index, cloid) in cloids.iter().enumerate() {
+            let Some(cloid) = cloid.as_deref() else {
+                continue;
+            };
             let Some(order) = state.orders.get_mut(cloid) else {
                 continue;
             };
@@ -910,10 +952,10 @@ fn apply_action_response(
     })
 }
 
-fn mark_unknown(store: &LiveStateStore, cloids: &[String], reason: &str) -> Result<()> {
+fn mark_unknown(store: &LiveStateStore, cloids: &[Option<String>], reason: &str) -> Result<()> {
     let now_ms = unix_ms();
     store.update(|state| {
-        for cloid in cloids {
+        for cloid in cloids.iter().flatten() {
             if let Some(order) = state.orders.get_mut(cloid) {
                 if !order
                     .status
@@ -1095,11 +1137,13 @@ mod tests {
             2,
         )
         .unwrap();
-        assert!(tracked.is_empty());
-        mark_unknown(&store, std::slice::from_ref(&cloid), "late timeout").unwrap();
+        // The terminal order keeps its wire slot but is not claimed for cancel.
+        assert_eq!(tracked, vec![None]);
+        let slots = vec![Some(cloid.clone())];
+        mark_unknown(&store, &slots, "late timeout").unwrap();
         apply_action_response(
             &store,
-            std::slice::from_ref(&cloid),
+            &slots,
             ActionPurpose::Order,
             &serde_json::json!({
                 "response": {"data": {"statuses": [{"resting": {"oid": 8}}]}}
@@ -1111,5 +1155,143 @@ mod tests {
         assert_eq!(order.status, LiveOrderStatus::Filled);
         assert_eq!(order.remaining_qty_units, 0);
         assert_eq!(order.oid, Some(7));
+    }
+
+    /// A cancel batch keeps one wire slot per requested cloid even when an order
+    /// cannot be claimed locally, so venue statuses stay attributed by position.
+    /// Without the `None` placeholder the second order would inherit the first
+    /// order's status.
+    #[test]
+    fn cancel_statuses_stay_aligned_when_an_order_is_already_terminal() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LiveStateStore::open(
+            &directory.path().join("state.redb"),
+            "CASHCAT",
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "config",
+            "meta",
+            false,
+        )
+        .unwrap();
+        let filled = "0x434a4d4d000000000000000000000001".to_owned();
+        let resting = "0x434a4d4d000000000000000000000002".to_owned();
+        let template = |cloid: &str, status: LiveOrderStatus| PersistedLiveOrder {
+            cloid: cloid.to_owned(),
+            quote_seq: 1,
+            side: crate::types::Side::Buy,
+            px_units: 100_000,
+            original_qty_units: 100,
+            remaining_qty_units: if status.terminal() { 0 } else { 100 },
+            reduce_only: false,
+            status,
+            nonce: Some(1),
+            transport_id: Some(1),
+            oid: Some(7),
+            prepared_at_ms: 1,
+            last_update_ms: 2,
+            last_error: None,
+        };
+        store
+            .update(|state| {
+                state
+                    .orders
+                    .insert(filled.clone(), template(&filled, LiveOrderStatus::Filled));
+                state
+                    .orders
+                    .insert(resting.clone(), template(&resting, LiveOrderStatus::Resting));
+                Ok(())
+            })
+            .unwrap();
+
+        let slots = prepare_action_state(
+            &store,
+            &SessionAction::CancelCloids(vec![filled.clone(), resting.clone()]),
+            2,
+            2,
+        )
+        .unwrap();
+        assert_eq!(slots, vec![None, Some(resting.clone())]);
+
+        // Status 0 belongs to the already-filled order and must not reach the
+        // resting one; status 1 is the cancel that actually succeeded.
+        apply_action_response(
+            &store,
+            &slots,
+            ActionPurpose::Cancel,
+            &serde_json::json!({
+                "response": {"data": {"statuses": [
+                    {"error": "order was already filled"},
+                    "success"
+                ]}}
+            }),
+            3,
+        )
+        .unwrap();
+
+        let orders = store.load_required().unwrap().orders;
+        assert_eq!(orders[&filled].status, LiveOrderStatus::Filled);
+        assert_eq!(orders[&filled].last_error, None);
+        assert_eq!(orders[&resting].status, LiveOrderStatus::Canceled);
+    }
+
+    /// A status array we cannot attribute by position must fail closed rather
+    /// than align by guesswork.
+    #[test]
+    fn mismatched_status_length_marks_every_slot_unknown() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LiveStateStore::open(
+            &directory.path().join("state.redb"),
+            "CASHCAT",
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "config",
+            "meta",
+            false,
+        )
+        .unwrap();
+        let cloid = "0x434a4d4d000000000000000000000003".to_owned();
+        store
+            .update(|state| {
+                state.orders.insert(
+                    cloid.clone(),
+                    PersistedLiveOrder {
+                        cloid: cloid.clone(),
+                        quote_seq: 1,
+                        side: crate::types::Side::Buy,
+                        px_units: 100_000,
+                        original_qty_units: 100,
+                        remaining_qty_units: 100,
+                        reduce_only: false,
+                        status: LiveOrderStatus::Sent,
+                        nonce: Some(1),
+                        transport_id: Some(1),
+                        oid: None,
+                        prepared_at_ms: 1,
+                        last_update_ms: 2,
+                        last_error: None,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        apply_action_response(
+            &store,
+            &[Some(cloid.clone())],
+            ActionPurpose::Order,
+            &serde_json::json!({
+                "response": {"data": {"statuses": [
+                    {"resting": {"oid": 8}},
+                    {"resting": {"oid": 9}}
+                ]}}
+            }),
+            3,
+        )
+        .unwrap();
+
+        let order = &store.load_required().unwrap().orders[&cloid];
+        assert_eq!(order.status, LiveOrderStatus::UnknownOutcome);
+        assert_eq!(order.oid, None);
     }
 }
