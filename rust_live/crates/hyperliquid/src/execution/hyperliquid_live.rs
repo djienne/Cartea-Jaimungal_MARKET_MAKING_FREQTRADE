@@ -1575,12 +1575,28 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             .map(|order| order.cloid)
             .collect();
         if !cloids.is_empty() {
+            let canceled_actions = cloids.len() as u64;
             let outcome = self.cancel_cloids_resilient(cloids).await?;
+            self.diagnostics.cancels_submitted += 1;
+            self.diagnostics.address_requests_used = self
+                .diagnostics
+                .address_requests_used
+                .saturating_add(canceled_actions);
             require_action_known(&outcome)?;
         }
         self.reconcile_authoritative().await?;
         if !self.account.open_orders.is_empty() {
             bail!("graceful live shutdown could not confirm empty open orders");
+        }
+        if self.live.flatten_on_stop && self.account.inventory_units != 0 {
+            self.market_close().await?;
+            self.reconcile_authoritative().await?;
+            if self.account.inventory_units != 0 {
+                bail!(
+                    "flatten_on_stop left residual inventory {}",
+                    self.account.inventory_units
+                );
+            }
         }
         self.clear_deadman().await?;
         self.diagnostics.operationally_healthy = false;

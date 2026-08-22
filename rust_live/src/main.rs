@@ -1279,9 +1279,14 @@ async fn run_live(
                 event_logger.log("quote_decision", None, &next)?;
             }
             _ = maintenance.tick() => {
+                let market_valid = market_evidence_valid.load(Ordering::Acquire);
+                if !market_valid {
+                    backend.invalidate("public market stream lost causal continuity");
+                    warn!("public market evidence invalidated; stopping live session");
+                    break;
+                }
                 let can_quote = armed
                     && backend.operationally_healthy()
-                    && market_evidence_valid.load(Ordering::Acquire)
                     && latency.trading_allowed();
                 let was_enabled = quote_enabled.swap(can_quote, Ordering::AcqRel);
                 if was_enabled != can_quote {
@@ -1290,7 +1295,6 @@ async fn run_live(
                 if !armed
                     && tokio::time::Instant::now() >= warmup_deadline
                     && backend.operationally_healthy()
-                    && market_evidence_valid.load(Ordering::Acquire)
                     && latency.trading_allowed()
                     && latest_bbo.load().is_some()
                 {
@@ -1377,6 +1381,11 @@ async fn run_live(
     quote_enabled.store(false, Ordering::Release);
     signal.notify(HOT_SIGNAL_EXECUTION);
     let shutdown_result = backend.shutdown(unix_ms()).await;
+    let final_account = backend.account_state();
+    inventory_units.store(final_account.inventory_units, Ordering::Release);
+    metrics
+        .inventory_units
+        .store(final_account.inventory_units, Ordering::Release);
     signal.notify(HOT_SIGNAL_SHUTDOWN);
     let _ = shutdown_tx.send(true);
     event_logger.flush()?;
@@ -2165,8 +2174,7 @@ fn data_end_ms(bbo: Option<Bbo>) -> u64 {
 }
 
 fn init_tracing(json: bool) {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("mm_live=info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     if json {
         tracing_subscriber::fmt()
             .json()

@@ -498,7 +498,13 @@ where
                                     received_ns.saturating_sub(entry.sent_ns),
                                     received_ns,
                                 );
-                                apply_action_response(&args.state, &entry.cloids, &payload, received_ns)?;
+                                apply_action_response(
+                                    &args.state,
+                                    &entry.cloids,
+                                    entry.purpose,
+                                    &payload,
+                                    received_ns,
+                                )?;
                                 let outcome = ActionOutcome::Response {
                                     nonce: entry.nonce,
                                     http_status: 200,
@@ -802,17 +808,25 @@ fn prepare_action_state(
             Ok(cloids)
         }),
         SessionAction::CancelCloids(cloids) => {
-            let cloids = cloids.clone();
+            let requested = cloids.clone();
             store.update(|state| {
-                for cloid in &cloids {
+                let mut tracked = Vec::with_capacity(requested.len());
+                for cloid in &requested {
                     if let Some(order) = state.orders.get_mut(cloid) {
+                        if !order
+                            .status
+                            .can_transition_to(LiveOrderStatus::CancelPending)
+                        {
+                            continue;
+                        }
                         order.status = LiveOrderStatus::CancelPending;
                         order.nonce = Some(nonce);
                         order.transport_id = Some(transport_id);
                         order.last_update_ms = now_ms;
+                        tracked.push(cloid.clone());
                     }
                 }
-                Ok(cloids)
+                Ok(tracked)
             })
         }
         _ => Ok(Vec::new()),
@@ -822,6 +836,7 @@ fn prepare_action_state(
 fn apply_action_response(
     store: &LiveStateStore,
     cloids: &[String],
+    purpose: ActionPurpose,
     body: &serde_json::Value,
     received_ns: u64,
 ) -> Result<()> {
@@ -838,23 +853,57 @@ fn apply_action_response(
                 continue;
             };
             let status = statuses.and_then(|values| values.get(index));
-            if let Some(resting) = status.and_then(|value| value.get("resting")) {
-                order.status = LiveOrderStatus::Resting;
-                order.oid = resting.get("oid").and_then(serde_json::Value::as_u64);
-            } else if let Some(filled) = status.and_then(|value| value.get("filled")) {
-                order.status = LiveOrderStatus::Filled;
-                order.remaining_qty_units = 0;
-                order.oid = filled.get("oid").and_then(serde_json::Value::as_u64);
-            } else if let Some(error) = status.and_then(|value| value.get("error")) {
-                order.status = LiveOrderStatus::Rejected;
-                order.last_error = error.as_str().map(ToOwned::to_owned);
-            } else if status.is_some_and(|value| value.as_str() == Some("success")) {
-                order.status = LiveOrderStatus::Canceled;
-                order.remaining_qty_units = 0;
-            } else {
-                order.status = LiveOrderStatus::UnknownOutcome;
-                order.last_error = Some(format!("unrecognized action response at {received_ns}"));
+            let (next_status, oid, last_error) =
+                if let Some(resting) = status.and_then(|value| value.get("resting")) {
+                    (
+                        LiveOrderStatus::Resting,
+                        resting.get("oid").and_then(serde_json::Value::as_u64),
+                        None,
+                    )
+                } else if let Some(filled) = status.and_then(|value| value.get("filled")) {
+                    (
+                        LiveOrderStatus::Filled,
+                        filled.get("oid").and_then(serde_json::Value::as_u64),
+                        None,
+                    )
+                } else if let Some(error) = status.and_then(|value| value.get("error")) {
+                    (
+                        if purpose == ActionPurpose::Order {
+                            LiveOrderStatus::Rejected
+                        } else {
+                            LiveOrderStatus::UnknownOutcome
+                        },
+                        None,
+                        error.as_str().map(ToOwned::to_owned),
+                    )
+                } else if status.is_some_and(|value| value.as_str() == Some("success")) {
+                    (
+                        if purpose == ActionPurpose::Cancel {
+                            LiveOrderStatus::Canceled
+                        } else {
+                            LiveOrderStatus::UnknownOutcome
+                        },
+                        None,
+                        None,
+                    )
+                } else {
+                    (
+                        LiveOrderStatus::UnknownOutcome,
+                        None,
+                        Some(format!("unrecognized action response at {received_ns}")),
+                    )
+                };
+            if !order.status.can_transition_to(next_status) {
+                continue;
             }
+            order.status = next_status;
+            if next_status.terminal() {
+                order.remaining_qty_units = 0;
+            }
+            if oid.is_some() {
+                order.oid = oid;
+            }
+            order.last_error = last_error;
             order.last_update_ms = now_ms;
         }
         Ok(())
@@ -866,6 +915,12 @@ fn mark_unknown(store: &LiveStateStore, cloids: &[String], reason: &str) -> Resu
     store.update(|state| {
         for cloid in cloids {
             if let Some(order) = state.orders.get_mut(cloid) {
+                if !order
+                    .status
+                    .can_transition_to(LiveOrderStatus::UnknownOutcome)
+                {
+                    continue;
+                }
                 order.status = LiveOrderStatus::UnknownOutcome;
                 order.last_error = Some(reason.to_owned());
                 order.last_update_ms = now_ms;
@@ -992,5 +1047,69 @@ mod tests {
     fn order_expiry_uses_send_time_when_nonce_lease_is_old() {
         assert_eq!(order_expires_after(1_000, 50_000, 5_000), 55_000);
         assert_eq!(order_expires_after(50_000, 1_000, 5_000), 55_000);
+    }
+
+    #[test]
+    fn timeout_and_late_responses_never_resurrect_terminal_orders() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LiveStateStore::open(
+            &directory.path().join("state.redb"),
+            "CASHCAT",
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "config",
+            "meta",
+            false,
+        )
+        .unwrap();
+        let cloid = "0x434a4d4d000000000000000000000001".to_owned();
+        store
+            .update(|state| {
+                state.orders.insert(
+                    cloid.clone(),
+                    PersistedLiveOrder {
+                        cloid: cloid.clone(),
+                        quote_seq: 1,
+                        side: crate::types::Side::Buy,
+                        px_units: 100_000,
+                        original_qty_units: 100,
+                        remaining_qty_units: 0,
+                        reduce_only: false,
+                        status: LiveOrderStatus::Filled,
+                        nonce: Some(1),
+                        transport_id: Some(1),
+                        oid: Some(7),
+                        prepared_at_ms: 1,
+                        last_update_ms: 2,
+                        last_error: None,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        let tracked = prepare_action_state(
+            &store,
+            &SessionAction::CancelCloids(vec![cloid.clone()]),
+            2,
+            2,
+        )
+        .unwrap();
+        assert!(tracked.is_empty());
+        mark_unknown(&store, std::slice::from_ref(&cloid), "late timeout").unwrap();
+        apply_action_response(
+            &store,
+            std::slice::from_ref(&cloid),
+            ActionPurpose::Order,
+            &serde_json::json!({
+                "response": {"data": {"statuses": [{"resting": {"oid": 8}}]}}
+            }),
+            3,
+        )
+        .unwrap();
+        let order = &store.load_required().unwrap().orders[&cloid];
+        assert_eq!(order.status, LiveOrderStatus::Filled);
+        assert_eq!(order.remaining_qty_units, 0);
+        assert_eq!(order.oid, Some(7));
     }
 }
