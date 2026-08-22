@@ -278,11 +278,11 @@ impl HyperliquidLiveBackend {
     }
 
     pub fn effective_quoting_config(&self) -> Result<QuotingConfig> {
-        let effective_equity = self
-            .quoting
-            .available_capital_usdc
-            .min(self.account.account_value_usdc);
-        let usable = (effective_equity - self.risk.min_liquidation_buffer_usdc).max(0.0);
+        let usable = allocated_usable_equity(
+            self.quoting.available_capital_usdc,
+            self.account.account_value_usdc,
+            self.risk.min_liquidation_buffer_usdc,
+        );
         if usable <= 0.0 {
             bail!("account equity does not exceed the liquidation reserve");
         }
@@ -1416,6 +1416,15 @@ impl HyperliquidLiveBackend {
     }
 }
 
+fn allocated_usable_equity(
+    allocated_capital_usdc: f64,
+    account_equity_usdc: f64,
+    liquidation_reserve_usdc: f64,
+) -> f64 {
+    let account_usable = (account_equity_usdc - liquidation_reserve_usdc).max(0.0);
+    allocated_capital_usdc.max(0.0).min(account_usable)
+}
+
 fn live_directional_notional_cap(
     quoting: &QuotingConfig,
     risk: &RiskConfig,
@@ -2069,6 +2078,8 @@ mod tests {
         assert!((cap - 99.9888).abs() < 1.0e-9);
         let underfunded = live_directional_notional_cap(&quoting, &risk, 50.0);
         assert_eq!(underfunded, 0.0);
+        assert!((allocated_usable_equity(67.56, 299.48, 100.0) - 67.56).abs() < 1.0e-9);
+        assert_eq!(allocated_usable_equity(67.56, 50.0, 100.0), 0.0);
     }
 
     #[tokio::test]
