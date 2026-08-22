@@ -28,6 +28,11 @@ actions on a dedicated CASHCAT subaccount and ended flat with zero open orders.
   address request usage advances for every action within each batch, and
   allocated-capital limits are independent of the account liquidation-buffer
   reserve.
+- A bounded real-account canary exposed that safety-critical cancel/heartbeat
+  messages were incorrectly consuming the regular quote-placement allowance.
+  The rolling limiter now enforces the total WebSocket ceiling and the regular
+  sub-budget independently; regression tests prove safety traffic preserves the
+  placement budget without bypassing the total ceiling.
 - Order-expiry tests pin `expiresAfter` to the actual send clock rather than the
   start of a durable nonce lease, preventing warm-up from expiring the first
   live action before transmission.

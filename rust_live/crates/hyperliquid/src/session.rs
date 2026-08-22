@@ -878,7 +878,12 @@ fn mark_unknown(store: &LiveStateStore, cloids: &[String], reason: &str) -> Resu
 struct WebSocketRateLimiter {
     maximum_per_minute: u64,
     regular_limit: u64,
-    sent: VecDeque<tokio::time::Instant>,
+    sent: VecDeque<SentWebSocketMessage>,
+}
+
+struct SentWebSocketMessage {
+    at: tokio::time::Instant,
+    safety_critical: bool,
 }
 
 impl WebSocketRateLimiter {
@@ -891,19 +896,28 @@ impl WebSocketRateLimiter {
     }
 
     fn consume(&mut self, safety_critical: bool) -> Result<()> {
-        let cutoff = tokio::time::Instant::now() - Duration::from_secs(60);
-        while self.sent.front().is_some_and(|sent| *sent < cutoff) {
+        let now = tokio::time::Instant::now();
+        let cutoff = now - Duration::from_secs(60);
+        while self.sent.front().is_some_and(|sent| sent.at < cutoff) {
             self.sent.pop_front();
         }
-        let limit = if safety_critical {
-            self.maximum_per_minute
-        } else {
-            self.regular_limit
-        };
-        if self.sent.len() as u64 >= limit {
+        if self.sent.len() as u64 >= self.maximum_per_minute {
             bail!("Hyperliquid WebSocket message rate limit reached");
         }
-        self.sent.push_back(tokio::time::Instant::now());
+        if !safety_critical
+            && self
+                .sent
+                .iter()
+                .filter(|sent| !sent.safety_critical)
+                .count() as u64
+                >= self.regular_limit
+        {
+            bail!("Hyperliquid regular WebSocket message budget reached");
+        }
+        self.sent.push_back(SentWebSocketMessage {
+            at: now,
+            safety_critical,
+        });
         Ok(())
     }
 }
@@ -920,6 +934,19 @@ mod tests {
         limiter.consume(false).unwrap();
         assert!(limiter.consume(false).is_err());
         limiter.consume(true).unwrap();
+        assert!(limiter.consume(true).is_err());
+    }
+
+    #[test]
+    fn safety_messages_do_not_consume_the_regular_budget() {
+        let mut limiter = WebSocketRateLimiter::new(6, 0.5);
+        limiter.consume(true).unwrap();
+        limiter.consume(true).unwrap();
+        limiter.consume(true).unwrap();
+        limiter.consume(false).unwrap();
+        limiter.consume(false).unwrap();
+        limiter.consume(false).unwrap();
+        assert!(limiter.consume(false).is_err());
         assert!(limiter.consume(true).is_err());
     }
 
