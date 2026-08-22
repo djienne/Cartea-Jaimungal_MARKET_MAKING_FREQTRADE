@@ -129,7 +129,11 @@ pub struct HyperliquidLiveBackend {
     last_fill_received_ns: Option<u64>,
     allow_untracked_position: bool,
     reconcile_requested: bool,
-    last_inventory_update_ms: u64,
+    /// Exchange-time watermark up to which `account.inventory_units` already
+    /// reflects trading. Compared against `fill.time`, so it must only ever be
+    /// fed venue timestamps — a local clock here silently drops legitimate
+    /// fills whenever it runs ahead of the exchange.
+    last_inventory_update_exchange_ms: u64,
     last_quote_action_ms: u64,
     inventory_at_last_quote_action: i64,
     deferred_desired: Option<DesiredQuotes>,
@@ -273,7 +277,10 @@ impl HyperliquidLiveBackend {
             last_fill_received_ns: None,
             allow_untracked_position,
             reconcile_requested: false,
-            last_inventory_update_ms: unix_ms(),
+            // Exchange time, never local: 0 accepts every admitted fill. The
+            // checkpoint and dedup-key gates already keep stale replays from
+            // reaching inventory adjustment at all.
+            last_inventory_update_exchange_ms: 0,
             last_quote_action_ms: 0,
             inventory_at_last_quote_action: initial_inventory_units,
             deferred_desired: None,
@@ -865,7 +872,15 @@ impl HyperliquidLiveBackend {
             open_orders.clone(),
             &self.instrument,
         )?;
-        self.last_inventory_update_ms = unix_ms();
+        // The REST position reflects trading up to the newest fill the venue
+        // reports; that fill time is the only venue clock available here. With
+        // no fills there is nothing newer to guard against, so the watermark
+        // keeps its previous (exchange-time) value — never a local clock,
+        // which would silently drop legitimate fills while it ran ahead.
+        if let Some(latest_fill_ms) = fills.iter().map(|fill| fill.time).max() {
+            self.last_inventory_update_exchange_ms =
+                self.last_inventory_update_exchange_ms.max(latest_fill_ms);
+        }
         self.account.realized_pnl_usdc = view.cumulative_realized_pnl_usdc;
         self.account.fees_usdc = view.cumulative_fees_usdc;
         self.account.funding_usdc = view.cumulative_funding_usdc;
@@ -1209,9 +1224,9 @@ impl HyperliquidLiveBackend {
             } else {
                 Side::Sell
             };
-            if adjust_inventory && fill.time >= self.last_inventory_update_ms {
+            if adjust_inventory && fill.time >= self.last_inventory_update_exchange_ms {
                 self.account.inventory_units = inventory_after_fill(start_units, side, qty_units);
-                self.last_inventory_update_ms = fill.time;
+                self.last_inventory_update_exchange_ms = fill.time;
             }
             self.diagnostics.fills += 1;
             if fill.crossed {
@@ -2018,12 +2033,69 @@ mod tests {
             last_fill_received_ns: None,
             allow_untracked_position: false,
             reconcile_requested: false,
-            last_inventory_update_ms: 0,
+            last_inventory_update_exchange_ms: 0,
             last_quote_action_ms: 0,
             inventory_at_last_quote_action: 0,
             deferred_desired: None,
         };
         (directory, backend, cloid)
+    }
+
+    /// The inventory watermark is exchange time: fills gate on venue
+    /// timestamps only, never on the local clock. A local clock running ahead
+    /// used to silently drop legitimate fills' inventory adjustments until the
+    /// next 30s reconcile, leaving the hot path quoting on wrong inventory.
+    #[test]
+    fn inventory_watermark_follows_venue_time_and_ignores_stale_replays() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
+        let mut feed = |backend: &mut HyperliquidLiveBackend,
+                        tid: u64,
+                        time: u64,
+                        start_position: &str,
+                        size: &str| {
+            backend
+                .process_session_event(SessionEvent::AccountData {
+                    generation: 1,
+                    received_ns: 100 + tid,
+                    channel: AccountChannel::UserFills,
+                    data: serde_json::json!({
+                        "isSnapshot": false,
+                        "fills": [{
+                            "coin":"CASHCAT", "px":"0.1", "sz":size, "side":"B",
+                            "time":time, "oid":7, "tid":tid, "cloid":cloid,
+                            "startPosition":start_position, "crossed":false,
+                            "fee":"0.001", "closedPnl":"0",
+                            "hash":format!("0x{tid:x}")
+                        }]
+                    }),
+                })
+                .unwrap();
+        };
+
+        // A fill whose venue time is far behind the local wall clock (the
+        // checkpoint is roughly "now"; this is only 10ms past it) must still
+        // adjust inventory: the watermark starts at 0, not at unix_ms().
+        feed(&mut backend, 1, checkpoint + 10, "0", "4");
+        assert_eq!(backend.account.inventory_units, 4);
+        assert_eq!(
+            backend.last_inventory_update_exchange_ms,
+            checkpoint + 10,
+            "watermark must advance to the fill's venue time"
+        );
+
+        // An out-of-order (older venue time) fill must not regress inventory,
+        // because inventory_after_fill is absolute from startPosition.
+        feed(&mut backend, 2, checkpoint + 5, "0", "1");
+        assert_eq!(
+            backend.account.inventory_units, 4,
+            "an older fill must not rewind inventory to its stale startPosition"
+        );
+
+        // A newer fill advances both inventory and the watermark.
+        feed(&mut backend, 3, checkpoint + 20, "4", "2");
+        assert_eq!(backend.account.inventory_units, 6);
+        assert_eq!(backend.last_inventory_update_exchange_ms, checkpoint + 20);
     }
 
     /// A full session command queue is backpressure, not a reason to end the

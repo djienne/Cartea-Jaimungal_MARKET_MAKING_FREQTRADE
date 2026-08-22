@@ -656,6 +656,7 @@ mod tests {
             model_revision: 1,
             generated_ns: 0,
             source_recv_ns: 0,
+            source_exchange_ms: 0,
             reason: QuoteReason::Market,
             mid: 100.01,
             q_exact: 0.0,

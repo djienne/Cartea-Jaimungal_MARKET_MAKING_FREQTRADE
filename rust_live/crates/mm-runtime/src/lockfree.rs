@@ -172,6 +172,7 @@ struct AtomicDesiredQuotes {
     model_revision: AtomicU64,
     generated_ns: AtomicU64,
     source_recv_ns: AtomicU64,
+    source_exchange_ms: AtomicU64,
     reason: AtomicU8,
     mid: AtomicU64,
     q_exact: AtomicU64,
@@ -189,6 +190,7 @@ impl Default for AtomicDesiredQuotes {
             model_revision: AtomicU64::new(0),
             generated_ns: AtomicU64::new(0),
             source_recv_ns: AtomicU64::new(0),
+            source_exchange_ms: AtomicU64::new(0),
             reason: AtomicU8::new(reason_to_u8(QuoteReason::Startup)),
             mid: AtomicU64::new(0.0_f64.to_bits()),
             q_exact: AtomicU64::new(0.0_f64.to_bits()),
@@ -210,6 +212,8 @@ impl AtomicDesiredQuotes {
             .store(value.generated_ns, Ordering::Release);
         self.source_recv_ns
             .store(value.source_recv_ns, Ordering::Release);
+        self.source_exchange_ms
+            .store(value.source_exchange_ms, Ordering::Release);
         self.reason
             .store(reason_to_u8(value.reason), Ordering::Release);
         self.mid.store(value.mid.to_bits(), Ordering::Release);
@@ -235,6 +239,7 @@ impl AtomicDesiredQuotes {
                 model_revision: self.model_revision.load(Ordering::Acquire),
                 generated_ns: self.generated_ns.load(Ordering::Acquire),
                 source_recv_ns: self.source_recv_ns.load(Ordering::Acquire),
+                source_exchange_ms: self.source_exchange_ms.load(Ordering::Acquire),
                 reason: reason_from_u8(self.reason.load(Ordering::Acquire)),
                 mid: f64::from_bits(self.mid.load(Ordering::Acquire)),
                 q_exact: f64::from_bits(self.q_exact.load(Ordering::Acquire)),

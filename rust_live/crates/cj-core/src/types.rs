@@ -121,6 +121,12 @@ pub struct DesiredQuotes {
     pub generated_ns: u64,
     #[serde(default)]
     pub source_recv_ns: u64,
+    /// Exchange timestamp of the BBO this decision was computed from. This is
+    /// the decision's time in *market* coordinates: simulators must schedule
+    /// activation and cancellation from it, not from the local wall clock,
+    /// or local scheduling jitter leaks into simulated fills.
+    #[serde(default)]
+    pub source_exchange_ms: u64,
     pub reason: QuoteReason,
     pub mid: f64,
     pub q_exact: f64,
@@ -137,6 +143,7 @@ impl DesiredQuotes {
             model_revision: 0,
             generated_ns,
             source_recv_ns: 0,
+            source_exchange_ms: 0,
             reason,
             mid: 0.0,
             q_exact: 0.0,

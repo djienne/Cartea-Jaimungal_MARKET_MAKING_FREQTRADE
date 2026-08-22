@@ -195,6 +195,7 @@ fn run_hot_path(inputs: &HotPathInputs) {
         let Some(bundle) = bundle_guard.as_ref() else {
             let mut next = DesiredQuotes::empty(QuoteReason::StaleCalibration, quote_seq, now_ns);
             next.source_recv_ns = bbo.recv_ns;
+            next.source_exchange_ms = bbo.exchange_ms;
             if quote_changed(last_quotes, next) {
                 inputs.desired.publish(next);
                 inputs
@@ -257,6 +258,9 @@ fn run_hot_path(inputs: &HotPathInputs) {
         };
         if next.source_recv_ns == 0 {
             next.source_recv_ns = bbo.recv_ns;
+        }
+        if next.source_exchange_ms == 0 {
+            next.source_exchange_ms = bbo.exchange_ms;
         }
         if next.reason == QuoteReason::RiskLimit {
             inputs.metrics.risk_refusals.fetch_add(1, Ordering::Relaxed);

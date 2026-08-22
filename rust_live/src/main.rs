@@ -1910,6 +1910,12 @@ async fn run_public_dry_run(
         tokio::sync::mpsc::channel::<Result<(CalibrationSnapshot, HjbSurface, i64)>>(1);
     let mut calibration_inflight = false;
     let mut observed_quote_seq = desired.load().quote_seq;
+    // The simulator runs on exchange time: order activation and cancellation
+    // are scheduled from the decision's source BBO timestamp so local
+    // scheduling jitter cannot leak into simulated fills. This mirrors the
+    // replay path, which drives both matching and reconciliation from
+    // event time.
+    let mut last_event_exchange_ms = 0_u64;
     let deadline = (duration_seconds > 0)
         .then(|| tokio::time::Instant::now() + Duration::from_secs(duration_seconds));
     let shutdown_signal = wait_for_shutdown_signal();
@@ -1936,6 +1942,7 @@ async fn run_public_dry_run(
                 dispatch_ns,
             );
             let event_time = event_ms(&event);
+            last_event_exchange_ms = last_event_exchange_ms.max(event_time);
             event_logger.log("market_event", Some(event_time), &event)?;
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(&event, unix_ms())?;
@@ -1976,7 +1983,15 @@ async fn run_public_dry_run(
                     backend_started_ns,
                 );
             }
-            backend.reconcile(next, unix_ms()).await?;
+            // Exchange time, matching the simulator's matching engine. A BBO
+            // can carry exchange_ms = 0 on a malformed frame, so fall back to
+            // the newest event time seen.
+            let simulated_now_ms = if next.source_exchange_ms != 0 {
+                next.source_exchange_ms
+            } else {
+                last_event_exchange_ms
+            };
+            backend.reconcile(next, simulated_now_ms).await?;
             let backend_done_ns = clock.now_ns();
             latency.record(
                 LatencyKind::BackendReconcile,

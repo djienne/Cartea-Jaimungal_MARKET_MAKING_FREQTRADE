@@ -100,6 +100,7 @@ impl CarteaJaimungalPolicy {
         let empty = |reason| {
             let mut quotes = DesiredQuotes::empty(reason, quote_seq, now_ns);
             quotes.source_recv_ns = bbo.recv_ns;
+            quotes.source_exchange_ms = bbo.exchange_ms;
             QuoteDecision {
                 quotes,
                 bid_spread: None,
@@ -180,6 +181,7 @@ impl CarteaJaimungalPolicy {
                 model_revision: surface.revision,
                 generated_ns: now_ns,
                 source_recv_ns: bbo.recv_ns,
+                source_exchange_ms: bbo.exchange_ms,
                 reason,
                 mid,
                 q_exact,
