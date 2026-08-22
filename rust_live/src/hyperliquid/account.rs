@@ -199,7 +199,7 @@ where
                             if let Some((sent_ns, _)) = pending_ping.take() {
                                 if let Some(latency) = &args.latency {
                                     latency.record(
-                                        LatencyKind::WsPingRtt,
+                                        LatencyKind::AccountWsPingRtt,
                                         received_ns.saturating_sub(sent_ns),
                                         received_ns,
                                     );

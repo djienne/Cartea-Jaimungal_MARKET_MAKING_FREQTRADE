@@ -2,6 +2,7 @@ use crate::config::{InstrumentProfile, Network};
 use crate::instrument::InstrumentSpec;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,6 +10,14 @@ struct AssetMeta {
     name: String,
     sz_decimals: u32,
     max_leverage: f64,
+    #[serde(default)]
+    margin_table_id: u32,
+    #[serde(default)]
+    only_isolated: bool,
+    #[serde(default)]
+    margin_mode: String,
+    #[serde(default)]
+    is_delisted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +63,24 @@ pub async fn discover_instrument(
         max_significant_figures: profile.max_significant_figures,
         max_leverage: asset.max_leverage,
         minimum_notional: profile.minimum_notional,
+        margin_table_id: asset.margin_table_id,
+        only_isolated: asset.only_isolated,
+        margin_mode: asset.margin_mode.clone(),
+        is_delisted: asset.is_delisted,
+        metadata_fingerprint: {
+            let encoded = serde_json::to_vec(&serde_json::json!({
+                "symbol": profile.symbol,
+                "dex": profile.dex,
+                "asset_id": asset_id,
+                "sz_decimals": asset.sz_decimals,
+                "max_leverage": asset.max_leverage,
+                "margin_table_id": asset.margin_table_id,
+                "only_isolated": asset.only_isolated,
+                "margin_mode": asset.margin_mode,
+                "is_delisted": asset.is_delisted,
+            }))?;
+            hex::encode(Sha256::digest(encoded))
+        },
     };
     spec.validate()?;
     Ok(spec)

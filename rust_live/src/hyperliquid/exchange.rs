@@ -1,6 +1,7 @@
 use super::auth::HyperliquidCredentials;
 use super::signing::{
-    cancel_by_cloid_action, cancel_by_oid_action, order_action, sign_envelope, LiveOrderRequest,
+    cancel_by_cloid_action, cancel_by_oid_action, order_action, schedule_cancel_action,
+    sign_envelope, LiveOrderRequest,
 };
 use crate::config::Network;
 use crate::instrument::InstrumentSpec;
@@ -9,9 +10,10 @@ use crate::types::{unix_ms, ProcessClock};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub struct HyperliquidExchangeClient {
     http: reqwest::Client,
@@ -22,6 +24,7 @@ pub struct HyperliquidExchangeClient {
     action_expiry_ms: u64,
     clock: Arc<ProcessClock>,
     latency: Option<Arc<LatencyMonitor>>,
+    rate_limit: Mutex<RestRateLimiter>,
 }
 
 impl HyperliquidExchangeClient {
@@ -33,10 +36,14 @@ impl HyperliquidExchangeClient {
         latency: Option<Arc<LatencyMonitor>>,
         action_timeout: Duration,
         action_expiry_ms: u64,
+        max_rest_weight_per_minute: u64,
     ) -> Result<Self> {
         instrument.validate()?;
         if action_timeout.is_zero() {
             bail!("Hyperliquid action timeout must be positive");
+        }
+        if max_rest_weight_per_minute == 0 || max_rest_weight_per_minute > 1_200 {
+            bail!("REST weight limit must be in 1..=1200 per minute");
         }
         let http = reqwest::Client::builder()
             .timeout(action_timeout)
@@ -54,6 +61,7 @@ impl HyperliquidExchangeClient {
             action_expiry_ms,
             clock,
             latency,
+            rate_limit: Mutex::new(RestRateLimiter::new(max_rest_weight_per_minute)),
         })
     }
 
@@ -70,6 +78,11 @@ impl HyperliquidExchangeClient {
     }
 
     pub async fn info(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+        let request_type = request
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        self.consume_rest_weight(info_weight(request_type))?;
         let started_ns = self.clock.now_ns();
         let response = self
             .http
@@ -122,6 +135,25 @@ impl HyperliquidExchangeClient {
         serde_json::from_value(value).context("cannot decode userFills")
     }
 
+    pub async fn historical_orders(&self) -> Result<serde_json::Value> {
+        self.info(json!({"type": "historicalOrders", "user": self.account()}))
+            .await
+    }
+
+    pub async fn user_rate_limit(&self) -> Result<serde_json::Value> {
+        self.info(json!({"type": "userRateLimit", "user": self.account()}))
+            .await
+    }
+
+    pub async fn user_funding(&self, start_time: u64) -> Result<serde_json::Value> {
+        self.info(json!({
+            "type": "userFunding",
+            "user": self.account(),
+            "startTime": start_time,
+        }))
+        .await
+    }
+
     pub async fn user_role(&self) -> Result<serde_json::Value> {
         self.info(json!({"type": "userRole", "user": self.account()}))
             .await
@@ -172,9 +204,29 @@ impl HyperliquidExchangeClient {
             .await
     }
 
+    pub async fn cancel_by_cloid_with_nonce(
+        &self,
+        cloids: &[String],
+        nonce: u64,
+    ) -> Result<ActionOutcome> {
+        let action = cancel_by_cloid_action(self.instrument.asset_id, cloids)?;
+        self.post_signed_at(&action, LatencyKind::CancelToAck, None, nonce)
+            .await
+    }
+
     pub async fn cancel_by_oid(&self, oids: &[u64]) -> Result<ActionOutcome> {
         let action = cancel_by_oid_action(self.instrument.asset_id, oids)?;
         self.post_signed(&action, LatencyKind::CancelToAck, false)
+            .await
+    }
+
+    pub async fn schedule_cancel_with_nonce(
+        &self,
+        time: Option<u64>,
+        nonce: u64,
+    ) -> Result<ActionOutcome> {
+        let action = schedule_cancel_action(time);
+        self.post_signed_at(&action, LatencyKind::CancelToAck, None, nonce)
             .await
     }
 
@@ -187,6 +239,18 @@ impl HyperliquidExchangeClient {
         let nonce = self.nonce.next();
         let expires_after = (with_expiry && self.action_expiry_ms != 0)
             .then(|| nonce.saturating_add(self.action_expiry_ms));
+        self.post_signed_at(action, latency_kind, expires_after, nonce)
+            .await
+    }
+
+    async fn post_signed_at<A: Serialize>(
+        &self,
+        action: &A,
+        latency_kind: LatencyKind,
+        expires_after: Option<u64>,
+        nonce: u64,
+    ) -> Result<ActionOutcome> {
+        self.consume_rest_weight(1)?;
         let envelope = sign_envelope(
             action,
             &self.credentials,
@@ -229,6 +293,60 @@ impl HyperliquidExchangeClient {
             http_status,
             body,
         })
+    }
+
+    fn consume_rest_weight(&self, weight: u64) -> Result<()> {
+        self.rate_limit
+            .lock()
+            .map_err(|_| anyhow::anyhow!("REST rate limiter lock poisoned"))?
+            .consume(weight)
+    }
+}
+
+struct RestRateLimiter {
+    maximum: u64,
+    used: u64,
+    entries: VecDeque<(Instant, u64)>,
+}
+
+impl RestRateLimiter {
+    fn new(maximum: u64) -> Self {
+        Self {
+            maximum,
+            used: 0,
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn consume(&mut self, weight: u64) -> Result<()> {
+        let cutoff = Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .context("monotonic clock cannot represent REST rate window")?;
+        while self.entries.front().is_some_and(|(at, _)| *at < cutoff) {
+            if let Some((_, expired)) = self.entries.pop_front() {
+                self.used = self.used.saturating_sub(expired);
+            }
+        }
+        if self.used.saturating_add(weight) > self.maximum {
+            bail!(
+                "configured Hyperliquid REST weight budget exhausted: used={}, requested={}, maximum={}",
+                self.used,
+                weight,
+                self.maximum
+            );
+        }
+        self.entries.push_back((Instant::now(), weight));
+        self.used = self.used.saturating_add(weight);
+        Ok(())
+    }
+}
+
+fn info_weight(request_type: &str) -> u64 {
+    match request_type {
+        "l2Book" | "allMids" | "clearinghouseState" | "orderStatus" | "exchangeStatus" => 2,
+        "userRole" => 60,
+        "userFills" | "userFillsByTime" | "historicalOrders" | "userFunding" => 40,
+        _ => 20,
     }
 }
 
@@ -332,6 +450,12 @@ pub struct UserFill {
     pub oid: u64,
     pub tid: u64,
     #[serde(default)]
+    pub cloid: Option<String>,
+    #[serde(default)]
+    pub start_position: String,
+    #[serde(default)]
+    pub direction: String,
+    #[serde(default)]
     pub crossed: bool,
     #[serde(default)]
     pub fee: String,
@@ -339,6 +463,8 @@ pub struct UserFill {
     pub closed_pnl: String,
     #[serde(default)]
     pub hash: String,
+    #[serde(default)]
+    pub fee_token: String,
 }
 
 #[derive(Debug, Default)]
@@ -388,5 +514,16 @@ mod tests {
             error: "timeout after write".to_owned(),
         };
         assert!(unknown.require_known().is_err());
+    }
+
+    #[test]
+    fn rest_rate_limiter_uses_documented_weights() {
+        assert_eq!(info_weight("clearinghouseState"), 2);
+        assert_eq!(info_weight("userRole"), 60);
+        assert_eq!(info_weight("userFees"), 20);
+        let mut limiter = RestRateLimiter::new(3);
+        limiter.consume(2).unwrap();
+        assert!(limiter.consume(2).is_err());
+        limiter.consume(1).unwrap();
     }
 }

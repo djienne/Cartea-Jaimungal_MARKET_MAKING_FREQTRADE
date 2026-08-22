@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
     Buy,
@@ -167,9 +167,38 @@ pub struct Fill {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutionEvent {
     Fill(Fill),
+    OrderAcknowledged {
+        cloid: String,
+        oid: Option<u64>,
+    },
+    OrderRejected {
+        cloid: String,
+        reason: String,
+    },
+    OrderCanceled {
+        cloid: String,
+        oid: Option<u64>,
+    },
+    Funding {
+        coin: String,
+        time_ms: u64,
+        usdc: f64,
+    },
+    AccountReconciled {
+        inventory_units: i64,
+        equity_usdc: f64,
+    },
+    UnknownOutcome {
+        cloid: Option<String>,
+        reason: String,
+    },
     Connected,
-    Disconnected { reason: String },
-    Invalidated { reason: String },
+    Disconnected {
+        reason: String,
+    },
+    Invalidated {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -189,6 +218,8 @@ pub struct DryRunAccountState {
     pub liquidation_buffer_usdc: f64,
     pub consecutive_losses: u32,
 }
+
+pub type AccountState = DryRunAccountState;
 
 #[derive(Debug, Clone)]
 pub struct ProcessClock {

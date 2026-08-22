@@ -16,6 +16,16 @@ pub struct InstrumentSpec {
     pub max_significant_figures: u32,
     pub max_leverage: f64,
     pub minimum_notional: f64,
+    #[serde(default)]
+    pub margin_table_id: u32,
+    #[serde(default)]
+    pub only_isolated: bool,
+    #[serde(default)]
+    pub margin_mode: String,
+    #[serde(default)]
+    pub is_delisted: bool,
+    #[serde(default)]
+    pub metadata_fingerprint: String,
 }
 
 impl InstrumentSpec {
@@ -34,6 +44,9 @@ impl InstrumentSpec {
         }
         if !self.minimum_notional.is_finite() || self.minimum_notional < 0.0 {
             bail!("minimum_notional must be finite and non-negative");
+        }
+        if self.only_isolated && self.margin_mode.is_empty() {
+            bail!("isolated instruments must report a margin mode");
         }
         Ok(())
     }

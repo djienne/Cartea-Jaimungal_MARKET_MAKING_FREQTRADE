@@ -1,26 +1,27 @@
 # Validation status
 
-Validated locally on 2026-08-22. The persistent `live` strategy backend remains
-disabled. A separately guarded pure-Rust connector canary was explicitly
-authorized and exercised minimum-notional real actions on a dedicated CASHCAT
-subaccount; all canaries ended flat with zero open orders.
+Validated locally on 2026-08-22. The stateful continuous `live` backend is
+implemented but the tracked CASHCAT profile ships with `live.enabled=false`.
+An explicitly authorized acceptance campaign exercised minimum-notional real
+actions on a dedicated CASHCAT subaccount and ended flat with zero open orders.
 
 ## Deterministic gates
 
 - `cargo fmt --check`: passed.
 - strict Clippy over all targets with warnings denied: passed.
-- Rust tests: 62 passed across unit and integration targets.
+- Rust tests: 80 passed across unit and integration targets.
 - Python/Freqtrade reference tests: 722 passed.
 - locked optimized build of both binaries: passed.
 - Docker image build with the bounded context: passed; containerized metadata
-  validation resolved CASHCAT correctly, and the containerized `live` command
-  retained the intentional refusal boundary.
+  validation resolved CASHCAT correctly, and disabled `live` refused before
+  credential or network access.
 - the 30-page mathematical walkthrough rebuilt successfully after removing the
   obsolete smoothing description.
 - source-hygiene gate: passed; the Rust model contains only the selected
   Cartea–Jaimungal policy.
-- live-command safety gate: passed; it exits before credentials or order
-  transport.
+- live-command safety gate: passed; disabled live exits before credentials or
+  order transport, while production-mode smoke submitted zero actions during
+  mandatory latency warm-up.
 - mock Hyperliquid WebSocket tests: public parsing, the eight account
   subscriptions, application ping/pong with measured RTT, protocol ping
   response, idle timeout, reconnect/resubscription, order/fill delivery, and
@@ -64,6 +65,15 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
   decision-to-backend p99 0.487 ms, and WebSocket RTT p99 574.286 ms. The gate
   remained visible but non-enforcing (`not_enforced_in_mode`) as required for
   dry-run.
+- The post-live-backend release-image smoke (`dry_run-1787406166955.json`) also
+  exited 0 scientifically valid: 98 messages, 59 BBO, eight trades, 14 L2
+  books, 14/14 heartbeat replies, two calibrations, and zero reconnects,
+  causal drops, or calibration failures. Dispatch p99 was 0.078 ms,
+  hot-decision p99 25.861 us, and public WebSocket RTT p99 529.733 ms.
+- The final rebuilt image (`sha256:952970ff...`) repeated a bounded dry-run in
+  `dry_run-1787407198386.json`: scientifically valid with clean shutdown and no
+  reconnect or causal-drop warning; it processed 36 messages and completed 6/6
+  heartbeat RTTs.
 - The EMA-free bounded public-feed canary
   `dry_run-1787346470124.json` connected successfully and received 13 BBO, six
   trade, and 12 L2 events. It made 573 quote decisions with zero invalid
@@ -113,6 +123,36 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
   including fees, received order and fill stream events, and again finished
   flat with zero open orders. This is connector validation, not evidence of
   strategy profitability.
+- The stateful live-backend campaign began at 299.782699 USDC and ended flat at
+  299.480038 USDC with zero open or unresolved orders. Filled turnover was
+  41.0306 USDC and campaign realized PnL after fees was -0.302661 USDC, inside
+  the authorized 60-USDC/0.5-USDC limits.
+- The real WebSocket action path set and verified strict-isolated leverage 2x,
+  rested a two-sided 20.32891-USDC ALO batch, canceled one leg by CLOID and one
+  by OID, and proved a crossing ALO is rejected without a fill.
+- A deliberately discarded post response forced a socket reconnect. Durable
+  state plus CLOID/open-order/historical-order reconciliation recovered and
+  canceled the one original order without submitting a duplicate. A separate
+  hard process exit left one resting ALO; the next process recovered the same
+  CLOID/OID and canceled it.
+- A genuine maker bid filled 86 CASHCAT at 0.11791 with `crossed=false` and a
+  0.001521-USDC fee. The reduce-only IOC close sold all 86 at 0.11843; once the
+  close command was running, authoritative flat confirmation took 1.58 seconds.
+- A separate IOC sold 86 at 0.11845, the process exited with the short persisted,
+  and a new process used the explicit market-close path to buy all 86
+  reduce-only at 0.12231. Authoritative flat confirmation took 1.79 seconds.
+  The adverse move caused most of the campaign loss and is retained as real
+  evidence rather than hidden.
+- `scheduleCancel` was signed correctly but Hyperliquid refused it before any
+  test order because the subaccount has about 1,930 USDC cumulative volume and
+  the venue currently requires 1,000,000 USDC. Production with
+  `deadman_enabled=true` therefore fails closed on this account; the option can
+  be disabled explicitly, but no dead-man trigger is claimed as validated.
+- A bounded continuous-production smoke ran the actual Cartea-Jaimungal hot
+  loop, public/account sockets, background calibration, and live backend with
+  the latency gate enforced. It submitted zero orders/cancels/dead-man actions,
+  recorded three public and five account RTT samples, and remained in
+  `warming_up` as designed.
 - On this development machine, the read-only probe measured `/info` p99 around
   324 ms and WebSocket ping p99 around 561 ms; the final action canary measured
   submit acknowledgements around 959-976 ms. These exceed the configured 150 ms
@@ -139,9 +179,10 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
 
 ## Remaining boundary
 
-`live` is still an intentional unavailable backend. Low-level authenticated
-reads, private/account WebSocket listening, signing, ALO/IOC placement, and
-CLOID/OID cancellation are now pure Rust and empirically exercised. Production
-activation still requires durable nonce and order state, fill/funding
-deduplication, unknown-outcome restart reconciliation, rate limiting, and a
-dead-man policy. Replay and dry-run remain the only continuous strategy modes.
+Continuous live trading is implemented and selected by one central TOML flag,
+which remains off in the tracked profile. This development machine is not a
+production host: measured API/action latency exceeds the enforced 150-ms p99
+limit. The current low-volume subaccount also cannot use Hyperliquid's dead-man
+feature. Production activation therefore requires suitable infrastructure and
+either an eligible account with dead-man enabled or an explicit decision to run
+without it.

@@ -291,6 +291,44 @@ pub(super) fn cancel_by_oid_action(asset_id: u32, oids: &[u64]) -> Result<Cancel
     })
 }
 
+#[derive(Serialize)]
+pub(super) struct UpdateLeverageAction {
+    #[serde(rename = "type")]
+    type_: &'static str,
+    asset: u32,
+    #[serde(rename = "isCross")]
+    is_cross: bool,
+    leverage: u32,
+}
+
+pub(super) const fn update_leverage_action(
+    asset_id: u32,
+    leverage: u32,
+    is_cross: bool,
+) -> UpdateLeverageAction {
+    UpdateLeverageAction {
+        type_: "updateLeverage",
+        asset: asset_id,
+        is_cross,
+        leverage,
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct ScheduleCancelAction {
+    #[serde(rename = "type")]
+    type_: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time: Option<u64>,
+}
+
+pub(super) const fn schedule_cancel_action(time: Option<u64>) -> ScheduleCancelAction {
+    ScheduleCancelAction {
+        type_: "scheduleCancel",
+        time,
+    }
+}
+
 pub fn make_cloid(session_started_at_ms: u64, quote_seq: u64, side: Side, sequence: u64) -> String {
     let mut digest = Sha256::new();
     digest.update(b"cashcat-cj-rust-v1");
@@ -299,7 +337,16 @@ pub fn make_cloid(session_started_at_ms: u64, quote_seq: u64, side: Side, sequen
     digest.update([u8::from(side == Side::Buy)]);
     digest.update(sequence.to_be_bytes());
     let digest = digest.finalize();
-    format!("0x{}", hex::encode(&digest[..16]))
+    let mut bytes = [0_u8; 16];
+    bytes[..4].copy_from_slice(b"CJMM");
+    bytes[4..].copy_from_slice(&digest[..12]);
+    format!("0x{}", hex::encode(bytes))
+}
+
+pub fn is_bot_cloid(cloid: &str) -> bool {
+    cloid
+        .strip_prefix("0x")
+        .is_some_and(|raw| raw.len() == 32 && raw[..8].eq_ignore_ascii_case("434a4d4d"))
 }
 
 fn validate_cloid(cloid: &str) -> Result<()> {
@@ -410,6 +457,11 @@ mod tests {
             max_significant_figures: 5,
             max_leverage: 3.0,
             minimum_notional: 10.0,
+            margin_table_id: 0,
+            only_isolated: false,
+            margin_mode: String::new(),
+            is_delisted: false,
+            metadata_fingerprint: String::new(),
         };
         let requests = [LiveOrderRequest {
             side: Side::Buy,
@@ -457,6 +509,28 @@ mod tests {
         let ask = make_cloid(1, 2, Side::Sell, 3);
         assert_ne!(bid, ask);
         assert_eq!(bid.len(), 34);
+        assert!(is_bot_cloid(&bid));
         validate_cloid(&bid).unwrap();
+    }
+
+    #[test]
+    fn leverage_and_deadman_action_shapes_are_stable() {
+        assert_eq!(
+            serde_json::to_value(update_leverage_action(231, 2, false)).unwrap(),
+            serde_json::json!({
+                "type": "updateLeverage",
+                "asset": 231,
+                "isCross": false,
+                "leverage": 2,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(schedule_cancel_action(Some(123))).unwrap(),
+            serde_json::json!({"type": "scheduleCancel", "time": 123})
+        );
+        assert_eq!(
+            serde_json::to_value(schedule_cancel_action(None)).unwrap(),
+            serde_json::json!({"type": "scheduleCancel"})
+        );
     }
 }

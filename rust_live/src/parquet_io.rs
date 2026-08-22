@@ -1097,6 +1097,11 @@ mod tests {
             max_significant_figures: 5,
             max_leverage: 3.0,
             minimum_notional: 1.0,
+            margin_table_id: 0,
+            only_isolated: false,
+            margin_mode: String::new(),
+            is_delisted: false,
+            metadata_fingerprint: String::new(),
         };
         let mut recorder = ParquetEventRecorder::new(directory.path().to_owned(), instrument, 10);
         for (timestamp, bid) in [(1_000, 10_000), (2_000, 10_001)] {
@@ -1136,6 +1141,11 @@ mod tests {
             max_significant_figures: 5,
             max_leverage: 3.0,
             minimum_notional: 1.0,
+            margin_table_id: 0,
+            only_isolated: false,
+            margin_mode: String::new(),
+            is_delisted: false,
+            metadata_fingerprint: String::new(),
         };
         let recorder = ParquetEventRecorder::new(directory.path().to_owned(), instrument, 10);
         let stream = directory.path().join("SYN/prices");

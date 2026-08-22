@@ -1,4 +1,4 @@
-use crate::types::{DesiredQuotes, DryRunAccountState, ExecutionEvent, MarketEvent};
+use crate::types::{AccountState, DesiredQuotes, ExecutionEvent, MarketEvent};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -17,5 +17,5 @@ pub trait ExecutionBackend: Send {
 }
 
 pub trait AccountStateProvider {
-    fn account_state(&self) -> DryRunAccountState;
+    fn account_state(&self) -> AccountState;
 }

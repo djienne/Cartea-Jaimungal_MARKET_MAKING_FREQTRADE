@@ -158,7 +158,7 @@ async fn account_listener_subscribes_heartbeats_and_delivers_order_and_fill_even
     assert_eq!(snapshot.reconnects, 0);
     assert_eq!(snapshot.dropped_events, 0);
     assert!(healthy.load(Ordering::Acquire));
-    assert!(latency.snapshot().distributions["ws_ping_rtt"]
+    assert!(latency.snapshot().distributions["account_ws_ping_rtt"]
         .last_ns
         .is_some_and(|value| value > 0));
 }

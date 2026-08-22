@@ -1,5 +1,6 @@
 use crate::calibration::CalibrationSnapshot;
 use crate::execution::DryRunDiagnostics;
+use crate::execution::LiveExecutionDiagnostics;
 use crate::instrument::InstrumentSpec;
 use crate::latency::LatencySnapshot;
 use crate::metrics::MetricsSnapshot;
@@ -28,6 +29,25 @@ pub struct SessionReport {
     pub latency: LatencySnapshot,
     pub scientifically_valid: bool,
     pub invalid_reasons: Vec<String>,
+    pub event_log_path: String,
+    pub market_event_ring_high_water: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveSessionReport {
+    pub schema_version: u32,
+    pub session_id: String,
+    pub started_at_ms: u64,
+    pub finished_at_ms: u64,
+    pub config_fingerprint: String,
+    pub instrument: InstrumentSpec,
+    pub calibration: Option<CalibrationSnapshot>,
+    pub model: Option<ModelReport>,
+    pub account: DryRunAccountState,
+    pub execution: LiveExecutionDiagnostics,
+    pub metrics: MetricsSnapshot,
+    pub latency: LatencySnapshot,
+    pub scientifically_valid: bool,
     pub event_log_path: String,
     pub market_event_ring_high_water: usize,
 }
@@ -104,6 +124,22 @@ impl JsonlEventLogger {
 }
 
 impl SessionReport {
+    pub fn write_atomic(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary =
+            tempfile::NamedTempFile::new_in(path.parent().unwrap_or_else(|| Path::new(".")))?;
+        serde_json::to_writer_pretty(temporary.as_file(), self)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(path)
+            .map_err(|error| anyhow::anyhow!(error.error))?;
+        Ok(())
+    }
+}
+
+impl LiveSessionReport {
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

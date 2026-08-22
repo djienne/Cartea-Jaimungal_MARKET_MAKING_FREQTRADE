@@ -9,7 +9,7 @@ fn live_command_fails_before_credentials_or_order_transport() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("live order submission is intentionally unavailable"));
+    assert!(stderr.contains("live.enabled=false"));
     assert!(!stderr.contains("private key"));
 }
 
@@ -30,4 +30,21 @@ fn live_canary_fails_before_network_or_credentials_without_explicit_confirmation
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("before network or credential access"));
     assert!(!stderr.contains("definitely-does-not-exist"));
+}
+
+#[test]
+fn acceptance_and_flatten_commands_share_the_default_off_live_gate() {
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat.toml");
+    for command in [["live-flatten", ""], ["live-acceptance", "--phase"]] {
+        let mut args = vec!["--config", config.to_str().unwrap(), command[0]];
+        if !command[1].is_empty() {
+            args.extend([command[1], "verify"]);
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_mm-live"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("live.enabled=false"));
+    }
 }

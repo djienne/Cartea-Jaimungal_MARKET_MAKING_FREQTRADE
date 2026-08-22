@@ -52,6 +52,11 @@ async fn public_adapter_parses_mock_cashcat_stream_without_loss() {
         max_significant_figures: 5,
         max_leverage: 3.0,
         minimum_notional: 10.0,
+        margin_table_id: 3,
+        only_isolated: true,
+        margin_mode: "strictIsolated".to_owned(),
+        is_delisted: false,
+        metadata_fingerprint: String::new(),
     };
     let events = Arc::new(AsyncRing::new(16));
     let latest_bbo = Arc::new(AtomicBbo::default());
@@ -132,6 +137,11 @@ async fn causal_ring_saturation_invalidates_the_session() {
             max_significant_figures: 5,
             max_leverage: 3.0,
             minimum_notional: 10.0,
+            margin_table_id: 3,
+            only_isolated: true,
+            margin_mode: "strictIsolated".to_owned(),
+            is_delisted: false,
+            metadata_fingerprint: String::new(),
         },
         latest_bbo: Arc::new(AtomicBbo::default()),
         events,
@@ -267,10 +277,10 @@ async fn application_ping_and_protocol_pong_are_exercised() {
     assert_eq!(metrics.snapshot().protocol_pings_received, 1);
     assert_eq!(metrics.snapshot().reconnects, 0);
     assert_eq!(
-        latency.snapshot().distributions["ws_ping_rtt"].total_samples,
+        latency.snapshot().distributions["public_ws_ping_rtt"].total_samples,
         1
     );
-    assert!(latency.snapshot().distributions["ws_ping_rtt"]
+    assert!(latency.snapshot().distributions["public_ws_ping_rtt"]
         .last_ns
         .is_some_and(|value| value > 0));
     assert!(valid.load(Ordering::Acquire));
@@ -425,5 +435,10 @@ fn test_instrument() -> InstrumentSpec {
         max_significant_figures: 5,
         max_leverage: 3.0,
         minimum_notional: 10.0,
+        margin_table_id: 3,
+        only_isolated: true,
+        margin_mode: "strictIsolated".to_owned(),
+        is_delisted: false,
+        metadata_fingerprint: String::new(),
     }
 }

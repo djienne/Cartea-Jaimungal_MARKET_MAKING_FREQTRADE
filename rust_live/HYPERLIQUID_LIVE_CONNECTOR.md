@@ -3,32 +3,37 @@
 Research and local-code audit date: **2026-08-21**. Target runtime:
 `rust_live`, initially validated only for **CASHCAT**.
 
-This is the single implementation reference for a future real-money Hyperliquid
-connector. It deliberately stops short of enabling live trading. Hyperliquid's
-API changes over time, so every implementation pass must recheck the linked
-official documentation and pin the exact SDK/protocol fixtures used for release.
+This is the implementation reference for the pure-Rust real-money Hyperliquid
+connector. The backend is selected only when the tracked default-off TOML flag
+is explicitly enabled. Hyperliquid's API changes over time, so release work must
+recheck the linked official documentation and pinned protocol fixtures.
 
 ## Current implementation status (2026-08-22)
 
-The persistent strategy `live` command remains fail-closed. The following
-low-level pieces are now implemented in pure Rust and exercised against a
-dedicated mainnet CASHCAT subaccount:
+The persistent `live` command now owns a stateful execution backend and remains
+fail-closed while `[live].enabled=false`. Implemented and exercised pieces are:
 
 - zeroizing, non-debug four-key dotenv loading;
 - fixed-point price/size formatting and strict CLOIDs;
 - vault-aware MessagePack action hashing including the expiry separator;
 - phantom-agent EIP-712/secp256k1 signing with independent golden vectors;
-- monotonic in-process nonces and explicit transport-unknown outcomes;
+- crash-safe persisted nonce ranges and explicit transport-unknown outcomes;
 - account/open-order/fill/fee/role/active-asset/book `/info` reads;
-- ALO/IOC order batches and CLOID/OID cancellation;
+- WebSocket-post ALO/IOC batches, CLOID/OID cancel, isolated leverage, and REST
+  emergency cancel;
 - all eight account subscriptions, application heartbeat with measured RTT,
   protocol pong, bounded delivery, reconnect, and health metrics;
-- production-only latency-gate primitives with probe/dry-run/canary bypass;
-- explicitly guarded, at-most-12-USDC passive and reduce-only canaries.
+- ACID order/fill/funding state, typed partial-fill lifecycle, account-aware
+  sizing, rate reserves, restart reconciliation, and explicit market close;
+- production-only latency enforcement with probe/dry-run/acceptance bypass;
+- an explicitly guarded 12-directional/24-gross/60-turnover/0.5-loss campaign.
 
-The canaries proved resting ALO placement/cancel, taker fill delivery, exact
-fees, and final flat/empty reconciliation. They do not promote the continuous
-`live` backend. Remaining production work is listed in section 17.
+Real evidence covers two-sided ALO, both cancel identifiers, post-only refusal,
+response loss, hard restarts with order and position, a genuine maker fill, and
+long/short reduce-only market close. The account ended flat and empty. The
+current subaccount cannot use `scheduleCancel` because the venue requires one
+million USDC cumulative volume; production with dead-man required therefore
+refuses on this account.
 
 **Runtime invariant:** the live and dry-run traders are pure Rust. They must not
 import, launch, or depend on Python, the Hyperliquid Python SDK, Passivbot, or
@@ -703,10 +708,9 @@ Implementation consequences:
 - record REST weight, action count, WebSocket messages, in-flight posts, and
   address budget from `userRateLimit`.
 
-## 14. Required changes to `rust_live`
+## 14. Implemented architecture in `rust_live`
 
-The present boundaries are a good start, but a real connector requires these
-explicit extensions:
+The live backend implements the following extensions:
 
 1. Extend `InstrumentSpec` with margin mode/`only_isolated`, margin table ID,
    delisting status, and a metadata revision/fingerprint.
@@ -726,8 +730,8 @@ explicit extensions:
    subscription manager, rate limiter, and order map modules.
 7. Keep signing/HTTP/JSON allocation off the hot thread. Desired quotes remain
    integer, venue-neutral `OrderIntent`s.
-8. Keep `LiveExecutionUnavailable` as the default until a build feature and
-   explicit runtime gate select the tested backend.
+8. Keep `[live].enabled=false` in the tracked profile; enabling that flag selects
+   the backend, while production mode always enforces latency.
 9. Reuse the Rust `LatencyMonitor`: record the monotonic timestamp immediately
    before socket write and on authoritative order/fill events, then publish
    `submit_to_ack`, `cancel_to_ack`, and `ack_to_fill`. The backend only enqueues
@@ -764,7 +768,7 @@ copies were separated from actual connector implementations.
 | --- | --- | --- |
 | `XEMM_CROSS_EXCHANGE_MARKET_MAKING_PACIFICA_HYPERLIQUID\src\connector\hyperliquid\` (line-identical duplicate under `XEMM\XEMM_CROSS_...`) | EIP-712 domain/digest, monotonic atomic nonce, metadata cache, public L2 WS, REST IOC submission with CLOID, order-status/fill/account parsing, timeout-aware unknown outcome comments | Only builds IOC market orders; no maker ALO lifecycle, cancel/modify/dead-man switch, or private WS. `construct_connection_id` appends a vault marker but **not the 20 vault address bytes** and has no expiry encoding. Its tests cover only `vault=None`. Uses `f64`, stores key as `String`, and uses the large deprecated-style `ethers` stack. Do not copy its signer. |
 | `OLD\XEMM_dry_run_evaluator\src\livebot\exec\{hyperliquid,crypto,sign,creds}.rs` plus `src\connectors\hyperliquid.rs` | Best local low-level reference: typed MessagePack wire structs, correct vault marker + address bytes, correct expiry separator, main/test phantom agent, secp256k1 signatures, monotonic nonce, golden vectors, ALO/IOC construction, OID cancel, leverage action, open orders/account reads, robust public `bbo`/book/trade WS heartbeat and reconnect | Retired project, not a maintained Git repository. Assumes a subaccount/vault on every live path, has no master-account/no-vault mode, cancel-by-CLOID, modify/batch, `scheduleCancel`, private/account WS, durable fill deduplication, or complete reconciliation. Key bytes are retained without a zeroizing secret type. Port fixtures/ideas only. |
-| Current `rust_live` | Generic instrument, public CASHCAT feed, fixed-point price/size, lock-free publications, execution/account traits, dry-run lifecycle/reports, zeroizing signer, exact action encoder, REST actions/reads, bounded account stream, latency monitoring, and guarded connector canaries | The continuous `live` backend still intentionally fails. Durable nonce/order persistence, restart reconciliation, deduplication, rate limiting, WS-post correlation, and dead-man control are not complete. |
+| Current `rust_live` | Generic instrument, lock-free CJ hot path, zeroizing signer, exact fixed-point actions, persisted nonce/order/fill/funding state, WebSocket posts/account streams, REST recovery, rate reserves, account-aware risk, explicit market close, and guarded acceptance tooling | Continuous live is implemented but tracked off. Current development latency fails the production gate, and the present low-volume account is ineligible for the venue dead-man feature. |
 
 Conclusion: the older Rust signer contains valuable byte-level work, but no local
 Rust implementation is complete enough to enable real money safely.
@@ -864,28 +868,30 @@ CASHCAT strategy validation.
 
 ### 16.5 Mainnet canary prerequisites
 
-Mainnet remains unavailable until all prior gates pass and a human explicitly
-authorizes a bounded canary. The canary must use a dedicated low-balance
-subaccount/API wallet, CASHCAT only, minimum possible valid notional, one passive
-order, immediate cancel/reconciliation, a hard daily loss cap, and the dead-man
-switch. No automated promotion follows a successful canary.
+The explicitly authorized mainnet campaign used the dedicated low-balance
+CASHCAT subaccount and enforced its directional/gross/turnover/loss caps. It
+finished flat and empty. This does not automatically enable the tracked profile
+or waive the production latency gate. Dead-man triggering remains unvalidated
+because the venue rejected `scheduleCancel` below its one-million-USDC
+cumulative-volume requirement.
 
 ## 17. Implementation checklist
 
-- [ ] Recheck all official links and API announcement channel immediately before coding.
-- [ ] Decide and pin the Rust signing SDK after toolchain/dependency audit.
+- [x] Recheck the official exchange, subscription, nonce, heartbeat, and rate-limit documentation.
+- [x] Pin and audit the manual `k256`/MessagePack implementation instead of adding a second SDK.
 - [ ] Refresh the Python oracle to a pinned current release.
-- [ ] Extend `InstrumentSpec` for isolated/margin metadata.
-- [ ] Persist the implemented zeroizing signer's atomic monotonic nonce across restarts.
+- [x] Extend `InstrumentSpec` for isolated/margin metadata and fingerprinting.
+- [x] Persist crash-safe monotonic nonce reservations across restarts.
 - [x] Add exact signing golden fixtures for vault and expiry.
-- [ ] Complete the implemented order/CLOID-cancel/OID-cancel action set with leverage and dead-man actions.
-- [ ] Add WebSocket post request correlation and unknown-outcome handling.
-- [ ] Add durable fill/funding deduplication to the implemented one-account subscription stream.
-- [ ] Add startup/reconnect/restart reconciliation.
-- [ ] Add actual fee/funding/account-state ingestion.
-- [ ] Add rate-limit accounting and emergency cancel reserve.
-- [ ] Keep `live` failing before credentials until every testnet gate passes.
-- [x] Perform separately authorized bounded mainnet passive and reduce-only canaries; both ended flat and empty without enabling `live`.
+- [x] Add order/CLOID-cancel/OID-cancel, isolated leverage, and schedule-cancel action encoding.
+- [x] Add WebSocket post correlation and unknown-outcome handling.
+- [x] Add durable fill/funding deduplication and account subscriptions.
+- [x] Add startup/reconnect/restart reconciliation.
+- [x] Add actual fee/funding/account-state ingestion.
+- [x] Add REST/WS rate budgets and emergency cancel reserve.
+- [x] Keep tracked live disabled and fail before credentials until enabled.
+- [x] Perform the authorized bounded mainnet campaign and finish flat/empty.
+- [ ] Trigger the dead-man on an eligible account; current account is venue-ineligible below $1M cumulative volume.
 
 ## 18. Primary references
 

@@ -117,7 +117,7 @@ where
                                 (pending_application_ping_ns.take(), args.latency.as_ref())
                             {
                                 latency.record(
-                                    LatencyKind::WsPingRtt,
+                                    LatencyKind::PublicWsPingRtt,
                                     pong_ns.saturating_sub(sent_ns),
                                     pong_ns,
                                 );

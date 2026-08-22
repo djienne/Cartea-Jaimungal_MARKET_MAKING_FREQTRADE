@@ -15,7 +15,8 @@ use std::time::Duration;
 #[serde(rename_all = "snake_case")]
 pub enum LatencyKind {
     MarketEventDispatch,
-    WsPingRtt,
+    PublicWsPingRtt,
+    AccountWsPingRtt,
     InfoRequestRtt,
     HotDecision,
     MarketDataToBackendStart,
@@ -26,12 +27,16 @@ pub enum LatencyKind {
     SubmitToAck,
     CancelToAck,
     AckToFill,
+    FillToCloseSend,
+    CloseSendToFill,
+    FillToFlat,
 }
 
 impl LatencyKind {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 16] = [
         Self::MarketEventDispatch,
-        Self::WsPingRtt,
+        Self::PublicWsPingRtt,
+        Self::AccountWsPingRtt,
         Self::InfoRequestRtt,
         Self::HotDecision,
         Self::MarketDataToBackendStart,
@@ -42,12 +47,16 @@ impl LatencyKind {
         Self::SubmitToAck,
         Self::CancelToAck,
         Self::AckToFill,
+        Self::FillToCloseSend,
+        Self::CloseSendToFill,
+        Self::FillToFlat,
     ];
 
     const fn name(self) -> &'static str {
         match self {
             Self::MarketEventDispatch => "market_event_dispatch",
-            Self::WsPingRtt => "ws_ping_rtt",
+            Self::PublicWsPingRtt => "public_ws_ping_rtt",
+            Self::AccountWsPingRtt => "account_ws_ping_rtt",
             Self::InfoRequestRtt => "info_request_rtt",
             Self::HotDecision => "hot_decision",
             Self::MarketDataToBackendStart => "market_data_to_backend_start",
@@ -58,6 +67,9 @@ impl LatencyKind {
             Self::SubmitToAck => "submit_to_ack",
             Self::CancelToAck => "cancel_to_ack",
             Self::AckToFill => "ack_to_fill",
+            Self::FillToCloseSend => "fill_to_close_send",
+            Self::CloseSendToFill => "close_send_to_fill",
+            Self::FillToFlat => "fill_to_flat",
         }
     }
 }
@@ -465,7 +477,11 @@ fn evaluate_gate(
     }
     for (mandatory_kind, minimum_samples) in [
         (LatencyKind::MarketEventDispatch, config.minimum_samples),
-        (LatencyKind::WsPingRtt, config.minimum_network_samples),
+        (LatencyKind::PublicWsPingRtt, config.minimum_network_samples),
+        (
+            LatencyKind::AccountWsPingRtt,
+            config.minimum_network_samples,
+        ),
     ] {
         let mandatory = &distributions[mandatory_kind.name()];
         if mandatory.window_samples < minimum_samples {
@@ -485,14 +501,15 @@ fn evaluate_gate(
     }
     let gated_kinds = [
         LatencyKind::MarketEventDispatch,
-        LatencyKind::WsPingRtt,
+        LatencyKind::PublicWsPingRtt,
+        LatencyKind::AccountWsPingRtt,
         LatencyKind::InfoRequestRtt,
         LatencyKind::HotDecision,
-        LatencyKind::MarketDataToBackendStart,
         LatencyKind::DecisionToBackendDone,
         LatencyKind::SubmitToAck,
         LatencyKind::CancelToAck,
         LatencyKind::AckToFill,
+        LatencyKind::FillToCloseSend,
     ];
     let threshold_ns = config.max_acceptable_p99_ms * 1_000_000.0;
     for kind in gated_kinds {
@@ -676,6 +693,7 @@ mod tests {
             gate_enabled: true,
             max_acceptable_p99_ms: 1.0,
             minimum_samples: 3,
+            minimum_network_samples: 1,
             max_sample_age_ms: 10_000,
             queue_capacity: 16,
             window_seconds: 60,
@@ -686,7 +704,8 @@ mod tests {
         for observed_ns in [1_000, 2_000, 3_000] {
             monitor.record(LatencyKind::MarketEventDispatch, 100_000, observed_ns);
         }
-        monitor.record(LatencyKind::WsPingRtt, 500_000, 3_500);
+        monitor.record(LatencyKind::PublicWsPingRtt, 500_000, 3_500);
+        monitor.record(LatencyKind::AccountWsPingRtt, 500_000, 3_600);
         let open = aggregator.drain(&monitor, 4_000);
         assert!(open.gate.trading_allowed);
         assert_eq!(open.gate.reason, "ok");
@@ -733,12 +752,16 @@ mod tests {
         let monitor = LatencyMonitor::new("SYN", 1, &config, true);
         monitor.record(LatencyKind::MarketEventDispatch, 10_000, 1_000);
         monitor.record(LatencyKind::MarketEventDispatch, 20_000, 2_000);
-        monitor.record(LatencyKind::WsPingRtt, 500_000_000, 3_000);
+        monitor.record(LatencyKind::PublicWsPingRtt, 500_000_000, 3_000);
+        monitor.record(LatencyKind::AccountWsPingRtt, 10_000_000, 3_500);
         let mut aggregator = LatencyAggregator::new("SYN", 1, config, true);
         let snapshot = aggregator.drain(&monitor, 4_000);
         assert!(!snapshot.gate.trading_allowed);
         assert_eq!(snapshot.gate.reason, "p99_exceeded");
-        assert_eq!(snapshot.gate.blocking_kind.as_deref(), Some("ws_ping_rtt"));
+        assert_eq!(
+            snapshot.gate.blocking_kind.as_deref(),
+            Some("public_ws_ping_rtt")
+        );
         assert_eq!(snapshot.gate.observed_p99_ms, Some(500.0));
     }
 }

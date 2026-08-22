@@ -28,6 +28,14 @@ acknowledgement about 931-961 ms, and the final IOC submit acknowledgements abou
 benchmarks. They exceed the configured 150 ms production p99 gate and therefore
 support refusing production trading from this machine.
 
+The stateful-backend acceptance campaign measured WebSocket order
+acknowledgements around 0.60-1.07 seconds and cancel acknowledgements around
+0.94-1.02 seconds. Once invoked, reduce-only IOC market close reached
+authoritative flat confirmation in 1.58 seconds for a long and 1.79 seconds for
+a short. These timings validate behavior and instrumentation, not competitive
+latency. A production-mode continuous smoke submitted zero actions because its
+20-sample public/account warm-up could not complete in the bounded run.
+
 The quote benchmark includes episodic time interpolation, fractional inventory
 interpolation, fee/cushion/clamp assembly, prospective risk checks, and venue
 rounding. The HJB solve is a cold-path operation performed after calibration.

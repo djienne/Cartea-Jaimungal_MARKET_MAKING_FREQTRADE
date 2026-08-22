@@ -45,6 +45,7 @@ pub struct AppConfig {
     pub quoting: QuotingConfig,
     pub risk: RiskConfig,
     pub dry_run: DryRunConfig,
+    pub live: LiveConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -95,12 +96,78 @@ impl Default for RuntimeConfig {
             network: Network::Mainnet,
             hot_path_cpu: None,
             market_stale_ms: 5_000,
-            ws_ping_interval_ms: 30_000,
-            ws_idle_timeout_ms: 45_000,
+            ws_ping_interval_ms: 5_000,
+            ws_idle_timeout_ms: 15_000,
             market_event_capacity: 65_536,
             execution_event_capacity: 16_384,
             stats_interval_ms: 5_000,
             log_json: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveMode {
+    #[default]
+    Production,
+    AcceptanceTest,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LiveConfig {
+    pub enabled: bool,
+    pub mode: LiveMode,
+    pub credentials_path: PathBuf,
+    pub state_path: PathBuf,
+    pub action_timeout_ms: u64,
+    pub action_expiry_ms: u64,
+    pub reconcile_interval_ms: u64,
+    pub startup_warmup_seconds: u64,
+    pub deadman_enabled: bool,
+    pub deadman_deadline_ms: u64,
+    pub deadman_refresh_ms: u64,
+    pub max_maker_fee_rate: f64,
+    pub flatten_on_stop: bool,
+    pub emergency_flatten_max_slippage_bps: f64,
+    pub max_rest_weight_per_minute: u64,
+    pub max_ws_messages_per_minute: u64,
+    pub max_inflight_posts: usize,
+    pub cancel_reserve_fraction: f64,
+    pub acceptance_max_order_notional_usdc: f64,
+    pub acceptance_max_directional_notional_usdc: f64,
+    pub acceptance_max_working_gross_usdc: f64,
+    pub acceptance_max_turnover_usdc: f64,
+    pub acceptance_max_realized_loss_usdc: f64,
+}
+
+impl Default for LiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: LiveMode::Production,
+            credentials_path: PathBuf::from("../hyperliquid.env"),
+            state_path: PathBuf::from("run/cashcat-live.redb"),
+            action_timeout_ms: 2_000,
+            action_expiry_ms: 5_000,
+            reconcile_interval_ms: 30_000,
+            startup_warmup_seconds: 120,
+            deadman_enabled: true,
+            deadman_deadline_ms: 30_000,
+            deadman_refresh_ms: 10_000,
+            max_maker_fee_rate: 0.0002,
+            flatten_on_stop: false,
+            emergency_flatten_max_slippage_bps: 250.0,
+            max_rest_weight_per_minute: 1_000,
+            max_ws_messages_per_minute: 1_600,
+            max_inflight_posts: 64,
+            cancel_reserve_fraction: 0.25,
+            acceptance_max_order_notional_usdc: 12.0,
+            acceptance_max_directional_notional_usdc: 12.0,
+            acceptance_max_working_gross_usdc: 24.0,
+            acceptance_max_turnover_usdc: 60.0,
+            acceptance_max_realized_loss_usdc: 0.5,
         }
     }
 }
@@ -124,8 +191,8 @@ impl Default for LatencyConfig {
             gate_enabled: true,
             max_acceptable_p99_ms: 150.0,
             minimum_samples: 20,
-            minimum_network_samples: 1,
-            max_sample_age_ms: 45_000,
+            minimum_network_samples: 20,
+            max_sample_age_ms: 15_000,
             hot_sample_every: 16,
             window_seconds: 300,
             queue_capacity: 4_096,
@@ -360,6 +427,8 @@ impl AppConfig {
             &mut config.storage.report_dir,
             &mut config.storage.writer_lock_path,
             &mut config.instrument.evidence_path,
+            &mut config.live.credentials_path,
+            &mut config.live.state_path,
         ] {
             if value.is_relative() {
                 *value = base.join(&*value);
@@ -427,6 +496,65 @@ impl AppConfig {
         }
         if self.storage.retention_minutes < self.calibration.window_minutes + 30 {
             bail!("storage retention must exceed the calibration window by at least 30 minutes");
+        }
+        if self.live.action_timeout_ms == 0 || self.live.action_expiry_ms == 0 {
+            bail!("live action timeout and expiry must be positive");
+        }
+        if self.live.reconcile_interval_ms < 500 {
+            bail!("live.reconcile_interval_ms must be at least 500");
+        }
+        if self.live.deadman_enabled
+            && (self.live.deadman_deadline_ms < 5_000
+                || self.live.deadman_refresh_ms == 0
+                || self.live.deadman_refresh_ms >= self.live.deadman_deadline_ms)
+        {
+            bail!("live dead-man refresh must be positive and below a deadline of at least 5s");
+        }
+        if !self.live.max_maker_fee_rate.is_finite() || self.live.max_maker_fee_rate < 0.0 {
+            bail!("live.max_maker_fee_rate must be finite and non-negative");
+        }
+        if !self.live.emergency_flatten_max_slippage_bps.is_finite()
+            || !(0.0..=250.0).contains(&self.live.emergency_flatten_max_slippage_bps)
+        {
+            bail!("live emergency flatten slippage must be in [0,250] bps");
+        }
+        if self.live.max_rest_weight_per_minute == 0
+            || self.live.max_ws_messages_per_minute == 0
+            || self.live.max_inflight_posts == 0
+            || !(0.0..1.0).contains(&self.live.cancel_reserve_fraction)
+        {
+            bail!("invalid live rate-limit configuration");
+        }
+        for (name, value, hard_maximum) in [
+            (
+                "acceptance_max_order_notional_usdc",
+                self.live.acceptance_max_order_notional_usdc,
+                12.0,
+            ),
+            (
+                "acceptance_max_directional_notional_usdc",
+                self.live.acceptance_max_directional_notional_usdc,
+                12.0,
+            ),
+            (
+                "acceptance_max_working_gross_usdc",
+                self.live.acceptance_max_working_gross_usdc,
+                24.0,
+            ),
+            (
+                "acceptance_max_turnover_usdc",
+                self.live.acceptance_max_turnover_usdc,
+                60.0,
+            ),
+            (
+                "acceptance_max_realized_loss_usdc",
+                self.live.acceptance_max_realized_loss_usdc,
+                0.5,
+            ),
+        ] {
+            if !value.is_finite() || value <= 0.0 || value > hard_maximum {
+                bail!("live.{name} must be positive and <= {hard_maximum}");
+            }
         }
         if self.model.q_max < 1 || self.model.q_max > 1_000 {
             bail!("model.q_max must be in 1..=1000");
@@ -533,6 +661,17 @@ mod tests {
         config.instrument.expected_sz_decimals = 3;
         config.instrument.evidence_path = evidence;
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn acceptance_caps_and_deadman_timing_cannot_be_relaxed_past_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat.toml");
+        let mut config = AppConfig::load(&path).unwrap();
+        config.live.acceptance_max_directional_notional_usdc = 12.01;
+        assert!(config.validate().is_err());
+        config.live.acceptance_max_directional_notional_usdc = 12.0;
+        config.live.deadman_refresh_ms = config.live.deadman_deadline_ms;
+        assert!(config.validate().is_err());
     }
 }
 

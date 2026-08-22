@@ -56,6 +56,7 @@ docs/*.synctex.gz
 rust_live/target/
 rust_live/run/
 rust_live/config/local.toml
+rust_live/config/*.acceptance.local.toml
 rust_live/config/*.state.json
 rust_live/config/*.snapshot.json
 rust_live/reports/

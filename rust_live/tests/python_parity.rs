@@ -194,6 +194,11 @@ fn hjb_surface_and_final_spreads_match_python_reference() {
         max_significant_figures: 5,
         max_leverage: 3.0,
         minimum_notional: 1.0,
+        margin_table_id: 0,
+        only_isolated: false,
+        margin_mode: String::new(),
+        is_delisted: false,
+        metadata_fingerprint: String::new(),
     };
     let policy =
         CarteaJaimungalPolicy::new(instrument, QuotingConfig::default(), RiskConfig::default())
