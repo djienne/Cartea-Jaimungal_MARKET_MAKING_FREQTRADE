@@ -19,7 +19,7 @@ use crate::instrument::InstrumentSpec;
 use crate::latency::{LatencyKind, LatencyMonitor};
 use crate::types::{
     unix_ms, AccountState, Bbo, DesiredQuotes, ExecutionEvent, Fill, MarketEvent, ProcessClock,
-    Side,
+    QuoteReason, Side,
 };
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -98,6 +98,8 @@ pub struct HyperliquidLiveBackend {
     allow_untracked_position: bool,
     reconcile_requested: bool,
     last_inventory_update_ms: u64,
+    last_quote_action_ms: u64,
+    deferred_desired: Option<DesiredQuotes>,
 }
 
 impl HyperliquidLiveBackend {
@@ -238,6 +240,8 @@ impl HyperliquidLiveBackend {
             allow_untracked_position,
             reconcile_requested: false,
             last_inventory_update_ms: unix_ms(),
+            last_quote_action_ms: 0,
+            deferred_desired: None,
         };
         backend.initialize_campaign()?;
         Ok(LiveBootstrap {
@@ -587,7 +591,17 @@ impl HyperliquidLiveBackend {
         Ok(std::mem::take(&mut self.pending_events))
     }
 
-    pub fn maintenance(&mut self, now_ms: u64) -> Result<Vec<ExecutionEvent>> {
+    pub async fn maintenance(&mut self, now_ms: u64) -> Result<Vec<ExecutionEvent>> {
+        if self.deferred_desired.is_some()
+            && now_ms.saturating_sub(self.last_quote_action_ms)
+                >= self.quoting.min_order_lifetime_ms
+        {
+            let desired = self
+                .deferred_desired
+                .take()
+                .expect("deferred desired quote was checked as present");
+            self.reconcile(desired, now_ms).await?;
+        }
         if now_ms.saturating_sub(self.last_reconcile_ms) >= self.live.reconcile_interval_ms {
             self.reconcile_requested = true;
         }
@@ -1343,20 +1357,12 @@ impl HyperliquidLiveBackend {
                 bail!("acceptance campaign cleanup reserve reached");
             }
         } else {
-            let usable_equity = self
-                .quoting
-                .available_capital_usdc
-                .min(self.account.account_value_usdc)
-                - self.risk.min_liquidation_buffer_usdc;
-            let account_cap = usable_equity.max(0.0)
-                * self.quoting.leverage
-                * self.quoting.target_capital_utilisation;
-            let configured_cap = if self.risk.max_notional_usdc > 0.0 {
-                self.risk.max_notional_usdc
-            } else {
-                f64::INFINITY
-            };
-            if directional > account_cap.min(configured_cap) {
+            let cap = live_directional_notional_cap(
+                &self.quoting,
+                &self.risk,
+                self.account.account_value_usdc,
+            );
+            if directional > cap {
                 bail!("prospective live directional exposure exceeds account-aware cap");
             }
         }
@@ -1410,9 +1416,41 @@ impl HyperliquidLiveBackend {
     }
 }
 
+fn live_directional_notional_cap(
+    quoting: &QuotingConfig,
+    risk: &RiskConfig,
+    account_equity_usdc: f64,
+) -> f64 {
+    let leveraged_utilisation = quoting.leverage * quoting.target_capital_utilisation;
+    let account_cap =
+        (account_equity_usdc - risk.min_liquidation_buffer_usdc).max(0.0) * leveraged_utilisation;
+    let allocation_cap = quoting
+        .available_capital_usdc
+        .min(account_equity_usdc.max(0.0))
+        * leveraged_utilisation;
+    let configured_cap = if risk.max_notional_usdc > 0.0 {
+        risk.max_notional_usdc
+    } else {
+        f64::INFINITY
+    };
+    account_cap.min(allocation_cap).min(configured_cap)
+}
+
 #[async_trait]
 impl ExecutionBackend for HyperliquidLiveBackend {
-    async fn reconcile(&mut self, desired: DesiredQuotes, _now_ms: u64) -> Result<()> {
+    async fn reconcile(&mut self, desired: DesiredQuotes, now_ms: u64) -> Result<()> {
+        let replacement_may_wait = matches!(
+            desired.reason,
+            QuoteReason::Market | QuoteReason::Calibration | QuoteReason::Episode
+        );
+        if replacement_may_wait
+            && self.last_quote_action_ms != 0
+            && now_ms.saturating_sub(self.last_quote_action_ms) < self.quoting.min_order_lifetime_ms
+        {
+            self.deferred_desired = Some(desired);
+            return Ok(());
+        }
+        self.deferred_desired = None;
         let existing = self.active_orders_by_side()?;
         let mut cancel = Vec::new();
         let mut place = Vec::new();
@@ -1460,6 +1498,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 });
             }
         }
+        let mut action_submitted = false;
         if !cancel.is_empty() {
             if self.session.healthy() {
                 self.session.enqueue_cancel_cloids(cancel)?;
@@ -1468,6 +1507,9 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 require_action_known(&outcome)?;
             }
             self.diagnostics.cancels_submitted += 1;
+            self.diagnostics.address_requests_used =
+                self.diagnostics.address_requests_used.saturating_add(1);
+            action_submitted = true;
         }
         if !place.is_empty() {
             let bbo = self
@@ -1476,6 +1518,12 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             self.validate_new_orders(&place, bbo)?;
             self.session.enqueue_orders(desired.quote_seq, place)?;
             self.diagnostics.orders_submitted += 1;
+            self.diagnostics.address_requests_used =
+                self.diagnostics.address_requests_used.saturating_add(1);
+            action_submitted = true;
+        }
+        if action_submitted {
+            self.last_quote_action_ms = now_ms;
         }
         Ok(())
     }
@@ -1760,6 +1808,8 @@ mod tests {
             account: LiveAccountSnapshot {
                 account_value_usdc: 300.0,
                 withdrawable_usdc: 300.0,
+                available_to_trade_usdc: [300.0, 300.0],
+                max_trade_units: [5_000, 5_000],
                 isolated: true,
                 leverage: 2,
                 maker_fee_rate: 0.00015,
@@ -1785,6 +1835,8 @@ mod tests {
             allow_untracked_position: false,
             reconcile_requested: false,
             last_inventory_update_ms: 0,
+            last_quote_action_ms: 0,
+            deferred_desired: None,
         };
         (directory, backend, cloid)
     }
@@ -1998,6 +2050,64 @@ mod tests {
             .unwrap();
         assert_eq!(backend.diagnostics.unknown_outcomes, 1);
         assert!(backend.reconcile_requested);
+    }
+
+    #[test]
+    fn allocated_capital_and_account_buffer_are_independent_caps() {
+        let quoting = QuotingConfig {
+            available_capital_usdc: 67.56,
+            target_capital_utilisation: 0.74,
+            leverage: 2.0,
+            ..QuotingConfig::default()
+        };
+        let risk = RiskConfig {
+            max_notional_usdc: 100.0,
+            min_liquidation_buffer_usdc: 100.0,
+            ..RiskConfig::default()
+        };
+        let cap = live_directional_notional_cap(&quoting, &risk, 299.48);
+        assert!((cap - 99.9888).abs() < 1.0e-9);
+        let underfunded = live_directional_notional_cap(&quoting, &risk, 50.0);
+        assert_eq!(underfunded, 0.0);
+    }
+
+    #[tokio::test]
+    async fn market_replacements_coalesce_until_minimum_order_lifetime() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend.quoting.min_order_lifetime_ms = 2_000;
+        backend.last_quote_action_ms = 1_000;
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 100_000,
+            bid_sz: 1_000,
+            ask_px: 102_000,
+            ask_sz: 1_000,
+            exchange_ms: 1,
+            recv_ns: 1,
+        });
+        let desired = DesiredQuotes {
+            bid: Some(crate::types::OrderIntent {
+                side: Side::Buy,
+                px: 101_000,
+                qty_units: 100,
+                post_only: true,
+                reduce_only: false,
+            }),
+            quote_seq: 2,
+            model_revision: 1,
+            reason: QuoteReason::Market,
+            ..DesiredQuotes::default()
+        };
+        backend.reconcile(desired, 1_500).await.unwrap();
+        assert_eq!(backend.deferred_desired, Some(desired));
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
+        assert_eq!(backend.diagnostics.cancels_submitted, 0);
+
+        backend.maintenance(3_000).await.unwrap();
+        assert!(backend.deferred_desired.is_none());
+        assert_eq!(backend.last_quote_action_ms, 3_000);
+        assert_eq!(backend.diagnostics.orders_submitted, 1);
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert_eq!(backend.diagnostics.address_requests_used, 2);
     }
 
     proptest! {

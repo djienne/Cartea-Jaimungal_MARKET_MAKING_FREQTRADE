@@ -1225,7 +1225,7 @@ async fn run_live(
                 match result {
                     Ok(snapshot) => {
                         backend.apply_reconciliation(snapshot)?;
-                        let execution_events = backend.maintenance(unix_ms())?;
+                        let execution_events = backend.maintenance(unix_ms()).await?;
                         apply_live_execution_events(
                             &execution_events,
                             &mut event_logger,
@@ -1303,7 +1303,7 @@ async fn run_live(
                     signal.notify(HOT_SIGNAL_EXECUTION);
                     info!(mode = ?config.live.mode, "live backend armed after all startup gates");
                 }
-                let execution_events = backend.maintenance(unix_ms())?;
+                let execution_events = backend.maintenance(unix_ms()).await?;
                 apply_live_execution_events(
                     &execution_events,
                     &mut event_logger,

@@ -66,6 +66,10 @@ unknown-outcome reconciliation, account-aware sizing, actual fees, rate
 reserves, ALO batches, and reduce-only IOC market close. Network and persistence
 work stay off the hot thread. Lifecycle persistence is coalesced on a dedicated
 single-writer thread; only a newly reserved nonce range is fsynced before use.
+Superseded market quote revisions coalesce until the configured minimum order
+lifetime, while fill/risk cancellations bypass that delay. The connector tracks
+its local contribution to the venue address-action budget and preserves a
+separate WebSocket allowance for cancels and emergency reduction.
 
 Normal shutdown, latency refusal, and risk kills cancel orders but retain known
 inventory. `live-flatten` is the explicit CASHCAT-only reduce-only maintenance
