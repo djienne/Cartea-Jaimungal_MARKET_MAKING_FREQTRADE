@@ -20,7 +20,8 @@ actions on a dedicated CASHCAT subaccount and ended flat with zero open orders.
   while publishing the complete connector report for review.
 - An in-process live lifecycle exercises fill-before-ack, duplicate fill, stale
   acknowledgement, partial-fill cancellation, foreign-fill refusal, action
-  refusal, and ambiguous-write reconciliation without touching a real account.
+  refusal, historical foreign-fill snapshot filtering, and ambiguous-write
+  reconciliation without touching a real account.
 - Live replacement tests prove superseded market revisions coalesce until the
   minimum order lifetime, fill/risk actions remain immediate, local address
   request usage advances per action batch, and allocated-capital limits are
@@ -70,7 +71,7 @@ Checked on 2026-08-22 around 17:30 UTC:
 
 - `cargo fmt --check`: passed.
 - strict Clippy over all targets with warnings denied: passed.
-- Rust tests: 112 passed across optimized unit and integration targets.
+- Rust tests: 113 passed across optimized unit and integration targets.
 - Python/Freqtrade reference tests: 722 passed.
 - locked optimized builds of the production and feature-gated acceptance
   binaries: passed.

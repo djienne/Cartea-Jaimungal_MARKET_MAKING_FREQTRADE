@@ -858,7 +858,7 @@ impl HyperliquidLiveBackend {
         if self.account.maker_fee_rate > self.live.max_maker_fee_rate {
             bail!("actual maker fee exceeds configured live maximum");
         }
-        self.apply_fill_rows(&fills, false)?;
+        self.apply_fill_rows(&fills, false, false)?;
         self.reconcile_orders(&open_orders, &fills, &order_statuses)?;
         if self.account.inventory_units != 0
             && self.state.load_required()?.inventory_unit.is_none()
@@ -1033,18 +1033,24 @@ impl HyperliquidLiveBackend {
         if !message.fills.is_empty() && !message.is_snapshot {
             self.last_fill_received_ns = Some(received_ns);
         }
-        self.apply_fill_rows(&message.fills, true)
+        self.apply_fill_rows(&message.fills, true, !message.is_snapshot)
     }
 
-    fn apply_fill_rows(&mut self, fills: &[UserFill], adjust_inventory: bool) -> Result<()> {
+    fn apply_fill_rows(
+        &mut self,
+        fills: &[UserFill],
+        adjust_inventory: bool,
+        reject_foreign: bool,
+    ) -> Result<()> {
         for fill in fills {
             if fill.coin != self.instrument.symbol {
                 continue;
             }
-            if fill
-                .cloid
-                .as_deref()
-                .is_some_and(|cloid| !is_bot_cloid(cloid))
+            if reject_foreign
+                && fill
+                    .cloid
+                    .as_deref()
+                    .is_some_and(|cloid| !is_bot_cloid(cloid))
             {
                 self.diagnostics.operationally_healthy = false;
                 bail!("foreign fill appeared on dedicated account stream");
@@ -2029,6 +2035,30 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(!backend.diagnostics.operationally_healthy);
+    }
+
+    #[test]
+    fn historical_foreign_fill_snapshot_is_ignored() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
+        let result = backend.process_session_event(SessionEvent::AccountData {
+            generation: 1,
+            received_ns: 1,
+            channel: AccountChannel::UserFills,
+            data: serde_json::json!({
+                "isSnapshot": true,
+                "fills": [{
+                    "coin":"CASHCAT", "px":"0.1", "sz":"1", "side":"B",
+                    "time":checkpoint.saturating_sub(1), "oid":7, "tid":11,
+                    "cloid":"0x00000000000000000000000000000001",
+                    "startPosition":"0", "crossed":false, "fee":"0",
+                    "closedPnl":"0", "hash":"0xsnapshot"
+                }]
+            }),
+        });
+        assert!(result.unwrap().is_empty());
+        assert!(backend.diagnostics.operationally_healthy);
+        assert_eq!(backend.account.inventory_units, 0);
     }
 
     #[test]
