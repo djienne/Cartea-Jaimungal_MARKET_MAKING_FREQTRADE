@@ -8,6 +8,7 @@ use crate::hyperliquid::auth::HyperliquidCredentials;
 use crate::hyperliquid::exchange::{ActionOutcome, HyperliquidExchangeClient, OpenOrder, UserFill};
 use crate::hyperliquid::live_state::{
     DurableNonceManager, LiveOrderStatus, LiveStateStore, PersistedLiveOrder, RiskScalars,
+    TimedKey,
 };
 use crate::hyperliquid::session::{
     spawn_session, AccountChannel, HyperliquidSessionHandle, SessionEvent, SessionSpawnArgs,
@@ -64,6 +65,36 @@ pub struct LiveBootstrap {
     pub backend: HyperliquidLiveBackend,
     pub session_events: mpsc::Receiver<SessionEvent>,
     pub session_task: tokio::task::JoinHandle<()>,
+}
+
+/// Replay horizon for fill/funding dedup keys, in exchange time. Far beyond any
+/// WebSocket snapshot replay or REST `userFills` lookback, so a key older than
+/// this can never be asked about again.
+const EVENT_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
+/// Keep terminal orders at least this long so late acknowledgements and status
+/// rows can still be attributed before the entry is dropped.
+const MINIMUM_TERMINAL_ORDER_RETENTION_MS: u64 = 10 * 60 * 1_000;
+
+/// Scalars an authoritative reconcile needs from the durable state, projected
+/// under the lock so the growing collections are never cloned.
+struct PersistedView {
+    metadata_matches: bool,
+    any_non_terminal: bool,
+    cumulative_realized_pnl_usdc: f64,
+    cumulative_fees_usdc: f64,
+    cumulative_funding_usdc: f64,
+}
+
+/// Outcome of admitting one fill into durable accounting.
+enum FillAdmission {
+    /// Older than the replay horizon; its dedup key may already be pruned, so
+    /// it must not be treated as new — and it is not a duplicate either.
+    BeforeCheckpoint,
+    Duplicate,
+    Fresh {
+        cumulative_fees_usdc: f64,
+        cumulative_realized_pnl_usdc: f64,
+    },
 }
 
 pub struct AuthoritativeSnapshot {
@@ -317,7 +348,7 @@ impl HyperliquidLiveBackend {
     }
 
     pub fn persisted_inventory_unit(&self) -> Result<Option<i64>> {
-        Ok(self.state.load_required()?.inventory_unit)
+        self.state.inventory_unit()
     }
 
     pub fn durable_state(&self) -> Result<crate::hyperliquid::live_state::PersistedLiveState> {
@@ -428,13 +459,14 @@ impl HyperliquidLiveBackend {
     }
 
     pub async fn cancel_all_bot_orders(&mut self) -> Result<()> {
-        let state = self.state.load_required()?;
-        let cloids: Vec<String> = state
-            .orders
-            .values()
-            .filter(|order| !order.status.terminal())
-            .map(|order| order.cloid.clone())
-            .collect();
+        let cloids = self.state.with_state(|state| {
+            state
+                .orders
+                .values()
+                .filter(|order| !order.status.terminal())
+                .map(|order| order.cloid.clone())
+                .collect::<Vec<String>>()
+        })?;
         if !cloids.is_empty() {
             let outcome = self.cancel_cloids_resilient(cloids).await?;
             self.diagnostics.cancels_submitted += 1;
@@ -448,14 +480,14 @@ impl HyperliquidLiveBackend {
     }
 
     pub fn enqueue_cancel_all_bot_orders(&self) -> Result<()> {
-        let cloids: Vec<String> = self
-            .state
-            .load_required()?
-            .orders
-            .values()
-            .filter(|order| !order.status.terminal())
-            .map(|order| order.cloid.clone())
-            .collect();
+        let cloids = self.state.with_state(|state| {
+            state
+                .orders
+                .values()
+                .filter(|order| !order.status.terminal())
+                .map(|order| order.cloid.clone())
+                .collect::<Vec<String>>()
+        })?;
         if cloids.is_empty() {
             return Ok(());
         }
@@ -486,7 +518,7 @@ impl HyperliquidLiveBackend {
         if self.live.mode != LiveMode::AcceptanceTest {
             return Ok(());
         }
-        let campaign = self.state.load_required()?.campaign;
+        let campaign = self.state.campaign()?;
         if campaign.turnover_usdc > self.live.acceptance_max_turnover_usdc
             || campaign.realized_pnl_usdc < -self.live.acceptance_max_realized_loss_usdc
         {
@@ -808,17 +840,18 @@ impl HyperliquidLiveBackend {
                 bail!("foreign open order {cloid} on dedicated live account");
             }
         }
-        let persisted = self.state.load_required()?;
-        if persisted.metadata_fingerprint != self.instrument.metadata_fingerprint
-            && (self.account.inventory_units != 0
-                || persisted
-                    .orders
-                    .values()
-                    .any(|order| !order.status.terminal()))
+        let view = self.state.with_state(|state| PersistedView {
+            metadata_matches: state.metadata_fingerprint == self.instrument.metadata_fingerprint,
+            any_non_terminal: state.orders.values().any(|order| !order.status.terminal()),
+            cumulative_realized_pnl_usdc: state.cumulative_realized_pnl_usdc,
+            cumulative_fees_usdc: state.cumulative_fees_usdc,
+            cumulative_funding_usdc: state.cumulative_funding_usdc,
+        })?;
+        if !view.metadata_matches
+            && (self.account.inventory_units != 0 || view.any_non_terminal)
         {
             bail!("live metadata changed while durable exposure exists");
         }
-        let persisted_accounting = self.state.load_required()?;
         let effective_fees = fees.unwrap_or_else(|| {
             serde_json::json!({
                 "userAddRate": self.account.maker_fee_rate.to_string(),
@@ -833,47 +866,50 @@ impl HyperliquidLiveBackend {
             &self.instrument,
         )?;
         self.last_inventory_update_ms = unix_ms();
-        self.account.realized_pnl_usdc = persisted_accounting.cumulative_realized_pnl_usdc;
-        self.account.fees_usdc = persisted_accounting.cumulative_fees_usdc;
-        self.account.funding_usdc = persisted_accounting.cumulative_funding_usdc;
+        self.account.realized_pnl_usdc = view.cumulative_realized_pnl_usdc;
+        self.account.fees_usdc = view.cumulative_fees_usdc;
+        self.account.funding_usdc = view.cumulative_funding_usdc;
+        // Build recovered orders before entering `update`: it has no rollback,
+        // and a parse failure mid-loop must not leave half the venue's orders
+        // adopted.
+        let mut recovered = Vec::new();
+        for open in &open_orders {
+            let Some(cloid) = open.cloid.as_deref() else {
+                continue;
+            };
+            let side = match open.side.as_str() {
+                "B" | "Buy" => Side::Buy,
+                "A" | "Sell" => Side::Sell,
+                value => bail!("unknown open-order side {value:?}"),
+            };
+            let qty_units = parse_fixed(&open.sz, self.instrument.sz_decimals)?;
+            recovered.push(PersistedLiveOrder {
+                cloid: cloid.to_owned(),
+                quote_seq: 0,
+                side,
+                px_units: self.instrument.price_to_units(open.limit_px.parse()?)?,
+                original_qty_units: qty_units,
+                remaining_qty_units: qty_units,
+                reduce_only: false,
+                status: LiveOrderStatus::Resting,
+                nonce: None,
+                transport_id: None,
+                oid: Some(open.oid),
+                prepared_at_ms: open.timestamp,
+                last_update_ms: unix_ms(),
+                last_error: Some("recovered bot-prefixed venue order".to_owned()),
+            });
+        }
         self.state.update(|state| {
             if state.metadata_fingerprint != self.instrument.metadata_fingerprint {
                 state
                     .metadata_fingerprint
                     .clone_from(&self.instrument.metadata_fingerprint);
             }
-            for open in &open_orders {
-                let Some(cloid) = open.cloid.as_deref() else {
-                    continue;
-                };
-                if state.orders.contains_key(cloid) {
-                    continue;
+            for order in recovered {
+                if !state.orders.contains_key(&order.cloid) {
+                    state.orders.insert(order.cloid.clone(), order);
                 }
-                let side = match open.side.as_str() {
-                    "B" | "Buy" => Side::Buy,
-                    "A" | "Sell" => Side::Sell,
-                    value => bail!("unknown open-order side {value:?}"),
-                };
-                let qty_units = parse_fixed(&open.sz, self.instrument.sz_decimals)?;
-                state.orders.insert(
-                    cloid.to_owned(),
-                    PersistedLiveOrder {
-                        cloid: cloid.to_owned(),
-                        quote_seq: 0,
-                        side,
-                        px_units: self.instrument.price_to_units(open.limit_px.parse()?)?,
-                        original_qty_units: qty_units,
-                        remaining_qty_units: qty_units,
-                        reduce_only: false,
-                        status: LiveOrderStatus::Resting,
-                        nonce: None,
-                        transport_id: None,
-                        oid: Some(open.oid),
-                        prepared_at_ms: open.timestamp,
-                        last_update_ms: unix_ms(),
-                        last_error: Some("recovered bot-prefixed venue order".to_owned()),
-                    },
-                );
             }
             Ok(())
         })?;
@@ -883,11 +919,12 @@ impl HyperliquidLiveBackend {
         self.apply_fill_rows(&fills, false, false)?;
         self.reconcile_orders(&open_orders, &fills, &order_statuses)?;
         if self.account.inventory_units != 0
-            && self.state.load_required()?.inventory_unit.is_none()
+            && self.state.inventory_unit()?.is_none()
             && !self.allow_untracked_position
         {
             bail!("non-flat live account has no persisted inventory-unit identity");
         }
+        self.prune_durable_history(&fills)?;
         self.last_reconcile_ms = unix_ms();
         self.diagnostics.reconciliations += 1;
         self.diagnostics.actual_maker_fee_rate = self.account.maker_fee_rate;
@@ -896,15 +933,40 @@ impl HyperliquidLiveBackend {
             inventory_units: self.account.inventory_units,
             equity_usdc: self.account.account_value_usdc,
         });
-        let unresolved = self
-            .state
-            .load_required()?
-            .orders
-            .values()
-            .any(|order| order.status == LiveOrderStatus::UnknownOutcome);
+        let unresolved = self.state.with_state(|state| {
+            state
+                .orders
+                .values()
+                .any(|order| order.status == LiveOrderStatus::UnknownOutcome)
+        })?;
         if self.session.healthy() && !unresolved {
             self.diagnostics.operationally_healthy = true;
         }
+        Ok(())
+    }
+
+    /// Bound the durable collections after each authoritative reconcile.
+    ///
+    /// Without this the dedup-key sets and terminal orders grew for the life
+    /// of the store (surviving restarts), and every state clone and persist
+    /// paid for that history. The venue is authoritative for anything still
+    /// open once a reconcile has run, and the JSONL event log keeps forensics.
+    fn prune_durable_history(&mut self, fills: &[UserFill]) -> Result<()> {
+        // The replay horizon advances on exchange time only — the local clock
+        // must not decide which venue events are re-admittable. The newest
+        // fill time in the authoritative snapshot is a venue-time lower bound;
+        // with no fills there is nothing new to prune against.
+        if let Some(latest_fill_ms) = fills.iter().map(|fill| fill.time).max() {
+            let candidate = latest_fill_ms.saturating_sub(EVENT_RETENTION_MS);
+            self.state.advance_checkpoint_and_prune(candidate)?;
+        }
+        let terminal_grace_ms = self
+            .live
+            .action_expiry_ms
+            .saturating_add(self.live.reconcile_interval_ms)
+            .max(MINIMUM_TERMINAL_ORDER_RETENTION_MS);
+        self.state
+            .prune_terminal_orders(unix_ms().saturating_sub(terminal_grace_ms))?;
         Ok(())
     }
 
@@ -922,14 +984,14 @@ impl HyperliquidLiveBackend {
             .iter()
             .filter_map(|fill| fill.cloid.as_deref())
             .collect();
-        let candidates: Vec<(String, u64)> = self
-            .state
-            .load_required()?
-            .orders
-            .values()
-            .filter(|order| !order.status.terminal())
-            .map(|order| (order.cloid.clone(), order.prepared_at_ms))
-            .collect();
+        let candidates: Vec<(String, u64)> = self.state.with_state(|state| {
+            state
+                .orders
+                .values()
+                .filter(|order| !order.status.terminal())
+                .map(|order| (order.cloid.clone(), order.prepared_at_ms))
+                .collect()
+        })?;
         for (cloid, prepared_at_ms) in candidates {
             if let Some(open) = open_by_cloid.get(cloid.as_str()) {
                 let remaining = parse_fixed(&open.sz, self.instrument.sz_decimals)?;
@@ -1064,6 +1126,7 @@ impl HyperliquidLiveBackend {
         adjust_inventory: bool,
         reject_foreign: bool,
     ) -> Result<()> {
+        let mut applied_any = false;
         for fill in fills {
             if fill.coin != self.instrument.symbol {
                 continue;
@@ -1077,18 +1140,27 @@ impl HyperliquidLiveBackend {
                 self.diagnostics.operationally_healthy = false;
                 bail!("foreign fill appeared on dedicated account stream");
             }
-            let key = fill_key(fill);
-            let fresh = self.state.update(|state| {
-                if !state.processed_fill_keys.insert(key.clone()) {
-                    return Ok(false);
-                }
+            // All fallible work happens before the state mutation: `update` has
+            // no rollback, so a parse failure inside the closure would leave
+            // the fill marked processed while its P&L — the daily-loss switch's
+            // input — was silently dropped.
+            let px: f64 = fill.px.parse()?;
+            let size: f64 = fill.sz.parse()?;
+            let fee: f64 = fill.fee.parse()?;
+            let closed_pnl: f64 = fill.closed_pnl.parse()?;
+            let qty_units = parse_fixed(&fill.sz, self.instrument.sz_decimals)?;
+            let px_units = self.instrument.price_to_units(px)?;
+            let start_units = parse_fixed(&fill.start_position, self.instrument.sz_decimals)?;
+            let key = TimedKey(fill.time, fill_key(fill));
+            let admission = self.state.update(|state| {
+                // Checkpoint first: keys below it are pruned, and the time gate
+                // is what keeps those pruned fills from being re-admitted.
                 if fill.time < state.event_checkpoint_ms {
-                    return Ok(false);
+                    return Ok(FillAdmission::BeforeCheckpoint);
                 }
-                let px: f64 = fill.px.parse()?;
-                let size: f64 = fill.sz.parse()?;
-                let fee: f64 = fill.fee.parse()?;
-                let closed_pnl: f64 = fill.closed_pnl.parse()?;
+                if !state.processed_fill_keys.insert(key.clone()) {
+                    return Ok(FillAdmission::Duplicate);
+                }
                 let day = fill.time / 86_400_000;
                 if state.pnl_day != day {
                     state.pnl_day = day;
@@ -1112,31 +1184,35 @@ impl HyperliquidLiveBackend {
                         state.consecutive_losses = 0;
                     }
                 }
-                Ok(true)
+                Ok(FillAdmission::Fresh {
+                    cumulative_fees_usdc: state.cumulative_fees_usdc,
+                    cumulative_realized_pnl_usdc: state.cumulative_realized_pnl_usdc,
+                })
             })?;
-            if !fresh {
-                self.diagnostics.duplicate_fills += 1;
-                continue;
+            match admission {
+                FillAdmission::BeforeCheckpoint => continue,
+                FillAdmission::Duplicate => {
+                    self.diagnostics.duplicate_fills += 1;
+                    continue;
+                }
+                FillAdmission::Fresh {
+                    cumulative_fees_usdc,
+                    cumulative_realized_pnl_usdc,
+                } => {
+                    self.account.fees_usdc = cumulative_fees_usdc;
+                    self.account.realized_pnl_usdc = cumulative_realized_pnl_usdc;
+                }
             }
-            let qty_units = parse_fixed(&fill.sz, self.instrument.sz_decimals)?;
-            let px_units = self.instrument.price_to_units(fill.px.parse()?)?;
-            let fee: f64 = fill.fee.parse()?;
+            applied_any = true;
             let side = if fill.side == "B" {
                 Side::Buy
             } else {
                 Side::Sell
             };
-            if adjust_inventory {
-                let start_units = parse_fixed(&fill.start_position, self.instrument.sz_decimals)?;
-                if fill.time >= self.last_inventory_update_ms {
-                    self.account.inventory_units =
-                        inventory_after_fill(start_units, side, qty_units);
-                    self.last_inventory_update_ms = fill.time;
-                }
+            if adjust_inventory && fill.time >= self.last_inventory_update_ms {
+                self.account.inventory_units = inventory_after_fill(start_units, side, qty_units);
+                self.last_inventory_update_ms = fill.time;
             }
-            let accounting = self.state.load_required()?;
-            self.account.fees_usdc = accounting.cumulative_fees_usdc;
-            self.account.realized_pnl_usdc = accounting.cumulative_realized_pnl_usdc;
             self.diagnostics.fills += 1;
             if fill.crossed {
                 self.diagnostics.taker_fills += 1;
@@ -1169,9 +1245,11 @@ impl HyperliquidLiveBackend {
                 maker: !fill.crossed,
             }));
         }
-        let campaign = self.state.load_required()?.campaign;
-        self.diagnostics.campaign_turnover_usdc = campaign.turnover_usdc;
-        self.diagnostics.campaign_realized_pnl_usdc = campaign.realized_pnl_usdc;
+        if applied_any {
+            let campaign = self.state.campaign()?;
+            self.diagnostics.campaign_turnover_usdc = campaign.turnover_usdc;
+            self.diagnostics.campaign_realized_pnl_usdc = campaign.realized_pnl_usdc;
+        }
         Ok(())
     }
 
@@ -1180,20 +1258,24 @@ impl HyperliquidLiveBackend {
             if funding.coin != self.instrument.symbol {
                 continue;
             }
-            let key = funding_key(&funding);
-            let fresh = self.state.update(|state| {
-                if !state.processed_funding_keys.insert(key) {
-                    return Ok(false);
-                }
-                let usdc: f64 = funding.usdc.parse()?;
-                state.cumulative_funding_usdc += usdc;
-                Ok(true)
-            })?;
-            if !fresh {
-                continue;
-            }
+            // Parse before mutating: `update` has no rollback.
             let usdc: f64 = funding.usdc.parse()?;
-            self.account.funding_usdc = self.state.load_required()?.cumulative_funding_usdc;
+            let key = TimedKey(funding.time, funding_key(&funding));
+            let funding_total = self.state.update(|state| {
+                // Same checkpoint gate as fills: pruned funding keys must not
+                // be re-admittable through a replayed snapshot.
+                if funding.time < state.event_checkpoint_ms
+                    || !state.processed_funding_keys.insert(key.clone())
+                {
+                    return Ok(None);
+                }
+                state.cumulative_funding_usdc += usdc;
+                Ok(Some(state.cumulative_funding_usdc))
+            })?;
+            let Some(funding_total) = funding_total else {
+                continue;
+            };
+            self.account.funding_usdc = funding_total;
             self.diagnostics.funding_events += 1;
             self.pending_events.push(ExecutionEvent::Funding {
                 coin: funding.coin,
@@ -1326,17 +1408,22 @@ impl HyperliquidLiveBackend {
             bail!("venue address-action reserve is below 100 requests");
         }
         let mid = self.instrument.price_from_units(bbo.mid_units());
-        let persisted = self.state.load_required()?;
-        let working: Vec<&PersistedLiveOrder> = persisted
-            .orders
-            .values()
-            .filter(|order| !order.status.terminal())
-            .collect();
+        // Project the working set under the lock: this runs per quote
+        // replacement and must not clone the durable history.
+        let (working, campaign) = self.state.with_state(|state| {
+            let working: Vec<(Side, i64, i64)> = state
+                .orders
+                .values()
+                .filter(|order| !order.status.terminal())
+                .map(|order| (order.side, order.px_units, order.remaining_qty_units))
+                .collect();
+            (working, state.campaign)
+        })?;
         let existing_gross: f64 = working
             .iter()
-            .map(|order| {
-                self.instrument.price_from_units(order.px_units)
-                    * self.instrument.size_from_units(order.remaining_qty_units)
+            .map(|(_, px_units, remaining_qty_units)| {
+                self.instrument.price_from_units(*px_units)
+                    * self.instrument.size_from_units(*remaining_qty_units)
             })
             .sum();
         let new_gross: f64 = requests
@@ -1367,10 +1454,10 @@ impl HyperliquidLiveBackend {
         }
         let mut buy_units = self.account.inventory_units;
         let mut sell_units = self.account.inventory_units;
-        for order in working {
-            match order.side {
-                Side::Buy => buy_units = buy_units.saturating_add(order.remaining_qty_units),
-                Side::Sell => sell_units = sell_units.saturating_sub(order.remaining_qty_units),
+        for (side, _, remaining_qty_units) in working {
+            match side {
+                Side::Buy => buy_units = buy_units.saturating_add(remaining_qty_units),
+                Side::Sell => sell_units = sell_units.saturating_sub(remaining_qty_units),
             }
         }
         for request in requests {
@@ -1390,7 +1477,6 @@ impl HyperliquidLiveBackend {
             if directional > self.live.acceptance_max_directional_notional_usdc {
                 bail!("acceptance directional exposure exceeds 12-USDC hard cap");
             }
-            let campaign = persisted.campaign;
             if campaign.turnover_usdc >= self.live.acceptance_max_turnover_usdc - 12.0
                 || campaign.realized_pnl_usdc
                     <= -(self.live.acceptance_max_realized_loss_usdc - 0.1)
@@ -1419,13 +1505,15 @@ impl HyperliquidLiveBackend {
     }
 
     fn active_orders_by_side(&self) -> Result<BTreeMap<Side, Vec<PersistedLiveOrder>>> {
-        let mut by_side = BTreeMap::<Side, Vec<PersistedLiveOrder>>::new();
-        for order in self.state.load_required()?.orders.into_values() {
-            if !order.status.terminal() {
-                by_side.entry(order.side).or_default().push(order);
+        self.state.with_state(|state| {
+            let mut by_side = BTreeMap::<Side, Vec<PersistedLiveOrder>>::new();
+            for order in state.orders.values() {
+                if !order.status.terminal() {
+                    by_side.entry(order.side).or_default().push(order.clone());
+                }
             }
-        }
-        Ok(by_side)
+            by_side
+        })
     }
 
     async fn cancel_cloids_resilient(&mut self, cloids: Vec<String>) -> Result<ActionOutcome> {
@@ -1506,7 +1594,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             return Ok(());
         }
         self.deferred_desired = None;
-        let existing = self.active_orders_by_side()?;
+        let mut existing = self.active_orders_by_side()?;
         let mut cancel = Vec::new();
         let mut place = Vec::new();
         for side in [Side::Buy, Side::Sell] {
@@ -1514,7 +1602,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 Side::Buy => desired.bid,
                 Side::Sell => desired.ask,
             };
-            let side_orders = existing.get(&side).cloned().unwrap_or_default();
+            let side_orders = existing.remove(&side).unwrap_or_default();
             let unchanged = target.is_some_and(|target| {
                 side_orders.iter().any(|order| {
                     order.px_units == target.px
@@ -1614,14 +1702,14 @@ impl ExecutionBackend for HyperliquidLiveBackend {
     }
 
     async fn shutdown(&mut self, _now_ms: u64) -> Result<()> {
-        let cloids: Vec<String> = self
-            .state
-            .load_required()?
-            .orders
-            .into_values()
-            .filter(|order| !order.status.terminal())
-            .map(|order| order.cloid)
-            .collect();
+        let cloids = self.state.with_state(|state| {
+            state
+                .orders
+                .values()
+                .filter(|order| !order.status.terminal())
+                .map(|order| order.cloid.clone())
+                .collect::<Vec<String>>()
+        })?;
         if !cloids.is_empty() {
             let canceled_actions = cloids.len() as u64;
             let outcome = self.cancel_cloids_resilient(cloids).await?;
@@ -1676,11 +1764,12 @@ async fn fetch_authoritative_snapshot(
     client: Arc<HyperliquidExchangeClient>,
     state: Arc<LiveStateStore>,
 ) -> Result<AuthoritativeSnapshot> {
-    let needs_historical_orders = state
-        .load_required()?
-        .orders
-        .values()
-        .any(|order| !order.status.terminal());
+    let needs_historical_orders = state.with_state(|state| {
+        state
+            .orders
+            .values()
+            .any(|order| !order.status.terminal())
+    })?;
     let (clearinghouse, open_orders, active_asset, fills) = tokio::try_join!(
         client.clearinghouse_state(),
         client.open_orders(),
@@ -1717,18 +1806,19 @@ async fn fetch_authoritative_snapshot(
             }
         }
     }
-    let unresolved: Vec<String> = state
-        .load_required()?
-        .orders
-        .values()
-        .filter(|order| {
-            !order.status.terminal()
-                && !open_cloids.contains(order.cloid.as_str())
-                && !fill_cloids.contains(order.cloid.as_str())
-                && !order_statuses.contains_key(&order.cloid)
-        })
-        .map(|order| order.cloid.clone())
-        .collect();
+    let unresolved: Vec<String> = state.with_state(|state| {
+        state
+            .orders
+            .values()
+            .filter(|order| {
+                !order.status.terminal()
+                    && !open_cloids.contains(order.cloid.as_str())
+                    && !fill_cloids.contains(order.cloid.as_str())
+                    && !order_statuses.contains_key(&order.cloid)
+            })
+            .map(|order| order.cloid.clone())
+            .collect()
+    })?;
     if unresolved.len() > 16 {
         bail!(
             "{} durable orders remain unresolved after historicalOrders; refusing REST fan-out",

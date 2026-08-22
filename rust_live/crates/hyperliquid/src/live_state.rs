@@ -13,11 +13,58 @@ use std::thread::{self, JoinHandle};
 const LEGACY_STATE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("live_state");
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("live_meta_v2");
 const ORDER_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("live_orders_v2");
-const FILL_TABLE: TableDefinition<&str, u8> = TableDefinition::new("live_fill_keys_v2");
-const FUNDING_TABLE: TableDefinition<&str, u8> = TableDefinition::new("live_funding_keys_v2");
+const LEGACY_FILL_TABLE_V2: TableDefinition<&str, u8> = TableDefinition::new("live_fill_keys_v2");
+const LEGACY_FUNDING_TABLE_V2: TableDefinition<&str, u8> =
+    TableDefinition::new("live_funding_keys_v2");
+const FILL_TABLE: TableDefinition<&str, u8> = TableDefinition::new("live_fill_keys_v3");
+const FUNDING_TABLE: TableDefinition<&str, u8> = TableDefinition::new("live_funding_keys_v3");
 const STATE_KEY: &str = "state";
 const NONCE_RESERVATION_SIZE: u64 = 1_024;
-const STATE_SCHEMA_VERSION: u32 = 2;
+/// Prefetch the next nonce range once this many nonces remain in the current
+/// one, so the fsync that makes a range durable happens off the dispatch path.
+const NONCE_PREFETCH_HEADROOM: u64 = NONCE_RESERVATION_SIZE / 4;
+const STATE_SCHEMA_VERSION: u32 = 3;
+
+/// A dedup key stamped with the exchange time of the event it deduplicates.
+///
+/// Ordering by time first makes retention pruning an `O(log n)` range split
+/// instead of a scan. Legacy (schema ≤ 2) keys carried no time and deserialize
+/// with time `0`, so they fall to the first checkpoint advance.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct TimedKey(pub u64, pub String);
+
+impl<'de> Deserialize<'de> for TimedKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Compat {
+            Timed(u64, String),
+            Legacy(String),
+        }
+        Ok(match Compat::deserialize(deserializer)? {
+            Compat::Timed(time, key) => Self(time, key),
+            Compat::Legacy(key) => Self(0, key),
+        })
+    }
+}
+
+impl TimedKey {
+    /// Fixed-width time prefix keeps redb's lexicographic key order equal to
+    /// the `(time, key)` order used in memory.
+    fn encode(&self) -> String {
+        format!("{:020}|{}", self.0, self.1)
+    }
+
+    fn decode(raw: &str) -> Self {
+        match raw.split_once('|') {
+            Some((time, key)) => Self(time.parse().unwrap_or(0), key.to_owned()),
+            None => Self(0, raw.to_owned()),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,7 +127,7 @@ impl LiveOrderStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersistedLiveOrder {
     pub cloid: String,
     pub quote_seq: u64,
@@ -98,7 +145,7 @@ pub struct PersistedLiveOrder {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct AcceptanceBudgetState {
     pub started_at_ms: u64,
     pub starting_equity_usdc: f64,
@@ -120,8 +167,8 @@ pub struct PersistedLiveState {
     pub next_cloid_sequence: u64,
     pub inventory_unit: Option<i64>,
     pub orders: BTreeMap<String, PersistedLiveOrder>,
-    pub processed_fill_keys: BTreeSet<String>,
-    pub processed_funding_keys: BTreeSet<String>,
+    pub processed_fill_keys: BTreeSet<TimedKey>,
+    pub processed_funding_keys: BTreeSet<TimedKey>,
     #[serde(default)]
     pub cumulative_realized_pnl_usdc: f64,
     #[serde(default)]
@@ -229,7 +276,7 @@ impl LiveStateStore {
             .with_context(|| format!("cannot open live state {}", path.display()))?;
         let current = load_database(&database)?;
         let mut current = if let Some(mut current) = current {
-            if !matches!(current.schema_version, 1 | STATE_SCHEMA_VERSION)
+            if !matches!(current.schema_version, 1 | 2 | STATE_SCHEMA_VERSION)
                 || current.symbol != symbol
                 || !current.account.eq_ignore_ascii_case(account)
                 || !current.agent.eq_ignore_ascii_case(agent)
@@ -262,6 +309,7 @@ impl LiveStateStore {
         current.schema_version = STATE_SCHEMA_VERSION;
         persist_snapshot(&database, &current, Durability::Immediate)?;
 
+        let initial_image = current.clone();
         let state = Arc::new(Mutex::new(current));
         let persistence_error = Arc::new(Mutex::new(None));
         let (persistence_tx, persistence_rx) = mpsc::sync_channel(1);
@@ -270,7 +318,13 @@ impl LiveStateStore {
         let persistence_thread = thread::Builder::new()
             .name("live-state-writer".to_owned())
             .spawn(move || {
-                run_persistence_writer(&database, &writer_state, &writer_error, &persistence_rx);
+                run_persistence_writer(
+                    &database,
+                    &writer_state,
+                    &writer_error,
+                    &persistence_rx,
+                    initial_image,
+                );
             })?;
         Ok(Self {
             _process_lock: process_lock,
@@ -286,6 +340,12 @@ impl LiveStateStore {
         &self.path
     }
 
+    /// Deep-clone the whole persisted state, growing collections included.
+    ///
+    /// Reserve this for genuinely whole-state consumers (reconciliation,
+    /// acceptance reporting, tests). Anything on a per-event or per-order path
+    /// must use [`Self::with_state`] or a scalar accessor instead — this clone
+    /// is what made per-event cost grow with session length.
     pub fn load_required(&self) -> Result<PersistedLiveState> {
         self.check_persistence_error()?;
         self.state
@@ -294,6 +354,33 @@ impl LiveStateStore {
             .map(|state| state.clone())
     }
 
+    /// Read under the lock and project out only what is needed, cloning
+    /// nothing by default. The closure must be short and must never block or
+    /// await: it holds the same mutex the persistence writer snapshots under.
+    pub fn with_state<T>(&self, read: impl FnOnce(&PersistedLiveState) -> T) -> Result<T> {
+        self.check_persistence_error()?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("live-state memory lock poisoned"))?;
+        Ok(read(&state))
+    }
+
+    pub fn inventory_unit(&self) -> Result<Option<i64>> {
+        self.with_state(|state| state.inventory_unit)
+    }
+
+    pub fn campaign(&self) -> Result<AcceptanceBudgetState> {
+        self.with_state(|state| state.campaign)
+    }
+
+    /// Apply a mutation and wake the persistence writer.
+    ///
+    /// Contract: the closure must not fail after mutating. There is no
+    /// rollback — an `Err` returned mid-mutation leaves the partial mutation
+    /// in place (and it will still be persisted by the next successful wake).
+    /// Do all fallible work (parsing, validation) *before* calling `update`,
+    /// and keep the closure itself infallible or fail-first.
     pub fn update<T>(
         &self,
         update: impl FnOnce(&mut PersistedLiveState) -> Result<T>,
@@ -389,6 +476,57 @@ impl LiveStateStore {
         self.flush()?;
         Ok(range)
     }
+
+    /// Durably advance the fill/funding replay horizon, then prune dedup keys
+    /// strictly below it. Returns the number of keys removed.
+    ///
+    /// The checkpoint only ever moves forward — moving it back would re-admit
+    /// fills that predate the session. Ordering is load-bearing: the advanced
+    /// checkpoint is fsynced *before* any key is removed, because pruning
+    /// first would let a crash re-process (and double-count) old fills whose
+    /// keys are gone while the old checkpoint still admits them.
+    pub fn advance_checkpoint_and_prune(&self, candidate_ms: u64) -> Result<usize> {
+        let advanced = self.update(|state| {
+            if candidate_ms > state.event_checkpoint_ms {
+                state.event_checkpoint_ms = candidate_ms;
+                return Ok(true);
+            }
+            Ok(false)
+        })?;
+        if advanced {
+            self.flush()?;
+        }
+        self.update(|state| {
+            let cutoff = state.event_checkpoint_ms;
+            let mut removed = 0_usize;
+            for keys in [
+                &mut state.processed_fill_keys,
+                &mut state.processed_funding_keys,
+            ] {
+                let before = keys.len();
+                // Keys at exactly the cutoff stay: events at `checkpoint` are
+                // still admitted by the `time < checkpoint` gates.
+                *keys = keys.split_off(&TimedKey(cutoff, String::new()));
+                removed += before - keys.len();
+            }
+            Ok(removed)
+        })
+    }
+
+    /// Drop terminal orders whose last update is older than `older_than_ms`.
+    ///
+    /// After an authoritative reconcile the venue is the source of truth for
+    /// anything still open, and the JSONL event log keeps full forensics, so
+    /// aged terminal entries only cost clone and persist time.
+    pub fn prune_terminal_orders(&self, older_than_ms: u64) -> Result<usize> {
+        self.update(|state| {
+            let before = state.orders.len();
+            state
+                .orders
+                .retain(|_, order| !order.status.terminal() || order.last_update_ms >= older_than_ms);
+            Ok(before - state.orders.len())
+        })
+    }
 }
 
 impl Drop for LiveStateStore {
@@ -418,13 +556,35 @@ fn load_database(database: &Database) -> Result<Option<PersistedLiveState>> {
             if let Ok(fills) = read.open_table(FILL_TABLE) {
                 for entry in fills.iter()? {
                     let (key, _) = entry?;
-                    state.processed_fill_keys.insert(key.value().to_owned());
+                    state
+                        .processed_fill_keys
+                        .insert(TimedKey::decode(key.value()));
                 }
             }
             if let Ok(funding) = read.open_table(FUNDING_TABLE) {
                 for entry in funding.iter()? {
                     let (key, _) = entry?;
-                    state.processed_funding_keys.insert(key.value().to_owned());
+                    state
+                        .processed_funding_keys
+                        .insert(TimedKey::decode(key.value()));
+                }
+            }
+            // Schema-2 stores carried untimed keys in the v2 tables; adopt them
+            // at time 0 so they fall to the first checkpoint advance.
+            if let Ok(fills) = read.open_table(LEGACY_FILL_TABLE_V2) {
+                for entry in fills.iter()? {
+                    let (key, _) = entry?;
+                    state
+                        .processed_fill_keys
+                        .insert(TimedKey(0, key.value().to_owned()));
+                }
+            }
+            if let Ok(funding) = read.open_table(LEGACY_FUNDING_TABLE_V2) {
+                for entry in funding.iter()? {
+                    let (key, _) = entry?;
+                    state
+                        .processed_funding_keys
+                        .insert(TimedKey(0, key.value().to_owned()));
                 }
             }
             return Ok(Some(state));
@@ -442,17 +602,24 @@ fn load_database(database: &Database) -> Result<Option<PersistedLiveState>> {
     Ok(Some(serde_json::from_slice(value.value())?))
 }
 
-fn persist_snapshot(
-    database: &Database,
-    state: &PersistedLiveState,
-    durability: Durability,
-) -> Result<()> {
+fn metadata_blob(state: &PersistedLiveState) -> Result<Vec<u8>> {
     let mut metadata = state.clone();
     metadata.schema_version = STATE_SCHEMA_VERSION;
     metadata.orders.clear();
     metadata.processed_fill_keys.clear();
     metadata.processed_funding_keys.clear();
-    let metadata_bytes = serde_json::to_vec(&metadata)?;
+    Ok(serde_json::to_vec(&metadata)?)
+}
+
+/// Full rewrite of every table. Used once at `open()` as the consistency point
+/// (it also migrates away legacy tables); steady-state persists go through
+/// [`persist_delta`].
+fn persist_snapshot(
+    database: &Database,
+    state: &PersistedLiveState,
+    durability: Durability,
+) -> Result<()> {
+    let metadata_bytes = metadata_blob(state)?;
     let order_bytes = state
         .orders
         .iter()
@@ -476,18 +643,84 @@ fn persist_snapshot(
         let mut table = write.open_table(FILL_TABLE)?;
         table.retain(|_, _| false)?;
         for key in &state.processed_fill_keys {
-            table.insert(key.as_str(), 1)?;
+            table.insert(key.encode().as_str(), 1)?;
         }
     }
     {
         let mut table = write.open_table(FUNDING_TABLE)?;
         table.retain(|_, _| false)?;
         for key in &state.processed_funding_keys {
-            table.insert(key.as_str(), 1)?;
+            table.insert(key.encode().as_str(), 1)?;
         }
     }
     if let Ok(mut legacy) = write.open_table(LEGACY_STATE_TABLE) {
         legacy.remove(STATE_KEY)?;
+    }
+    // Schema-2 key tables were adopted into the v3 tables at load; drop them so
+    // they are not re-adopted (and re-timestamped at 0) on the next open.
+    for stale in [LEGACY_FILL_TABLE_V2, LEGACY_FUNDING_TABLE_V2] {
+        match write.delete_table(stale) {
+            Ok(_) | Err(redb::TableError::TableDoesNotExist(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    write.commit()?;
+    Ok(())
+}
+
+/// Persist only what changed since the previous persisted image.
+///
+/// The old writer rewrote every table (clear + full re-insert) and
+/// re-serialized every order on every wake, which made each persist O(session
+/// history). The metadata blob is small and written unconditionally; orders and
+/// dedup keys are diffed. Each commit is atomic, and a `Durability::Immediate`
+/// commit also makes all earlier `None` commits durable, so the fsync contract
+/// of `flush()` is unchanged.
+fn persist_delta(
+    database: &Database,
+    previous: &PersistedLiveState,
+    current: &PersistedLiveState,
+    durability: Durability,
+) -> Result<()> {
+    let metadata_bytes = metadata_blob(current)?;
+    let mut write = database.begin_write()?;
+    write.set_durability(durability)?;
+    {
+        let mut table = write.open_table(META_TABLE)?;
+        table.insert(STATE_KEY, metadata_bytes.as_slice())?;
+    }
+    {
+        let mut table = write.open_table(ORDER_TABLE)?;
+        for cloid in previous.orders.keys() {
+            if !current.orders.contains_key(cloid) {
+                table.remove(cloid.as_str())?;
+            }
+        }
+        for (cloid, order) in &current.orders {
+            if previous.orders.get(cloid) != Some(order) {
+                table.insert(cloid.as_str(), serde_json::to_vec(order)?.as_slice())?;
+            }
+        }
+    }
+    for (previous_keys, current_keys, definition) in [
+        (
+            &previous.processed_fill_keys,
+            &current.processed_fill_keys,
+            FILL_TABLE,
+        ),
+        (
+            &previous.processed_funding_keys,
+            &current.processed_funding_keys,
+            FUNDING_TABLE,
+        ),
+    ] {
+        let mut table = write.open_table(definition)?;
+        for removed in previous_keys.difference(current_keys) {
+            table.remove(removed.encode().as_str())?;
+        }
+        for added in current_keys.difference(previous_keys) {
+            table.insert(added.encode().as_str(), 1)?;
+        }
     }
     write.commit()?;
     Ok(())
@@ -498,6 +731,9 @@ fn run_persistence_writer(
     state: &Arc<Mutex<PersistedLiveState>>,
     persistence_error: &Arc<Mutex<Option<String>>>,
     receiver: &mpsc::Receiver<PersistCommand>,
+    // The image `open()` wrote with the initial full snapshot; deltas start
+    // from here.
+    mut last_persisted: PersistedLiveState,
 ) {
     while let Ok(command) = receiver.recv() {
         let durability = match &command {
@@ -511,7 +747,10 @@ fn run_persistence_writer(
         };
         let snapshot = state_guard.clone();
         drop(state_guard);
-        let result = persist_snapshot(database, &snapshot, durability);
+        let result = persist_delta(database, &last_persisted, &snapshot, durability);
+        if result.is_ok() {
+            last_persisted = snapshot;
+        }
         if let PersistCommand::Flush(reply) = command {
             let acknowledgement = match &result {
                 Ok(()) => Ok(()),
@@ -539,6 +778,7 @@ pub struct DurableNonceManager {
     store: Arc<LiveStateStore>,
     next: u64,
     reserved_through: u64,
+    prefetch: Option<mpsc::Receiver<Result<(u64, u64)>>>,
 }
 
 impl DurableNonceManager {
@@ -548,12 +788,36 @@ impl DurableNonceManager {
             store,
             next,
             reserved_through,
+            prefetch: None,
         })
     }
 
+    /// Hand out the next durable nonce.
+    ///
+    /// Reserving a range requires an fsync before any nonce in it is used, and
+    /// this runs on the session actor's dispatch path — so the next range is
+    /// reserved on a background thread while plenty of the current range
+    /// remains. Only if a burst outruns the prefetch does this block on the
+    /// in-flight reservation; the durability invariant is never relaxed.
     pub fn next_nonce(&mut self) -> Result<u64> {
+        let remaining = self.reserved_through.saturating_sub(self.next);
+        if remaining <= NONCE_PREFETCH_HEADROOM && self.prefetch.is_none() {
+            let (result_tx, result_rx) = mpsc::channel();
+            let store = self.store.clone();
+            thread::Builder::new()
+                .name("nonce-range-prefetch".to_owned())
+                .spawn(move || {
+                    let _ = result_tx.send(store.reserve_nonce_range());
+                })?;
+            self.prefetch = Some(result_rx);
+        }
         if self.next > self.reserved_through {
-            (self.next, self.reserved_through) = self.store.reserve_nonce_range()?;
+            (self.next, self.reserved_through) = match self.prefetch.take() {
+                Some(pending) => pending
+                    .recv()
+                    .map_err(|_| anyhow::anyhow!("nonce prefetch thread dropped its result"))??,
+                None => self.store.reserve_nonce_range()?,
+            };
         }
         let nonce = self.next;
         self.next = self.next.saturating_add(1);
@@ -576,6 +840,131 @@ mod tests {
             false,
         )
         .unwrap()
+    }
+
+    fn order_template(cloid: &str, status: LiveOrderStatus, last_update_ms: u64) -> PersistedLiveOrder {
+        PersistedLiveOrder {
+            cloid: cloid.to_owned(),
+            quote_seq: 1,
+            side: Side::Buy,
+            px_units: 100,
+            original_qty_units: 10,
+            remaining_qty_units: if status.terminal() { 0 } else { 10 },
+            reduce_only: false,
+            status,
+            nonce: None,
+            transport_id: None,
+            oid: None,
+            prepared_at_ms: 1,
+            last_update_ms,
+            last_error: None,
+        }
+    }
+
+    /// The replay horizon only moves forward, and keys strictly below it are
+    /// pruned while keys at or above it survive — including across a restart,
+    /// which exercises the delta persistence of removals.
+    #[test]
+    fn checkpoint_advance_prunes_dedup_keys_and_survives_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let store = open(&directory);
+            let base = store.load_required().unwrap().event_checkpoint_ms;
+            store
+                .update(|state| {
+                    for offset in 0..10_u64 {
+                        state
+                            .processed_fill_keys
+                            .insert(TimedKey(base + offset, format!("fill-{offset}")));
+                        state
+                            .processed_funding_keys
+                            .insert(TimedKey(base + offset, format!("funding-{offset}")));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let removed = store.advance_checkpoint_and_prune(base + 5).unwrap();
+            assert_eq!(removed, 10, "five fills and five fundings fall below the horizon");
+            // A lower candidate must never move the checkpoint back.
+            let removed = store.advance_checkpoint_and_prune(base).unwrap();
+            assert_eq!(removed, 0);
+            let state = store.load_required().unwrap();
+            assert_eq!(state.event_checkpoint_ms, base + 5);
+            assert_eq!(state.processed_fill_keys.len(), 5);
+            assert!(state
+                .processed_fill_keys
+                .contains(&TimedKey(base + 5, "fill-5".to_owned())));
+        }
+        let reopened = open(&directory);
+        let state = reopened.load_required().unwrap();
+        assert_eq!(state.processed_fill_keys.len(), 5);
+        assert_eq!(state.processed_funding_keys.len(), 5);
+        assert!(!state
+            .processed_fill_keys
+            .contains(&TimedKey(state.event_checkpoint_ms - 1, "fill-4".to_owned())));
+    }
+
+    #[test]
+    fn terminal_orders_prune_by_age_but_working_orders_never_do() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = open(&directory);
+        store
+            .update(|state| {
+                state
+                    .orders
+                    .insert("old-filled".to_owned(), order_template("old-filled", LiveOrderStatus::Filled, 1_000));
+                state
+                    .orders
+                    .insert("new-filled".to_owned(), order_template("new-filled", LiveOrderStatus::Filled, 9_000));
+                state
+                    .orders
+                    .insert("old-resting".to_owned(), order_template("old-resting", LiveOrderStatus::Resting, 1_000));
+                Ok(())
+            })
+            .unwrap();
+        let removed = store.prune_terminal_orders(5_000).unwrap();
+        assert_eq!(removed, 1);
+        let orders = store.load_required().unwrap().orders;
+        assert!(!orders.contains_key("old-filled"));
+        assert!(orders.contains_key("new-filled"));
+        assert!(
+            orders.contains_key("old-resting"),
+            "a non-terminal order is never pruned, whatever its age"
+        );
+    }
+
+    /// The dedup-key sets and order map must not grow with session history
+    /// once events pass beyond the retention horizon. Growth here was
+    /// unbounded before schema 3: nothing ever advanced the checkpoint, so
+    /// nothing could ever be pruned.
+    #[test]
+    fn durable_collections_stay_bounded_across_simulated_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = open(&directory);
+        let base = store.load_required().unwrap().event_checkpoint_ms;
+        let retention = 1_000_u64;
+        for batch in 0..20_u64 {
+            let now = base + batch * 500;
+            store
+                .update(|state| {
+                    for row in 0..50_u64 {
+                        state
+                            .processed_fill_keys
+                            .insert(TimedKey(now, format!("fill-{batch}-{row}")));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            store
+                .advance_checkpoint_and_prune(now.saturating_sub(retention))
+                .unwrap();
+        }
+        let state = store.load_required().unwrap();
+        assert!(
+            state.processed_fill_keys.len() <= 3 * 50,
+            "bounded by retention window, found {}",
+            state.processed_fill_keys.len()
+        );
     }
 
     #[test]
@@ -694,7 +1083,6 @@ mod tests {
             "meta",
         );
         legacy.schema_version = 1;
-        legacy.processed_fill_keys.insert("fill-1".to_owned());
         legacy.orders.insert(
             "0x00000000000000000000000000000001".to_owned(),
             PersistedLiveOrder {
@@ -720,7 +1108,11 @@ mod tests {
             write.set_durability(Durability::Immediate).unwrap();
             {
                 let mut table = write.open_table(LEGACY_STATE_TABLE).unwrap();
-                let bytes = serde_json::to_vec(&legacy).unwrap();
+                // Schema-1 blobs carried untimed dedup keys as plain strings;
+                // patch the JSON so the wire shape matches that era exactly.
+                let mut blob = serde_json::to_value(&legacy).unwrap();
+                blob["processed_fill_keys"] = serde_json::json!(["fill-1"]);
+                let bytes = serde_json::to_vec(&blob).unwrap();
                 table.insert(STATE_KEY, bytes.as_slice()).unwrap();
             }
             write.commit().unwrap();
@@ -730,7 +1122,9 @@ mod tests {
         let migrated = store.load_required().unwrap();
         assert_eq!(migrated.schema_version, STATE_SCHEMA_VERSION);
         assert_eq!(migrated.orders.len(), 1);
-        assert!(migrated.processed_fill_keys.contains("fill-1"));
+        assert!(migrated
+            .processed_fill_keys
+            .contains(&TimedKey(0, "fill-1".to_owned())));
         store.flush().unwrap();
         drop(store);
 
