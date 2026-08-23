@@ -1,3 +1,13 @@
+# CASHCAT dry-run base tuned for realism, for the dry-run grid.
+#
+# Differences from cashcat.toml are all MEASURED, not guessed -- each is
+# annotated with where the number came from. Everything here is held identical
+# across every grid variant so the comparison isolates the strategy levers.
+#
+# The venue action budget is deliberately NOT modelled: it is a lifetime
+# account allowance (docs/live_canary_20260823.md) and simulating it would
+# conflate a strategy question with an account-history one.
+
 [instrument]
 profile = "cashcat"
 symbol = "CASHCAT"
@@ -37,9 +47,9 @@ queue_capacity = 16384
 
 [storage]
 data_dir = "../../scripts/HL_data"
-state_path = "../run/cashcat-dry-state.json"
-calibration_path = "../run/cashcat-calibration.json"
-latency_path = "../run/cashcat-latency.json"
+state_path = "../run/cashcat-grid-dry-state.json"
+calibration_path = "../run/cashcat-grid-calibration.json"
+latency_path = "../run/cashcat-grid-latency.json"
 report_dir = "../reports"
 writer_lock_path = "../run/cashcat-collector.lock"
 flush_interval_seconds = 10
@@ -49,7 +59,7 @@ retention_minutes = 180
 # takes the writer lock, so a live session cannot disturb the reference
 # collector (the hl-cashcat-collector Docker container). See
 # docs/DATA_COLLECTION.md.
-write_parquet = true
+write_parquet = false
 
 [calibration]
 window_minutes = 120
@@ -90,7 +100,7 @@ episode_reset_on_flat = true
 episode_min_elapsed_fraction = 0.25
 
 [quoting]
-available_capital_usdc = 1000.0
+available_capital_usdc = 297.88
 target_capital_utilisation = 0.74
 leverage = 2.0
 maker_fee_rate = 0.00015
@@ -117,13 +127,18 @@ max_consecutive_losses = 25
 max_market_spread_bps = 100.0
 
 [dry_run]
-starting_equity_usdc = 1000.0
-decision_latency_ms = 250
-acknowledgement_latency_ms = 250
-cancel_latency_ms = 250
+# The real account value, not the 1000.0 placeholder -- order sizing and
+# the risk limits both scale off it.
+starting_equity_usdc = 297.88
+# 150/150: measured public_ws_ping_rtt p50 = 281 ms on this host, split
+# across the round trip (decision out, acknowledgement back). p95 is
+# 661 ms, so this is the typical machine and not the bad-patch one.
+decision_latency_ms = 150
+acknowledgement_latency_ms = 150
+cancel_latency_ms = 150
 queue_decay_per_second = 0.05
-# Measured from the venue (metaAndAssetCtxs, 2026-08-23). It is not zero for
-# this instrument, and 0.0 silently omitted a real cost from every dry run.
+# Measured from the venue (metaAndAssetCtxs, 2026-08-23). CASHCAT is not
+# a zero-funding instrument; 0.0 silently omitted a real cost.
 funding_rate_per_hour = 0.0000125
 markout_horizons_ms = [100, 1000, 5000, 30000]
 

@@ -93,6 +93,12 @@ session refuses to inherit is exactly the one flatten exists to clear. The
 stored fingerprint is adopted only once the store is flat, so an interrupted
 flatten still blocks the next quoting session.
 
+`dry-run-grid` runs several parameter sets against **one** shared market
+feed and ranks them by net P&L. One WebSocket regardless of variant count,
+because the venue allows ten per IP and that budget is shared with the
+collectors and any live session; it never records Parquet and never touches
+credentials. See [`../docs/DRY_RUN_GRID.md`](../docs/DRY_RUN_GRID.md).
+
 Market data is **not** produced by this binary. The reference recorder is the
 `hl-cashcat-collector` Docker container, and `storage.data_dir`
 (`scripts/HL_data`) is an NTFS junction onto the directory it writes. The

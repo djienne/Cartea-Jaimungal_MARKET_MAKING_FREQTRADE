@@ -49,6 +49,8 @@ rustls = { version = "=0.23.43", default-features = false, features = ["ring", "
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["raw_value"] }
 tempfile = "=3.27.0"
+# Already in the lockfile via mm-config; the grid spec is TOML like the configs.
+toml = "=0.8.23"
 tokio = { version = "=1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt", "json"] }

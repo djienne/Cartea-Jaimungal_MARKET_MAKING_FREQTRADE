@@ -44,6 +44,8 @@ use tracing_subscriber::EnvFilter;
 #[cfg(feature = "live-acceptance")]
 use hyperliquid_connector::acceptance as live_acceptance;
 
+mod grid;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "mm-live",
@@ -80,6 +82,22 @@ enum Command {
         no_write_parquet: bool,
         #[arg(long)]
         report: Option<PathBuf>,
+    },
+    /// Run several parameter sets against one shared public feed and rank them.
+    ///
+    /// One WebSocket regardless of how many variants: the venue allows ten per
+    /// IP and that budget is shared with the data collectors and any live
+    /// session. Never writes Parquet and never touches credentials.
+    DryRunGrid {
+        /// Grid spec listing the variants and their sparse overrides.
+        #[arg(long)]
+        grid: PathBuf,
+        /// Optional bounded runtime. Zero runs until Ctrl-C.
+        #[arg(long, default_value_t = 0)]
+        duration_seconds: u64,
+        /// Directory for per-variant reports and the leaderboard.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
     },
     /// Exercise credential parsing, account REST reads, and the account WebSocket without actions.
     ConnectorCheck {
@@ -280,6 +298,20 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
                 duration_seconds,
                 no_write_parquet,
                 report.as_deref(),
+            )
+            .await
+        }
+        Command::DryRunGrid {
+            grid,
+            duration_seconds,
+            out_dir,
+        } => {
+            run_dry_run_grid(
+                &config,
+                instrument,
+                &grid,
+                duration_seconds,
+                out_dir.as_deref(),
             )
             .await
         }
@@ -1636,6 +1668,401 @@ fn apply_live_execution_events(
         signal.notify(HOT_SIGNAL_EXECUTION);
     }
     Ok(())
+}
+
+/// One parameter set inside the grid: its own configuration, model surface,
+/// simulator and log. Nothing here is shared with a peer except the market feed.
+struct GridVariant {
+    name: String,
+    description: String,
+    config: AppConfig,
+    policy: CarteaJaimungalPolicy,
+    surface: HjbSurface,
+    inventory_unit: i64,
+    backend: DryRunBackend,
+    logger: JsonlEventLogger,
+    report_path: PathBuf,
+    episode_start_ns: u64,
+    quote_seq: u64,
+    fills: u64,
+    peak_equity_usdc: f64,
+    max_drawdown_usdc: f64,
+}
+
+impl GridVariant {
+    /// Price this variant against the current book and hand the result to its
+    /// own simulator. This is the same `policy.compute` the hot path calls; the
+    /// grid deliberately does not spawn hot-path threads (see `src/grid.rs`).
+    async fn step(
+        &mut self,
+        bbo: Bbo,
+        now_ns: u64,
+        simulated_now_ms: u64,
+        reason: QuoteReason,
+    ) -> Result<()> {
+        let account = self.backend.account_state();
+        let q_exact = if self.inventory_unit == 0 {
+            0.0
+        } else {
+            account.inventory_units as f64 / self.inventory_unit as f64
+        };
+        let elapsed = now_ns.saturating_sub(self.episode_start_ns) as f64 / 1_000_000_000.0;
+        let horizon_seconds = self.config.model.horizon_seconds;
+        let minimum_elapsed = horizon_seconds * self.config.model.episode_min_elapsed_fraction;
+        let episode_rolled = elapsed >= horizon_seconds
+            || (self.config.model.episode_reset_on_flat
+                && q_exact.round() == 0.0
+                && elapsed >= minimum_elapsed);
+        let elapsed = if episode_rolled {
+            self.episode_start_ns = now_ns;
+            0.0
+        } else {
+            elapsed
+        };
+        let tau = (horizon_seconds - elapsed).max(0.0);
+        let reason = if episode_rolled {
+            QuoteReason::Episode
+        } else {
+            reason
+        };
+        let risk_state = RiskState {
+            equity_usdc: account.equity_usdc,
+            daily_realized_pnl_usdc: self.backend.daily_realized_pnl_usdc(),
+            consecutive_losses: account.consecutive_losses,
+        };
+        self.quote_seq = self.quote_seq.wrapping_add(1);
+        let quotes = self
+            .policy
+            .compute(
+                &self.surface,
+                bbo,
+                account.inventory_units,
+                self.inventory_unit,
+                tau,
+                self.quote_seq,
+                now_ns,
+                reason,
+                risk_state,
+            )
+            .quotes;
+        self.backend.reconcile(quotes, simulated_now_ms).await?;
+        self.logger.log("quote_decision", None, &quotes)?;
+        Ok(())
+    }
+
+    fn observe_equity(&mut self) {
+        let equity = self.backend.account_state().equity_usdc;
+        if equity > self.peak_equity_usdc {
+            self.peak_equity_usdc = equity;
+        }
+        let drawdown = self.peak_equity_usdc - equity;
+        if drawdown > self.max_drawdown_usdc {
+            self.max_drawdown_usdc = drawdown;
+        }
+    }
+
+    fn leaderboard_row(&self) -> grid::LeaderboardRow {
+        let account = self.backend.account_state();
+        grid::LeaderboardRow {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            net_pnl_usdc: account.equity_usdc - self.config.dry_run.starting_equity_usdc,
+            equity_usdc: account.equity_usdc,
+            realized_pnl_usdc: account.realized_pnl_usdc,
+            mark_to_market_pnl_usdc: account.mark_to_market_pnl_usdc,
+            fees_usdc: account.fees_usdc,
+            funding_usdc: account.funding_usdc,
+            inventory_units: account.inventory_units,
+            fills: self.fills,
+            working_orders: self.backend.working_order_count(),
+            max_drawdown_usdc: self.max_drawdown_usdc,
+            scientifically_valid: self.backend.scientifically_valid(),
+        }
+    }
+}
+
+/// Run every variant in the grid against one shared public feed.
+///
+/// Deliberate differences from `run_public_dry_run`:
+///
+/// - **One WebSocket, N simulators.** The venue permits ten simultaneous
+///   connections per IP and that budget is shared with the collector containers
+///   and with any live session, so N processes is not an option.
+/// - **No hot-path threads.** Each `HotPathSignal` can register exactly one
+///   thread, so N variants would need N signals and N isolated cores. The grid
+///   measures strategy economics, where the simulated latencies dominate real
+///   compute by four orders of magnitude; `dry-run` remains the
+///   latency-faithful path.
+/// - **Never a Parquet writer.** Not a flag: the grid must not be able to
+///   contend with the reference collector.
+async fn run_dry_run_grid(
+    config: &AppConfig,
+    instrument: mm_live::InstrumentSpec,
+    grid_path: &Path,
+    duration_seconds: u64,
+    out_dir: Option<&Path>,
+) -> Result<()> {
+    let started_at_ms = unix_ms();
+    let spec = grid::GridSpec::load(grid_path)?;
+    let out_dir = out_dir.map_or_else(
+        || {
+            config
+                .storage
+                .report_dir
+                .join(format!("grid-{started_at_ms}"))
+        },
+        Path::to_owned,
+    );
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("cannot create grid output directory {}", out_dir.display()))?;
+
+    // Calibration is a property of the market, not of a parameter set, so it is
+    // fitted once and shared. Only the inventory unit and the HJB surface,
+    // which depend on q_max and the risk knobs, are per variant.
+    let (data, snapshot, _, _) = calibrate_model(config, &instrument, true)?;
+    let mid = data
+        .mids
+        .last()
+        .context("calibration window has no final mid")?
+        .mid;
+    drop(data);
+
+    let mut variants = Vec::with_capacity(spec.variants.len());
+    for entry in &spec.variants {
+        let variant_config = entry.overrides.apply(config).with_context(|| {
+            format!("grid variant {:?} is not a valid configuration", entry.name)
+        })?;
+        let policy = CarteaJaimungalPolicy::new(
+            instrument.clone(),
+            variant_config.quoting.clone(),
+            variant_config.risk.clone(),
+        )?;
+        let inventory_unit = policy.derive_inventory_unit(mid, variant_config.model.q_max)?;
+        let surface = solve_asymmetric(
+            snapshot.parameters,
+            &variant_config.model,
+            instrument.size_from_units(inventory_unit),
+            snapshot.revision,
+        )?;
+        let backend = DryRunBackend::new(
+            instrument.clone(),
+            variant_config.dry_run.clone(),
+            variant_config.quoting.clone(),
+            variant_config.risk.clone(),
+        )?;
+        let logger =
+            JsonlEventLogger::create(&out_dir, &format!("grid-{}", entry.name), started_at_ms)?;
+        info!(
+            variant = %entry.name,
+            overrides = %entry.overrides.describe(),
+            inventory_unit,
+            "grid variant armed"
+        );
+        variants.push(GridVariant {
+            name: entry.name.clone(),
+            description: entry.overrides.describe(),
+            report_path: out_dir.join(format!("{}.json", entry.name)),
+            peak_equity_usdc: variant_config.dry_run.starting_equity_usdc,
+            config: variant_config,
+            policy,
+            surface,
+            inventory_unit,
+            backend,
+            logger,
+            episode_start_ns: 0,
+            quote_seq: 0,
+            fills: 0,
+            max_drawdown_usdc: 0.0,
+        });
+    }
+
+    let metrics = Arc::new(Metrics::default());
+    let scientifically_valid = Arc::new(AtomicBool::new(true));
+    let events = Arc::new(AsyncRing::new(config.runtime.market_event_capacity));
+    let latest_bbo = Arc::new(AtomicBbo::default());
+    // Nothing registers against this signal: the grid has no hot-path thread.
+    // The market stream still notifies it, which is a cheap atomic OR.
+    let signal = Arc::new(HotPathSignal::default());
+    let clock = Arc::new(ProcessClock::default());
+    let latency = Arc::new(LatencyMonitor::new(
+        &instrument.symbol,
+        started_at_ms,
+        &config.latency,
+        false,
+    ));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let market_task = tokio::spawn(run_market_stream(MarketStreamArgs {
+        ws_url: config.runtime.network.ws_url().to_owned(),
+        instrument: instrument.clone(),
+        latest_bbo: latest_bbo.clone(),
+        events: events.clone(),
+        signal: signal.clone(),
+        clock: clock.clone(),
+        metrics: metrics.clone(),
+        latency: Some(latency.clone()),
+        scientifically_valid: scientifically_valid.clone(),
+        shutdown: shutdown_rx.clone(),
+        ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
+        idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+        max_trade_lag_ms: config.runtime.market_stale_ms,
+    }));
+
+    let start_ns = clock.now_ns();
+    for variant in &mut variants {
+        variant.episode_start_ns = start_ns;
+    }
+
+    let leaderboard_path = out_dir.join("leaderboard.json");
+    let mut stats = tokio::time::interval(Duration::from_millis(
+        config.runtime.stats_interval_ms.max(1_000),
+    ));
+    stats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let deadline = (duration_seconds > 0)
+        .then(|| tokio::time::Instant::now() + Duration::from_secs(duration_seconds));
+    let shutdown_signal = wait_for_shutdown_signal();
+    tokio::pin!(shutdown_signal);
+    let mut last_event_exchange_ms = 0_u64;
+
+    let loop_result: Result<()> = async {
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut shutdown_signal => {
+                    result?;
+                    break;
+                }
+                () = async {
+                    if let Some(deadline) = deadline {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => break,
+                _ = stats.tick() => {
+                    write_grid_leaderboard(
+                        &variants,
+                        &leaderboard_path,
+                        &instrument.symbol,
+                        started_at_ms,
+                    )?;
+                }
+                event = events.pop() => {
+                    let mut pending = Some(event);
+                    let mut drained = 0_u32;
+                    while let Some(event) = pending.take() {
+                        let event_time = event_ms(&event);
+                        if event_time != 0 {
+                            last_event_exchange_ms = event_time;
+                        }
+                        let simulated_now_ms = if event_time == 0 {
+                            last_event_exchange_ms
+                        } else {
+                            event_time
+                        };
+                        let now_ns = clock.now_ns();
+                        let bbo = latest_bbo.load();
+                        for variant in &mut variants {
+                            let execution_events = variant.backend.on_market_event(&event).await?;
+                            for execution_event in &execution_events {
+                                variant.logger.log(
+                                    "execution_event",
+                                    Some(event_time),
+                                    execution_event,
+                                )?;
+                            }
+                            variant.fills =
+                                variant.fills.saturating_add(execution_events.len() as u64);
+                            let reason = if execution_events.is_empty() {
+                                QuoteReason::Market
+                            } else {
+                                QuoteReason::Fill
+                            };
+                            if let Some(bbo) = bbo {
+                                variant.step(bbo, now_ns, simulated_now_ms, reason).await?;
+                            }
+                            variant.observe_equity();
+                        }
+                        drained += 1;
+                        if drained < MARKET_EVENT_DRAIN_BATCH {
+                            pending = events.try_pop();
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    // Teardown always runs, whatever ended the loop.
+    let _ = shutdown_tx.send(true);
+    let mut shutdown_errors = Vec::new();
+    let finished_ms = last_event_exchange_ms.max(unix_ms());
+    for variant in &mut variants {
+        if let Err(error) = variant.backend.shutdown(finished_ms).await {
+            shutdown_errors.push(format!("{}: {error}", variant.name));
+        }
+        if let Err(error) = variant.logger.flush() {
+            shutdown_errors.push(format!("{} log flush: {error}", variant.name));
+        }
+    }
+    let board = write_grid_leaderboard(
+        &variants,
+        &leaderboard_path,
+        &instrument.symbol,
+        started_at_ms,
+    )?;
+    let feed_valid = scientifically_valid.load(Ordering::Acquire);
+    for variant in &variants {
+        let report = SessionReport {
+            schema_version: 2,
+            build: mm_live::BuildInfo::current(),
+            session_id: format!("{}-{}-{started_at_ms}", instrument.symbol, variant.name),
+            started_at_ms,
+            finished_at_ms: unix_ms(),
+            mode: format!("dry_run_grid:{}", variant.name),
+            config_fingerprint: variant.config.fingerprint()?,
+            instrument: instrument.clone(),
+            calibration: Some(snapshot.clone()),
+            model: None,
+            account: variant.backend.account_state(),
+            execution: variant.backend.diagnostics().clone(),
+            metrics: metrics.snapshot(),
+            latency: (*latency.snapshot()).clone(),
+            scientifically_valid: variant.backend.scientifically_valid() && feed_valid,
+            invalid_reasons: Vec::new(),
+            event_log_path: out_dir.display().to_string(),
+            market_event_ring_high_water: events.high_water_mark(),
+        };
+        report.write_atomic(&variant.report_path)?;
+    }
+    market_task.abort();
+    println!("{}", board.render());
+    println!("leaderboard={}", leaderboard_path.display());
+    loop_result?;
+    if !shutdown_errors.is_empty() {
+        bail!("grid teardown errors: {}", shutdown_errors.join("; "));
+    }
+    Ok(())
+}
+
+fn write_grid_leaderboard(
+    variants: &[GridVariant],
+    path: &Path,
+    symbol: &str,
+    started_at_ms: u64,
+) -> Result<grid::Leaderboard> {
+    let now = unix_ms();
+    let mut board = grid::Leaderboard {
+        generated_at_ms: now,
+        started_at_ms,
+        elapsed_seconds: now.saturating_sub(started_at_ms) / 1_000,
+        symbol: symbol.to_owned(),
+        rows: variants.iter().map(GridVariant::leaderboard_row).collect(),
+    };
+    board.sort_by_net_pnl();
+    board.write_atomic(path)?;
+    Ok(board)
 }
 
 fn calibrate_model(

@@ -1,0 +1,71 @@
+# Live dry-run grid — parameter sets quoting one shared CASHCAT feed.
+#
+# Run with:
+#   mm-live --config config/cashcat_dryrun_realistic.toml dry-run-grid \
+#           --grid config/grid_cashcat.toml
+#
+# Every variant inherits that base config and changes only the fields below, so
+# latency, fees, funding and capital are identical across the grid and the
+# comparison is like-for-like. One WebSocket serves all of them: the venue
+# allows ten per IP and that budget is shared with the collector containers and
+# any live session (docs/DATA_COLLECTION.md).
+#
+# WHY THESE FOUR LEVERS. The 161.95 h staged sweep (docs/cashcat_sweep.md)
+# localised the entire loss to one six-hour burst window: 26 of 27 windows sum
+# to +35.28, and `08-22 03:57` alone is -241.17 on 1,771 fills. So the levers
+# worth testing are the ones that govern how much of a burst gets taken.
+#
+#   q_max               inventory cap. q=3 scored -279.11 against q=6's -585.61
+#                       on the same calibration -- the clearest single effect.
+#   min_half_spread_bps the losing window earned +683.89 of spread across 1,771
+#                       fills, ~0.39 per fill, which did not cover the adverse
+#                       selection taken.
+#   min_order_lifetime  requote cadence. The only positive rung of the latency
+#   + replace_threshold ladder was the 30 s-refresh one.
+#   phi_kappa_t         running inventory penalty; the sweep winner used 300
+#                       against a grid that topped out at 1000.
+
+# Control. No overrides: this is literally the shipped configuration, so it
+# stays honest as the baseline rather than being a separately maintained copy.
+[[variant]]
+name = "baseline"
+
+# --- single-lever variants: each isolates one mechanism ---
+
+[[variant]]
+name = "q3"
+q_max = 3
+
+[[variant]]
+name = "q2"
+q_max = 2
+
+[[variant]]
+name = "wide4"
+min_half_spread_bps = 4.0
+
+[[variant]]
+name = "wide8"
+min_half_spread_bps = 8.0
+
+[[variant]]
+name = "phi1000"
+phi_kappa_t = 1000.0
+
+# Slow requoting: hold a quote far longer and widen the hold window to match.
+[[variant]]
+name = "slow5s"
+min_order_lifetime_ms = 5000
+replace_threshold_bps = 8.0
+
+# --- combined corner ---
+# Every defensive lever at once. If the burst is the whole problem, this is the
+# variant that should survive it; if it merely stops trading, that shows up as
+# near-zero fills rather than as a win.
+[[variant]]
+name = "defensive"
+q_max = 2
+min_half_spread_bps = 4.0
+phi_kappa_t = 1000.0
+min_order_lifetime_ms = 5000
+replace_threshold_bps = 8.0
