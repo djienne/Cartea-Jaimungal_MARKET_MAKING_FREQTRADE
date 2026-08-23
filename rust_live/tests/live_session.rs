@@ -2,7 +2,7 @@ use futures_util::{SinkExt, StreamExt};
 use mm_live::config::{LatencyConfig, LiveConfig, Network};
 use mm_live::hyperliquid::auth::HyperliquidCredentials;
 use mm_live::hyperliquid::exchange::ActionOutcome;
-use mm_live::hyperliquid::live_state::{LiveOrderStatus, LiveStateStore};
+use mm_live::hyperliquid::live_state::{LiveOrderStatus, LiveStateStore, SessionIntent};
 use mm_live::hyperliquid::session::{spawn_session, SessionEvent, SessionSpawnArgs};
 use mm_live::hyperliquid::signing::{make_cloid, LiveOrderRequest, TimeInForce};
 use mm_live::instrument::InstrumentSpec;
@@ -189,7 +189,7 @@ impl Fixture {
                 &credentials.agent_address(),
                 "config",
                 "meta",
-                false,
+                SessionIntent::Quote { venue_is_flat: true },
             )
             .unwrap(),
         );

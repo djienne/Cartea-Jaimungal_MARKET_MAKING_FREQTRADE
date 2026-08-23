@@ -961,9 +961,12 @@ fn apply_action_response(
                         None,
                     )
                 } else if let Some(error) = status.and_then(|value| value.get("error")) {
+                    let text = error.as_str().unwrap_or_default();
                     (
                         if purpose == ActionPurpose::Order {
                             LiveOrderStatus::Rejected
+                        } else if cancel_error_is_terminal(text) {
+                            LiveOrderStatus::Canceled
                         } else {
                             LiveOrderStatus::UnknownOutcome
                         },
@@ -1002,6 +1005,26 @@ fn apply_action_response(
         }
         Ok(())
     })
+}
+
+/// Hyperliquid answers a cancel for an order that is no longer on the book with
+/// a fixed message. That answer is definitive — the order is *not* resting — so
+/// the local record is terminal, not unknown.
+///
+/// Treating it as `UnknownOutcome` kept the cloid in the non-terminal set, so it
+/// was re-cancelled on every later quote cycle and never pruned. The set only
+/// grows, and once more than 16 orders sit unresolved the authoritative snapshot
+/// refuses its bounded REST fan-out — which means no reconciliation at all, for
+/// the rest of the session.
+///
+/// Marking it `Canceled` cannot lose a fill: fill accounting reads `userFills`
+/// keyed by fill id and never a cancel response, so a cancel that lost the race
+/// to a fill is still booked from the fill stream.
+fn cancel_error_is_terminal(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("never placed")
+        || error.contains("already canceled")
+        || error.contains("already cancelled")
 }
 
 fn mark_unknown(store: &LiveStateStore, cloids: &[Option<String>], reason: &str) -> Result<()> {
@@ -1079,6 +1102,7 @@ impl WebSocketRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hyperliquid::live_state::SessionIntent;
 
     #[test]
     fn rate_limiter_preserves_safety_reserve() {
@@ -1143,6 +1167,22 @@ mod tests {
     }
 
     #[test]
+    fn cancel_errors_that_prove_the_order_is_gone_are_terminal() {
+        // The venue's own wording, verbatim from a live run.
+        assert!(cancel_error_is_terminal(
+            "Order was never placed, already canceled, or filled. asset=231"
+        ));
+        assert!(cancel_error_is_terminal(
+            "Order was never placed, already cancelled, or filled."
+        ));
+        // Anything that does not prove the order left the book stays unknown so
+        // the next reconcile resolves it against the venue.
+        assert!(!cancel_error_is_terminal("rate limited"));
+        assert!(!cancel_error_is_terminal("Insufficient margin"));
+        assert!(!cancel_error_is_terminal(""));
+    }
+
+    #[test]
     fn order_expiry_uses_send_time_when_nonce_lease_is_old() {
         assert_eq!(order_expires_after(1_000, 50_000, 5_000), 55_000);
         assert_eq!(order_expires_after(50_000, 1_000, 5_000), 55_000);
@@ -1158,7 +1198,7 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            false,
+            SessionIntent::Quote { venue_is_flat: true },
         )
         .unwrap();
         let cloid = "0x434a4d4d000000000000000000000001".to_owned();
@@ -1228,7 +1268,7 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            false,
+            SessionIntent::Quote { venue_is_flat: true },
         )
         .unwrap();
         let filled = "0x434a4d4d000000000000000000000001".to_owned();
@@ -1304,7 +1344,7 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            false,
+            SessionIntent::Quote { venue_is_flat: true },
         )
         .unwrap();
         let cloid = "0x434a4d4d000000000000000000000003".to_owned();

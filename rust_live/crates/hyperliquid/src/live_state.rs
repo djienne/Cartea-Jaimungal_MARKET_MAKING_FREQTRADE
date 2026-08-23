@@ -245,6 +245,21 @@ enum PersistCommand {
     Shutdown,
 }
 
+/// How a process intends to use the durable store, which decides what
+/// configuration drift it is allowed to open across.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionIntent {
+    /// Normal quoting. It may adopt a new configuration only when there is no
+    /// exposure to inherit anywhere — neither on the venue nor in the store —
+    /// because the sizes, thresholds and risk limits it would reconcile
+    /// against are not the ones the position was opened with.
+    Quote { venue_is_flat: bool },
+    /// `live-flatten`. It only cancels and reduces, never opens exposure, so it
+    /// must be able to open exactly the drifted-with-exposure store a quoting
+    /// session refuses — that state is the one it exists to clear.
+    ReduceOnly,
+}
+
 impl LiveStateStore {
     pub fn open(
         path: &Path,
@@ -253,7 +268,7 @@ impl LiveStateStore {
         agent: &str,
         config_fingerprint: &str,
         metadata_fingerprint: &str,
-        allow_flat_config_migration: bool,
+        intent: SessionIntent,
     ) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -285,16 +300,27 @@ impl LiveStateStore {
             }
             current.schema_version = STATE_SCHEMA_VERSION;
             if current.config_fingerprint != config_fingerprint {
-                if !allow_flat_config_migration
-                    || current
-                        .orders
-                        .values()
-                        .any(|order| !order.status.terminal())
-                {
-                    bail!("live-state configuration changed while durable exposure exists");
+                let durable_exposure = current
+                    .orders
+                    .values()
+                    .any(|order| !order.status.terminal());
+                match intent {
+                    SessionIntent::Quote { venue_is_flat } => {
+                        if !venue_is_flat || durable_exposure {
+                            bail!(
+                                "live-state configuration changed while durable exposure exists"
+                            );
+                        }
+                    }
+                    // A half-finished flatten leaves exposure behind, so the
+                    // fingerprint is not adopted below and a quoting session is
+                    // still refused on the next start.
+                    SessionIntent::ReduceOnly => {}
                 }
-                config_fingerprint.clone_into(&mut current.config_fingerprint);
-                metadata_fingerprint.clone_into(&mut current.metadata_fingerprint);
+                if !durable_exposure {
+                    config_fingerprint.clone_into(&mut current.config_fingerprint);
+                    metadata_fingerprint.clone_into(&mut current.metadata_fingerprint);
+                }
             }
             current
         } else {
@@ -837,7 +863,7 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            false,
+            SessionIntent::Quote { venue_is_flat: true },
         )
         .unwrap()
     }
@@ -902,6 +928,64 @@ mod tests {
         assert!(!state
             .processed_fill_keys
             .contains(&TimedKey(state.event_checkpoint_ms - 1, "fill-4".to_owned())));
+    }
+
+    #[test]
+    fn config_drift_blocks_a_quoting_session_but_never_the_flatten_that_clears_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("live.redb");
+        let quoting = SessionIntent::Quote {
+            venue_is_flat: true,
+        };
+        let reopen = |fingerprint: &str, intent: SessionIntent| {
+            LiveStateStore::open(
+                &path,
+                "CASHCAT",
+                "0x1111111111111111111111111111111111111111",
+                "0x2222222222222222222222222222222222222222",
+                fingerprint,
+                "meta",
+                intent,
+            )
+        };
+        let store = reopen("config-a", quoting).unwrap();
+        store
+            .update(|state| {
+                state.orders.insert(
+                    "resting".to_owned(),
+                    order_template("resting", LiveOrderStatus::Resting, 1_000),
+                );
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+
+        // A quoting session must not adopt exposure opened under another config.
+        // Even with the venue reporting flat, durable exposure blocks it.
+        assert!(reopen("config-b", quoting).is_err());
+
+        // `live-flatten` is exactly the tool for this state and must open.
+        let store = reopen("config-b", SessionIntent::ReduceOnly).unwrap();
+        // The fingerprint is not adopted while exposure remains, so a quoting
+        // session is still refused if the flatten does not finish.
+        assert_eq!(
+            store.load_required().unwrap().config_fingerprint,
+            "config-a"
+        );
+        store
+            .update(|state| {
+                state.orders.get_mut("resting").unwrap().status = LiveOrderStatus::Canceled;
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+
+        // Once flat, the store migrates to the new configuration as before.
+        let store = reopen("config-b", SessionIntent::ReduceOnly).unwrap();
+        assert_eq!(
+            store.load_required().unwrap().config_fingerprint,
+            "config-b"
+        );
     }
 
     #[test]
@@ -1031,7 +1115,7 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            false,
+            SessionIntent::Quote { venue_is_flat: true },
         )
         .is_err());
         drop(first);
@@ -1042,7 +1126,7 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            false,
+            SessionIntent::Quote { venue_is_flat: true },
         )
         .is_err());
     }
@@ -1178,7 +1262,7 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            false,
+            SessionIntent::Quote { venue_is_flat: true },
         )
         .is_err());
     }

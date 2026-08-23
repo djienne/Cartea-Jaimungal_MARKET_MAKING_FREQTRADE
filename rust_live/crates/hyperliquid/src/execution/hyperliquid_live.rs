@@ -8,7 +8,7 @@ use crate::hyperliquid::auth::HyperliquidCredentials;
 use crate::hyperliquid::exchange::{ActionOutcome, HyperliquidExchangeClient, OpenOrder, UserFill};
 use crate::hyperliquid::live_state::{
     DurableNonceManager, LiveOrderStatus, LiveStateStore, PersistedLiveOrder, RiskScalars,
-    TimedKey,
+    SessionIntent, TimedKey,
 };
 use crate::hyperliquid::session::{
     spawn_session, AccountChannel, HyperliquidSessionHandle, SessionEvent, SessionSpawnArgs,
@@ -246,7 +246,14 @@ impl HyperliquidLiveBackend {
             &credentials.agent_address(),
             &config.fingerprint()?,
             &instrument.metadata_fingerprint,
-            account.inventory_units == 0 && account.open_orders.is_empty(),
+            if allow_untracked_position {
+                SessionIntent::ReduceOnly
+            } else {
+                SessionIntent::Quote {
+                    venue_is_flat: account.inventory_units == 0
+                        && account.open_orders.is_empty(),
+                }
+            },
         )?);
         let (event_tx, event_rx) = mpsc::channel(config.runtime.execution_event_capacity);
         let (session, session_task) = spawn_session(SessionSpawnArgs {
@@ -1717,7 +1724,8 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 })
             });
             for order in side_orders {
-                if !unchanged {
+                if !unchanged && !cancel_already_in_flight(&order, now_ms, self.live.action_timeout_ms)
+                {
                     cancel.push(order.cloid);
                 }
             }
@@ -1983,6 +1991,25 @@ fn map_order_status(status: &str) -> LiveOrderStatus {
     }
 }
 
+/// A cancel that is still in flight cannot be helped by sending it again: the
+/// venue answers the duplicate with "Order was never placed, already canceled,
+/// or filled", and every duplicate still spends an address action against the
+/// rate budget. In a live run this was two thirds of all cancel traffic.
+///
+/// The bound is the session's own action timeout: until it elapses the first
+/// cancel is genuinely outstanding, and after it the session marks the order
+/// `UnknownOutcome` itself — at which point retrying is the safe direction and
+/// this guard stops applying. The extra second only covers the timeout tick's
+/// granularity, so a wedged session actor cannot strand a resting order.
+fn cancel_already_in_flight(
+    order: &PersistedLiveOrder,
+    now_ms: u64,
+    action_timeout_ms: u64,
+) -> bool {
+    order.status == LiveOrderStatus::CancelPending
+        && now_ms.saturating_sub(order.last_update_ms) < action_timeout_ms.saturating_add(1_000)
+}
+
 fn closing_side_and_quantity(inventory_units: i64) -> Option<(Side, i64)> {
     match inventory_units.cmp(&0) {
         std::cmp::Ordering::Greater => Some((Side::Sell, inventory_units)),
@@ -2054,7 +2081,7 @@ mod tests {
                 &credentials.agent_address(),
                 "config",
                 "meta",
-                false,
+                SessionIntent::Quote { venue_is_flat: true },
             )
             .unwrap(),
         );
@@ -2459,6 +2486,35 @@ mod tests {
             (daily - expected_daily).abs() < 1.0e-9,
             "daily realized pnl was {daily}, expected {expected_daily}"
         );
+    }
+
+    #[test]
+    fn a_cancel_still_in_flight_is_not_sent_again() {
+        let mut order = PersistedLiveOrder {
+            cloid: "c-1".to_owned(),
+            quote_seq: 1,
+            side: Side::Buy,
+            px_units: 100,
+            original_qty_units: 10,
+            remaining_qty_units: 10,
+            reduce_only: false,
+            status: LiveOrderStatus::CancelPending,
+            nonce: None,
+            transport_id: None,
+            oid: None,
+            prepared_at_ms: 10_000,
+            last_update_ms: 10_000,
+            last_error: None,
+        };
+        // Inside the action timeout the first cancel is still outstanding.
+        assert!(cancel_already_in_flight(&order, 11_000, 2_000));
+        // Past it the session has already marked the order unknown, so
+        // retrying is the safe direction and the guard must stop applying.
+        assert!(!cancel_already_in_flight(&order, 13_500, 2_000));
+        // Only an in-flight cancel is held back; a resting order is always
+        // cancellable, however recently it was touched.
+        order.status = LiveOrderStatus::Resting;
+        assert!(!cancel_already_in_flight(&order, 11_000, 2_000));
     }
 
     #[test]
