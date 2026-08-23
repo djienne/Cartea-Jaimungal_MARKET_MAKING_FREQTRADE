@@ -1,7 +1,8 @@
 use crate::instrument::InstrumentSpec;
 use crate::types::{AggressorSide, Bbo, BookLevel, BookSnapshot, TradePrint};
-use anyhow::{bail, Result};
-use serde_json::Value;
+use anyhow::{bail, Context, Result};
+use serde::Deserialize;
+use std::borrow::Cow;
 
 pub fn parse_decimal_scaled(input: &str, decimals: u32) -> Result<i64> {
     let input = input.trim();
@@ -49,110 +50,200 @@ pub fn parse_decimal_scaled(input: &str, decimals: u32) -> Result<i64> {
     Ok(i64::try_from(value)?)
 }
 
-pub fn parse_bbo(root: &Value, instrument: &InstrumentSpec, recv_ns: u64) -> Option<Bbo> {
-    if root.get("channel")?.as_str()? != "bbo" {
+/// One decoded public WebSocket frame.
+///
+/// The feed previously built a full `serde_json::Value` DOM per frame and ran
+/// three DOM-walking parsers over it. This decode is two-stage: a cheap
+/// envelope pass borrows the channel name and the raw payload slice, then only
+/// the matching channel's payload is deserialized — typed and borrowed, no
+/// DOM. This sits upstream of the quote kernel on the same critical path.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PublicFrame {
+    Pong,
+    Bbo(Bbo),
+    /// A trades frame for this instrument's channel; individual prints from
+    /// other coins or with malformed fields are dropped, matching the DOM
+    /// parser's per-item tolerance.
+    Trades(Vec<TradePrint>),
+    Book(BookSnapshot),
+    /// Valid JSON that is not a market payload for this instrument.
+    Other,
+    /// Not valid JSON at all.
+    Invalid,
+}
+
+#[derive(Deserialize)]
+struct Envelope<'a> {
+    #[serde(default, borrow)]
+    channel: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    data: Option<&'a serde_json::value::RawValue>,
+}
+
+/// Exchange timestamps arrive as integers but are tolerated as strings,
+/// matching the old `u64_field` behavior.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireU64<'a> {
+    Int(u64),
+    #[serde(borrow)]
+    Text(Cow<'a, str>),
+}
+
+impl WireU64<'_> {
+    fn value(&self) -> u64 {
+        match self {
+            Self::Int(value) => *value,
+            Self::Text(text) => text.parse().unwrap_or_default(),
+        }
+    }
+}
+
+fn wire_u64(field: Option<&WireU64<'_>>) -> u64 {
+    field.map(WireU64::value).unwrap_or_default()
+}
+
+#[derive(Deserialize)]
+struct WireLevel<'a> {
+    #[serde(borrow)]
+    px: Cow<'a, str>,
+    #[serde(borrow)]
+    sz: Cow<'a, str>,
+}
+
+#[derive(Deserialize)]
+struct WireBbo<'a> {
+    #[serde(borrow)]
+    coin: Cow<'a, str>,
+    bbo: Vec<Option<WireLevel<'a>>>,
+    #[serde(default, borrow)]
+    time: Option<WireU64<'a>>,
+}
+
+#[derive(Deserialize)]
+struct WireTrade<'a> {
+    #[serde(borrow)]
+    coin: Cow<'a, str>,
+    #[serde(borrow)]
+    px: Cow<'a, str>,
+    #[serde(borrow)]
+    sz: Cow<'a, str>,
+    #[serde(borrow)]
+    side: Cow<'a, str>,
+    #[serde(default, borrow)]
+    time: Option<WireU64<'a>>,
+    #[serde(default, borrow)]
+    tid: Option<WireU64<'a>>,
+}
+
+#[derive(Deserialize)]
+struct WireBook<'a> {
+    #[serde(borrow)]
+    coin: Cow<'a, str>,
+    #[serde(borrow)]
+    levels: Vec<Vec<WireLevel<'a>>>,
+    #[serde(default, borrow)]
+    time: Option<WireU64<'a>>,
+}
+
+pub fn parse_public_frame(
+    text: &str,
+    instrument: &InstrumentSpec,
+    recv_ns: u64,
+) -> PublicFrame {
+    let Ok(envelope) = serde_json::from_str::<Envelope<'_>>(text) else {
+        return PublicFrame::Invalid;
+    };
+    let channel = envelope.channel.as_deref().unwrap_or_default();
+    match channel {
+        "pong" => PublicFrame::Pong,
+        "bbo" => envelope
+            .data
+            .and_then(|data| decode_bbo(data.get(), instrument, recv_ns))
+            .map_or(PublicFrame::Other, PublicFrame::Bbo),
+        "trades" => PublicFrame::Trades(
+            envelope
+                .data
+                .map(|data| decode_trades(data.get(), instrument, recv_ns))
+                .unwrap_or_default(),
+        ),
+        "l2Book" => envelope
+            .data
+            .and_then(|data| decode_book(data.get(), instrument, recv_ns))
+            .map_or(PublicFrame::Other, PublicFrame::Book),
+        _ => PublicFrame::Other,
+    }
+}
+
+fn decode_bbo(payload: &str, instrument: &InstrumentSpec, recv_ns: u64) -> Option<Bbo> {
+    let data: WireBbo<'_> = serde_json::from_str(payload).ok()?;
+    if data.coin != instrument.symbol {
         return None;
     }
-    let data = root.get("data")?;
-    if data.get("coin")?.as_str()? != instrument.symbol {
-        return None;
-    }
-    let levels = data.get("bbo")?.as_array()?;
-    let bid = levels.first()?;
-    let ask = levels.get(1)?;
-    if bid.is_null() || ask.is_null() {
-        return None;
-    }
+    let mut levels = data.bbo.into_iter();
+    let bid = levels.next()??;
+    let ask = levels.next()??;
     Some(Bbo {
-        bid_px: parse_decimal_scaled(bid.get("px")?.as_str()?, instrument.max_price_decimals)
-            .ok()?,
-        bid_sz: parse_decimal_scaled(bid.get("sz")?.as_str()?, instrument.sz_decimals).ok()?,
-        ask_px: parse_decimal_scaled(ask.get("px")?.as_str()?, instrument.max_price_decimals)
-            .ok()?,
-        ask_sz: parse_decimal_scaled(ask.get("sz")?.as_str()?, instrument.sz_decimals).ok()?,
-        exchange_ms: u64_field(data, "time").unwrap_or_default(),
+        bid_px: parse_decimal_scaled(&bid.px, instrument.max_price_decimals).ok()?,
+        bid_sz: parse_decimal_scaled(&bid.sz, instrument.sz_decimals).ok()?,
+        ask_px: parse_decimal_scaled(&ask.px, instrument.max_price_decimals).ok()?,
+        ask_sz: parse_decimal_scaled(&ask.sz, instrument.sz_decimals).ok()?,
+        exchange_ms: wire_u64(data.time.as_ref()),
         recv_ns,
     })
 }
 
-pub fn parse_trades(root: &Value, instrument: &InstrumentSpec, recv_ns: u64) -> Vec<TradePrint> {
-    if root.get("channel").and_then(Value::as_str) != Some("trades") {
-        return Vec::new();
-    }
-    let Some(items) = root.get("data").and_then(Value::as_array) else {
+fn decode_trades(payload: &str, instrument: &InstrumentSpec, recv_ns: u64) -> Vec<TradePrint> {
+    let Ok(items) = serde_json::from_str::<Vec<WireTrade<'_>>>(payload) else {
         return Vec::new();
     };
     items
-        .iter()
-        .filter(|item| item.get("coin").and_then(Value::as_str) == Some(&instrument.symbol))
+        .into_iter()
+        .filter(|item| item.coin == instrument.symbol)
         .filter_map(|item| {
-            let aggressor = match item.get("side")?.as_str()? {
+            let aggressor = match item.side.as_ref() {
                 "B" => AggressorSide::Buy,
                 "A" => AggressorSide::Sell,
                 _ => return None,
             };
             Some(TradePrint {
                 aggressor,
-                px: parse_decimal_scaled(item.get("px")?.as_str()?, instrument.max_price_decimals)
-                    .ok()?,
-                qty_units: parse_decimal_scaled(item.get("sz")?.as_str()?, instrument.sz_decimals)
-                    .ok()?,
-                exchange_ms: u64_field(item, "time").unwrap_or_default(),
+                px: parse_decimal_scaled(&item.px, instrument.max_price_decimals).ok()?,
+                qty_units: parse_decimal_scaled(&item.sz, instrument.sz_decimals).ok()?,
+                exchange_ms: wire_u64(item.time.as_ref()),
                 recv_ns,
-                trade_id: u64_field(item, "tid").unwrap_or_default(),
+                trade_id: wire_u64(item.tid.as_ref()),
             })
         })
         .collect()
 }
 
-pub fn parse_book(root: &Value, instrument: &InstrumentSpec, recv_ns: u64) -> Option<BookSnapshot> {
-    if root.get("channel")?.as_str()? != "l2Book" {
+fn decode_book(payload: &str, instrument: &InstrumentSpec, recv_ns: u64) -> Option<BookSnapshot> {
+    let data: WireBook<'_> = serde_json::from_str(payload).ok()?;
+    if data.coin != instrument.symbol {
         return None;
     }
-    let data = root.get("data")?;
-    if data.get("coin")?.as_str()? != instrument.symbol {
-        return None;
-    }
-    let sides = data.get("levels")?.as_array()?;
-    let parse_levels = |value: &Value| -> Option<Vec<BookLevel>> {
-        Some(
-            value
-                .as_array()?
-                .iter()
-                .take(20)
-                .filter_map(|level| {
-                    Some(BookLevel {
-                        px: parse_decimal_scaled(
-                            level.get("px")?.as_str()?,
-                            instrument.max_price_decimals,
-                        )
-                        .ok()?,
-                        qty_units: parse_decimal_scaled(
-                            level.get("sz")?.as_str()?,
-                            instrument.sz_decimals,
-                        )
-                        .ok()?,
-                    })
+    let mut sides = data.levels.into_iter();
+    let decode_side = |levels: Vec<WireLevel<'_>>| -> Vec<BookLevel> {
+        levels
+            .into_iter()
+            .take(20)
+            .filter_map(|level| {
+                Some(BookLevel {
+                    px: parse_decimal_scaled(&level.px, instrument.max_price_decimals).ok()?,
+                    qty_units: parse_decimal_scaled(&level.sz, instrument.sz_decimals).ok()?,
                 })
-                .collect(),
-        )
+            })
+            .collect()
     };
     Some(BookSnapshot {
-        bids: parse_levels(sides.first()?)?,
-        asks: parse_levels(sides.get(1)?)?,
-        exchange_ms: u64_field(data, "time").unwrap_or_default(),
+        bids: decode_side(sides.next()?),
+        asks: decode_side(sides.next()?),
+        exchange_ms: wire_u64(data.time.as_ref()),
         recv_ns,
     })
 }
 
-fn u64_field(value: &Value, key: &str) -> Option<u64> {
-    value
-        .get(key)?
-        .as_u64()
-        .or_else(|| value.get(key)?.as_str()?.parse().ok())
-}
-
-use anyhow::Context;
 
 #[cfg(test)]
 mod tests {

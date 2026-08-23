@@ -103,66 +103,68 @@ where
                 match incoming? {
                     Message::Text(text) => {
                         args.metrics.market_messages.fetch_add(1, Ordering::Relaxed);
-                        let Ok(root) = serde_json::from_str::<serde_json::Value>(text.as_ref()) else {
-                            args.metrics.invalid_messages.fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        };
-                        if root.get("channel").and_then(serde_json::Value::as_str) == Some("pong") {
-                            let pong_ns = args.clock.now_ns();
-                            if let (Some(sent_ns), Some(latency)) =
-                                (pending_application_ping_ns.take(), args.latency.as_ref())
-                            {
-                                latency.record(
-                                    LatencyKind::PublicWsPingRtt,
-                                    pong_ns.saturating_sub(sent_ns),
-                                    pong_ns,
-                                );
-                            }
-                            args.metrics
-                                .application_pongs_received
-                                .fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        }
                         let recv_ns = args.clock.now_ns();
-                        if let Some(bbo) = super::wire::parse_bbo(&root, &args.instrument, recv_ns) {
-                            if bbo.is_valid() {
-                                args.latest_bbo.store(bbo);
-                                push_causal(args, MarketEvent::Bbo(bbo))?;
-                                args.metrics.bbo_updates.fetch_add(1, Ordering::Relaxed);
-                                args.signal.notify(HOT_SIGNAL_MARKET);
-                            } else {
+                        match super::wire::parse_public_frame(
+                            text.as_str(),
+                            &args.instrument,
+                            recv_ns,
+                        ) {
+                            super::wire::PublicFrame::Invalid => {
                                 args.metrics.invalid_messages.fetch_add(1, Ordering::Relaxed);
                             }
-                        }
-                        let is_trade_frame = root
-                            .get("channel")
-                            .and_then(serde_json::Value::as_str)
-                            == Some("trades");
-                        let initial_trade_frame = is_trade_frame && !trade_stream_live;
-                        for trade in super::wire::parse_trades(&root, &args.instrument, recv_ns) {
-                            let startup_backlog =
-                                trade.exchange_ms.saturating_add(2_000) < connected_at_ms;
-                            if initial_trade_frame && startup_backlog {
+                            super::wire::PublicFrame::Pong => {
+                                if let (Some(sent_ns), Some(latency)) =
+                                    (pending_application_ping_ns.take(), args.latency.as_ref())
+                                {
+                                    latency.record(
+                                        LatencyKind::PublicWsPingRtt,
+                                        recv_ns.saturating_sub(sent_ns),
+                                        recv_ns,
+                                    );
+                                }
                                 args.metrics
-                                    .historical_trade_prints_ignored
+                                    .application_pongs_received
                                     .fetch_add(1, Ordering::Relaxed);
-                                continue;
                             }
-                            if !initial_trade_frame
-                                && crate::types::unix_ms().saturating_sub(trade.exchange_ms) > 2_000
-                            {
-                                args.scientifically_valid.store(false, Ordering::Release);
-                                bail!("live trade arrived more than two seconds late");
+                            super::wire::PublicFrame::Bbo(bbo) => {
+                                if bbo.is_valid() {
+                                    args.latest_bbo.store(bbo);
+                                    push_causal(args, MarketEvent::Bbo(bbo))?;
+                                    args.metrics.bbo_updates.fetch_add(1, Ordering::Relaxed);
+                                    args.signal.notify(HOT_SIGNAL_MARKET);
+                                } else {
+                                    args.metrics.invalid_messages.fetch_add(1, Ordering::Relaxed);
+                                }
                             }
-                            push_causal(args, MarketEvent::Trade(trade))?;
-                            args.metrics.trade_prints.fetch_add(1, Ordering::Relaxed);
-                        }
-                        if is_trade_frame {
-                            trade_stream_live = true;
-                        }
-                        if let Some(book) = super::wire::parse_book(&root, &args.instrument, recv_ns) {
-                            push_causal(args, MarketEvent::Book(book))?;
-                            args.metrics.book_updates.fetch_add(1, Ordering::Relaxed);
+                            super::wire::PublicFrame::Trades(trades) => {
+                                let initial_trade_frame = !trade_stream_live;
+                                for trade in trades {
+                                    let startup_backlog =
+                                        trade.exchange_ms.saturating_add(2_000) < connected_at_ms;
+                                    if initial_trade_frame && startup_backlog {
+                                        args.metrics
+                                            .historical_trade_prints_ignored
+                                            .fetch_add(1, Ordering::Relaxed);
+                                        continue;
+                                    }
+                                    if !initial_trade_frame
+                                        && crate::types::unix_ms()
+                                            .saturating_sub(trade.exchange_ms)
+                                            > 2_000
+                                    {
+                                        args.scientifically_valid.store(false, Ordering::Release);
+                                        bail!("live trade arrived more than two seconds late");
+                                    }
+                                    push_causal(args, MarketEvent::Trade(trade))?;
+                                    args.metrics.trade_prints.fetch_add(1, Ordering::Relaxed);
+                                }
+                                trade_stream_live = true;
+                            }
+                            super::wire::PublicFrame::Book(book) => {
+                                push_causal(args, MarketEvent::Book(book))?;
+                                args.metrics.book_updates.fetch_add(1, Ordering::Relaxed);
+                            }
+                            super::wire::PublicFrame::Other => {}
                         }
                     }
                     Message::Ping(payload) => {

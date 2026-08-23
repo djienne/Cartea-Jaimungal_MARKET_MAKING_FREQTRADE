@@ -76,7 +76,7 @@ impl HjbSurface {
     #[inline]
     pub fn depth_pair(&self, q_exact: f64, tau_remaining: f64) -> DepthPair {
         let elapsed = (self.horizon_seconds - tau_remaining).clamp(0.0, self.horizon_seconds);
-        let (t_lo, t_hi, t_weight) = bracket(&self.t_grid, elapsed);
+        let (t_lo, t_hi, t_weight) = self.bracket_time(elapsed);
         let (q_lo, q_hi, q_weight) = bracket_inventory(self.q_min, self.q_max, q_exact);
 
         let select = |surface: &[f64]| {
@@ -107,6 +107,31 @@ impl HjbSurface {
             &self.delta_plus_surface[..self.row_width],
             &self.delta_minus_surface[..self.row_width],
         )
+    }
+
+    /// O(1) time bracketing over the uniform grid `t_grid[i] = dt * i`.
+    ///
+    /// The grid is uniform by construction (asserted in [`solve_asymmetric`]),
+    /// so the bracket is a division — not a binary search over ~600 points on
+    /// every quote decision, as it was when this went through
+    /// `partition_point`. Mirrors `bracket_inventory`.
+    #[inline]
+    fn bracket_time(&self, elapsed: f64) -> (usize, usize, f64) {
+        if elapsed <= 0.0 || self.n_steps == 0 {
+            return (0, 0, 0.0);
+        }
+        let position = elapsed / self.dt;
+        let last = self.n_steps;
+        if position >= last as f64 {
+            return (last, last, 0.0);
+        }
+        let low = position.floor() as usize;
+        let weight = position - low as f64;
+        if weight == 0.0 {
+            (low, low, 0.0)
+        } else {
+            (low, low.min(last - 1) + 1, weight)
+        }
     }
 }
 
@@ -218,9 +243,17 @@ pub fn solve_asymmetric(
         delta_plus_surface.extend(plus);
         delta_minus_surface.extend(minus);
     }
-    let t_grid = (0..=n_steps)
+    let t_grid: Vec<f64> = (0..=n_steps)
         .map(|index| config.horizon_seconds - dt * (n_steps - index) as f64)
         .collect();
+    // depth_pair brackets time as `index = elapsed / dt`, which is only valid
+    // on an exactly uniform grid. The construction above is algebraically
+    // `dt * index`; this guards against that ever changing.
+    for (index, value) in t_grid.iter().enumerate() {
+        if (value - dt * index as f64).abs() > 1.0e-9 * config.horizon_seconds.max(1.0) {
+            bail!("HJB time grid is not uniform; O(1) bracketing would misread it");
+        }
+    }
 
     Ok(HjbSurface {
         revision,
@@ -408,28 +441,6 @@ fn solve_tridiagonal(
         .then_some(solution)
 }
 
-fn bracket(axis: &[f64], value: f64) -> (usize, usize, f64) {
-    if axis.len() == 1 || value <= axis[0] {
-        return (0, 0, 0.0);
-    }
-    let last = axis.len() - 1;
-    if value >= axis[last] {
-        return (last, last, 0.0);
-    }
-    let high = axis.partition_point(|candidate| *candidate < value);
-    if axis[high] == value {
-        return (high, high, 0.0);
-    }
-    let low = high - 1;
-    let span = axis[high] - axis[low];
-    let weight = if span <= 0.0 {
-        0.0
-    } else {
-        (value - axis[low]) / span
-    };
-    (low, high, weight)
-}
-
 #[inline]
 fn bracket_inventory(q_min: i64, q_max: i64, value: f64) -> (usize, usize, f64) {
     let minimum = q_min as f64;
@@ -514,6 +525,68 @@ mod tests {
         assert!(surface.depth(Side::Sell, 6.0, 150.0).is_some());
         assert!(surface.depth(Side::Sell, -6.0, 150.0).is_none());
         assert!(surface.depth(Side::Buy, -6.0, 150.0).is_some());
+    }
+
+    /// The retired binary-search bracket, kept as the reference the O(1)
+    /// division-based bracket must agree with.
+    fn reference_bracket(axis: &[f64], value: f64) -> (usize, usize, f64) {
+        if axis.len() == 1 || value <= axis[0] {
+            return (0, 0, 0.0);
+        }
+        let last = axis.len() - 1;
+        if value >= axis[last] {
+            return (last, last, 0.0);
+        }
+        let high = axis.partition_point(|candidate| *candidate < value);
+        if axis[high] == value {
+            return (high, high, 0.0);
+        }
+        let low = high - 1;
+        let span = axis[high] - axis[low];
+        let weight = if span <= 0.0 {
+            0.0
+        } else {
+            (value - axis[low]) / span
+        };
+        (low, high, weight)
+    }
+
+    #[test]
+    fn division_bracket_matches_binary_search_across_the_surface() {
+        let surface = solve_asymmetric(parameters(), &ModelConfig::default(), 2_430.0, 1).unwrap();
+        let steps = 1_500_u32;
+        let row_width = (surface.q_max - surface.q_min + 1) as usize;
+        for index in 0..=steps {
+            let elapsed = surface.horizon_seconds * f64::from(index) / f64::from(steps);
+            let reference = reference_bracket(&surface.t_grid, elapsed);
+            // Bracket indices may legitimately differ at exact grid points
+            // (exact hit versus an epsilon weight); what must agree are the
+            // interpolated depths.
+            for q in [-5.5_f64, -2.0, 0.0, 0.25, 3.75, 5.5] {
+                let tau = surface.horizon_seconds - elapsed;
+                let via_pair = surface.depth_pair(q, tau);
+                let (q_lo, q_hi, q_weight) = bracket_inventory(surface.q_min, surface.q_max, q);
+                let reference_depth = |values: &[f64]| {
+                    let low_row = interpolate_time(
+                        values, row_width, reference.0, reference.1, reference.2, q_lo,
+                    );
+                    let high_row = interpolate_time(
+                        values, row_width, reference.0, reference.1, reference.2, q_hi,
+                    );
+                    blend_depth(low_row, high_row, q_weight)
+                };
+                let reference_bid = reference_depth(&surface.delta_minus_surface);
+                let reference_ask = reference_depth(&surface.delta_plus_surface);
+                match (reference_bid, via_pair.bid) {
+                    (Some(a), Some(b)) => assert_relative_eq!(a, b, epsilon = 1.0e-9),
+                    (a, b) => assert_eq!(a.is_some(), b.is_some(), "bid at q={q} t={elapsed}"),
+                }
+                match (reference_ask, via_pair.ask) {
+                    (Some(a), Some(b)) => assert_relative_eq!(a, b, epsilon = 1.0e-9),
+                    (a, b) => assert_eq!(a.is_some(), b.is_some(), "ask at q={q} t={elapsed}"),
+                }
+            }
+        }
     }
 
     #[test]

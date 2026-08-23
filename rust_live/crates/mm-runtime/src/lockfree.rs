@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, AtomicUsize,
 use std::sync::OnceLock;
 use std::thread::{self, Thread};
 use std::time::Duration;
-use tokio::sync::{watch, Notify};
+use tokio::sync::Notify;
 
 pub const HOT_SIGNAL_MARKET: usize = 1 << 0;
 pub const HOT_SIGNAL_MODEL: usize = 1 << 1;
@@ -255,6 +255,27 @@ impl AtomicDesiredQuotes {
     }
 }
 
+/// Increments a waiter counter for exactly as long as the waiting future is
+/// alive. `tokio::select!` drops losing futures mid-await; without the guard
+/// the decrement on the completion path never ran, the counter leaked upward
+/// forever, and the notify-elision it exists for was permanently defeated.
+struct WaiterGuard<'a> {
+    counter: &'a AtomicUsize,
+}
+
+impl<'a> WaiterGuard<'a> {
+    fn register(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self { counter }
+    }
+}
+
+impl Drop for WaiterGuard<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 pub struct SharedQuotes {
     value: AtomicDesiredQuotes,
     waiters: AtomicUsize,
@@ -293,28 +314,33 @@ impl SharedQuotes {
             }
             let notified = self.changed.notified();
             tokio::pin!(notified);
-            self.waiters.fetch_add(1, Ordering::AcqRel);
+            // Guard, not manual decrement: this future is routinely dropped
+            // mid-await by select loops.
+            let _waiter = WaiterGuard::register(&self.waiters);
             notified.as_mut().enable();
             let current = self.load();
             if current.quote_seq != observed_quote_seq {
-                self.waiters.fetch_sub(1, Ordering::AcqRel);
                 return current;
             }
             notified.as_mut().await;
-            self.waiters.fetch_sub(1, Ordering::AcqRel);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiter_count(&self) -> usize {
+        self.waiters.load(Ordering::Acquire)
     }
 }
 
 /// Bounded MPMC queue. Successful operations are lock-free; asynchronous
-/// notification is used only when a producer or consumer must wait.
+/// notification is used only when a consumer must wait. Producers never wait:
+/// `try_push` fails on a full ring, and both feeds treat that as evidence
+/// loss rather than something to block on.
 pub struct AsyncRing<T> {
     queue: ArrayQueue<T>,
     high_water: AtomicUsize,
-    waiting_producers: AtomicUsize,
     waiting_consumers: AtomicUsize,
     not_empty: Notify,
-    not_full: Notify,
 }
 
 impl<T> AsyncRing<T> {
@@ -323,10 +349,8 @@ impl<T> AsyncRing<T> {
         Self {
             queue: ArrayQueue::new(capacity),
             high_water: AtomicUsize::new(0),
-            waiting_producers: AtomicUsize::new(0),
             waiting_consumers: AtomicUsize::new(0),
             not_empty: Notify::new(),
-            not_full: Notify::new(),
         }
     }
 
@@ -360,56 +384,9 @@ impl<T> AsyncRing<T> {
         })
     }
 
-    pub async fn push_or_shutdown(
-        &self,
-        mut value: T,
-        shutdown: &mut watch::Receiver<bool>,
-    ) -> Result<bool, T> {
-        let mut backpressured = false;
-        loop {
-            if *shutdown.borrow() {
-                return Err(value);
-            }
-            match self.try_push(value) {
-                Ok(()) => return Ok(backpressured),
-                Err(returned) => {
-                    value = returned;
-                    backpressured = true;
-                }
-            }
-            let notified = self.not_full.notified();
-            tokio::pin!(notified);
-            self.waiting_producers.fetch_add(1, Ordering::AcqRel);
-            notified.as_mut().enable();
-            match self.try_push(value) {
-                Ok(()) => {
-                    self.waiting_producers.fetch_sub(1, Ordering::AcqRel);
-                    return Ok(backpressured);
-                }
-                Err(returned) => value = returned,
-            }
-            tokio::select! {
-                biased;
-                changed = shutdown.changed() => {
-                    self.waiting_producers.fetch_sub(1, Ordering::AcqRel);
-                    if changed.is_err() || *shutdown.borrow() {
-                        return Err(value);
-                    }
-                }
-                () = notified.as_mut() => {
-                    self.waiting_producers.fetch_sub(1, Ordering::AcqRel);
-                }
-            }
-        }
-    }
-
     #[inline]
     pub fn try_pop(&self) -> Option<T> {
-        let value = self.queue.pop();
-        if value.is_some() && self.waiting_producers.load(Ordering::Acquire) != 0 {
-            self.not_full.notify_one();
-        }
-        value
+        self.queue.pop()
     }
 
     pub async fn pop(&self) -> T {
@@ -419,15 +396,20 @@ impl<T> AsyncRing<T> {
             }
             let notified = self.not_empty.notified();
             tokio::pin!(notified);
-            self.waiting_consumers.fetch_add(1, Ordering::AcqRel);
+            // Guard, not manual decrement: select loops drop this future
+            // mid-await on every iteration another branch wins.
+            let _waiter = WaiterGuard::register(&self.waiting_consumers);
             notified.as_mut().enable();
             if let Some(value) = self.try_pop() {
-                self.waiting_consumers.fetch_sub(1, Ordering::AcqRel);
                 return value;
             }
             notified.as_mut().await;
-            self.waiting_consumers.fetch_sub(1, Ordering::AcqRel);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiter_count(&self) -> usize {
+        self.waiting_consumers.load(Ordering::Acquire)
     }
 
     fn observe_high_water(&self) {
@@ -569,6 +551,41 @@ mod tests {
             ..DesiredQuotes::default()
         });
         assert_eq!(shared.load().reason, QuoteReason::LatencyLimit);
+    }
+
+    /// Dropping a waiting future mid-await — what `tokio::select!` does on
+    /// every iteration another branch wins — must release its waiter slot.
+    /// Before the drop guard, each such drop leaked the counter upward and
+    /// permanently defeated the notify-elision.
+    #[tokio::test]
+    async fn dropped_waiters_release_their_counter_slots() {
+        let shared = SharedQuotes::default();
+        for _ in 0..8 {
+            let waiting = shared.changed_after(0);
+            tokio::pin!(waiting);
+            // Poll once so the future registers as a waiter, then drop it.
+            let poll = futures_util::poll!(waiting.as_mut());
+            assert!(poll.is_pending());
+        }
+        assert_eq!(shared.waiter_count(), 0);
+
+        let ring: AsyncRing<u64> = AsyncRing::new(2);
+        for _ in 0..8 {
+            let waiting = ring.pop();
+            tokio::pin!(waiting);
+            let poll = futures_util::poll!(waiting.as_mut());
+            assert!(poll.is_pending());
+        }
+        assert_eq!(ring.waiter_count(), 0);
+
+        // Wakeups still work after churn.
+        shared.publish(DesiredQuotes {
+            quote_seq: 5,
+            ..DesiredQuotes::default()
+        });
+        assert_eq!(shared.changed_after(0).await.quote_seq, 5);
+        assert!(ring.try_push(9).is_ok());
+        assert_eq!(ring.pop().await, 9);
     }
 
     #[tokio::test]

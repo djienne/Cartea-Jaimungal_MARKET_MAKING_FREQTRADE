@@ -18,6 +18,7 @@ use crate::hyperliquid::signing::{
 };
 use crate::instrument::InstrumentSpec;
 use crate::latency::{LatencyKind, LatencyMonitor};
+use crate::lockfree::AtomicBbo;
 use crate::types::{
     unix_ms, AccountState, Bbo, DesiredQuotes, ExecutionEvent, Fill, MarketEvent, ProcessClock,
     QuoteReason, Side,
@@ -117,6 +118,10 @@ pub struct HyperliquidLiveBackend {
     account: LiveAccountSnapshot,
     diagnostics: LiveExecutionDiagnostics,
     latest_bbo: Option<Bbo>,
+    /// The hot path's shared BBO slot, when attached. Quote validation reads
+    /// this so decision and validation see one snapshot; `latest_bbo` (fed by
+    /// the drained event ring) is the fallback and can lag under backlog.
+    market_bbo: Option<Arc<AtomicBbo>>,
     session_started_at_ms: u64,
     pending_events: Vec<ExecutionEvent>,
     last_reconcile_ms: u64,
@@ -265,6 +270,7 @@ impl HyperliquidLiveBackend {
                 ..LiveExecutionDiagnostics::default()
             },
             latest_bbo: None,
+            market_bbo: None,
             session_started_at_ms: unix_ms(),
             pending_events: Vec::new(),
             last_reconcile_ms: 0,
@@ -291,6 +297,12 @@ impl HyperliquidLiveBackend {
             session_events: event_rx,
             session_task,
         })
+    }
+
+    /// Attach the hot path's shared BBO slot so order validation prices from
+    /// the same snapshot the quote decision used.
+    pub fn attach_market_bbo(&mut self, slot: Arc<AtomicBbo>) {
+        self.market_bbo = Some(slot);
     }
 
     pub const fn diagnostics(&self) -> &LiveExecutionDiagnostics {
@@ -1707,8 +1719,14 @@ impl ExecutionBackend for HyperliquidLiveBackend {
         }
         if !place.is_empty() {
             let placed_actions = place.len() as u64;
+            // Prefer the hot path's shared slot: it is the exact snapshot the
+            // quote decision priced from, while `latest_bbo` is fed by the
+            // drained event ring and can lag under backlog.
             let bbo = self
-                .latest_bbo
+                .market_bbo
+                .as_ref()
+                .and_then(|slot| slot.load())
+                .or(self.latest_bbo)
                 .context("cannot place live quote without BBO")?;
             self.validate_new_orders(&place, bbo)?;
             if let Err(error) = self.session.enqueue_orders(desired.quote_seq, place) {
@@ -2047,6 +2065,7 @@ mod tests {
                 ..LiveExecutionDiagnostics::default()
             },
             latest_bbo: None,
+            market_bbo: None,
             session_started_at_ms: checkpoint,
             pending_events: Vec::new(),
             last_reconcile_ms: 0,

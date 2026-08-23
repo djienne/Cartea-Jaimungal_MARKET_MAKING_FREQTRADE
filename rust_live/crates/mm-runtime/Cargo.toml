@@ -21,6 +21,7 @@ tracing = "=0.1.44"
 
 [dev-dependencies]
 allocation-counter = "=0.8.1"
+futures-util = "=0.3.34"
 loom = "=0.7.2"
 
 [lints.rust]

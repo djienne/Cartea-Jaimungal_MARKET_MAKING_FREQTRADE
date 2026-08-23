@@ -1439,6 +1439,7 @@ dependencies = [
  "cj-core",
  "core_affinity",
  "crossbeam-queue",
+ "futures-util",
  "loom",
  "mm-settings",
  "serde",

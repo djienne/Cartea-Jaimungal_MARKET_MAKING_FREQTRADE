@@ -1181,6 +1181,9 @@ async fn run_live(
     let market_evidence_valid = Arc::new(AtomicBool::new(true));
     let events = Arc::new(AsyncRing::new(config.runtime.market_event_capacity));
     let latest_bbo = Arc::new(AtomicBbo::default());
+    // Order validation prices from the same shared snapshot the hot path
+    // quotes from, not from the drained event ring.
+    backend.attach_market_bbo(latest_bbo.clone());
     let signal = Arc::new(HotPathSignal::default());
     let desired = Arc::new(SharedQuotes::default());
     let market_task = tokio::spawn(run_market_stream(MarketStreamArgs {

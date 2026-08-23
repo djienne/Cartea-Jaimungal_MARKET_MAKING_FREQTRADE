@@ -63,13 +63,19 @@ impl InstrumentSpec {
 
     /// Hyperliquid accepts at most `max_significant_figures`, while integer
     /// prices remain valid irrespective of their digit count.
+    ///
+    /// The price decade is computed in integer arithmetic:
+    /// `floor(log10(units * 10^-d)) = ilog10(units) - d` exactly, with no
+    /// float `log10` on the quote path and no rounding surprises at decade
+    /// boundaries.
     #[inline]
     pub fn price_quantum(&self, px_units: i64) -> i64 {
         if px_units == 0 {
             return 1;
         }
-        let px = px_units.unsigned_abs() as f64 / self.price_scale() as f64;
-        let decimal_places = (self.max_significant_figures as i32 - 1 - px.log10().floor() as i32)
+        let decade =
+            px_units.unsigned_abs().ilog10() as i32 - self.max_price_decimals as i32;
+        let decimal_places = (self.max_significant_figures as i32 - 1 - decade)
             .clamp(0, self.max_price_decimals as i32) as u32;
         10_i64.pow(self.max_price_decimals - decimal_places)
     }

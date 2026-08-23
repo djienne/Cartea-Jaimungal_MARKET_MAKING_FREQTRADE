@@ -1,29 +1,29 @@
 #![no_main]
 
 use hyperliquid_connector::instrument::InstrumentSpec;
-use hyperliquid_connector::wire::{parse_bbo, parse_book, parse_trades};
+use hyperliquid_connector::wire::parse_public_frame;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) else {
+    let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
     let instrument = InstrumentSpec {
         symbol: "CASHCAT".to_owned(),
         dex: String::new(),
-        asset_id: 0,
+        asset_id: 231,
         sz_decimals: 0,
         max_price_decimals: 6,
         max_significant_figures: 5,
         max_leverage: 3.0,
         minimum_notional: 10.0,
-        margin_table_id: 0,
-        only_isolated: false,
-        margin_mode: String::new(),
+        margin_table_id: 3,
+        only_isolated: true,
+        margin_mode: "strictIsolated".to_owned(),
         is_delisted: false,
         metadata_fingerprint: String::new(),
     };
-    let _ = parse_bbo(&value, &instrument, 1);
-    let _ = parse_trades(&value, &instrument, 1);
-    let _ = parse_book(&value, &instrument, 1);
+    // The decoder must never panic on arbitrary input; it exercises the real
+    // feed path (envelope pass plus typed per-channel payload decode).
+    let _ = parse_public_frame(text, &instrument, 1);
 });
