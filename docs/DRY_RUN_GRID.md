@@ -14,17 +14,17 @@ every stats interval. `--duration-seconds 0` (the default) runs until Ctrl-C.
 
 Hyperliquid allows **10 simultaneous WebSocket connections per IP**. That budget
 is already shared with three collector containers and with any live session,
-which needs two. Eight `dry-run` processes would open eight more and could take
-down data collection or block real trading.
+which needs two. One `dry-run` process per variant would open one connection
+each and could take down data collection or block real trading.
 
-Measured on the running 8-variant grid: **1 connection, 18 threads**, both
-collectors still `(healthy)`. The count does not grow with the number of
-variants.
+Measured on the running **10-variant** grid: **1 connection**, both collectors
+still `(healthy)`. The count does not grow with the number of variants — that is
+the whole point.
 
 ## What a variant may change
 
-Only four levers, because only four are implicated by the evidence. The
-161.95 h staged sweep (`cashcat_sweep.md`) localised the entire loss to one
+A deliberately narrow set, because only these are implicated by the evidence.
+The 161.95 h staged sweep (`cashcat_sweep.md`) localised the entire loss to one
 six-hour burst: 26 of 27 windows sum to **+35.28**, and `08-22 03:57` alone is
 **−241.17** on 1,771 fills. So the question a variant should answer is *how much
 of a burst does this take*.
@@ -35,6 +35,7 @@ of a burst does this take*.
 | `phi_kappa_t` | `model.phi_kappa_t` | sweep winner used 300 against a grid topping out at 1000 |
 | `min_half_spread_bps` | `quoting.min_half_spread_bps` | the losing window earned +683.89 across 1,771 fills — ~0.39/fill, under its adverse selection |
 | `min_order_lifetime_ms`, `replace_threshold_bps` | `quoting.*` | the only positive latency-ladder rung was the 30 s-refresh one |
+| `flow_guard_enabled`, `vpin_threshold`, `fast_move_threshold_bps` | `flow_guard.*` | the toxic-flow guard (`TOXIC_FLOW_GUARD.md`); the shipped spec pairs `guarded`/`unguarded` so the A/B runs on one shared live feed |
 
 Every field is optional and inherits when absent, so a variant with no overrides
 is literally the shipped configuration — which is what makes `baseline` an
