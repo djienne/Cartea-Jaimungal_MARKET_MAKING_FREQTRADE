@@ -745,12 +745,43 @@ info calls such as `l2Book`, `allMids`, `clearinghouseState`, and `orderStatus`
 cost weight 2; most other info calls cost 20, with additional response-size
 weights on history endpoints.
 
-Address limits are separate. An address begins with a 10,000-request buffer and
-earns roughly one action request per cumulative USDC traded. Cancels receive a
-larger allowance. A batch counts once for IP weight but each contained action
-counts toward the address limit. During congestion, block share also depends on
-maker share. See
+Address limits are separate, and they are the constraint that actually binds
+this strategy. An address begins with a 10,000-request buffer and earns roughly
+one action request per cumulative USDC traded. Cancels receive a larger
+allowance. A batch counts once for IP weight but each contained action counts
+toward the address limit. During congestion, block share also depends on maker
+share. See
 [Rate limits and user limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits).
+
+**The address counter is cumulative for the life of the account. It does not
+reset.** Query it with `{"type":"userRateLimit","user":<addr>}` and read
+`nRequestsUsed` / `nRequestsCap`; never assume a per-run or rolling-window
+budget. Measured on the CASHCAT account on 2026-08-23:
+
+```
+cumVlm        = 3,060.56 USDC
+nRequestsCap  = 13,060      (= 10,000 + cumulative volume)
+nRequestsUsed = 12,941      (lifetime)
+remaining     =    119
+```
+
+Two consequences follow, and both were observed live:
+
+- A wasted action is gone permanently. The duplicate-cancel defect fixed in
+  `9769354` burned 2,440 actions in a single 40-minute session — about 19% of
+  the entire lifetime cap.
+- Replay of one 120-minute CASHCAT window at the shipped
+  `replace_threshold_bps = 2.0` costs 11,902 address actions
+  (`docs/requote_hysteresis_sweep.md`). A *fresh* account's 10,000-request
+  buffer does not cover one two-hour session. Sustained operation requires the
+  volume traded per action to exceed 1 USDC; that window managed roughly 1
+  fill per 220 actions.
+
+When the remaining reserve falls below 100 requests the backend suspends new
+orders while still permitting cancels, logs `rate limit hit; suspending new
+orders`, and enters a 30-second cooldown before retrying. That path was
+exercised live on 2026-08-23: it held the reserve at ~119 rather than draining
+it to zero, leaving room to flatten.
 
 Implementation consequences:
 

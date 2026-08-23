@@ -93,6 +93,14 @@ session refuses to inherit is exactly the one flatten exists to clear. The
 stored fingerprint is adopted only once the store is flat, so an interrupted
 flatten still blocks the next quoting session.
 
+Market data is **not** produced by this binary. The reference recorder is the
+`hl-cashcat-collector` Docker container, and `storage.data_dir`
+(`scripts/HL_data`) is an NTFS junction onto the directory it writes. The
+`live` command never records Parquet and never takes the writer lock, so
+starting or stopping a live session cannot disturb collection; only `dry-run`
+can, and it is refused by the writer lock and shard preflight. See
+[`../docs/DATA_COLLECTION.md`](../docs/DATA_COLLECTION.md).
+
 The current protocol research, exact signing specification, repository-wide
 connector audit, CASHCAT constraints, and staged release gates are consolidated
 in [`HYPERLIQUID_LIVE_CONNECTOR.md`](HYPERLIQUID_LIVE_CONNECTOR.md).

@@ -78,6 +78,17 @@ tape (546,818 price rows, 243,653 trades, 0.7 train/held-out split) —
 with `ok=false`; it is retained as evidence but must not be mistaken for the
 95-hour staged sweep above.
 
+**Real money has since been risked, twice.** `docs/live_canary_20260823.md`
+records two mainnet CASHCAT sessions at minimum size: what they cost, the three
+production defects they surfaced, and why the venue's **address-action budget**
+— a lifetime account allowance of `10,000 + 1 per USDC traded` that never
+resets — is the constraint that actually binds this strategy, ahead of the
+WebSocket message rate the configuration validates against.
+
+Market data is produced by a Docker container, not by this repo; see
+`docs/DATA_COLLECTION.md` for who owns the tape, why no live session can
+disturb it, and how to check that it is still running.
+
 Shorter tapes read positive out of sample — +1.18 on 24.8 h, +1.56 on 31.23 h
 (`docs/cashcat_sweep_phitail.md`), +1.37 on 44.97 h — while both the 60.32 h and
 95.23 h tapes read negative. The winning calibration also moved between tapes,

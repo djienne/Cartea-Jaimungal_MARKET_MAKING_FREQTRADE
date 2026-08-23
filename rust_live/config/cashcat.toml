@@ -45,6 +45,10 @@ writer_lock_path = "../run/cashcat-collector.lock"
 flush_interval_seconds = 10
 compact_after_minutes = 15
 retention_minutes = 180
+# Only affects `dry-run`. The `live` command never records Parquet and never
+# takes the writer lock, so a live session cannot disturb the reference
+# collector (the hl-cashcat-collector Docker container). See
+# docs/DATA_COLLECTION.md.
 write_parquet = true
 
 [calibration]

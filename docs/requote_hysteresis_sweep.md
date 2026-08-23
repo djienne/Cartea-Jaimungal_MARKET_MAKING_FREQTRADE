@@ -34,6 +34,42 @@ Reading:
 - The shipped default stays `replace_threshold_bps = 2.0`, now with evidence
   behind it rather than only the remediation plan's argument.
 
+## Address-action cost — the constraint that actually binds
+
+Added 2026-08-23, after a live run showed the venue's **address-action budget**
+is a lifetime account allowance (`10,000 + 1 per USDC of cumulative volume`)
+that never resets, not a rolling window. The sweep above was scored on
+WebSocket messages/minute against a 1600/min budget; that budget was never the
+binding one. Each order and each cancel costs one address action, so the true
+cost is `virtual_orders_created + virtual_orders_canceled`, derived here from
+the same `requote_hysteresis_sweep.json` runs:
+
+| bps | orders | cancels | address actions | fills | actions/fill |
+|----:|----:|----:|----:|----:|----:|
+| 0 | 12,755 | 12,745 | **25,500** | 41 | **622** |
+| 1 | 8,599 | 8,587 | **17,186** | 45 | **382** |
+| 2 | 5,959 | 5,943 | **11,902** | 54 | **220** |
+| 4 | 3,080 | 3,068 | **6,148** | 51 | **121** |
+
+Reading this against the economics table above:
+
+- **The shipped default is not the action-efficient choice.** `bps = 4` costs
+  1.9x fewer actions than `bps = 2` (6,148 vs 11,902) for almost the same fill
+  count (51 vs 54) — 120 actions per fill against 220.
+- **No setting is sustainable on its own.** Allowance breaks even only when a
+  fill generates more than 1 USDC of volume per action spent — roughly 220 USDC
+  of notional per fill at `bps = 2`, or 120 at `bps = 4`. Live CASHCAT fills
+  were ~11 USDC. The knob changes the multiple, not the sign.
+- One 120-minute window at `bps = 2` costs 11,902 actions, so a **fresh
+  account's 10,000-request buffer does not cover a single two-hour session.**
+
+The default stays at `2.0`: it wins on equity, realized P&L and every markout
+horizon, and `bps = 4` has the worst 30s markout in the sweep. But the choice
+is now an explicit trade of allowance for adverse selection, not a free win. If
+runtime per unit of allowance becomes the objective — a long unattended session
+on a fixed budget — `bps = 4` is the setting to re-examine, and the decision
+should be re-scored on actions-per-fill rather than messages/minute.
+
 **Caveat:** one two-hour window on one day. This supports the default; it does
 not close the question. Re-run this sweep (four replay invocations over a
 frozen `HL_data` snapshot) before promoting any different value.
