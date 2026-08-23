@@ -99,14 +99,73 @@ python HYPERLIQUID_DATA/inventory.py     # what is collected, and is it fresh
 Healthy logs report a rolling BBO count and periodic
 `Flushed buffers for 3 data types across symbols`.
 
-## Known gap
+## Watchdog
 
-There is **no Docker `HEALTHCHECK`** on either collector (`mm-redis` and
-`polymarket-1d-paper` have one; these do not). The `os._exit(1)` path covers a
-dead or quiet WebSocket, but not a process that is wedged while still holding
-the socket, nor writes that fail silently — in those states the container stays
-"Up" and nothing restarts it.
+Two layers, because they fail differently.
 
-A freshness-based healthcheck plus an autoheal sidecar would close it. It is not
-applied here because adding a healthcheck forces container recreation, which
-costs a gap in the tape; do it at a deliberate moment, not mid-session.
+**Inside the collector** — covers a dead or quiet WebSocket:
+
+- `INACTIVITY_TIMEOUT_SEC=180` — no data for 3 minutes is a stall;
+- `MAX_RECONNECT_ATTEMPTS=3` with `RECONNECT_BACKOFF_SEC=5`;
+- on exhaustion the process calls `os._exit(1)`
+  (`hyperliquid_data_collector.py`), and `restart: unless-stopped` restarts it.
+
+That loop is not theoretical — the container had already logged
+`RestartCount=1` before any of this was added.
+
+**Docker `HEALTHCHECK` + autoheal** (added 2026-08-23) — covers what the above
+cannot: a process wedged while still holding the socket, or writes failing
+silently. In those states the container stays "Up" forever and nothing acts.
+
+The check asserts *data is landing*, not that a process exists. It takes the
+flush timestamp from the newest shard **filename** rather than calling `stat()`
+per file, so its cost tracks directory size and not retention — the same reason
+the readers were changed on 2026-08-17. Measured: 6,219 files in 29 ms, run
+once a minute against a `cpus: 0.1` cap.
+
+It is scoped to each container's own `SYMBOLS`. Both collectors share the mount
+and can see each other's directories, so an unscoped check would let a wedged
+CASHCAT collector look healthy off the other collector's writes.
+
+The threshold is 600 s (`HEALTH_MAX_AGE_SEC`), deliberately well above the
+app's own recovery window (180 s + 3 reconnects), so it only fires once that
+path has already failed to.
+
+Docker never acts on a failing healthcheck outside Swarm — it only marks the
+container. The `autoheal` service (`willfarrell/autoheal`) does the restarting.
+It is scoped **by label** (`autoheal=true`), not `AUTOHEAL_CONTAINER_LABEL=all`,
+so it can only ever touch the two collectors and never the trading stack or any
+other project sharing this daemon.
+
+### Verified, not assumed
+
+- The check passes on healthy collectors (`newest_age_s` 4.3 and 1.3).
+- It fails when data is stale (`HEALTH_MAX_AGE_SEC=0` → exit 1) and when the
+  symbol has no data (→ exit 1). A check that cannot fail is worthless.
+- The autoheal loop was proven with a disposable canary container labelled
+  `autoheal=true` and a permanently failing healthcheck, rather than by
+  breaking a real collector.
+
+### Restarts are graceful (2026-08-23)
+
+The watchdog restarts a collector; that restart must not itself cost data. It
+used to. The entrypoint runs as **PID 1**, which gets no default signal
+handlers, and the collector only caught `KeyboardInterrupt` (SIGINT). So
+`docker stop`, `docker restart`, `docker compose down` and autoheal all waited
+out the full stop timeout and then SIGKILLed — skipping `stop_collection()` and
+therefore the final `_flush_buffers()`, losing everything still in memory.
+
+`run_collector.py` now installs a SIGTERM handler that raises
+`KeyboardInterrupt`, reusing the already-tested shutdown path rather than
+adding a second one. Measured before and after on `hl-cashcat-collector`:
+
+| | before | after |
+|---|---|---|
+| restart duration | ~30 s (timeout, then SIGKILL) | **3 s** |
+| final flush | skipped | `Shutting down...` → `Flushed buffers` |
+
+`AUTOHEAL_DEFAULT_STOP_TIMEOUT` was lowered 30 s → 15 s to match: it is now
+headroom for a graceful flush rather than a wait for the inevitable kill.
+
+Attaching the healthchecks cost a **5–6 second** gap in the tape, taken one
+collector at a time.
