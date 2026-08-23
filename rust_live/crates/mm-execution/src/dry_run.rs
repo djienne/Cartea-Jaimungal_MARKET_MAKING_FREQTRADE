@@ -216,6 +216,31 @@ impl DryRunBackend {
         self.restored_inventory_unit
     }
 
+    /// Requote hold window in price units, mirroring the live backend: the
+    /// larger of the tick threshold and the price-relative bps threshold.
+    /// The simulator must implement the same hysteresis the live path trades
+    /// with, or replay evidence cannot evaluate the hold window at all.
+    fn requote_hold_window_units(&self, target_px_units: i64) -> i64 {
+        let ticks = self
+            .quoting
+            .replace_threshold_ticks
+            .max(0)
+            .saturating_mul(self.instrument.price_quantum(target_px_units));
+        let bps = (self.quoting.replace_threshold_bps.max(0.0) / 10_000.0
+            * target_px_units as f64) as i64;
+        ticks.max(bps)
+    }
+
+    /// A live (non-cancelling) virtual order is held when the new target sits
+    /// inside the hold window at the same size and reduce-only flag.
+    fn order_is_held(&self, order: &VirtualOrder, intent: OrderIntent) -> bool {
+        order.cancel_effective_ms.is_none()
+            && order.intent.side == intent.side
+            && order.intent.qty_units == intent.qty_units
+            && order.intent.reduce_only == intent.reduce_only
+            && (order.intent.px - intent.px).abs() < self.requote_hold_window_units(intent.px)
+    }
+
     fn reconcile_now(&mut self, desired: DesiredQuotes, now_ms: u64) {
         self.expire_cancels(now_ms);
         for side in [Side::Buy, Side::Sell] {
@@ -226,16 +251,25 @@ impl DryRunBackend {
             let unchanged = next.is_some_and(|intent| {
                 self.orders
                     .iter()
-                    .any(|order| order.intent == intent && order.cancel_effective_ms.is_none())
+                    .any(|order| self.order_is_held(order, intent))
             });
+            let held: Vec<u64> = next
+                .map(|intent| {
+                    self.orders
+                        .iter()
+                        .filter(|order| self.order_is_held(order, intent))
+                        .map(|order| order.id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let cancel_effective = now_ms.saturating_add(self.config.cancel_latency_ms);
             for order in self
                 .orders
                 .iter_mut()
                 .filter(|order| order.intent.side == side && order.cancel_effective_ms.is_none())
             {
-                if next != Some(order.intent) {
-                    order.cancel_effective_ms =
-                        Some(now_ms.saturating_add(self.config.cancel_latency_ms));
+                if !held.contains(&order.id) {
+                    order.cancel_effective_ms = Some(cancel_effective);
                 }
             }
             if !unchanged {

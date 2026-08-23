@@ -96,14 +96,39 @@ impl ModelReport {
     }
 }
 
+/// What a full event-log queue means for the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogBackpressure {
+    /// Real-time sessions: a saturated queue is evidence loss, refuse the run.
+    RefuseWhenFull,
+    /// Offline replay: the producer runs at replay speed and nothing is
+    /// real-time, so completeness is preserved by blocking on the writer.
+    BlockWhenFull,
+}
+
 pub struct JsonlEventLogger {
     path: PathBuf,
     sender: SyncSender<WriterMessage>,
+    backpressure: LogBackpressure,
     writer_thread: Option<JoinHandle<()>>,
 }
 
 impl JsonlEventLogger {
     pub fn create(directory: &Path, mode: &str, started_at_ms: u64) -> Result<Self> {
+        Self::create_with_backpressure(
+            directory,
+            mode,
+            started_at_ms,
+            LogBackpressure::RefuseWhenFull,
+        )
+    }
+
+    pub fn create_with_backpressure(
+        directory: &Path,
+        mode: &str,
+        started_at_ms: u64,
+        backpressure: LogBackpressure,
+    ) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
         let path = directory.join(format!("{mode}-{started_at_ms}.jsonl"));
         let writer = BufWriter::new(File::create(&path)?);
@@ -114,6 +139,7 @@ impl JsonlEventLogger {
         Ok(Self {
             path,
             sender,
+            backpressure,
             writer_thread: Some(writer_thread),
         })
     }
@@ -136,16 +162,23 @@ impl JsonlEventLogger {
             writer.write_all(b"\n")?;
             Ok(())
         });
-        self.sender
-            .try_send(WriterMessage::Event(job))
-            .map_err(|error| {
-                anyhow::anyhow!(match error {
-                    TrySendError::Full(_) => {
-                        "event-log queue saturated; refusing an incomplete scientific run"
-                    }
-                    TrySendError::Disconnected(_) => "event-log writer stopped unexpectedly",
-                })
-            })
+        match self.backpressure {
+            LogBackpressure::BlockWhenFull => self
+                .sender
+                .send(WriterMessage::Event(job))
+                .map_err(|_| anyhow::anyhow!("event-log writer stopped unexpectedly")),
+            LogBackpressure::RefuseWhenFull => self
+                .sender
+                .try_send(WriterMessage::Event(job))
+                .map_err(|error| {
+                    anyhow::anyhow!(match error {
+                        TrySendError::Full(_) => {
+                            "event-log queue saturated; refusing an incomplete scientific run"
+                        }
+                        TrySendError::Disconnected(_) => "event-log writer stopped unexpectedly",
+                    })
+                }),
+        }
     }
 
     pub fn flush(&mut self) -> Result<()> {

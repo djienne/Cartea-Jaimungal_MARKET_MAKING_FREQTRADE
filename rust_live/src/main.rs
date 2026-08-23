@@ -1752,8 +1752,14 @@ async fn run_replay_command(
         config.quoting.clone(),
         config.risk.clone(),
     )?;
-    let mut event_logger =
-        JsonlEventLogger::create(&config.storage.report_dir, "replay", started_at_ms)?;
+    // Replay produces events at replay speed; block on the writer rather than
+    // refusing the run, since nothing here is real-time.
+    let mut event_logger = JsonlEventLogger::create_with_backpressure(
+        &config.storage.report_dir,
+        "replay",
+        started_at_ms,
+        mm_live::report::LogBackpressure::BlockWhenFull,
+    )?;
     run_event_source(
         config,
         &surface,
