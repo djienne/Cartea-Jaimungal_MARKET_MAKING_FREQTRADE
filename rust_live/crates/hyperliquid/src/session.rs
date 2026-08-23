@@ -442,13 +442,10 @@ where
             .send(Message::Text(subscription_request(&subscription).into()))
             .await?;
     }
-    args.events
-        .send(SessionEvent::Connected {
+    deliver_event(&args.events, healthy, SessionEvent::Connected {
             generation,
             received_ns: args.clock.now_ns(),
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+        })?;
     let mut subscription_acks = 0_usize;
     let mut request_id = 1_u64;
     let mut inflight = InflightBook::new(args.state.clone());
@@ -465,10 +462,16 @@ where
                 last_inbound = tokio::time::Instant::now();
                 match incoming? {
                     Message::Text(text) => {
-                        let root: serde_json::Value = serde_json::from_str(text.as_ref())?;
-                        let channel = root.get("channel").and_then(serde_json::Value::as_str).unwrap_or_default();
+                        let mut root: serde_json::Value = serde_json::from_str(text.as_ref())?;
+                        // Owned so the account-data arm can move `data` out of
+                        // the DOM instead of deep-cloning it.
+                        let channel = root
+                            .get("channel")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
                         let received_ns = args.clock.now_ns();
-                        match channel {
+                        match channel.as_str() {
                             "pong" => {
                                 if let Some(sent_ns) = pending_ping_ns.take() {
                                     args.latency.record(
@@ -482,8 +485,7 @@ where
                                 subscription_acks += 1;
                                 if subscription_acks == ACCOUNT_SUBSCRIPTION_COUNT {
                                     healthy.store(true, Ordering::Release);
-                                    args.events.send(SessionEvent::Ready { generation, received_ns }).await
-                                        .map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+                                    deliver_event(&args.events, healthy, SessionEvent::Ready { generation, received_ns })?;
                                 }
                             }
                             "post" => {
@@ -515,26 +517,28 @@ where
                                     http_status: 200,
                                     body: payload,
                                 };
-                                args.events
-                                    .send(SessionEvent::ActionCompleted {
+                                deliver_event(&args.events, healthy, SessionEvent::ActionCompleted {
                                         purpose: entry.purpose,
                                         outcome: outcome.clone(),
                                         received_ns,
-                                    })
-                                    .await
-                                    .map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+                                    })?;
                                 if let Some(response) = entry.response {
                                     let _ = response.send(Ok(outcome));
                                 }
                             }
                             "" => {}
                             _ => {
-                                args.events.send(SessionEvent::AccountData {
+                                deliver_event(&args.events, healthy, SessionEvent::AccountData {
                                     generation,
                                     received_ns,
-                                    channel: AccountChannel::from_wire(channel),
-                                    data: root.get("data").cloned().unwrap_or_default(),
-                                }).await.map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+                                    channel: AccountChannel::from_wire(&channel),
+                                    // Move the payload out of the parsed frame
+                                    // rather than deep-cloning the DOM again.
+                                    data: root
+                                        .get_mut("data")
+                                        .map(serde_json::Value::take)
+                                        .unwrap_or_default(),
+                                })?;
                             }
                         }
                     }
@@ -559,11 +563,11 @@ where
                     if let Some(response) = command.response {
                         let _ = response.send(Err(anyhow::anyhow!(reason)));
                     } else {
-                        args.events.send(SessionEvent::ActionRefused {
+                        deliver_event(&args.events, healthy, SessionEvent::ActionRefused {
                             purpose,
                             reason,
                             received_ns: args.clock.now_ns(),
-                        }).await.map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+                        })?;
                     }
                     continue;
                 }
@@ -572,11 +576,11 @@ where
                     if let Some(response) = command.response {
                         let _ = response.send(Err(anyhow::anyhow!(reason)));
                     } else {
-                        args.events.send(SessionEvent::ActionRefused {
+                        deliver_event(&args.events, healthy, SessionEvent::ActionRefused {
                             purpose,
                             reason,
                             received_ns: args.clock.now_ns(),
-                        }).await.map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+                        })?;
                     }
                     continue;
                 }
@@ -585,11 +589,11 @@ where
                     if let Some(response) = command.response {
                         let _ = response.send(Err(error));
                     } else {
-                        args.events.send(SessionEvent::ActionRefused {
+                        deliver_event(&args.events, healthy, SessionEvent::ActionRefused {
                             purpose,
                             reason,
                             received_ns: args.clock.now_ns(),
-                        }).await.map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+                        })?;
                     }
                     continue;
                 }
@@ -630,14 +634,11 @@ where
                             nonce: entry.nonce,
                             error: error.to_string(),
                         };
-                        args.events
-                            .send(SessionEvent::ActionCompleted {
+                        deliver_event(&args.events, healthy, SessionEvent::ActionCompleted {
                                 purpose: entry.purpose,
                                 outcome: outcome.clone(),
                                 received_ns: args.clock.now_ns(),
-                            })
-                            .await
-                            .map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+                            })?;
                         if let Some(response) = entry.response {
                             let _ = response.send(Ok(outcome));
                         }
@@ -693,14 +694,11 @@ where
                             nonce: entry.nonce,
                             error: "WebSocket post timeout".to_owned(),
                         };
-                        args.events
-                            .send(SessionEvent::ActionCompleted {
+                        deliver_event(&args.events, healthy, SessionEvent::ActionCompleted {
                                 purpose: entry.purpose,
                                 outcome: outcome.clone(),
                                 received_ns: now_ns,
-                            })
-                            .await
-                            .map_err(|_| anyhow::anyhow!("session event consumer stopped"))?;
+                            })?;
                         if let Some(response) = entry.response {
                             let _ = response.send(Ok(outcome));
                         }
@@ -723,6 +721,46 @@ where
                     return Ok(());
                 }
             }
+        }
+    }
+}
+
+const fn session_event_kind(event: &SessionEvent) -> &'static str {
+    match event {
+        SessionEvent::Connected { .. } => "connected",
+        SessionEvent::Ready { .. } => "ready",
+        SessionEvent::AccountData { .. } => "account_data",
+        SessionEvent::ActionCompleted { .. } => "action_completed",
+        SessionEvent::ActionRefused { .. } => "action_refused",
+        SessionEvent::Disconnected { .. } => "disconnected",
+    }
+}
+
+/// Non-blocking session-event delivery for use inside the dispatch loop.
+///
+/// The event channel is drained by the strategy loop. Awaiting a send here
+/// would let a slow consumer stall order — and priority-cancel — dispatch,
+/// and can deadlock outright: the strategy loop awaits our oneshot responses,
+/// and we would be awaiting its channel capacity. On a full channel the event
+/// is dropped and the session degrades to unhealthy; the next authoritative
+/// reconcile restores exact durable state from the venue.
+fn deliver_event(
+    events: &mpsc::Sender<SessionEvent>,
+    healthy: &AtomicBool,
+    event: SessionEvent,
+) -> Result<()> {
+    match events.try_send(event) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Full(event)) => {
+            healthy.store(false, Ordering::Release);
+            warn!(
+                kind = session_event_kind(&event),
+                "session event channel full; event dropped, session degraded"
+            );
+            Ok(())
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            bail!("session event consumer stopped")
         }
     }
 }

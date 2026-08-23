@@ -18,7 +18,9 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -948,6 +950,195 @@ impl ParquetEventRecorder {
             cutoff,
         )?;
         Ok(compacted)
+    }
+}
+
+const RECORDER_QUEUE_CAPACITY: usize = 16_384;
+
+enum RecorderCommand {
+    Record(MarketEvent, u64),
+    Maintain {
+        now_ms: u64,
+        compact_after_minutes: u64,
+        retention_minutes: u64,
+    },
+    Finish {
+        now_ms: u64,
+        compact_after_minutes: u64,
+        retention_minutes: u64,
+        reply: SyncSender<std::result::Result<(usize, usize), String>>,
+    },
+    Shutdown {
+        now_ms: u64,
+    },
+}
+
+/// [`ParquetEventRecorder`] behind a dedicated writer thread.
+///
+/// `ParquetEventRecorder::record` performs a synchronous ZSTD Parquet write of
+/// up to a whole flush interval of rows whenever the flush cadence fires, and
+/// compaction rewrites entire shards — none of which belongs on the runtime
+/// thread that drains the market-event ring. The strategy loop only sends;
+/// buffering, flushing, compaction, and pruning all run here.
+pub struct ParquetRecorderHandle {
+    sender: SyncSender<RecorderCommand>,
+    error: Arc<Mutex<Option<String>>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl ParquetRecorderHandle {
+    pub fn spawn(mut recorder: ParquetEventRecorder) -> Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel(RECORDER_QUEUE_CAPACITY);
+        let error = Arc::new(Mutex::new(None::<String>));
+        let thread_error = error.clone();
+        let thread = thread::Builder::new()
+            .name("parquet-recorder".to_owned())
+            .spawn(move || {
+                while let Ok(command) = receiver.recv() {
+                    let result = match command {
+                        RecorderCommand::Record(event, local_ms) => {
+                            recorder.record(&event, local_ms)
+                        }
+                        RecorderCommand::Maintain {
+                            now_ms,
+                            compact_after_minutes,
+                            retention_minutes,
+                        } => recorder
+                            .compact(now_ms, compact_after_minutes)
+                            .and_then(|compacted| {
+                                let removed = recorder.prune(now_ms, retention_minutes)?;
+                                tracing::info!(compacted, removed, "Parquet maintenance complete");
+                                Ok(())
+                            }),
+                        RecorderCommand::Finish {
+                            now_ms,
+                            compact_after_minutes,
+                            retention_minutes,
+                            reply,
+                        } => {
+                            let result = recorder.flush(now_ms).and_then(|()| {
+                                let compacted = recorder.compact(now_ms, compact_after_minutes)?;
+                                let removed = recorder.prune(now_ms, retention_minutes)?;
+                                Ok((compacted, removed))
+                            });
+                            let _ = reply.send(result.map_err(|error| error.to_string()));
+                            return;
+                        }
+                        RecorderCommand::Shutdown { now_ms } => {
+                            let _ = recorder.flush(now_ms);
+                            return;
+                        }
+                    };
+                    if let Err(error) = result {
+                        if let Ok(mut destination) = thread_error.lock() {
+                            *destination = Some(error.to_string());
+                        }
+                        return;
+                    }
+                }
+            })?;
+        Ok(Self {
+            sender,
+            error,
+            thread: Some(thread),
+        })
+    }
+
+    fn check_error(&self) -> Result<()> {
+        let error = self
+            .error
+            .lock()
+            .map_err(|_| anyhow::anyhow!("parquet recorder error lock poisoned"))?;
+        if let Some(error) = error.as_deref() {
+            bail!("parquet recorder failed: {error}");
+        }
+        Ok(())
+    }
+
+    /// Queue one market event for recording. A saturated queue is refused for
+    /// the same reason a saturated event log is: silently dropping collector
+    /// rows would corrupt the calibration evidence this data feeds.
+    pub fn record(&self, event: &MarketEvent, local_ms: u64) -> Result<()> {
+        self.check_error()?;
+        match self
+            .sender
+            .try_send(RecorderCommand::Record(event.clone(), local_ms))
+        {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                bail!("parquet recorder queue saturated; refusing an incomplete scientific run")
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.check_error()?;
+                bail!("parquet recorder thread stopped unexpectedly")
+            }
+        }
+    }
+
+    /// Queue compaction and pruning. Skipped silently when the writer is busy;
+    /// the next calibration interval retries.
+    pub fn maintain(
+        &self,
+        now_ms: u64,
+        compact_after_minutes: u64,
+        retention_minutes: u64,
+    ) -> Result<()> {
+        self.check_error()?;
+        match self.sender.try_send(RecorderCommand::Maintain {
+            now_ms,
+            compact_after_minutes,
+            retention_minutes,
+        }) {
+            Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
+            Err(TrySendError::Disconnected(_)) => {
+                self.check_error()?;
+                bail!("parquet recorder thread stopped unexpectedly")
+            }
+        }
+    }
+
+    /// Flush, compact, and prune one final time, then join the writer.
+    pub fn finish(
+        mut self,
+        now_ms: u64,
+        compact_after_minutes: u64,
+        retention_minutes: u64,
+    ) -> Result<(usize, usize)> {
+        self.check_error()?;
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.sender
+            .send(RecorderCommand::Finish {
+                now_ms,
+                compact_after_minutes,
+                retention_minutes,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("parquet recorder stopped before final flush"))?;
+        let result = reply_rx
+            .recv()
+            .map_err(|_| anyhow::anyhow!("parquet recorder dropped its final acknowledgement"))?
+            .map_err(anyhow::Error::msg);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        result
+    }
+}
+
+impl Drop for ParquetRecorderHandle {
+    fn drop(&mut self) {
+        // Error paths that skip `finish` still get a best-effort final flush.
+        let _ = self.sender.try_send(RecorderCommand::Shutdown {
+            now_ms: crate::types::unix_ms(),
+        });
+        // Replace the sender so the channel disconnects: if the queue was full
+        // above, the writer would otherwise drain it and then wait on `recv`
+        // forever while we wait on `join`.
+        let (disconnected, _) = mpsc::sync_channel(1);
+        drop(std::mem::replace(&mut self.sender, disconnected));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 

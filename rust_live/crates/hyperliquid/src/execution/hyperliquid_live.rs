@@ -2049,11 +2049,11 @@ mod tests {
     fn inventory_watermark_follows_venue_time_and_ignores_stale_replays() {
         let (_directory, mut backend, cloid) = lifecycle_backend();
         let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
-        let mut feed = |backend: &mut HyperliquidLiveBackend,
-                        tid: u64,
-                        time: u64,
-                        start_position: &str,
-                        size: &str| {
+        let feed = |backend: &mut HyperliquidLiveBackend,
+                    tid: u64,
+                    time: u64,
+                    start_position: &str,
+                    size: &str| {
             backend
                 .process_session_event(SessionEvent::AccountData {
                     generation: 1,

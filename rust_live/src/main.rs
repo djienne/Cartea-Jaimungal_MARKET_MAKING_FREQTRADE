@@ -26,7 +26,7 @@ use mm_live::lockfree::{
 use mm_live::metrics::Metrics;
 use mm_live::parquet_io::{
     ensure_no_external_writer, load_market_window, CollectorLock, MarketDataSet,
-    ParquetEventRecorder,
+    ParquetEventRecorder, ParquetRecorderHandle,
 };
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
 use mm_live::replay::ParquetReplaySource;
@@ -147,8 +147,7 @@ enum AcceptancePhase {
     Final,
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     mm_live::BuildInfo::current().ensure_optimized()?;
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -163,6 +162,61 @@ async fn main() -> Result<()> {
     }
     let config = AppConfig::load(&cli.config)?;
     init_tracing(config.runtime.log_json);
+    // The runtime is built explicitly so hot-path isolation is real: the
+    // default #[tokio::main] spawned one worker per logical CPU with no
+    // affinity, leaving workers, the blocking pool (Parquet, HJB solves), and
+    // the writer threads all schedulable on the hot-path core.
+    let runtime = build_runtime(config.runtime.hot_path_cpu)?;
+    runtime.block_on(run_command(cli, config))
+}
+
+/// Bounded, hot-core-avoiding tokio runtime.
+///
+/// Worker and blocking threads round-robin across every core except the one
+/// reserved for the hot path. Rust-side affinity cannot keep *other
+/// processes* off that core — pair it with OS-level isolation (Windows
+/// process affinity / Linux `isolcpus`) for a quiet core.
+fn build_runtime(hot_path_cpu: Option<usize>) -> Result<tokio::runtime::Runtime> {
+    let cores = core_affinity::get_core_ids().unwrap_or_default();
+    let available = cores.len().max(1);
+    let workers = available
+        .saturating_sub(usize::from(hot_path_cpu.is_some()))
+        .clamp(2, 6);
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder
+        .enable_all()
+        .worker_threads(workers)
+        .max_blocking_threads(16);
+    if let Some(hot) = hot_path_cpu {
+        let complement: Vec<core_affinity::CoreId> = cores
+            .iter()
+            .copied()
+            .filter(|core| core.id != hot)
+            .collect();
+        if complement.is_empty() {
+            bail!("hot_path_cpu {hot} leaves no cores for the runtime");
+        }
+        let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        builder.on_thread_start(move || {
+            let index = next.fetch_add(1, Ordering::Relaxed) % complement.len();
+            let _ = core_affinity::set_for_current(complement[index]);
+        });
+        info!(
+            hot_path_cpu = hot,
+            workers,
+            runtime_cores = available - 1,
+            "runtime configured; workers excluded from the hot-path core"
+        );
+    } else {
+        info!(
+            workers,
+            "runtime configured without hot-path isolation (runtime.hot_path_cpu unset)"
+        );
+    }
+    Ok(builder.build()?)
+}
+
+async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
     if command_requires_live(&cli.command) && !config.live.enabled {
         bail!("live.enabled=false; refusing before credentials or order transport");
     }
@@ -273,6 +327,11 @@ async fn main() -> Result<()> {
         }
     }
 }
+
+/// Market events drained per select visit once the quote branch outranks the
+/// ring. Large enough to clear bursts quickly, small enough that a fresh quote
+/// decision never waits behind more than one batch.
+const MARKET_EVENT_DRAIN_BATCH: u32 = 32;
 
 fn command_requires_live(command: &Command) -> bool {
     match command {
@@ -1210,6 +1269,27 @@ async fn run_live(
                         std::future::pending::<()>().await;
                     }
                 } => break,
+                // Quote dispatch outranks the market drain: with the ring
+                // ranked higher, a burst of market events deferred order
+                // placement and cancellation exactly when requoting mattered
+                // most. Shutdown and the deadline stay above everything.
+                next = desired.changed_after(observed_quote_seq) => {
+                    observed_quote_seq = next.quote_seq;
+                    let backend_started_ns = clock.now_ns();
+                    latency.record(
+                        LatencyKind::DecisionToBackendStart,
+                        backend_started_ns.saturating_sub(next.generated_ns),
+                        backend_started_ns,
+                    );
+                    backend.reconcile(next, unix_ms()).await?;
+                    let backend_done_ns = clock.now_ns();
+                    latency.record(
+                        LatencyKind::DecisionToBackendDone,
+                        backend_done_ns.saturating_sub(next.generated_ns),
+                        backend_done_ns,
+                    );
+                    event_logger.log("quote_decision", None, &next)?;
+                }
                 event = session_events.recv() => {
                     let Some(event) = event else {
                         backend.invalidate("live session event channel closed");
@@ -1251,40 +1331,40 @@ async fn run_live(
                     }
                 }
                 event = events.pop() => {
-                    let dispatch_ns = clock.now_ns();
-                    latency.record(
-                        LatencyKind::MarketEventDispatch,
-                        dispatch_ns.saturating_sub(event_recv_ns(&event)),
-                        dispatch_ns,
-                    );
-                    event_logger.log("market_event", Some(event_ms(&event)), &event)?;
-                    let execution_events = backend.on_market_event(&event).await?;
-                    apply_live_execution_events(
-                        &execution_events,
-                        &mut event_logger,
-                        &backend,
-                        &inventory_units,
-                        &risk_state,
-                        &metrics,
-                        &signal,
-                    )?;
-                }
-                next = desired.changed_after(observed_quote_seq) => {
-                    observed_quote_seq = next.quote_seq;
-                    let backend_started_ns = clock.now_ns();
-                    latency.record(
-                        LatencyKind::DecisionToBackendStart,
-                        backend_started_ns.saturating_sub(next.generated_ns),
-                        backend_started_ns,
-                    );
-                    backend.reconcile(next, unix_ms()).await?;
-                    let backend_done_ns = clock.now_ns();
-                    latency.record(
-                        LatencyKind::DecisionToBackendDone,
-                        backend_done_ns.saturating_sub(next.generated_ns),
-                        backend_done_ns,
-                    );
-                    event_logger.log("quote_decision", None, &next)?;
+                    // Ranked below quote dispatch, so drain a bounded batch
+                    // per visit to keep the ring from growing while the quote
+                    // branch wins the race.
+                    let mut pending = Some(event);
+                    let mut drained = 0_u32;
+                    while let Some(event) = pending.take() {
+                        let dispatch_ns = clock.now_ns();
+                        latency.record(
+                            LatencyKind::MarketEventDispatch,
+                            dispatch_ns.saturating_sub(event_recv_ns(&event)),
+                            dispatch_ns,
+                        );
+                        event_logger.log("market_event", Some(event_ms(&event)), &event)?;
+                        let execution_events = backend.on_market_event(&event).await?;
+                        // In live mode a market event only refreshes the BBO;
+                        // account state, risk publication, and the hot-path
+                        // notification only need to move when execution
+                        // events actually arrived.
+                        if !execution_events.is_empty() {
+                            apply_live_execution_events(
+                                &execution_events,
+                                &mut event_logger,
+                                &backend,
+                                &inventory_units,
+                                &risk_state,
+                                &metrics,
+                                &signal,
+                            )?;
+                        }
+                        drained += 1;
+                        if drained < MARKET_EVENT_DRAIN_BATCH {
+                            pending = events.try_pop();
+                        }
+                    }
                 }
                 _ = maintenance.tick() => {
                     let market_valid = market_evidence_valid.load(Ordering::Acquire);
@@ -1334,19 +1414,26 @@ async fn run_live(
                     calibration_inflight = false;
                     let Some(result) = result else { continue };
                     match result {
-                        Ok((next, mut surface, mut next_unit)) => {
+                        Ok((next, surface, next_unit)) => {
+                            // The non-flat re-solve already happened on the
+                            // worker against the unit captured at spawn time.
+                            // Only the inventory-went-non-flat race between
+                            // spawn and receipt remains; skipping keeps the
+                            // last model until the next 30s interval, well
+                            // inside its freshness window.
                             let account = backend.account_state();
-                            if account.inventory_units != 0 {
-                                next_unit = model
-                                    .load_full()
-                                    .context("live non-flat calibration lost inventory unit")?
-                                    .inventory_unit;
-                                surface = solve_asymmetric(
-                                    next.parameters,
-                                    &effective_config.model,
-                                    instrument.size_from_units(next_unit),
-                                    next.revision,
-                                )?;
+                            let model_unit =
+                                model.load_full().map(|bundle| bundle.inventory_unit);
+                            if account.inventory_units != 0
+                                && model_unit != Some(next_unit)
+                            {
+                                metrics.calibration_failures.fetch_add(1, Ordering::Relaxed);
+                                warn!(
+                                    next_unit,
+                                    ?model_unit,
+                                    "inventory went non-flat during calibration; result skipped"
+                                );
+                                continue;
                             }
                             backend.persist_inventory_unit(next_unit)?;
                             model.store(Some(Arc::new(prepare_model_bundle(
@@ -1368,14 +1455,23 @@ async fn run_live(
                     }
                 }
                 _ = calibration_interval.tick(), if !calibration_inflight => {
+                    // While non-flat the inventory unit is pinned; hand it to
+                    // the worker so the re-solve for that unit happens off the
+                    // event loop instead of inline on receipt.
+                    let forced_unit = (backend.account_state().inventory_units != 0)
+                        .then(|| model.load_full().map(|bundle| bundle.inventory_unit))
+                        .flatten();
                     calibration_inflight = true;
                     let job_config = effective_config.clone();
                     let job_instrument = instrument.clone();
                     let result_tx = calibration_tx.clone();
                     tokio::spawn(async move {
                         let result = tokio::task::spawn_blocking(move || {
-                            calibrate_model(&job_config, &job_instrument, true)
-                                .map(|(_, snapshot, surface, unit)| (snapshot, surface, unit))
+                            calibrate_model_for_unit(
+                                &job_config,
+                                &job_instrument,
+                                forced_unit,
+                            )
                         })
                         .await
                         .map_err(|error| anyhow::anyhow!("live calibration worker failed: {error}"))
@@ -1590,6 +1686,31 @@ fn calibrate_model(
     Ok((data, snapshot, surface, inventory_unit))
 }
 
+/// Calibration worker body: calibrate, then — when the caller is non-flat and
+/// its inventory unit is therefore pinned — re-solve the surface for that unit
+/// here, on the blocking pool. The receipt branch on the event loop is then
+/// pure bookkeeping; the HJB solve (~1ms p99) no longer runs inline in the
+/// select.
+fn calibrate_model_for_unit(
+    config: &AppConfig,
+    instrument: &mm_live::InstrumentSpec,
+    forced_unit: Option<i64>,
+) -> Result<(CalibrationSnapshot, HjbSurface, i64)> {
+    let (_, snapshot, mut surface, mut unit) = calibrate_model(config, instrument, true)?;
+    if let Some(forced) = forced_unit {
+        if forced != unit {
+            surface = solve_asymmetric(
+                snapshot.parameters,
+                &config.model,
+                instrument.size_from_units(forced),
+                snapshot.revision,
+            )?;
+            unit = forced;
+        }
+    }
+    Ok((snapshot, surface, unit))
+}
+
 fn prepare_model_bundle(
     surface: HjbSurface,
     inventory_unit: i64,
@@ -1768,13 +1889,17 @@ async fn run_public_dry_run(
     } else {
         None
     };
-    let mut recorder = write_parquet.then(|| {
-        ParquetEventRecorder::new(
-            config.storage.data_dir.clone(),
-            instrument.clone(),
-            config.storage.flush_interval_seconds,
-        )
-    });
+    // All Parquet I/O (ZSTD shard writes, compaction, pruning) runs on the
+    // recorder's own thread; this loop only queues events.
+    let recorder = write_parquet
+        .then(|| {
+            ParquetRecorderHandle::spawn(ParquetEventRecorder::new(
+                config.storage.data_dir.clone(),
+                instrument.clone(),
+                config.storage.flush_interval_seconds,
+            ))
+        })
+        .transpose()?;
     let mut event_logger =
         JsonlEventLogger::create(&config.storage.report_dir, "dry_run", started_at_ms)?;
     let metrics = Arc::new(Metrics::default());
@@ -1934,40 +2059,7 @@ async fn run_public_dry_run(
                 std::future::pending::<()>().await;
             }
         } => break,
-        event = events.pop() => {
-            let dispatch_ns = clock.now_ns();
-            latency.record(
-                LatencyKind::MarketEventDispatch,
-                dispatch_ns.saturating_sub(event_recv_ns(&event)),
-                dispatch_ns,
-            );
-            let event_time = event_ms(&event);
-            last_event_exchange_ms = last_event_exchange_ms.max(event_time);
-            event_logger.log("market_event", Some(event_time), &event)?;
-            if let Some(recorder) = recorder.as_mut() {
-                recorder.record(&event, unix_ms())?;
-            }
-            if !scientifically_valid.load(Ordering::Acquire) && backend.scientifically_valid() {
-                backend.invalidate("public market stream lost causal events or disconnected");
-                signal.notify(HOT_SIGNAL_EXECUTION);
-            }
-            let execution_events = backend.on_market_event(&event).await?;
-            for execution_event in &execution_events {
-                event_logger.log("execution_event", Some(event_time), execution_event)?;
-            }
-            metrics.fills.fetch_add(execution_events.len() as u64, Ordering::Relaxed);
-            let account = backend.account_state();
-            inventory_units.store(account.inventory_units, Ordering::Relaxed);
-            metrics.inventory_units.store(account.inventory_units, Ordering::Relaxed);
-            risk_state.store(RiskState {
-                equity_usdc: account.equity_usdc,
-                daily_realized_pnl_usdc: backend.daily_realized_pnl_usdc(),
-                consecutive_losses: account.consecutive_losses,
-            });
-            if !execution_events.is_empty() {
-                signal.notify(HOT_SIGNAL_EXECUTION);
-            }
-        }
+        // Quote dispatch outranks the market drain, mirroring the live loop.
         next = desired.changed_after(observed_quote_seq) => {
             observed_quote_seq = next.quote_seq;
             let backend_started_ns = clock.now_ns();
@@ -2005,29 +2097,72 @@ async fn run_public_dry_run(
             );
             event_logger.log("quote_decision", None, &next)?;
         }
+        event = events.pop() => {
+            // Ranked below quote dispatch; drain a bounded batch per visit so
+            // the ring cannot grow unboundedly while quotes win the race.
+            let mut pending = Some(event);
+            let mut drained = 0_u32;
+            while let Some(event) = pending.take() {
+                let dispatch_ns = clock.now_ns();
+                latency.record(
+                    LatencyKind::MarketEventDispatch,
+                    dispatch_ns.saturating_sub(event_recv_ns(&event)),
+                    dispatch_ns,
+                );
+                let event_time = event_ms(&event);
+                last_event_exchange_ms = last_event_exchange_ms.max(event_time);
+                event_logger.log("market_event", Some(event_time), &event)?;
+                if let Some(recorder) = recorder.as_ref() {
+                    recorder.record(&event, unix_ms())?;
+                }
+                if !scientifically_valid.load(Ordering::Acquire) && backend.scientifically_valid() {
+                    backend.invalidate("public market stream lost causal events or disconnected");
+                    signal.notify(HOT_SIGNAL_EXECUTION);
+                }
+                let execution_events = backend.on_market_event(&event).await?;
+                for execution_event in &execution_events {
+                    event_logger.log("execution_event", Some(event_time), execution_event)?;
+                }
+                metrics.fills.fetch_add(execution_events.len() as u64, Ordering::Relaxed);
+                let account = backend.account_state();
+                inventory_units.store(account.inventory_units, Ordering::Relaxed);
+                metrics.inventory_units.store(account.inventory_units, Ordering::Relaxed);
+                risk_state.store(RiskState {
+                    equity_usdc: account.equity_usdc,
+                    daily_realized_pnl_usdc: backend.daily_realized_pnl_usdc(),
+                    consecutive_losses: account.consecutive_losses,
+                });
+                if !execution_events.is_empty() {
+                    signal.notify(HOT_SIGNAL_EXECUTION);
+                }
+                drained += 1;
+                if drained < MARKET_EVENT_DRAIN_BATCH {
+                    pending = events.try_pop();
+                }
+            }
+        }
         result = calibration_rx.recv() => {
             calibration_inflight = false;
             let Some(result) = result else { continue };
             match result {
-                Ok((next, mut next_surface, mut next_inventory_unit)) => {
+                Ok((next, next_surface, next_inventory_unit)) => {
+                // The non-flat re-solve already ran on the worker for the unit
+                // captured at spawn time; only the went-non-flat race remains.
                 let account = backend.account_state();
                 if account.inventory_units != 0 {
-                    let Some(retained_unit) = model
+                    let retained_unit = model
                         .load_full()
                         .map(|bundle| bundle.inventory_unit)
-                        .or_else(|| backend.restored_inventory_unit())
-                    else {
+                        .or_else(|| backend.restored_inventory_unit());
+                    if retained_unit != Some(next_inventory_unit) {
                         metrics.calibration_failures.fetch_add(1, Ordering::Relaxed);
-                        warn!("cannot publish calibration while non-flat without a retained inventory unit");
+                        warn!(
+                            next_inventory_unit,
+                            ?retained_unit,
+                            "inventory went non-flat during calibration; result skipped"
+                        );
                         continue;
-                    };
-                    next_inventory_unit = retained_unit;
-                    next_surface = solve_asymmetric(
-                        next.parameters,
-                        &config.model,
-                        instrument.size_from_units(next_inventory_unit),
-                        next.revision,
-                    )?;
+                    }
                 }
                 model.store(Some(Arc::new(prepare_model_bundle(
                     next_surface,
@@ -2040,17 +2175,12 @@ async fn run_public_dry_run(
                 event_logger.log("calibration", None, &next)?;
                 metrics.calibration_runs.fetch_add(1, Ordering::Relaxed);
                 signal.notify(HOT_SIGNAL_MODEL);
-                if let Some(recorder) = recorder.as_mut() {
-                    let now_ms = unix_ms();
-                    let compacted = recorder.compact(
-                        now_ms,
+                if let Some(recorder) = recorder.as_ref() {
+                    recorder.maintain(
+                        unix_ms(),
                         config.storage.compact_after_minutes,
-                    )?;
-                    let removed = recorder.prune(
-                        now_ms,
                         config.storage.retention_minutes,
                     )?;
-                    info!(compacted, removed, "Parquet maintenance complete");
                 }
             }
             Err(error) => {
@@ -2060,6 +2190,16 @@ async fn run_public_dry_run(
             }
         }
         _ = calibration_interval.tick(), if !calibration_inflight => {
+            // While non-flat the unit is pinned; the worker re-solves for it
+            // off the event loop, so the receipt branch never solves inline.
+            let forced_unit = (backend.account_state().inventory_units != 0)
+                .then(|| {
+                    model
+                        .load_full()
+                        .map(|bundle| bundle.inventory_unit)
+                        .or_else(|| backend.restored_inventory_unit())
+                })
+                .flatten();
             calibration_inflight = true;
             let job_config = config.clone();
             let job_instrument = instrument.clone();
@@ -2069,10 +2209,7 @@ async fn run_public_dry_run(
             tokio::spawn(async move {
                 let started_ns = job_clock.now_ns();
                 let result = tokio::task::spawn_blocking(move || {
-                    calibrate_model(&job_config, &job_instrument, true)
-                        .map(|(_, snapshot, surface, inventory_unit)| {
-                            (snapshot, surface, inventory_unit)
-                        })
+                    calibrate_model_for_unit(&job_config, &job_instrument, forced_unit)
                 })
                 .await
                 .map_err(|error| anyhow::anyhow!("calibration worker failed: {error}"))
@@ -2100,11 +2237,13 @@ async fn run_public_dry_run(
         )?;
     }
     event_logger.flush()?;
-    if let Some(recorder) = recorder.as_mut() {
-        let now_ms = unix_ms();
-        recorder.flush(now_ms)?;
-        let compacted = recorder.compact(now_ms, config.storage.compact_after_minutes)?;
-        let removed = recorder.prune(now_ms, config.storage.retention_minutes)?;
+    if let Some(recorder) = recorder {
+        // Final flush/compact/prune runs on the writer thread; this joins it.
+        let (compacted, removed) = recorder.finish(
+            unix_ms(),
+            config.storage.compact_after_minutes,
+            config.storage.retention_minutes,
+        )?;
         info!(compacted, removed, "Parquet maintenance complete");
     }
     drop(collector_lock);

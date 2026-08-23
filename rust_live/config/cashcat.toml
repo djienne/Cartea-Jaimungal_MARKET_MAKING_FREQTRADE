@@ -10,6 +10,10 @@ evidence_path = "cashcat.validation.json"
 
 [runtime]
 network = "mainnet"
+# Dedicated hot-path core; tokio workers, the blocking pool, and writer
+# threads are pinned to the other cores. Pair with OS-level isolation for a
+# genuinely quiet core.
+hot_path_cpu = 4
 market_stale_ms = 5000
 ws_ping_interval_ms = 5000
 ws_idle_timeout_ms = 15000
