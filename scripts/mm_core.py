@@ -37,6 +37,7 @@ Conventions worth knowing before reading further:
 
 from __future__ import annotations
 
+import os
 import json
 import math
 import threading
@@ -449,6 +450,115 @@ def solve_hjb(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Compiled inner loop for select_delta
+#
+# select_delta is the hot path of every replay: profiled over the 161.95 h
+# CASHCAT tape it was 18.1 s of a 42.4 s run (43%), called 1.18 M times, and
+# most of that was numpy dispatch rather than arithmetic -- 3.5 M scalar
+# np.searchsorted calls costing ~1 us each to compare a handful of floats.
+#
+# The kernels below are the same bracket-and-blend written for numba, so the
+# whole lookup runs as one compiled call. The pure-Python _bracket/_blend are
+# kept unchanged: they are part of this module's API, they are what the tests
+# exercise, and they are the fallback when numba is absent.
+# ---------------------------------------------------------------------------
+# MM_DISABLE_NUMBA=1 forces the pure-Python reference path. It exists so the
+# two can be A/B'd on one frozen tape -- the collector keeps writing, so two
+# runs minutes apart otherwise score different data and prove nothing.
+try:  # pragma: no cover - exercised by whichever branch the host provides
+    if os.environ.get("MM_DISABLE_NUMBA") == "1":
+        raise ImportError("numba disabled by MM_DISABLE_NUMBA")
+    from numba import njit as _njit
+
+    _HAVE_NUMBA = True
+except ImportError:  # pragma: no cover
+    _HAVE_NUMBA = False
+
+    def _njit(*args, **kwargs):
+        def _wrap(func):
+            return func
+
+        if args and callable(args[0]):
+            return args[0]
+        return _wrap
+
+
+@_njit(cache=True, nogil=True)
+def _bracket_nb(axis, value):
+    """Compiled twin of :func:`_bracket`. Semantics must match it exactly."""
+    n = axis.shape[0]
+    if n == 1 or value <= axis[0]:
+        return 0, 0, 0.0
+    if value >= axis[n - 1]:
+        return n - 1, n - 1, 0.0
+    # searchsorted(..., side="left"): first index whose value is >= `value`.
+    lo_i = 0
+    hi_i = n
+    while lo_i < hi_i:
+        mid_i = (lo_i + hi_i) // 2
+        if axis[mid_i] < value:
+            lo_i = mid_i + 1
+        else:
+            hi_i = mid_i
+    hi = lo_i
+    if axis[hi] == value:
+        return hi, hi, 0.0
+    lo = hi - 1
+    span = axis[hi] - axis[lo]
+    weight = 0.0 if span <= 0.0 else (value - axis[lo]) / span
+    return lo, hi, weight
+
+
+@_njit(cache=True, nogil=True)
+def _blend_nb(low, high, weight):
+    """Compiled twin of :func:`_blend`; a non-finite endpoint still disables."""
+    if not (np.isfinite(low) and np.isfinite(high)):
+        return np.inf
+    if weight <= 0.0:
+        return low
+    if weight >= 1.0:
+        return high
+    return low + weight * (high - low)
+
+
+@_njit(cache=True, nogil=True)
+def _delta_from_depths_nb(q_grid, depths, q):
+    q_lo, q_hi, q_w = _bracket_nb(q_grid, q)
+    return _blend_nb(depths[q_lo], depths[q_hi], q_w)
+
+
+@_njit(cache=True, nogil=True)
+def _delta_from_surface_nb(t_grid, surface, q_grid, elapsed, q):
+    t_lo, t_hi, t_w = _bracket_nb(t_grid, elapsed)
+    # The disabled-side columns are +inf at EVERY time node, so weights of
+    # exactly 0 or 1 short-circuit: 0.0 * inf is NaN, which would turn a
+    # disabled side into a nonsense depth. Mirrors the Python branch.
+    n_q = q_grid.shape[0]
+    if t_lo == t_hi or t_w <= 0.0:
+        row_lo = t_lo
+        row_hi = t_lo
+        blend = False
+    elif t_w >= 1.0:
+        row_lo = t_hi
+        row_hi = t_hi
+        blend = False
+    else:
+        row_lo = t_lo
+        row_hi = t_hi
+        blend = True
+    q_lo, q_hi, q_w = _bracket_nb(q_grid, q)
+    if blend:
+        d_lo = (1.0 - t_w) * surface[row_lo, q_lo] + t_w * surface[row_hi, q_lo]
+        d_hi = (1.0 - t_w) * surface[row_lo, q_hi] + t_w * surface[row_hi, q_hi]
+    else:
+        d_lo = surface[row_lo, q_lo]
+        d_hi = surface[row_lo, q_hi]
+    if n_q == 0:
+        return np.inf
+    return _blend_nb(d_lo, d_hi, q_w)
+
+
 def _bracket(axis: np.ndarray, value: float) -> tuple[int, int, float]:
     """(lower index, upper index, weight on upper) for ``value`` on ``axis``.
 
@@ -531,6 +641,22 @@ def select_delta(
     key = "delta_minus" if side == "bid" else "delta_plus"
     surface = hjb.get(f"{key}_surface")
     t_grid = hjb.get("t_grid")
+
+    # Compiled fast path. Identical arithmetic to the branches below, which stay
+    # as the reference implementation and the no-numba fallback.
+    if _HAVE_NUMBA:
+        q_grid_a = np.ascontiguousarray(hjb["q_grid"], dtype=np.float64)
+        q_f = float(q)
+        if surface is not None and t_grid is not None and tau_remaining is not None:
+            t_grid_a = np.ascontiguousarray(t_grid, dtype=np.float64)
+            surface_a = np.ascontiguousarray(surface, dtype=np.float64)
+            elapsed = float(hjb.get("T_seconds", t_grid_a[-1])) - float(tau_remaining)
+            value = _delta_from_surface_nb(t_grid_a, surface_a, q_grid_a, elapsed, q_f)
+        else:
+            depths_a = np.ascontiguousarray(hjb[key], dtype=np.float64)
+            value = _delta_from_depths_nb(q_grid_a, depths_a, q_f)
+        return None if not np.isfinite(value) else float(value)
+
     if surface is not None and t_grid is not None and tau_remaining is not None:
         t_grid = np.asarray(t_grid, dtype=float)
         elapsed = float(hjb.get("T_seconds", t_grid[-1])) - float(tau_remaining)
