@@ -51,23 +51,35 @@ What that costs, measured rather than assumed: adverse selection roughly
 **doubles** between a 200 ms and a 5 s markout (ε went 1.98→3.98 bps on the ask
 and 3.53→6.14 bps on the bid). Your quotes are exposed for *seconds*.
 
-**And cutting the cadence only makes it pay in the colocated scenario.** The
-current evidence is a staged parameter sweep on a pinned **95.23 h** CASHCAT
-tape (546,818 price rows, 243,653 trades, 0.7 train/held-out split) —
-`docs/cashcat_sweep.md`:
+**The loss is one window, not a steady bleed.** The current evidence is a
+staged parameter sweep on a pinned **161.95 h** CASHCAT tape (918,417 price
+rows, 417,923 trades, 0.7 train/held-out split) — `docs/cashcat_sweep.md`. It
+replaces a 95.23 h run whose headline conclusions did **not** survive the extra
+70% of tape; that earlier artifact is kept as
+`docs/cashcat_sweep_20260820_95h.*` for comparison.
 
-- **Every finalist still loses out of sample**: −10.24 USDC, only 5 of 16
-  six-hour windows positive, worst window −13.55.
-- **Latency is economically decisive in this tape.** The complete infrastructure
-  ladder reads: colocated (50 ms latency / 100 ms refresh) **+23.07**, good
-  (100/250 ms) −10.24, mid (200/500 ms) −16.49, this stack (500/1000 ms)
-  −49.19, and the slow-refresh reality case (500 ms / 30 s) −148.60. Latency and
-  requote cadence move together in this ladder, so it compares plausible
-  machines rather than claiming a pure one-variable latency experiment.
+- **One six-hour window is the entire result.** The winner scores −205.89 USDC
+  across 27 windows, but the window at `08-22 03:57` alone is **−241.17** on
+  1,771 fills. Excluding it the same run is **+35.28 over 26 windows**. That one
+  window is 117% of the total loss and 40% of every fill taken.
+- **So the shape is fat-tailed, not marginal.** 13 of 27 windows are positive,
+  and the failure mode is a volume burst: the busiest window is the losing one,
+  and it takes more fills than the next twelve windows combined.
+- **The latency ladder inverted.** On 95 h the colocated rung was the only
+  positive one (+23.07) and the story was "latency is economically decisive".
+  On 162 h colocated is the **worst** rung: colocated (50 ms/100 ms) −418.11,
+  good (100/250) −279.11, mid (200/500) −388.59, this stack (500/1000) −398.20,
+  slow-refresh reality (500 ms/30 s) **+9.36**. Quoting faster means taking more
+  of the burst, so speed made the tail worse rather than better. Do not quote
+  the old ladder.
 - **The spread is earned; the direction gives it back.** At 100 ms the net
-  realized spread after fees is +273.91 USDC, but the directional/adverse term
-  is −284.15, leaving −10.24. At 50 ms, +301.16 of net spread barely outruns
-  −278.10 of directional loss.
+  realized spread after fees is +852.51 USDC against −1,131.62 of
+  directional/adverse P&L. In the losing window alone: +683.89 spread against
+  −925.05 directional.
+
+The practical reading: a short tape can invert this conclusion, so every sweep
+must run on the maximum tape available (`docs/DATA_COLLECTION.md` covers how the
+tape is produced and how far back it goes).
 - **Performance is unstable across time.** Only 5/16 held-out windows are
   positive. The same selected configuration ranges from +7.63 to −13.55 USDC
   over six-hour windows despite 1,135 held-out maker fills in aggregate.
