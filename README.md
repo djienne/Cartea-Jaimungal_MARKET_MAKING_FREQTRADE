@@ -85,6 +85,13 @@ production defects they surfaced, and why the venue's **address-action budget**
 resets — is the constraint that actually binds this strategy, ahead of the
 WebSocket message rate the configuration validates against.
 
+`docs/latency_hysteresis_sweep.md` crosses simulated latency (50/100/200/500 ms)
+with the requote hold window on one frozen two-hour window. It resolves the
+**address-action cost** cleanly — `bps = 4` buys ~2.2x the runtime per unit of
+venue allowance that the shipped `bps = 2` does — but it is explicit that a
+two-hour window at ~50 fills **cannot** resolve latency economics, and that the
+95-hour ladder above remains the evidence for those.
+
 Market data is produced by a Docker container, not by this repo; see
 `docs/DATA_COLLECTION.md` for who owns the tape, why no live session can
 disturb it, and how to check that it is still running.
