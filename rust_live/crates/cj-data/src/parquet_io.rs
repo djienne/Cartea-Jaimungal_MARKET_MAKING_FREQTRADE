@@ -1003,13 +1003,19 @@ impl ParquetRecorderHandle {
                             now_ms,
                             compact_after_minutes,
                             retention_minutes,
-                        } => recorder
-                            .compact(now_ms, compact_after_minutes)
-                            .and_then(|compacted| {
-                                let removed = recorder.prune(now_ms, retention_minutes)?;
-                                tracing::info!(compacted, removed, "Parquet maintenance complete");
-                                Ok(())
-                            }),
+                        } => {
+                            recorder
+                                .compact(now_ms, compact_after_minutes)
+                                .and_then(|compacted| {
+                                    let removed = recorder.prune(now_ms, retention_minutes)?;
+                                    tracing::info!(
+                                        compacted,
+                                        removed,
+                                        "Parquet maintenance complete"
+                                    );
+                                    Ok(())
+                                })
+                        }
                         RecorderCommand::Finish {
                             now_ms,
                             compact_after_minutes,

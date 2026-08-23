@@ -189,7 +189,9 @@ impl Fixture {
                 &credentials.agent_address(),
                 "config",
                 "meta",
-                SessionIntent::Quote { venue_is_flat: true },
+                SessionIntent::Quote {
+                    venue_is_flat: true,
+                },
             )
             .unwrap(),
         );

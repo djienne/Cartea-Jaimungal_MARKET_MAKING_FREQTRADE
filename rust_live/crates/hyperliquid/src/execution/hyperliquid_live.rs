@@ -80,9 +80,14 @@ const RATE_LIMIT_COOLDOWN_MS: u64 = 30_000;
 /// session actor, the REST client, and the address-action reserve check.
 fn is_rate_limit_reason(reason: &str) -> bool {
     let reason = reason.to_ascii_lowercase();
-    ["rate limit", "budget", "reserve is below", "in-flight posts"]
-        .iter()
-        .any(|needle| reason.contains(needle))
+    [
+        "rate limit",
+        "budget",
+        "reserve is below",
+        "in-flight posts",
+    ]
+    .iter()
+    .any(|needle| reason.contains(needle))
 }
 
 /// Replay horizon for fill/funding dedup keys, in exchange time. Far beyond any
@@ -250,8 +255,7 @@ impl HyperliquidLiveBackend {
                 SessionIntent::ReduceOnly
             } else {
                 SessionIntent::Quote {
-                    venue_is_flat: account.inventory_units == 0
-                        && account.open_orders.is_empty(),
+                    venue_is_flat: account.inventory_units == 0 && account.open_orders.is_empty(),
                 }
             },
         )?);
@@ -920,9 +924,7 @@ impl HyperliquidLiveBackend {
             cumulative_fees_usdc: state.cumulative_fees_usdc,
             cumulative_funding_usdc: state.cumulative_funding_usdc,
         })?;
-        if !view.metadata_matches
-            && (self.account.inventory_units != 0 || view.any_non_terminal)
-        {
+        if !view.metadata_matches && (self.account.inventory_units != 0 || view.any_non_terminal) {
             bail!("live metadata changed while durable exposure exists");
         }
         let effective_fees = fees.unwrap_or_else(|| {
@@ -1596,8 +1598,8 @@ impl HyperliquidLiveBackend {
             .replace_threshold_ticks
             .max(0)
             .saturating_mul(self.instrument.price_quantum(target_px_units));
-        let bps = (self.quoting.replace_threshold_bps.max(0.0) / 10_000.0
-            * target_px_units as f64) as i64;
+        let bps = (self.quoting.replace_threshold_bps.max(0.0) / 10_000.0 * target_px_units as f64)
+            as i64;
         ticks.max(bps)
     }
 
@@ -1724,7 +1726,8 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 })
             });
             for order in side_orders {
-                if !unchanged && !cancel_already_in_flight(&order, now_ms, self.live.action_timeout_ms)
+                if !unchanged
+                    && !cancel_already_in_flight(&order, now_ms, self.live.action_timeout_ms)
                 {
                     cancel.push(order.cloid);
                 }
@@ -1899,12 +1902,8 @@ async fn fetch_authoritative_snapshot(
     client: Arc<HyperliquidExchangeClient>,
     state: Arc<LiveStateStore>,
 ) -> Result<AuthoritativeSnapshot> {
-    let needs_historical_orders = state.with_state(|state| {
-        state
-            .orders
-            .values()
-            .any(|order| !order.status.terminal())
-    })?;
+    let needs_historical_orders =
+        state.with_state(|state| state.orders.values().any(|order| !order.status.terminal()))?;
     let (clearinghouse, open_orders, active_asset, fills) = tokio::try_join!(
         client.clearinghouse_state(),
         client.open_orders(),
@@ -2081,7 +2080,9 @@ mod tests {
                 &credentials.agent_address(),
                 "config",
                 "meta",
-                SessionIntent::Quote { venue_is_flat: true },
+                SessionIntent::Quote {
+                    venue_is_flat: true,
+                },
             )
             .unwrap(),
         );
@@ -2185,8 +2186,10 @@ mod tests {
     /// Prepare a backend whose one resting bid can be re-quoted: the seeded
     /// order is resized to clear the venue minimum notional and a BBO is
     /// installed so the placement path can validate.
-    fn requote_backend(px_units: i64, qty_units: i64) -> (tempfile::TempDir, HyperliquidLiveBackend)
-    {
+    fn requote_backend(
+        px_units: i64,
+        qty_units: i64,
+    ) -> (tempfile::TempDir, HyperliquidLiveBackend) {
         let (directory, mut backend, cloid) = lifecycle_backend();
         backend
             .state

@@ -301,7 +301,10 @@ mod tests {
     fn an_empty_override_set_reproduces_the_base_configuration() {
         let config = base();
         let applied = VariantOverrides::default().apply(&config).unwrap();
-        assert_eq!(applied.fingerprint().unwrap(), config.fingerprint().unwrap());
+        assert_eq!(
+            applied.fingerprint().unwrap(),
+            config.fingerprint().unwrap()
+        );
     }
 
     #[test]
@@ -319,14 +322,12 @@ mod tests {
 
     #[test]
     fn duplicate_and_malformed_variant_names_are_refused() {
-        let duplicate = toml::from_str::<GridSpec>(
-            "[[variant]]\nname = \"a\"\n\n[[variant]]\nname = \"a\"\n",
-        )
-        .unwrap();
+        let duplicate =
+            toml::from_str::<GridSpec>("[[variant]]\nname = \"a\"\n\n[[variant]]\nname = \"a\"\n")
+                .unwrap();
         assert!(duplicate.validate().is_err());
 
-        let malformed =
-            toml::from_str::<GridSpec>("[[variant]]\nname = \"a b/c\"\n").unwrap();
+        let malformed = toml::from_str::<GridSpec>("[[variant]]\nname = \"a b/c\"\n").unwrap();
         assert!(malformed.validate().is_err());
 
         let empty = toml::from_str::<GridSpec>("variant = []\n").unwrap();

@@ -276,11 +276,8 @@ fn run_hot_path(inputs: &HotPathInputs) {
         // still inside the window. Cheap, allocation-free, and the earliest
         // signal available -- 16 s ahead of VPIN on the 2026-08-22 cascade.
         let move_bps = mid_window.observe(now_ns, bbo.mid_units());
-        let flow_tripped = flow_guard.evaluate(
-            now_ns / 1_000_000,
-            move_bps,
-            inputs.flow_state.load(),
-        );
+        let flow_tripped =
+            flow_guard.evaluate(now_ns / 1_000_000, move_bps, inputs.flow_state.load());
         let reason = if pending & HOT_SIGNAL_EXECUTION != 0 {
             QuoteReason::Fill
         } else if pending & HOT_SIGNAL_MODEL != 0 {

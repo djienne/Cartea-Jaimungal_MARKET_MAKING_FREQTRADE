@@ -7,8 +7,8 @@ use mm_live::config::AppConfig;
 use mm_live::execution::{
     AccountStateProvider, DryRunBackend, ExecutionBackend, HyperliquidLiveBackend, MarketDataSource,
 };
-use mm_live::hjb::{solve_asymmetric, HjbSurface};
 use mm_live::flow_guard::{FlowGuard, MidWindow, VpinTracker};
+use mm_live::hjb::{solve_asymmetric, HjbSurface};
 use mm_live::hot_path::{
     spawn_hot_path, AtomicFlowState, AtomicRiskState, HotPathInputs, ModelBundle,
 };
@@ -1605,9 +1605,7 @@ async fn run_live(
     let hot_join_result = tokio::task::spawn_blocking(move || hot_thread.join())
         .await
         .context("cannot join live hot-path task")
-        .and_then(|joined| {
-            joined.map_err(|_| anyhow::anyhow!("live hot-path thread panicked"))
-        });
+        .and_then(|joined| joined.map_err(|_| anyhow::anyhow!("live hot-path thread panicked")));
     let observer_result = latency_observer.stop();
     let report = LiveSessionReport {
         schema_version: 3,
@@ -1765,8 +1763,7 @@ impl GridVariant {
         // resting orders because a `None` target bypasses the requote hold.
         let move_bps = self.mid_window.observe(now_ns, bbo.mid_units());
         if self.guard.evaluate(now_ns / 1_000_000, move_bps, vpin) {
-            let quotes =
-                DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, now_ns);
+            let quotes = DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, now_ns);
             self.backend.reconcile(quotes, simulated_now_ms).await?;
             self.logger.log("quote_decision", None, &quotes)?;
             return Ok(());
@@ -1958,7 +1955,11 @@ async fn run_dry_run_grid(
     // VPIN is a property of the market, not of a parameter set, so one tracker
     // feeds every variant; only the trip threshold is per variant.
     let mut vpin = VpinTracker::new(
-        vpin_bucket_units(&grid_data, &instrument, config.flow_guard.vpin_buckets_per_day),
+        vpin_bucket_units(
+            &grid_data,
+            &instrument,
+            config.flow_guard.vpin_buckets_per_day,
+        ),
         config.flow_guard.vpin_window_buckets as usize,
     );
     let mut vpin_value: Option<f64> = None;
@@ -2370,10 +2371,7 @@ async fn run_event_source<S: MarketDataSource>(
         .div_ceil(1_000)
         .clamp(64, 8_192) as usize;
     let mut mid_window = MidWindow::new(mid_capacity, config.flow_guard.fast_move_window_ms);
-    let mut vpin = VpinTracker::new(
-        vpin_bucket,
-        config.flow_guard.vpin_window_buckets as usize,
-    );
+    let mut vpin = VpinTracker::new(vpin_bucket, config.flow_guard.vpin_window_buckets as usize);
     let mut vpin_value: Option<f64> = None;
     while let Some(event) = source.next_event().await? {
         let event_ms = event_ms(&event);

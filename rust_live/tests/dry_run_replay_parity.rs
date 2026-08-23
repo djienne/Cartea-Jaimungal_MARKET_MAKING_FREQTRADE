@@ -8,8 +8,8 @@ use mm_live::config::{DryRunConfig, QuotingConfig, RiskConfig};
 use mm_live::execution::{AccountStateProvider, DryRunBackend, ExecutionBackend};
 use mm_live::instrument::InstrumentSpec;
 use mm_live::types::{
-    AggressorSide, Bbo, DesiredQuotes, ExecutionEvent, MarketEvent, OrderIntent, QuoteReason,
-    Side, TradePrint,
+    AggressorSide, Bbo, DesiredQuotes, ExecutionEvent, MarketEvent, OrderIntent, QuoteReason, Side,
+    TradePrint,
 };
 
 fn instrument() -> InstrumentSpec {
@@ -91,8 +91,16 @@ async fn run_fixture(reconcile_now_ms: u64) -> (Vec<ExecutionEvent>, f64) {
     let mut backend = backend();
     let first = bbo(1_000);
     let mut fills = Vec::new();
-    fills.extend(backend.on_market_event(&MarketEvent::Bbo(first)).await.unwrap());
-    backend.reconcile(decision(first), reconcile_now_ms).await.unwrap();
+    fills.extend(
+        backend
+            .on_market_event(&MarketEvent::Bbo(first))
+            .await
+            .unwrap(),
+    );
+    backend
+        .reconcile(decision(first), reconcile_now_ms)
+        .await
+        .unwrap();
     fills.extend(
         backend
             .on_market_event(&MarketEvent::Bbo(bbo(1_500)))

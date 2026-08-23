@@ -340,7 +340,10 @@ mod tests {
         assert_eq!(window.observe(second, 10_000), 0.0);
         // 10% down inside the window.
         let moved = window.observe(second + 2 * second, 9_000);
-        assert!((moved - 1_000.0).abs() < 1.0, "expected ~1000 bps, got {moved}");
+        assert!(
+            (moved - 1_000.0).abs() < 1.0,
+            "expected ~1000 bps, got {moved}"
+        );
     }
 
     #[test]
@@ -351,7 +354,10 @@ mod tests {
         // Ten seconds later the old sample is outside a five second window, so
         // the only reference left is this observation itself: no move.
         let moved = window.observe(second + 10 * second, 5_000);
-        assert_eq!(moved, 0.0, "a sample outside the window must not be a reference");
+        assert_eq!(
+            moved, 0.0,
+            "a sample outside the window must not be a reference"
+        );
     }
 
     #[test]
@@ -364,7 +370,10 @@ mod tests {
         // Every retained sample is 10_000, so a 5% move must read as 500 bps
         // even though the ring wrapped three times.
         let moved = window.observe(second * 13, 10_500);
-        assert!((moved - 500.0).abs() < 1.0, "expected ~500 bps, got {moved}");
+        assert!(
+            (moved - 500.0).abs() < 1.0,
+            "expected ~500 bps, got {moved}"
+        );
     }
 
     #[test]
@@ -375,7 +384,10 @@ mod tests {
             tracker.observe(&trade(id, AggressorSide::Buy, 50));
         }
         let value = tracker.value().expect("two buckets should be complete");
-        assert!((value - 1.0).abs() < 1e-9, "perfectly toxic flow is VPIN 1, got {value}");
+        assert!(
+            (value - 1.0).abs() < 1e-9,
+            "perfectly toxic flow is VPIN 1, got {value}"
+        );
     }
 
     #[test]
@@ -399,7 +411,11 @@ mod tests {
         tracker.observe(&trade(7, AggressorSide::Buy, 60));
         // The same print arriving twice across a reconnect must not count twice.
         tracker.observe(&trade(7, AggressorSide::Buy, 60));
-        assert_eq!(tracker.buckets_seen(), 0, "a duplicate must not complete a bucket");
+        assert_eq!(
+            tracker.buckets_seen(),
+            0,
+            "a duplicate must not complete a bucket"
+        );
         tracker.observe(&trade(8, AggressorSide::Buy, 60));
         assert_eq!(tracker.buckets_seen(), 1);
     }

@@ -226,8 +226,8 @@ impl DryRunBackend {
             .replace_threshold_ticks
             .max(0)
             .saturating_mul(self.instrument.price_quantum(target_px_units));
-        let bps = (self.quoting.replace_threshold_bps.max(0.0) / 10_000.0
-            * target_px_units as f64) as i64;
+        let bps = (self.quoting.replace_threshold_bps.max(0.0) / 10_000.0 * target_px_units as f64)
+            as i64;
         ticks.max(bps)
     }
 

@@ -506,7 +506,11 @@ mod tests {
         }
         // The match in `reason_to_u8` is exhaustive, so this count is what
         // fails when a variant is added without extending this test.
-        assert_eq!(codes.len(), 12, "a QuoteReason variant is missing from this test");
+        assert_eq!(
+            codes.len(),
+            12,
+            "a QuoteReason variant is missing from this test"
+        );
     }
 
     #[test]

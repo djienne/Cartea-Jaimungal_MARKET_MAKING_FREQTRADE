@@ -568,10 +568,20 @@ mod tests {
                 let (q_lo, q_hi, q_weight) = bracket_inventory(surface.q_min, surface.q_max, q);
                 let reference_depth = |values: &[f64]| {
                     let low_row = interpolate_time(
-                        values, row_width, reference.0, reference.1, reference.2, q_lo,
+                        values,
+                        row_width,
+                        reference.0,
+                        reference.1,
+                        reference.2,
+                        q_lo,
                     );
                     let high_row = interpolate_time(
-                        values, row_width, reference.0, reference.1, reference.2, q_hi,
+                        values,
+                        row_width,
+                        reference.0,
+                        reference.1,
+                        reference.2,
+                        q_hi,
                     );
                     blend_depth(low_row, high_row, q_weight)
                 };

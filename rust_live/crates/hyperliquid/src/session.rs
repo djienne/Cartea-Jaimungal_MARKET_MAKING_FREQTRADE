@@ -442,10 +442,14 @@ where
             .send(Message::Text(subscription_request(&subscription).into()))
             .await?;
     }
-    deliver_event(&args.events, healthy, SessionEvent::Connected {
+    deliver_event(
+        &args.events,
+        healthy,
+        SessionEvent::Connected {
             generation,
             received_ns: args.clock.now_ns(),
-        })?;
+        },
+    )?;
     let mut subscription_acks = 0_usize;
     let mut request_id = 1_u64;
     let mut inflight = InflightBook::new(args.state.clone());
@@ -1198,7 +1202,9 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            SessionIntent::Quote { venue_is_flat: true },
+            SessionIntent::Quote {
+                venue_is_flat: true,
+            },
         )
         .unwrap();
         let cloid = "0x434a4d4d000000000000000000000001".to_owned();
@@ -1268,7 +1274,9 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            SessionIntent::Quote { venue_is_flat: true },
+            SessionIntent::Quote {
+                venue_is_flat: true,
+            },
         )
         .unwrap();
         let filled = "0x434a4d4d000000000000000000000001".to_owned();
@@ -1294,9 +1302,10 @@ mod tests {
                 state
                     .orders
                     .insert(filled.clone(), template(&filled, LiveOrderStatus::Filled));
-                state
-                    .orders
-                    .insert(resting.clone(), template(&resting, LiveOrderStatus::Resting));
+                state.orders.insert(
+                    resting.clone(),
+                    template(&resting, LiveOrderStatus::Resting),
+                );
                 Ok(())
             })
             .unwrap();
@@ -1344,7 +1353,9 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            SessionIntent::Quote { venue_is_flat: true },
+            SessionIntent::Quote {
+                venue_is_flat: true,
+            },
         )
         .unwrap();
         let cloid = "0x434a4d4d000000000000000000000003".to_owned();

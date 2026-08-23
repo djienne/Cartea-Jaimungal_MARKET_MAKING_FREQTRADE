@@ -146,11 +146,7 @@ struct WireBook<'a> {
     time: Option<WireU64<'a>>,
 }
 
-pub fn parse_public_frame(
-    text: &str,
-    instrument: &InstrumentSpec,
-    recv_ns: u64,
-) -> PublicFrame {
+pub fn parse_public_frame(text: &str, instrument: &InstrumentSpec, recv_ns: u64) -> PublicFrame {
     let Ok(envelope) = serde_json::from_str::<Envelope<'_>>(text) else {
         return PublicFrame::Invalid;
     };
@@ -243,7 +239,6 @@ fn decode_book(payload: &str, instrument: &InstrumentSpec, recv_ns: u64) -> Opti
         recv_ns,
     })
 }
-
 
 #[cfg(test)]
 mod tests {

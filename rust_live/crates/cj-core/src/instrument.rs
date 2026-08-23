@@ -73,8 +73,7 @@ impl InstrumentSpec {
         if px_units == 0 {
             return 1;
         }
-        let decade =
-            px_units.unsigned_abs().ilog10() as i32 - self.max_price_decimals as i32;
+        let decade = px_units.unsigned_abs().ilog10() as i32 - self.max_price_decimals as i32;
         let decimal_places = (self.max_significant_figures as i32 - 1 - decade)
             .clamp(0, self.max_price_decimals as i32) as u32;
         10_i64.pow(self.max_price_decimals - decimal_places)

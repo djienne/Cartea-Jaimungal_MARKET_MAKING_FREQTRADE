@@ -307,9 +307,7 @@ impl LiveStateStore {
                 match intent {
                     SessionIntent::Quote { venue_is_flat } => {
                         if !venue_is_flat || durable_exposure {
-                            bail!(
-                                "live-state configuration changed while durable exposure exists"
-                            );
+                            bail!("live-state configuration changed while durable exposure exists");
                         }
                     }
                     // A half-finished flatten leaves exposure behind, so the
@@ -547,9 +545,9 @@ impl LiveStateStore {
     pub fn prune_terminal_orders(&self, older_than_ms: u64) -> Result<usize> {
         self.update(|state| {
             let before = state.orders.len();
-            state
-                .orders
-                .retain(|_, order| !order.status.terminal() || order.last_update_ms >= older_than_ms);
+            state.orders.retain(|_, order| {
+                !order.status.terminal() || order.last_update_ms >= older_than_ms
+            });
             Ok(before - state.orders.len())
         })
     }
@@ -863,12 +861,18 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            SessionIntent::Quote { venue_is_flat: true },
+            SessionIntent::Quote {
+                venue_is_flat: true,
+            },
         )
         .unwrap()
     }
 
-    fn order_template(cloid: &str, status: LiveOrderStatus, last_update_ms: u64) -> PersistedLiveOrder {
+    fn order_template(
+        cloid: &str,
+        status: LiveOrderStatus,
+        last_update_ms: u64,
+    ) -> PersistedLiveOrder {
         PersistedLiveOrder {
             cloid: cloid.to_owned(),
             quote_seq: 1,
@@ -910,7 +914,10 @@ mod tests {
                 })
                 .unwrap();
             let removed = store.advance_checkpoint_and_prune(base + 5).unwrap();
-            assert_eq!(removed, 10, "five fills and five fundings fall below the horizon");
+            assert_eq!(
+                removed, 10,
+                "five fills and five fundings fall below the horizon"
+            );
             // A lower candidate must never move the checkpoint back.
             let removed = store.advance_checkpoint_and_prune(base).unwrap();
             assert_eq!(removed, 0);
@@ -925,9 +932,10 @@ mod tests {
         let state = reopened.load_required().unwrap();
         assert_eq!(state.processed_fill_keys.len(), 5);
         assert_eq!(state.processed_funding_keys.len(), 5);
-        assert!(!state
-            .processed_fill_keys
-            .contains(&TimedKey(state.event_checkpoint_ms - 1, "fill-4".to_owned())));
+        assert!(!state.processed_fill_keys.contains(&TimedKey(
+            state.event_checkpoint_ms - 1,
+            "fill-4".to_owned()
+        )));
     }
 
     #[test]
@@ -994,15 +1002,18 @@ mod tests {
         let store = open(&directory);
         store
             .update(|state| {
-                state
-                    .orders
-                    .insert("old-filled".to_owned(), order_template("old-filled", LiveOrderStatus::Filled, 1_000));
-                state
-                    .orders
-                    .insert("new-filled".to_owned(), order_template("new-filled", LiveOrderStatus::Filled, 9_000));
-                state
-                    .orders
-                    .insert("old-resting".to_owned(), order_template("old-resting", LiveOrderStatus::Resting, 1_000));
+                state.orders.insert(
+                    "old-filled".to_owned(),
+                    order_template("old-filled", LiveOrderStatus::Filled, 1_000),
+                );
+                state.orders.insert(
+                    "new-filled".to_owned(),
+                    order_template("new-filled", LiveOrderStatus::Filled, 9_000),
+                );
+                state.orders.insert(
+                    "old-resting".to_owned(),
+                    order_template("old-resting", LiveOrderStatus::Resting, 1_000),
+                );
                 Ok(())
             })
             .unwrap();
@@ -1115,7 +1126,9 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            SessionIntent::Quote { venue_is_flat: true },
+            SessionIntent::Quote {
+                venue_is_flat: true
+            },
         )
         .is_err());
         drop(first);
@@ -1126,7 +1139,9 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            SessionIntent::Quote { venue_is_flat: true },
+            SessionIntent::Quote {
+                venue_is_flat: true
+            },
         )
         .is_err());
     }
@@ -1262,7 +1277,9 @@ mod tests {
             "0x2222222222222222222222222222222222222222",
             "config",
             "meta",
-            SessionIntent::Quote { venue_is_flat: true },
+            SessionIntent::Quote {
+                venue_is_flat: true
+            },
         )
         .is_err());
     }
