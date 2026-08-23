@@ -8,6 +8,45 @@ connector. The backend is selected only when the tracked default-off TOML flag
 is explicitly enabled. Hyperliquid's API changes over time, so release work must
 recheck the linked official documentation and pinned protocol fixtures.
 
+## Remediation changes (2026-08-23)
+
+A full-review remediation series (commits `43c4d6b..4dc3db4`) changed connector
+behavior in ways that supersede older statements in this document:
+
+- **Teardown always runs.** `run_live`'s loop errors no longer unwind past the
+  shutdown sequence; cancel-resting-orders, reconcile, and dead-man clearing
+  execute on every exit path, and the release profile unwinds on panic. Event
+  log saturation, enqueue refusals, and refused pings degrade (pause quoting,
+  request reconcile) instead of ending the session.
+- **Cancel responses are attributed positionally.** Action state keeps one
+  slot per wire order (`None` where untracked), so a venue status array can no
+  longer be applied to the wrong order when a cancel raced a fill; mismatched
+  status lengths fail closed to `UnknownOutcome`.
+- **Durable state is bounded (schema 3).** Fill/funding dedup keys carry
+  exchange time; the replay checkpoint advances after each authoritative
+  reconcile (24h retention, fsynced before pruning) and aged terminal orders
+  are pruned. The persistence writer writes deltas instead of rewriting every
+  table per wake; nonce-range fsyncs are prefetched off the dispatch path.
+- **Risk inputs are durable and live.** `consecutive_losses` is tracked from
+  closing fills (it was previously pinned to zero in live, making
+  `max_consecutive_losses` dead); daily P&L rolls are read through a scalar
+  accessor with no full-state clone per event.
+- **Clocks are venue clocks.** The inventory watermark compares fill times
+  against exchange time only, and the dry-run simulator schedules activation
+  and cancellation from `source_exchange_ms`, matching replay.
+- **The session actor never blocks on the strategy loop.** Event delivery is
+  non-blocking (drop-and-degrade on a full channel), removing a mutual-wait
+  with awaited oneshot responses; one malformed account frame is skipped, not
+  a reason to tear down the socket.
+- **Requote hysteresis.** A resting order within
+  `max(replace_threshold_ticks × quantum, replace_threshold_bps)` of the new
+  target (same size and reduce-only) is held; withdrawals bypass the window.
+  Evidence: `docs/requote_hysteresis_sweep.md`. `min_order_lifetime_ms` rose
+  to 100 and config validation rejects WebSocket budgets the worst-case
+  requote rate plus pings and dead-man refreshes cannot fit.
+- **Latency gate un-latched.** Dropped-sample/observer-error blocks are
+  per-window (deltas), not per-session (lifetime counters).
+
 ## Current implementation status (2026-08-22)
 
 The persistent `live` command now owns a stateful execution backend and remains

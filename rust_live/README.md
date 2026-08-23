@@ -64,15 +64,28 @@ order/fill/funding state,
 WebSocket action posts, REST emergency cancels, typed account subscriptions,
 unknown-outcome reconciliation, account-aware sizing, actual fees, rate
 reserves, ALO batches, and reduce-only IOC market close. Network and persistence
-work stay off the hot thread. Lifecycle persistence is coalesced on a dedicated
-single-writer thread; only a newly reserved nonce range is fsynced before use.
+work stay off the hot thread. Lifecycle persistence is delta-written on a
+dedicated single-writer thread (only changed orders and dedup keys touch redb);
+a newly reserved nonce range is fsynced before use, and the next range is
+prefetched on a background thread before the current one runs out. Durable
+history is bounded: the fill/funding replay horizon advances with each
+authoritative reconcile (24h retention, checkpoint fsynced before pruning) and
+aged terminal orders are dropped, so per-event cost stays flat over a session.
 Superseded market quote revisions coalesce until the configured minimum order
-lifetime, while fill/risk cancellations bypass that delay. The connector tracks
-its local contribution to the venue address-action budget and preserves a
-separate WebSocket allowance for cancels and emergency reduction.
+lifetime, while fill/risk cancellations bypass that delay; a resting order
+within the requote hold window (`replace_threshold_ticks` /
+`replace_threshold_bps`, evidence in `docs/requote_hysteresis_sweep.md`) is
+kept to preserve queue position. The connector tracks its local contribution
+to the venue address-action budget, preserves a separate WebSocket allowance
+for cancels and emergency reduction, and config validation rejects budgets the
+worst-case requote rate plus pings and dead-man refreshes cannot fit.
 
 Normal shutdown, latency refusal, and risk kills cancel orders but retain known
-inventory. `live-flatten` is the explicit CASHCAT-only reduce-only maintenance
+inventory. The live loop's teardown — cancel resting orders, reconcile, clear
+the dead-man — runs on **every** exit path, error exits included, and the
+release profile unwinds on panic so a panicking task cannot bypass it.
+Consecutive-loss and daily-loss kill inputs are tracked durably from closing
+fills. `live-flatten` is the explicit CASHCAT-only reduce-only maintenance
 path and escalates IOC limits from 25 to 250 bps without allowing a position
 flip.
 
@@ -134,7 +147,14 @@ dry-run, and the feature-gated acceptance runner. Production `live` always
 enables enforcement and requires 20 fresh samples from both sockets plus three
 healthy observer windows before reopening. Warm-up, stale/dropped samples,
 observer failures, or a breached rolling p95 withdraw both quotes with reason
-`latency_limit`.
+`latency_limit`. Dropped-sample and observer-error blocks apply to the
+evaluation window they occurred in — the gate judges deltas, not lifetime
+totals, so one transient snapshot-write failure or queue burst no longer halts
+trading for the rest of the session (snapshot-write failures count only after
+three consecutive misses). The tokio runtime is bounded and, when
+`runtime.hot_path_cpu` is set (as the shipped config now does), workers and
+blocking threads are pinned away from the hot core; pair with OS-level
+isolation for a genuinely quiet core.
 
 `window_samples` must be inspected before interpreting tail percentiles. The
 dry-run backend's configured 250 ms decision/ack/cancel delays are simulation
