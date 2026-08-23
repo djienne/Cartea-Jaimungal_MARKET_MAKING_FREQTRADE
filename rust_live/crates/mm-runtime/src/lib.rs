@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod flow_guard;
 pub mod hot_path;
 pub mod latency;
 pub mod lockfree;

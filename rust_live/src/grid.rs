@@ -42,6 +42,13 @@ pub struct VariantOverrides {
     /// `quoting.replace_threshold_bps` — requote hold window, the other half of
     /// cadence.
     pub replace_threshold_bps: Option<f64>,
+    /// `flow_guard.enabled` — the toxic-flow guard. Exposing it as a lever is
+    /// what makes a guarded/unguarded A/B on one shared live feed possible.
+    pub flow_guard_enabled: Option<bool>,
+    /// `flow_guard.vpin_threshold`.
+    pub vpin_threshold: Option<f64>,
+    /// `flow_guard.fast_move_threshold_bps`.
+    pub fast_move_threshold_bps: Option<f64>,
 }
 
 impl VariantOverrides {
@@ -69,6 +76,15 @@ impl VariantOverrides {
         if let Some(value) = self.replace_threshold_bps {
             config.quoting.replace_threshold_bps = value;
         }
+        if let Some(value) = self.flow_guard_enabled {
+            config.flow_guard.enabled = value;
+        }
+        if let Some(value) = self.vpin_threshold {
+            config.flow_guard.vpin_threshold = value;
+        }
+        if let Some(value) = self.fast_move_threshold_bps {
+            config.flow_guard.fast_move_threshold_bps = value;
+        }
         config.validate()?;
         Ok(config)
     }
@@ -90,6 +106,15 @@ impl VariantOverrides {
         }
         if let Some(value) = self.replace_threshold_bps {
             parts.push(format!("hold={value}bps"));
+        }
+        if let Some(value) = self.flow_guard_enabled {
+            parts.push(format!("guard={value}"));
+        }
+        if let Some(value) = self.vpin_threshold {
+            parts.push(format!("vpin={value}"));
+        }
+        if let Some(value) = self.fast_move_threshold_bps {
+            parts.push(format!("fastMove={value}bps"));
         }
         if parts.is_empty() {
             "shipped defaults".to_owned()

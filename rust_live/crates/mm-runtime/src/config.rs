@@ -1,1 +1,1 @@
-pub use mm_settings::{LatencyConfig, ModelConfig, QuotingConfig, RiskConfig};
+pub use mm_settings::{FlowGuardConfig, LatencyConfig, ModelConfig, QuotingConfig, RiskConfig};

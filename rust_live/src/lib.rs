@@ -5,7 +5,7 @@ pub use mm_config as config;
 pub mod execution;
 pub use cj_data::{calibration, parquet_io, replay};
 pub use hyperliquid_connector as hyperliquid;
-pub use mm_runtime::{hot_path, latency, lockfree, metrics};
+pub use mm_runtime::{flow_guard, hot_path, latency, lockfree, metrics};
 pub mod report;
 pub use cj_core::{hjb, instrument, quote, types};
 

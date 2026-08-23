@@ -127,6 +127,27 @@ queue_decay_per_second = 0.05
 funding_rate_per_hour = 0.0000125
 markout_horizons_ms = [100, 1000, 5000, 30000]
 
+[flow_guard]
+# Toxic-flow guard. The 161.95 h tape had one losing six-hour window (-241.17
+# on 1,771 fills) and it was a liquidation cascade: mid -1% -> -31% in ten
+# seconds, -70% in sixty. Nothing predicts that; these bound how much of one
+# gets ridden down. See docs/TOXIC_FLOW_GUARD.md.
+enabled = true
+# Fast breaker. 800 bps (8%) in 5s was the tightest threshold with ZERO false
+# positives across the whole tape; 5% produced four. It fired at -14% where
+# VPIN needed -45%.
+fast_move_window_ms = 5000
+fast_move_threshold_bps = 800.0
+# VPIN. Bucket size is derived from observed volume (ADV / buckets_per_day), so
+# the threshold keeps its meaning as activity changes. The 6.8-day maximum
+# outside the cascade was 0.362; the cascade peaked at 0.663.
+vpin_buckets_per_day = 50
+vpin_window_buckets = 30
+vpin_threshold = 0.40
+# Re-entry needs BOTH this cooldown AND VPIN back under threshold: VPIN alone
+# can dip mid-cascade, and a timer alone would re-enter a live one.
+cooldown_ms = 900000
+
 [live]
 enabled = false
 mode = "production"

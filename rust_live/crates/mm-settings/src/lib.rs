@@ -228,3 +228,56 @@ impl Default for LatencyConfig {
         }
     }
 }
+
+/// Guard against toxic order flow — the regime that produced the only losing
+/// window in the 161.95 h tape.
+///
+/// Two tiers, because they fail differently and were measured separately
+/// (`docs/TOXIC_FLOW_GUARD.md`):
+///
+/// - a **fast mid-move breaker**, which trips on a large adverse move inside a
+///   few seconds. On the 2026-08-22 cascade it fired at −14% where VPIN needed
+///   −45%, and had zero false positives across the whole tape;
+/// - **VPIN**, the volume-synchronised probability of informed trading, which
+///   identifies the toxic *regime* rather than the instant. 86% of the losing
+///   window's volume arrived after it fired, so it is what keeps the bot out of
+///   the aftermath.
+///
+/// Neither predicts a flash crash. They bound how much of one gets ridden down.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FlowGuardConfig {
+    pub enabled: bool,
+    /// Trailing window for the fast breaker.
+    pub fast_move_window_ms: u64,
+    /// Adverse mid move within that window that trips the breaker, in bps.
+    /// 800 (8%) was the tightest threshold with zero false positives over
+    /// 6.8 days of CASHCAT; 5% produced four.
+    pub fast_move_threshold_bps: f64,
+    /// Volume buckets per day, which sets bucket size from observed volume.
+    /// 50 is the VPIN literature default and the reference implementation's.
+    pub vpin_buckets_per_day: u32,
+    /// Rolling bucket count in the VPIN numerator.
+    pub vpin_window_buckets: u32,
+    /// VPIN level treated as toxic. The 6.8-day maximum outside the cascade was
+    /// 0.362, and the cascade peaked at 0.663.
+    pub vpin_threshold: f64,
+    /// Minimum time quoting stays withdrawn after a trip. Re-entry additionally
+    /// requires VPIN to have fallen back under `vpin_threshold`, so this is a
+    /// floor and not the whole rule.
+    pub cooldown_ms: u64,
+}
+
+impl Default for FlowGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fast_move_window_ms: 5_000,
+            fast_move_threshold_bps: 800.0,
+            vpin_buckets_per_day: 50,
+            vpin_window_buckets: 30,
+            vpin_threshold: 0.40,
+            cooldown_ms: 900_000,
+        }
+    }
+}

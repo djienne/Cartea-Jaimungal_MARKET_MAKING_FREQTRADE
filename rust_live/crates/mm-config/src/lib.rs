@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 pub use mm_settings::{
-    CalibrationConfig, DryRunConfig, LatencyConfig, ModelConfig, QuotingConfig, RiskConfig,
+    CalibrationConfig, DryRunConfig, FlowGuardConfig, LatencyConfig, ModelConfig, QuotingConfig,
+    RiskConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -48,6 +49,7 @@ pub struct AppConfig {
     pub quoting: QuotingConfig,
     pub risk: RiskConfig,
     pub dry_run: DryRunConfig,
+    pub flow_guard: FlowGuardConfig,
     pub live: LiveConfig,
 }
 
@@ -238,6 +240,7 @@ impl AppConfig {
 
     pub fn validate(&self) -> Result<()> {
         self.validate_profile()?;
+        self.validate_flow_guard()?;
         for (name, capacity) in [
             (
                 "runtime.market_event_capacity",
@@ -439,6 +442,43 @@ impl AppConfig {
             if !(0.0 <= lower && lower < upper && upper <= 1.0) {
                 bail!("invalid {side} calibration support quantiles");
             }
+        }
+        Ok(())
+    }
+
+    /// The flow guard withdraws quoting, so a misconfigured one is not a
+    /// performance problem but a trading outage. Reject the shapes that would
+    /// either fire constantly or never fire at all.
+    fn validate_flow_guard(&self) -> Result<()> {
+        let guard = &self.flow_guard;
+        if !guard.enabled {
+            return Ok(());
+        }
+        if guard.fast_move_window_ms == 0 {
+            bail!("flow_guard.fast_move_window_ms must be greater than zero");
+        }
+        if !guard.fast_move_threshold_bps.is_finite() || guard.fast_move_threshold_bps <= 0.0 {
+            bail!("flow_guard.fast_move_threshold_bps must be finite and greater than zero");
+        }
+        // A breaker that trips inside the spread would fire on every tick.
+        if guard.fast_move_threshold_bps <= self.quoting.max_half_spread_bps {
+            bail!(
+                "flow_guard.fast_move_threshold_bps ({}) must exceed quoting.max_half_spread_bps ({});                  a breaker inside the widest quote would fire continuously",
+                guard.fast_move_threshold_bps,
+                self.quoting.max_half_spread_bps
+            );
+        }
+        if !guard.vpin_threshold.is_finite()
+            || guard.vpin_threshold <= 0.0
+            || guard.vpin_threshold >= 1.0
+        {
+            bail!("flow_guard.vpin_threshold must be finite and inside (0, 1)");
+        }
+        if guard.vpin_window_buckets == 0 {
+            bail!("flow_guard.vpin_window_buckets must be greater than zero");
+        }
+        if guard.vpin_buckets_per_day == 0 {
+            bail!("flow_guard.vpin_buckets_per_day must be greater than zero");
         }
         Ok(())
     }

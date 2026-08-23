@@ -8,7 +8,10 @@ use mm_live::execution::{
     AccountStateProvider, DryRunBackend, ExecutionBackend, HyperliquidLiveBackend, MarketDataSource,
 };
 use mm_live::hjb::{solve_asymmetric, HjbSurface};
-use mm_live::hot_path::{spawn_hot_path, AtomicRiskState, HotPathInputs, ModelBundle};
+use mm_live::flow_guard::{FlowGuard, MidWindow, VpinTracker};
+use mm_live::hot_path::{
+    spawn_hot_path, AtomicFlowState, AtomicRiskState, HotPathInputs, ModelBundle,
+};
 use mm_live::hyperliquid::market::{run_market_stream, MarketStreamArgs};
 use mm_live::hyperliquid::meta::discover_instrument;
 #[cfg(feature = "live-acceptance")]
@@ -31,7 +34,7 @@ use mm_live::parquet_io::{
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
 use mm_live::replay::ParquetReplaySource;
 use mm_live::report::{JsonlEventLogger, LiveSessionReport, ModelReport, SessionReport};
-use mm_live::types::{unix_ms, Bbo, MarketEvent, ProcessClock, QuoteReason};
+use mm_live::types::{unix_ms, Bbo, DesiredQuotes, MarketEvent, ProcessClock, QuoteReason};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -1182,8 +1185,16 @@ async fn run_live(
 
     let mut effective_config = config.clone();
     effective_config.quoting = backend.effective_quoting_config()?;
-    let (_, initial_snapshot, mut initial_surface, mut inventory_unit) =
+    let (calibration_data, initial_snapshot, mut initial_surface, mut inventory_unit) =
         calibrate_model(&effective_config, &instrument, true)?;
+    // Size the VPIN bucket from the calibration window's observed volume so the
+    // threshold keeps its meaning as the instrument's activity changes.
+    let vpin_bucket = vpin_bucket_units(
+        &calibration_data,
+        &instrument,
+        effective_config.flow_guard.vpin_buckets_per_day,
+    );
+    drop(calibration_data);
     let account = backend.account_state();
     if account.inventory_units != 0 {
         inventory_unit = backend
@@ -1235,6 +1246,12 @@ async fn run_live(
     }));
     let inventory_units = Arc::new(AtomicI64::new(account.inventory_units));
     let risk_state = Arc::new(AtomicRiskState::default());
+    let flow_state = Arc::new(AtomicFlowState::default());
+    // Bucket size is resized from observed volume as soon as a calibration
+    // window is available; until then VPIN stays in warm-up and only the fast
+    // breaker is armed.
+    let mut vpin = VpinTracker::new(1, config.flow_guard.vpin_window_buckets as usize);
+    vpin.resize_bucket(vpin_bucket);
     let initial_risk = backend.risk_scalars()?;
     risk_state.store(RiskState {
         equity_usdc: account.equity_usdc,
@@ -1252,6 +1269,8 @@ async fn run_live(
         model_config: effective_config.model.clone(),
         inventory_units: inventory_units.clone(),
         risk_state: risk_state.clone(),
+        flow_state: flow_state.clone(),
+        flow_guard: config.flow_guard.clone(),
         scientifically_valid: quote_enabled.clone(),
         market_stale_ms: effective_config.runtime.market_stale_ms,
         clock: clock.clone(),
@@ -1393,6 +1412,11 @@ async fn run_live(
                     let mut pending = Some(event);
                     let mut drained = 0_u32;
                     while let Some(event) = pending.take() {
+                        // VPIN is a trade-flow statistic and the hot path only
+                        // sees the BBO, so it is folded in here and published.
+                        if let MarketEvent::Trade(print) = &event {
+                            flow_state.store(vpin.observe(print));
+                        }
                         let dispatch_ns = clock.now_ns();
                         latency.record(
                             LatencyKind::MarketEventDispatch,
@@ -1687,6 +1711,11 @@ struct GridVariant {
     fills: u64,
     peak_equity_usdc: f64,
     max_drawdown_usdc: f64,
+    /// Per variant, because the thresholds are a lever. The VPIN statistic
+    /// itself is a property of the market and is shared across variants; only
+    /// the trip decision is per variant.
+    guard: FlowGuard,
+    mid_window: MidWindow,
 }
 
 impl GridVariant {
@@ -1699,6 +1728,7 @@ impl GridVariant {
         now_ns: u64,
         simulated_now_ms: u64,
         reason: QuoteReason,
+        vpin: Option<f64>,
     ) -> Result<()> {
         let account = self.backend.account_state();
         let q_exact = if self.inventory_unit == 0 {
@@ -1731,6 +1761,16 @@ impl GridVariant {
             consecutive_losses: account.consecutive_losses,
         };
         self.quote_seq = self.quote_seq.wrapping_add(1);
+        // Toxic-flow guard, mirroring the hot path's arm: empty quotes cancel
+        // resting orders because a `None` target bypasses the requote hold.
+        let move_bps = self.mid_window.observe(now_ns, bbo.mid_units());
+        if self.guard.evaluate(now_ns / 1_000_000, move_bps, vpin) {
+            let quotes =
+                DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, now_ns);
+            self.backend.reconcile(quotes, simulated_now_ms).await?;
+            self.logger.log("quote_decision", None, &quotes)?;
+            return Ok(());
+        }
         let quotes = self
             .policy
             .compute(
@@ -1819,13 +1859,12 @@ async fn run_dry_run_grid(
     // Calibration is a property of the market, not of a parameter set, so it is
     // fitted once and shared. Only the inventory unit and the HJB surface,
     // which depend on q_max and the risk knobs, are per variant.
-    let (data, snapshot, _, _) = calibrate_model(config, &instrument, true)?;
-    let mid = data
+    let (grid_data, snapshot, _, _) = calibrate_model(config, &instrument, true)?;
+    let mid = grid_data
         .mids
         .last()
         .context("calibration window has no final mid")?
         .mid;
-    drop(data);
 
     let mut variants = Vec::with_capacity(spec.variants.len());
     for entry in &spec.variants {
@@ -1852,10 +1891,17 @@ async fn run_dry_run_grid(
         )?;
         let logger =
             JsonlEventLogger::create(&out_dir, &format!("grid-{}", entry.name), started_at_ms)?;
+        let guard_config = variant_config.flow_guard.clone();
+        let guard_window_ms = guard_config.fast_move_window_ms;
+        let mid_capacity = guard_window_ms
+            .saturating_mul(200)
+            .div_ceil(1_000)
+            .clamp(64, 8_192) as usize;
         info!(
             variant = %entry.name,
             overrides = %entry.overrides.describe(),
             inventory_unit,
+            flow_guard = guard_config.enabled,
             "grid variant armed"
         );
         variants.push(GridVariant {
@@ -1873,6 +1919,8 @@ async fn run_dry_run_grid(
             quote_seq: 0,
             fills: 0,
             max_drawdown_usdc: 0.0,
+            guard: FlowGuard::new(guard_config),
+            mid_window: MidWindow::new(mid_capacity, guard_window_ms),
         });
     }
 
@@ -1906,6 +1954,14 @@ async fn run_dry_run_grid(
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
         max_trade_lag_ms: config.runtime.market_stale_ms,
     }));
+
+    // VPIN is a property of the market, not of a parameter set, so one tracker
+    // feeds every variant; only the trip threshold is per variant.
+    let mut vpin = VpinTracker::new(
+        vpin_bucket_units(&grid_data, &instrument, config.flow_guard.vpin_buckets_per_day),
+        config.flow_guard.vpin_window_buckets as usize,
+    );
+    let mut vpin_value: Option<f64> = None;
 
     let start_ns = clock.now_ns();
     for variant in &mut variants {
@@ -1950,6 +2006,9 @@ async fn run_dry_run_grid(
                     let mut pending = Some(event);
                     let mut drained = 0_u32;
                     while let Some(event) = pending.take() {
+                        if let MarketEvent::Trade(print) = &event {
+                            vpin_value = vpin.observe(print);
+                        }
                         let event_time = event_ms(&event);
                         if event_time != 0 {
                             last_event_exchange_ms = event_time;
@@ -1978,7 +2037,9 @@ async fn run_dry_run_grid(
                                 QuoteReason::Fill
                             };
                             if let Some(bbo) = bbo {
-                                variant.step(bbo, now_ns, simulated_now_ms, reason).await?;
+                                variant
+                                    .step(bbo, now_ns, simulated_now_ms, reason, vpin_value)
+                                    .await?;
                             }
                             variant.observe_equity();
                         }
@@ -2063,6 +2124,29 @@ fn write_grid_leaderboard(
     board.sort_by_net_pnl();
     board.write_atomic(path)?;
     Ok(board)
+}
+
+/// Volume per VPIN bucket, derived from the calibration window rather than
+/// pinned to a constant.
+///
+/// VPIN's denominator is `n · V`, so `V` sets the scale of the whole statistic.
+/// Deriving it from observed volume (ADV / buckets-per-day, the reference
+/// implementation's default of 50) means the threshold keeps its meaning as the
+/// instrument's activity changes, instead of silently drifting toward 0 or 1.
+fn vpin_bucket_units(
+    data: &MarketDataSet,
+    instrument: &mm_live::InstrumentSpec,
+    buckets_per_day: u32,
+) -> i64 {
+    let span_ms = data.window_end_ms - data.window_start_ms;
+    let span_days = (span_ms / 86_400_000.0).max(f64::MIN_POSITIVE);
+    let total: f64 = data.trades.iter().map(|trade| trade.size.abs()).sum();
+    if total <= 0.0 || !span_days.is_finite() {
+        return 1;
+    }
+    let per_day = total / span_days;
+    let bucket = per_day / f64::from(buckets_per_day.max(1));
+    instrument.size_to_units(bucket).unwrap_or(1).max(1)
 }
 
 fn calibrate_model(
@@ -2235,6 +2319,7 @@ async fn run_replay_command(
         &mut backend,
         &metrics,
         &mut event_logger,
+        vpin_bucket_units(&data, &instrument, config.flow_guard.vpin_buckets_per_day),
     )
     .await?;
     event_logger.flush()?;
@@ -2268,12 +2353,33 @@ async fn run_event_source<S: MarketDataSource>(
     backend: &mut DryRunBackend,
     metrics: &Arc<Metrics>,
     event_logger: &mut JsonlEventLogger,
+    vpin_bucket: i64,
 ) -> Result<()> {
     let mut latest_bbo = None;
     let mut quote_seq = 0_u64;
     let mut episode_start_ms = None;
+    // The toxic-flow guard, on the replay path too — otherwise a guarded/
+    // unguarded A/B over a frozen tape would measure nothing. Everything here
+    // runs on EXCHANGE time, matching the simulator: wall clock would make the
+    // guard's window depend on replay speed rather than on the market.
+    let mut guard = FlowGuard::new(config.flow_guard.clone());
+    let mid_capacity = config
+        .flow_guard
+        .fast_move_window_ms
+        .saturating_mul(200)
+        .div_ceil(1_000)
+        .clamp(64, 8_192) as usize;
+    let mut mid_window = MidWindow::new(mid_capacity, config.flow_guard.fast_move_window_ms);
+    let mut vpin = VpinTracker::new(
+        vpin_bucket,
+        config.flow_guard.vpin_window_buckets as usize,
+    );
+    let mut vpin_value: Option<f64> = None;
     while let Some(event) = source.next_event().await? {
         let event_ms = event_ms(&event);
+        if let MarketEvent::Trade(print) = &event {
+            vpin_value = vpin.observe(print);
+        }
         event_logger.log("market_event", Some(event_ms), &event)?;
         let execution_events = backend.on_market_event(&event).await?;
         for execution_event in &execution_events {
@@ -2303,6 +2409,13 @@ async fn run_event_source<S: MarketDataSource>(
         }
         let tau = (config.model.horizon_seconds - elapsed).max(0.0);
         quote_seq = quote_seq.wrapping_add(1);
+        let move_bps = mid_window.observe(event_ms.saturating_mul(1_000_000), bbo.mid_units());
+        if guard.evaluate(event_ms, move_bps, vpin_value) {
+            let quotes = DesiredQuotes::empty(QuoteReason::ToxicFlow, quote_seq, 0);
+            backend.reconcile(quotes, event_ms).await?;
+            event_logger.log("quote_decision", Some(event_ms), &quotes)?;
+            continue;
+        }
         let decision = policy.compute(
             surface,
             bbo,
@@ -2342,8 +2455,13 @@ async fn run_public_dry_run(
     report_path: Option<&Path>,
 ) -> Result<()> {
     let started_at_ms = unix_ms();
+    let mut vpin_bucket = 1_i64;
     let mut initial_model = match calibrate_model(config, &instrument, true) {
-        Ok((_, snapshot, surface, inventory_unit)) => Some((snapshot, surface, inventory_unit)),
+        Ok((data, snapshot, surface, inventory_unit)) => {
+            vpin_bucket =
+                vpin_bucket_units(&data, &instrument, config.flow_guard.vpin_buckets_per_day);
+            Some((snapshot, surface, inventory_unit))
+        }
         Err(error) => {
             warn!(%error, "no valid startup calibration; collecting data with quotes disabled");
             None
@@ -2440,6 +2558,12 @@ async fn run_public_dry_run(
     let restored_account = backend.account_state();
     let inventory_units = Arc::new(AtomicI64::new(restored_account.inventory_units));
     let risk_state = Arc::new(AtomicRiskState::default());
+    let flow_state = Arc::new(AtomicFlowState::default());
+    // Bucket size is resized from observed volume as soon as a calibration
+    // window is available; until then VPIN stays in warm-up and only the fast
+    // breaker is armed.
+    let mut vpin = VpinTracker::new(1, config.flow_guard.vpin_window_buckets as usize);
+    vpin.resize_bucket(vpin_bucket);
     risk_state.store(RiskState {
         equity_usdc: restored_account.equity_usdc,
         daily_realized_pnl_usdc: backend.daily_realized_pnl_usdc(),
@@ -2493,6 +2617,8 @@ async fn run_public_dry_run(
         model_config: config.model.clone(),
         inventory_units: inventory_units.clone(),
         risk_state: risk_state.clone(),
+        flow_state: flow_state.clone(),
+        flow_guard: config.flow_guard.clone(),
         scientifically_valid: scientifically_valid.clone(),
         market_stale_ms: config.runtime.market_stale_ms,
         clock: clock.clone(),
@@ -2579,6 +2705,12 @@ async fn run_public_dry_run(
             let mut pending = Some(event);
             let mut drained = 0_u32;
             while let Some(event) = pending.take() {
+                // VPIN is a trade-flow statistic, and the hot path only ever
+                // sees the BBO -- so it is folded in here and published for the
+                // hot path to read.
+                if let MarketEvent::Trade(print) = &event {
+                    flow_state.store(vpin.observe(print));
+                }
                 let dispatch_ns = clock.now_ns();
                 latency.record(
                     LatencyKind::MarketEventDispatch,

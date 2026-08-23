@@ -93,6 +93,13 @@ session refuses to inherit is exactly the one flatten exists to clear. The
 stored fingerprint is adopted only once the store is flat, so an interrupted
 flatten still blocks the next quoting session.
 
+A **toxic-flow guard** withdraws quoting when order flow turns against us: a
+fast mid-move breaker (≥8% in 5 s) plus VPIN, with re-entry requiring both a
+cooldown and VPIN clearing. On a frozen replay of the 2026-08-22 liquidation
+cascade it cut the loss 61% (−87.95 → −33.88) and ending inventory 2,091 → 74,
+while being bit-identical on a calm control window. See
+[`../docs/TOXIC_FLOW_GUARD.md`](../docs/TOXIC_FLOW_GUARD.md).
+
 `dry-run-grid` runs several parameter sets against **one** shared market
 feed and ranks them by net P&L. One WebSocket regardless of variant count,
 because the venue allows ten per IP and that budget is shared with the

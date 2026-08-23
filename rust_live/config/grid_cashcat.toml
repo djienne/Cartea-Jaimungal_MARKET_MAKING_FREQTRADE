@@ -69,3 +69,15 @@ min_half_spread_bps = 4.0
 phi_kappa_t = 1000.0
 min_order_lifetime_ms = 5000
 replace_threshold_bps = 8.0
+
+# --- toxic-flow guard A/B ---
+# The whole point of the guard is the one losing window, and a live grid is the
+# only way to see what it costs in normal conditions. These two are identical
+# except for the guard, quoting the same feed, so the difference IS the guard.
+[[variant]]
+name = "guarded"
+flow_guard_enabled = true
+
+[[variant]]
+name = "unguarded"
+flow_guard_enabled = false

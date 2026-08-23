@@ -1,4 +1,5 @@
-use crate::config::{ModelConfig, QuotingConfig, RiskConfig};
+use crate::config::{FlowGuardConfig, ModelConfig, QuotingConfig, RiskConfig};
+use crate::flow_guard::{FlowGuard, MidWindow};
 use crate::hjb::HjbSurface;
 use crate::instrument::InstrumentSpec;
 use crate::latency::{HotLatencySampler, LatencyKind, LatencyMonitor};
@@ -51,6 +52,39 @@ impl ModelBundle {
             generated_at_ms,
             valid_until_ns,
         }
+    }
+}
+
+/// VPIN published from the event loop, where trade prints are seen, and read
+/// by the hot path, which only ever sees the BBO.
+///
+/// `NOT_READY` distinguishes "the tracker is still warming up" from "flow is
+/// calm": the guard must not re-open on a statistic it does not yet have. A
+/// plain f64 sentinel would collide with a real value, so warm-up is encoded as
+/// a separate flag rather than a magic number.
+#[derive(Debug, Default)]
+#[repr(align(64))]
+pub struct AtomicFlowState {
+    vpin_bits: AtomicU64,
+    ready: AtomicBool,
+}
+
+impl AtomicFlowState {
+    pub fn store(&self, vpin: Option<f64>) {
+        match vpin {
+            Some(value) => {
+                self.vpin_bits.store(value.to_bits(), Ordering::Release);
+                self.ready.store(true, Ordering::Release);
+            }
+            None => self.ready.store(false, Ordering::Release),
+        }
+    }
+
+    pub fn load(&self) -> Option<f64> {
+        if !self.ready.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(f64::from_bits(self.vpin_bits.load(Ordering::Acquire)))
     }
 }
 
@@ -109,6 +143,8 @@ pub struct HotPathInputs {
     pub model_config: ModelConfig,
     pub inventory_units: Arc<AtomicI64>,
     pub risk_state: Arc<AtomicRiskState>,
+    pub flow_state: Arc<AtomicFlowState>,
+    pub flow_guard: FlowGuardConfig,
     pub scientifically_valid: Arc<AtomicBool>,
     pub market_stale_ms: u64,
     pub clock: Arc<ProcessClock>,
@@ -155,6 +191,18 @@ fn run_hot_path(inputs: &HotPathInputs) {
         return;
     };
     let market_stale_ns = inputs.market_stale_ms.saturating_mul(1_000_000);
+    // Sized for the observed ~50 BBO updates/second with generous headroom, so
+    // the window holds its full span. If it ever overflows the reference
+    // becomes younger, which understates the move -- it delays a trip, never
+    // invents one.
+    let mid_capacity = inputs
+        .flow_guard
+        .fast_move_window_ms
+        .saturating_mul(200)
+        .div_ceil(1_000)
+        .clamp(64, 8_192) as usize;
+    let mut mid_window = MidWindow::new(mid_capacity, inputs.flow_guard.fast_move_window_ms);
+    let mut flow_guard = FlowGuard::new(inputs.flow_guard.clone());
     let idle_poll = Duration::from_millis(100);
     let mut quote_seq = 0_u64;
     let mut last_quotes = DesiredQuotes::default();
@@ -224,6 +272,15 @@ fn run_hot_path(inputs: &HotPathInputs) {
         let tau = (inputs.model_config.horizon_seconds - elapsed).max(0.0);
         let calibration_fresh = now_ns <= bundle.valid_until_ns;
         let market_age_ns = now_ns.saturating_sub(bbo.recv_ns);
+        // Fast breaker: how far has the mid moved against the oldest sample
+        // still inside the window. Cheap, allocation-free, and the earliest
+        // signal available -- 16 s ahead of VPIN on the 2026-08-22 cascade.
+        let move_bps = mid_window.observe(now_ns, bbo.mid_units());
+        let flow_tripped = flow_guard.evaluate(
+            now_ns / 1_000_000,
+            move_bps,
+            inputs.flow_state.load(),
+        );
         let reason = if pending & HOT_SIGNAL_EXECUTION != 0 {
             QuoteReason::Fill
         } else if pending & HOT_SIGNAL_MODEL != 0 {
@@ -241,6 +298,10 @@ fn run_hot_path(inputs: &HotPathInputs) {
             DesiredQuotes::empty(QuoteReason::StaleMarket, quote_seq, now_ns)
         } else if !inputs.latency.trading_allowed() {
             DesiredQuotes::empty(QuoteReason::LatencyLimit, quote_seq, now_ns)
+        } else if flow_tripped {
+            // Empty quotes cancel resting orders immediately: the requote hold
+            // window is explicitly bypassed for a `None` target.
+            DesiredQuotes::empty(QuoteReason::ToxicFlow, quote_seq, now_ns)
         } else {
             policy
                 .compute(
@@ -411,6 +472,13 @@ mod tests {
             ..RiskState::default()
         });
         let handle = spawn_hot_path(HotPathInputs {
+            flow_state: Arc::new(AtomicFlowState::default()),
+            // The guard is off in this test: it exercises the publication path,
+            // and an armed breaker would withdraw quotes on the synthetic jumps.
+            flow_guard: FlowGuardConfig {
+                enabled: false,
+                ..FlowGuardConfig::default()
+            },
             latest_bbo: bbo,
             signal: signal.clone(),
             desired: desired.clone(),

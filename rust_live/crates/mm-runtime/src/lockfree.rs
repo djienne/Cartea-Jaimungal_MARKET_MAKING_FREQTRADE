@@ -444,6 +444,7 @@ const fn reason_to_u8(reason: QuoteReason) -> u8 {
         QuoteReason::StaleCalibration => 6,
         QuoteReason::RiskLimit => 7,
         QuoteReason::LatencyLimit => 10,
+        QuoteReason::ToxicFlow => 11,
         QuoteReason::InvalidRun => 8,
         QuoteReason::Shutdown => 9,
     }
@@ -459,6 +460,7 @@ const fn reason_from_u8(value: u8) -> QuoteReason {
         6 => QuoteReason::StaleCalibration,
         7 => QuoteReason::RiskLimit,
         10 => QuoteReason::LatencyLimit,
+        11 => QuoteReason::ToxicFlow,
         8 => QuoteReason::InvalidRun,
         9 => QuoteReason::Shutdown,
         _ => QuoteReason::Startup,
@@ -468,6 +470,44 @@ const fn reason_from_u8(value: u8) -> QuoteReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seqlock packs `QuoteReason` into a byte, and an unmapped variant
+    /// decodes as `Startup` — silently turning "we withdrew because flow went
+    /// toxic" into "we are starting up". Exhaustive so a new variant cannot be
+    /// added without being given a code.
+    #[test]
+    fn every_quote_reason_survives_the_seqlock_round_trip() {
+        let all = [
+            QuoteReason::Startup,
+            QuoteReason::Market,
+            QuoteReason::Fill,
+            QuoteReason::Calibration,
+            QuoteReason::Episode,
+            QuoteReason::StaleMarket,
+            QuoteReason::StaleCalibration,
+            QuoteReason::RiskLimit,
+            QuoteReason::LatencyLimit,
+            QuoteReason::ToxicFlow,
+            QuoteReason::InvalidRun,
+            QuoteReason::Shutdown,
+        ];
+        let mut codes = std::collections::BTreeSet::new();
+        for reason in all {
+            let code = reason_to_u8(reason);
+            assert!(
+                codes.insert(code),
+                "{reason:?} shares byte {code} with another variant"
+            );
+            assert_eq!(
+                reason_from_u8(code),
+                reason,
+                "{reason:?} did not survive the round trip"
+            );
+        }
+        // The match in `reason_to_u8` is exhaustive, so this count is what
+        // fails when a variant is added without extending this test.
+        assert_eq!(codes.len(), 12, "a QuoteReason variant is missing from this test");
+    }
 
     #[test]
     fn atomic_bbo_round_trip() {

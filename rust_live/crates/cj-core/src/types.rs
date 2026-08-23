@@ -108,6 +108,9 @@ pub enum QuoteReason {
     StaleCalibration,
     RiskLimit,
     LatencyLimit,
+    /// Order flow turned toxic: a fast adverse mid move, or VPIN above its
+    /// threshold. Quoting is withdrawn until the flow guard clears.
+    ToxicFlow,
     InvalidRun,
     Shutdown,
 }

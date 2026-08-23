@@ -77,6 +77,13 @@ replaces a 95.23 h run whose headline conclusions did **not** survive the extra
   directional/adverse P&L. In the losing window alone: +683.89 spread against
   −925.05 directional.
 
+**That one window is now guarded.** `docs/TOXIC_FLOW_GUARD.md` covers the
+toxic-flow guard built against it — a fast mid-move breaker plus VPIN — which on
+a frozen replay of the cascade cut the loss 61% (−87.95 → −33.88) and ending
+inventory from 2,091 to 74 units, while being bit-identical on a calm control
+window. It does not predict the crash; it bounds how much of one gets ridden
+down, and both legs still lose money.
+
 The practical reading: a short tape can invert this conclusion, so every sweep
 must run on the maximum tape available (`docs/DATA_COLLECTION.md` covers how the
 tape is produced and how far back it goes).
