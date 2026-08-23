@@ -1841,6 +1841,14 @@ async fn run_dry_run_grid(
 ) -> Result<()> {
     let started_at_ms = unix_ms();
     let spec = grid::GridSpec::load(grid_path)?;
+    // Validate every variant before touching market data. An invalid spec must
+    // fail immediately and by name -- not after a calibration it will never
+    // use, and not with a data error on a machine that has no tape at all.
+    for entry in &spec.variants {
+        entry.overrides.apply(config).with_context(|| {
+            format!("grid variant {:?} is not a valid configuration", entry.name)
+        })?;
+    }
     let out_dir = out_dir.map_or_else(
         || {
             config
