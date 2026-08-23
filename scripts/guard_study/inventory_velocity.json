@@ -1,0 +1,279 @@
+{
+  "sources": {
+    "calm_guardoff": 1208,
+    "crash_guardoff": 389,
+    "full_guardoff": 2012,
+    "grid:baseline": 4,
+    "grid:defensive": 0,
+    "grid:guarded": 4,
+    "grid:phi1000": 0,
+    "grid:q2": 16,
+    "grid:q3": 9,
+    "grid:slow5s": 5,
+    "grid:unguarded": 4,
+    "grid:wide4": 4,
+    "grid:wide8": 2
+  },
+  "velocity": {
+    "calm_guardoff": {
+      "10": {
+        "benign": 5297.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 6207.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 5134.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 6823.0,
+        "zone": null
+      }
+    },
+    "crash_guardoff": {
+      "10": {
+        "benign": 4214.0,
+        "zone": 6640.0
+      },
+      "30": {
+        "benign": 4214.0,
+        "zone": 9011.0
+      },
+      "60": {
+        "benign": 4214.0,
+        "zone": 10141.0
+      },
+      "120": {
+        "benign": 4214.0,
+        "zone": 11064.0
+      }
+    },
+    "full_guardoff": {
+      "10": {
+        "benign": 6339.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 6339.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 6339.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 6339.0,
+        "zone": null
+      }
+    },
+    "grid:baseline": {
+      "10": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 640.0,
+        "zone": null
+      }
+    },
+    "grid:defensive": {
+      "10": {
+        "benign": 0.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 0.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 0.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 0.0,
+        "zone": null
+      }
+    },
+    "grid:guarded": {
+      "10": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 640.0,
+        "zone": null
+      }
+    },
+    "grid:phi1000": {
+      "10": {
+        "benign": 0.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 0.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 0.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 0.0,
+        "zone": null
+      }
+    },
+    "grid:q2": {
+      "10": {
+        "benign": 1920.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 1920.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 1920.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 1920.0,
+        "zone": null
+      }
+    },
+    "grid:q3": {
+      "10": {
+        "benign": 1280.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 1280.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 1280.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 1280.0,
+        "zone": null
+      }
+    },
+    "grid:slow5s": {
+      "10": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 640.0,
+        "zone": null
+      }
+    },
+    "grid:unguarded": {
+      "10": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 640.0,
+        "zone": null
+      }
+    },
+    "grid:wide4": {
+      "10": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 640.0,
+        "zone": null
+      }
+    },
+    "grid:wide8": {
+      "10": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "30": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "60": {
+        "benign": 640.0,
+        "zone": null
+      },
+      "120": {
+        "benign": 640.0,
+        "zone": null
+      }
+    }
+  },
+  "design": {
+    "10": {
+      "benign_max": 6339.0,
+      "threshold": 19017.0,
+      "crash_first_cross_ms": null,
+      "vs_breaker_s": null
+    },
+    "30": {
+      "benign_max": 6339.0,
+      "threshold": 19017.0,
+      "crash_first_cross_ms": null,
+      "vs_breaker_s": null
+    },
+    "60": {
+      "benign_max": 6339.0,
+      "threshold": 19017.0,
+      "crash_first_cross_ms": null,
+      "vs_breaker_s": null
+    },
+    "120": {
+      "benign_max": 6823.0,
+      "threshold": 20469.0,
+      "crash_first_cross_ms": null,
+      "vs_breaker_s": null
+    }
+  }
+}

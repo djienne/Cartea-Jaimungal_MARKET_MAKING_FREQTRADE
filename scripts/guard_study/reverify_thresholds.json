@@ -1,0 +1,16 @@
+{
+  "freeze_span_h": 165.1093136111111,
+  "breaker": {
+    "fires": 631,
+    "outside_zone": 0,
+    "first_trip_ms": 1787375475336.0,
+    "max_outside_bps": 427.1172451740115
+  },
+  "vpin": {
+    "bucket_volume": 2404277.099980851,
+    "breaches": 39,
+    "outside_zone": 0,
+    "first_breach_ms": 1787375491560.0,
+    "max_outside": 0.37114732893336266
+  }
+}

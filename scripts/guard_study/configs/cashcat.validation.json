@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "profile": "cashcat",
+  "symbol": "CASHCAT",
+  "scientifically_valid": true,
+  "model": "asymmetric_cartea_jaimungal",
+  "parameter_relative_tolerance": 1e-8,
+  "hjb_relative_tolerance": 1e-7,
+  "rounded_quotes_exact": true,
+  "oracle": "unchanged Python Freqtrade estimator/HJB/quote core",
+  "gate": "cargo test --manifest-path rust_live/Cargo.toml --test python_parity"
+}

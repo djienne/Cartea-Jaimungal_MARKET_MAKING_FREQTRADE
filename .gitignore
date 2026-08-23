@@ -66,3 +66,5 @@ rust_live/reports/
 # tracked and is safe to copy before replacing its values locally.
 hyperliquid.env
 !hyperliquid.env.example
+scripts/guard_study_tapes/
+scripts/guard_study/run/

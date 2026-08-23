@@ -84,8 +84,15 @@ field changed.
 
 | 16 h window | guard off | guard on | effect |
 |---|---:|---:|---:|
-| **crash** 08-21 20:00 → 08-22 12:00 | −87.95 | **−33.88** | **+54.07** |
+| **crash** 08-21 20:00 → 08-22 12:00 | −87.95 | **−23.13** | **+64.82** |
 | **calm** 08-19 08:00 → 08-20 00:00 | −80.90 | −80.90 | **0.00** |
+
+*(Re-baselined by the guard-candidate study, `FLOW_GUARD_CANDIDATES.md`. The
+original A/B recorded −33.88 for the guard-on leg; the guard-off leg and the
+trip anatomy — first trip 05:11:15, quotes withheld to ~06:40 — reproduce
+exactly, and the guard-on delta is re-entry-timing sensitivity: VPIN bucket
+volume derives from the loaded calibration window, so small window-derivation
+differences move the re-entry minute. Direction and mechanism unchanged.)*
 
 In the crash window the loss falls by 61%, and the mechanism is visible in the
 detail rather than only the total:
@@ -119,6 +126,10 @@ starts unlatched before the cascade is what made the test informative.
 - **n = 1.** One cascade in 6.8 days. The thresholds were chosen on the single
   event they are then tested against, so the zero-false-positive claim is only as
   good as that window. Re-check as the tape grows toward its 30-day retention.
+  *Re-checked on 165.11 h (2026-08-23, `FLOW_GUARD_CANDIDATES.md`): still zero
+  false positives for both tiers; max 5s move outside the cascade 427 bps
+  (threshold 800), max VPIN outside 0.371 (threshold 0.40 — was 0.362, so the
+  headroom is narrowing slowly).*
 - **It cannot prevent the first fills.** At −14% the resting bids have already
   been hit. This bounds the damage; it does not avoid it.
 - **A guard is not an edge.** Both A/B legs still lose money. If CASHCAT's

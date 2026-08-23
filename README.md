@@ -79,10 +79,15 @@ replaces a 95.23 h run whose headline conclusions did **not** survive the extra
 
 **That one window is now guarded.** `docs/TOXIC_FLOW_GUARD.md` covers the
 toxic-flow guard built against it — a fast mid-move breaker plus VPIN — which on
-a frozen replay of the cascade cut the loss 61% (−87.95 → −33.88) and ending
-inventory from 2,091 to 74 units, while being bit-identical on a calm control
-window. It does not predict the crash; it bounds how much of one gets ridden
-down, and both legs still lose money.
+a frozen replay of the cascade cut the loss 74% (−87.95 → −23.13, re-baselined
+in `docs/FLOW_GUARD_CANDIDATES.md`) and bounded ending inventory, while being
+bit-identical on a calm control window. It does not predict the crash; it
+bounds how much of one gets ridden down, and both legs still lose money. Four
+candidate improvements to the guard were then studied on 165 h of frozen tape
+(`docs/FLOW_GUARD_CANDIDATES.md`): all four rejected or deferred — including
+the counter-intuitive result that a spread gate firing 46 minutes *earlier*
+made the crash 3.8x *worse*, because withdrawing quotes freezes inventory
+instead of de-risking it.
 
 The practical reading: a short tape can invert this conclusion, so every sweep
 must run on the maximum tape available (`docs/DATA_COLLECTION.md` covers how the

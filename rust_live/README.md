@@ -96,9 +96,11 @@ flatten still blocks the next quoting session.
 A **toxic-flow guard** withdraws quoting when order flow turns against us: a
 fast mid-move breaker (≥8% in 5 s) plus VPIN, with re-entry requiring both a
 cooldown and VPIN clearing. On a frozen replay of the 2026-08-22 liquidation
-cascade it cut the loss 61% (−87.95 → −33.88) and ending inventory 2,091 → 74,
-while being bit-identical on a calm control window. See
-[`../docs/TOXIC_FLOW_GUARD.md`](../docs/TOXIC_FLOW_GUARD.md).
+cascade it cut the loss 74% (−87.95 → −23.13, re-baselined) and bounded ending
+inventory, while being bit-identical on a calm control window. See
+[`../docs/TOXIC_FLOW_GUARD.md`](../docs/TOXIC_FLOW_GUARD.md); four candidate
+extensions were studied and rejected or deferred in
+[`../docs/FLOW_GUARD_CANDIDATES.md`](../docs/FLOW_GUARD_CANDIDATES.md).
 
 `dry-run-grid` runs several parameter sets against **one** shared market
 feed and ranks them by net P&L. One WebSocket regardless of variant count,
