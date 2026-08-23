@@ -1519,6 +1519,22 @@ impl HyperliquidLiveBackend {
         Ok(())
     }
 
+    /// Requote hold window in price units: the larger of the tick threshold
+    /// (venue quantum multiples) and the price-relative bps threshold. With
+    /// `ticks = 1, bps = 0` the strict `<` comparison reproduces exact-price
+    /// matching bit for bit, so the sweep over `replace_threshold_bps` has a
+    /// true zero point.
+    fn requote_hold_window_units(&self, target_px_units: i64) -> i64 {
+        let ticks = self
+            .quoting
+            .replace_threshold_ticks
+            .max(0)
+            .saturating_mul(self.instrument.price_quantum(target_px_units));
+        let bps = (self.quoting.replace_threshold_bps.max(0.0) / 10_000.0
+            * target_px_units as f64) as i64;
+        ticks.max(bps)
+    }
+
     fn active_orders_by_side(&self) -> Result<BTreeMap<Side, Vec<PersistedLiveOrder>>> {
         self.state.with_state(|state| {
             let mut by_side = BTreeMap::<Side, Vec<PersistedLiveOrder>>::new();
@@ -1618,9 +1634,19 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 Side::Sell => desired.ask,
             };
             let side_orders = existing.remove(&side).unwrap_or_default();
+            // Hold a resting order whose price sits inside the requote hold
+            // window: queue position is worth more than a sub-window price
+            // improvement, and every avoided replacement saves two WebSocket
+            // messages. Safety carve-outs, all load-bearing:
+            // - `target.is_some_and` means a withdrawal (None target) bypasses
+            //   hysteresis entirely — every fail-closed reason publishes empty
+            //   quotes and still cancels immediately;
+            // - any change in size or reduce-only forces a replacement;
+            // - the comparison is against the *resting* price, never a rolling
+            //   reference, so drift beyond the window always triggers.
             let unchanged = target.is_some_and(|target| {
                 side_orders.iter().any(|order| {
-                    order.px_units == target.px
+                    (order.px_units - target.px).abs() < self.requote_hold_window_units(target.px)
                         && order.remaining_qty_units == target.qty_units
                         && order.reduce_only == target.reduce_only
                         && matches!(
@@ -2039,6 +2065,112 @@ mod tests {
             deferred_desired: None,
         };
         (directory, backend, cloid)
+    }
+
+    /// Prepare a backend whose one resting bid can be re-quoted: the seeded
+    /// order is resized to clear the venue minimum notional and a BBO is
+    /// installed so the placement path can validate.
+    fn requote_backend(px_units: i64, qty_units: i64) -> (tempfile::TempDir, HyperliquidLiveBackend)
+    {
+        let (directory, mut backend, cloid) = lifecycle_backend();
+        backend
+            .state
+            .update(|state| {
+                let order = state.orders.get_mut(&cloid).expect("seeded order");
+                order.px_units = px_units;
+                order.original_qty_units = qty_units;
+                order.remaining_qty_units = qty_units;
+                order.status = LiveOrderStatus::Resting;
+                Ok(())
+            })
+            .unwrap();
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 99_990,
+            bid_sz: 1_000,
+            ask_px: 100_100,
+            ask_sz: 1_000,
+            exchange_ms: 1,
+            recv_ns: 1,
+        });
+        (directory, backend)
+    }
+
+    fn bid_target(px: i64, qty_units: i64) -> DesiredQuotes {
+        DesiredQuotes {
+            bid: Some(crate::types::OrderIntent {
+                side: Side::Buy,
+                px,
+                qty_units,
+                post_only: true,
+                reduce_only: false,
+            }),
+            ..DesiredQuotes::empty(QuoteReason::Market, 9, 9)
+        }
+    }
+
+    /// The effective hold window is the larger of the tick and bps thresholds,
+    /// and `ticks = 1, bps = 0` reproduces exact-price matching (the sweep's
+    /// zero point).
+    #[test]
+    fn requote_hold_window_is_max_of_ticks_and_bps() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        // Defaults: 1 tick (quantum 10 in [0.1, 1)) and 2 bps of 100_015 = 20.
+        assert_eq!(backend.requote_hold_window_units(100_015), 20);
+        backend.quoting.replace_threshold_bps = 0.0;
+        assert_eq!(backend.requote_hold_window_units(100_015), 10);
+        backend.quoting.replace_threshold_ticks = 0;
+        assert_eq!(backend.requote_hold_window_units(100_015), 0);
+    }
+
+    #[tokio::test]
+    async fn sub_window_price_moves_hold_the_resting_order() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        // 15 units of drift < the 20-unit window: hold, no venue action.
+        backend
+            .reconcile(bid_target(100_015, 200), 1_000)
+            .await
+            .unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 0);
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
+        assert_eq!(
+            backend.last_quote_action_ms, 0,
+            "a held quote must not restart the requote cooldown"
+        );
+    }
+
+    #[tokio::test]
+    async fn moves_past_the_window_replace_the_order() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        backend
+            .reconcile(bid_target(100_030, 200), 1_000)
+            .await
+            .unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert_eq!(backend.diagnostics.orders_submitted, 1);
+    }
+
+    #[tokio::test]
+    async fn size_changes_replace_even_inside_the_window() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        backend
+            .reconcile(bid_target(100_000, 150), 1_000)
+            .await
+            .unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert_eq!(backend.diagnostics.orders_submitted, 1);
+    }
+
+    /// Withdrawals bypass hysteresis: every fail-closed reason publishes empty
+    /// quotes, and those must cancel immediately.
+    #[tokio::test]
+    async fn empty_quotes_cancel_immediately_despite_the_hold_window() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        backend
+            .reconcile(DesiredQuotes::empty(QuoteReason::RiskLimit, 9, 9), 1_000)
+            .await
+            .unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
     }
 
     /// The inventory watermark is exchange time: fills gate on venue

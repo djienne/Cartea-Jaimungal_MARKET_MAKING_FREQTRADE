@@ -2254,6 +2254,12 @@ async fn run_public_dry_run(
         .map_err(|_| anyhow::anyhow!("hot-path thread panicked"))?;
     latency_observer.stop()?;
     let latency_snapshot = (*latency.snapshot()).clone();
+    // A feed that died with no subsequent market event never reached the
+    // in-loop invalidation, so the flag must be consulted directly here or the
+    // report claims validity for a run whose evidence stream was broken.
+    if !scientifically_valid.load(Ordering::Acquire) && backend.scientifically_valid() {
+        backend.invalidate("public market stream lost causal events or disconnected");
+    }
     let mut invalid_reasons = Vec::new();
     if let Some(reason) = backend.diagnostics().invalid_reason.clone() {
         invalid_reasons.push(reason);

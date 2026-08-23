@@ -57,7 +57,15 @@ pub struct QuotingConfig {
     pub extra_cushion_bps: f64,
     pub min_half_spread_bps: f64,
     pub max_half_spread_bps: f64,
+    /// Requote hold window as a multiple of the venue price quantum. A resting
+    /// order whose price is within the hold window of the new target (same
+    /// size and reduce-only flag) is kept, preserving queue position.
     pub replace_threshold_ticks: i64,
+    /// Price-relative half of the hold window, in basis points of the target
+    /// price. The effective window is the larger of the two thresholds, which
+    /// keeps the behavior portable across instruments whose quantum differs
+    /// in bps terms.
+    pub replace_threshold_bps: f64,
     pub min_order_lifetime_ms: u64,
     pub reduce_only_threshold_q: f64,
 }
@@ -74,7 +82,11 @@ impl Default for QuotingConfig {
             min_half_spread_bps: 1.5,
             max_half_spread_bps: 80.0,
             replace_threshold_ticks: 1,
-            min_order_lifetime_ms: 75,
+            replace_threshold_bps: 2.0,
+            // 100ms keeps the worst-case replace rate inside the WebSocket
+            // message budget with room for pings and dead-man refreshes; 75ms
+            // consumed the entire budget by itself.
+            min_order_lifetime_ms: 100,
             reduce_only_threshold_q: 5.0,
         }
     }
@@ -206,7 +218,10 @@ impl Default for LatencyConfig {
             max_sample_age_ms: 15_000,
             hot_sample_every: 16,
             window_seconds: 60,
-            queue_capacity: 4_096,
+            // Sized so per-event dispatch sampling cannot overflow between two
+            // observer drains even during bursts; overflow now blocks only
+            // the window it happened in, but staying out of it is cheaper.
+            queue_capacity: 16_384,
         }
     }
 }

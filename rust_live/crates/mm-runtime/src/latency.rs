@@ -338,17 +338,34 @@ impl LatencyObserver {
             .spawn(move || {
                 let mut aggregator =
                     LatencyAggregator::new(&symbol, session_started_at_ms, config, gate_enforced);
+                // The snapshot file is a diagnostic, and on Windows a virus
+                // scanner or indexer can hold it briefly. Count an observer
+                // error (which blocks the gate for a window) only after
+                // several consecutive failed publishes.
+                let mut consecutive_write_failures = 0_u32;
                 loop {
                     thread::park_timeout(publish_interval);
                     let mut snapshot = aggregator.drain(&monitor, clock.now_ns());
                     monitor
                         .trading_allowed
                         .store(snapshot.gate.trading_allowed, Ordering::Release);
-                    if snapshot.write_atomic(&output_path).is_err() {
-                        snapshot.observer_errors = monitor
-                            .observer_errors
-                            .fetch_add(1, Ordering::Relaxed)
-                            .saturating_add(1);
+                    match snapshot.write_atomic(&output_path) {
+                        Ok(()) => consecutive_write_failures = 0,
+                        Err(error) => {
+                            consecutive_write_failures += 1;
+                            tracing::warn!(
+                                %error,
+                                consecutive_write_failures,
+                                path = %output_path.display(),
+                                "cannot publish latency snapshot"
+                            );
+                            if consecutive_write_failures >= 3 {
+                                snapshot.observer_errors = monitor
+                                    .observer_errors
+                                    .fetch_add(1, Ordering::Relaxed)
+                                    .saturating_add(1);
+                            }
+                        }
                     }
                     monitor.current.store(Arc::new(snapshot));
                     if thread_shutdown.load(Ordering::Acquire) {
@@ -393,6 +410,13 @@ struct LatencyAggregator {
     windows: BTreeMap<LatencyKind, VecDeque<LatencySample>>,
     totals: BTreeMap<LatencyKind, u64>,
     healthy_windows: u8,
+    /// Lifetime totals at the previous evaluation. The gate blocks on the
+    /// *delta* since then: dropped samples or observer errors are evidence
+    /// about the window in which they happened, not about the rest of the
+    /// session, and the lifetime counters never reset — gating on them
+    /// permanently halted production trading after one transient failure.
+    seen_dropped_samples: u64,
+    seen_observer_errors: u64,
 }
 
 impl LatencyAggregator {
@@ -414,6 +438,8 @@ impl LatencyAggregator {
                 .collect(),
             totals: LatencyKind::ALL.into_iter().map(|kind| (kind, 0)).collect(),
             healthy_windows: 0,
+            seen_dropped_samples: 0,
+            seen_observer_errors: 0,
         }
     }
 
@@ -466,11 +492,17 @@ impl LatencyAggregator {
             distributions,
             short_distributions,
         };
+        // Gate on what happened since the previous evaluation; the snapshot
+        // keeps lifetime totals for reporting.
+        let dropped_delta = snapshot.dropped_samples - self.seen_dropped_samples;
+        let observer_delta = snapshot.observer_errors - self.seen_observer_errors;
+        self.seen_dropped_samples = snapshot.dropped_samples;
+        self.seen_observer_errors = snapshot.observer_errors;
         let mut candidate = evaluate_gate(
             &snapshot.distributions,
             &self.config,
-            snapshot.dropped_samples,
-            snapshot.observer_errors,
+            dropped_delta,
+            observer_delta,
             self.gate_enforced,
         );
         if candidate.enforced && candidate.trading_allowed {
@@ -513,17 +545,20 @@ fn initial_gate(config: &LatencyConfig, gate_enforced: bool) -> LatencyGateSnaps
 fn evaluate_gate(
     distributions: &BTreeMap<String, LatencyDistribution>,
     config: &LatencyConfig,
-    dropped_samples: u64,
-    observer_errors: u64,
+    dropped_samples_delta: u64,
+    observer_errors_delta: u64,
     gate_enforced: bool,
 ) -> LatencyGateSnapshot {
     if !config.gate_enabled || !gate_enforced {
         return initial_gate(config, gate_enforced);
     }
-    if observer_errors != 0 {
+    // Deltas since the previous evaluation, deliberately not lifetime totals:
+    // a transient failure blocks this window, and the healthy-window ramp
+    // (three consecutive clean evaluations) governs recovery.
+    if observer_errors_delta != 0 {
         return blocked_gate(config, "observer_error", None, None);
     }
-    if dropped_samples != 0 {
+    if dropped_samples_delta != 0 {
         return blocked_gate(config, "samples_dropped", None, None);
     }
     for (mandatory_kind, minimum_samples) in [

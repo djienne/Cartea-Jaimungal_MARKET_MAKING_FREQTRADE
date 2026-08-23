@@ -462,7 +462,21 @@ where
                 last_inbound = tokio::time::Instant::now();
                 match incoming? {
                     Message::Text(text) => {
-                        let mut root: serde_json::Value = serde_json::from_str(text.as_ref())?;
+                        // One malformed frame is data corruption, not a
+                        // transport failure: tearing the socket down here
+                        // turned every in-flight order into an unknown outcome
+                        // and permanently invalidated the run on reconnect.
+                        // Matches the public market stream's tolerance.
+                        let mut root: serde_json::Value = match serde_json::from_str(text.as_ref())
+                        {
+                            Ok(root) => root,
+                            Err(error) => {
+                                let prefix: String =
+                                    text.as_str().chars().take(96).collect();
+                                warn!(%error, prefix, "malformed account frame ignored");
+                                continue;
+                            }
+                        };
                         // Owned so the account-data arm can move `data` out of
                         // the DOM instead of deep-cloning it.
                         let channel = root
@@ -1014,6 +1028,10 @@ struct WebSocketRateLimiter {
     maximum_per_minute: u64,
     regular_limit: u64,
     sent: VecDeque<SentWebSocketMessage>,
+    /// Non-safety-critical entries currently in `sent`, maintained on push and
+    /// pop so `consume` never scans the window (it previously counted up to
+    /// the full window on every regular message).
+    regular_in_window: u64,
 }
 
 struct SentWebSocketMessage {
@@ -1027,6 +1045,7 @@ impl WebSocketRateLimiter {
             maximum_per_minute,
             regular_limit: ((maximum_per_minute as f64) * (1.0 - reserve_fraction)).floor() as u64,
             sent: VecDeque::new(),
+            regular_in_window: 0,
         }
     }
 
@@ -1034,20 +1053,20 @@ impl WebSocketRateLimiter {
         let now = tokio::time::Instant::now();
         let cutoff = now - Duration::from_secs(60);
         while self.sent.front().is_some_and(|sent| sent.at < cutoff) {
-            self.sent.pop_front();
+            if let Some(expired) = self.sent.pop_front() {
+                if !expired.safety_critical {
+                    self.regular_in_window = self.regular_in_window.saturating_sub(1);
+                }
+            }
         }
         if self.sent.len() as u64 >= self.maximum_per_minute {
             bail!("Hyperliquid WebSocket message rate limit reached");
         }
-        if !safety_critical
-            && self
-                .sent
-                .iter()
-                .filter(|sent| !sent.safety_critical)
-                .count() as u64
-                >= self.regular_limit
-        {
+        if !safety_critical && self.regular_in_window >= self.regular_limit {
             bail!("Hyperliquid regular WebSocket message budget reached");
+        }
+        if !safety_critical {
+            self.regular_in_window += 1;
         }
         self.sent.push_back(SentWebSocketMessage {
             at: now,

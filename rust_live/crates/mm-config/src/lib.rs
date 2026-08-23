@@ -360,6 +360,44 @@ impl AppConfig {
         if self.quoting.min_half_spread_bps >= self.quoting.max_half_spread_bps {
             bail!("minimum half-spread must be below maximum half-spread");
         }
+        if self.quoting.replace_threshold_ticks < 0 {
+            bail!("quoting.replace_threshold_ticks must be non-negative");
+        }
+        if !self.quoting.replace_threshold_bps.is_finite()
+            || self.quoting.replace_threshold_bps < 0.0
+            || self.quoting.replace_threshold_bps >= self.quoting.max_half_spread_bps
+        {
+            bail!(
+                "quoting.replace_threshold_bps must be finite, non-negative, and below \
+                 max_half_spread_bps: a hold window wider than the widest permitted quote \
+                 is nonsense"
+            );
+        }
+        if self.quoting.min_order_lifetime_ms == 0 {
+            bail!("quoting.min_order_lifetime_ms must be positive");
+        }
+        // The WebSocket budget must cover the worst-case replace rate plus
+        // protocol overhead. Shipping a config where sustained requoting alone
+        // exhausts the budget starves pings and dead-man refreshes.
+        let replace_messages_per_minute = 120_000 / self.quoting.min_order_lifetime_ms;
+        let ping_messages_per_minute = 60_000 / self.runtime.ws_ping_interval_ms.max(1);
+        let deadman_messages_per_minute = if self.live.deadman_enabled {
+            60_000 / self.live.deadman_refresh_ms.max(1)
+        } else {
+            0
+        };
+        if replace_messages_per_minute + ping_messages_per_minute + deadman_messages_per_minute
+            > self.live.max_ws_messages_per_minute
+        {
+            bail!(
+                "WebSocket budget insufficient: {replace_messages_per_minute} worst-case \
+                 replace messages + {ping_messages_per_minute} pings + \
+                 {deadman_messages_per_minute} dead-man refreshes per minute exceed \
+                 live.max_ws_messages_per_minute ({}); raise the budget or \
+                 quoting.min_order_lifetime_ms",
+                self.live.max_ws_messages_per_minute
+            );
+        }
         if !(0.0..=1.0).contains(&self.quoting.target_capital_utilisation) {
             bail!("target_capital_utilisation must be in [0,1]");
         }

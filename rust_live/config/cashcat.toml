@@ -30,7 +30,7 @@ minimum_network_samples = 20
 max_sample_age_ms = 15000
 hot_sample_every = 16
 window_seconds = 60
-queue_capacity = 4096
+queue_capacity = 16384
 
 [storage]
 data_dir = "../../scripts/HL_data"
@@ -92,7 +92,11 @@ extra_cushion_bps = 0.0
 min_half_spread_bps = 1.5
 max_half_spread_bps = 80.0
 replace_threshold_ticks = 1
-min_order_lifetime_ms = 75
+# Hold a resting quote while the new target is within this window (max of
+# ticks and bps), preserving queue position and WebSocket budget. Default from
+# the remediation plan; docs/requote_hysteresis_sweep.* holds the evidence run.
+replace_threshold_bps = 2.0
+min_order_lifetime_ms = 100
 reduce_only_threshold_q = 5.0
 
 [risk]
