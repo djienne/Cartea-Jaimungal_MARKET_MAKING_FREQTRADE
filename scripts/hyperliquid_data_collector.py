@@ -26,6 +26,10 @@ from hyperliquid.utils import constants
 # are large integers, so narrowing is gated on this ceiling.
 FLOAT32_EXACT_INT_LIMIT = 2 ** 24
 
+# Every shard stream the collector writes, in one place so storage, flushing,
+# pruning and compaction can never drift apart when a stream is added.
+STREAMS = ('prices', 'trades', 'orderbooks', 'asset_ctx')
+
 
 @dataclass
 class TickData:
@@ -121,8 +125,11 @@ class HyperliquidDataCollector:
             self.data_buffers[symbol] = {
                 'prices': deque(maxlen=100000),
                 'trades': deque(maxlen=100000),
-                'orderbooks': deque(maxlen=10000)
+                'orderbooks': deque(maxlen=10000),
+                'asset_ctx': deque(maxlen=100000)
             }
+        # Per-symbol (signature, last_kept_ts) for asset_ctx change-detection.
+        self._asset_ctx_last = {}
         
         self.running = False
         self.executor = ThreadPoolExecutor(max_workers=4)
@@ -185,7 +192,7 @@ class HyperliquidDataCollector:
     def _init_storage(self):
         """Initialize directory structure for data storage"""
         for symbol in self.symbols:
-            for dtype in ['prices', 'trades', 'orderbooks']:
+            for dtype in STREAMS:
                 path = os.path.join(self.output_dir, symbol, dtype)
                 os.makedirs(path, exist_ok=True)
     
@@ -503,7 +510,75 @@ class HyperliquidDataCollector:
             
         except Exception as e:
             print(f"Error handling order book data: {e}")
-    
+
+    def _handle_asset_ctx_data(self, data: Dict[str, Any]):
+        """activeAssetCtx: oracle/mark/mid price, open interest, funding, premium.
+
+        Recorded for the oracle-dislocation / OI-drop question deferred in
+        docs/FLOW_GUARD_CANDIDATES.md: oraclePx-vs-midPx divergence is what
+        distinguishes "the perp dislocated alone and will mean-revert" from
+        "the whole market repriced", and openInterest collapsing is forced
+        unwinding by definition. The 08-22 CASHCAT cascade was confirmed
+        idiosyncratic from sibling tapes, but the signal itself could never be
+        backtested because nothing recorded this channel -- this fixes that
+        going forward.
+
+        The venue pushes an unchanged ctx roughly every second, so a row is
+        kept only when any tracked field changes, plus a 60 s heartbeat row so
+        a quiet stream stays distinguishable from a dead subscription. The
+        channel carries no exchange timestamp; `timestamp` is local receive
+        time in float seconds like every other stream.
+        """
+        try:
+            if not (isinstance(data, dict) and data.get('channel') == 'activeAssetCtx' and 'data' in data):
+                return
+            payload = data['data']
+            symbol = payload.get('coin', 'UNKNOWN')
+            if symbol not in self.data_buffers:
+                return
+            ctx = payload.get('ctx') or {}
+
+            def _field(key):
+                value = ctx.get(key)
+                try:
+                    return float(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            impact = ctx.get('impactPxs') or []
+            try:
+                impact_bid = float(impact[0]) if len(impact) > 0 and impact[0] is not None else None
+                impact_ask = float(impact[1]) if len(impact) > 1 and impact[1] is not None else None
+            except (TypeError, ValueError):
+                impact_bid = impact_ask = None
+
+            now = time.time()
+            row = {
+                'timestamp': now,
+                'oracle_px': _field('oraclePx'),
+                'mark_px': _field('markPx'),
+                'mid_px': _field('midPx'),
+                'open_interest': _field('openInterest'),
+                'funding': _field('funding'),
+                'premium': _field('premium'),
+                'impact_bid_px': impact_bid,
+                'impact_ask_px': impact_ask,
+                'day_ntl_vlm': _field('dayNtlVlm'),
+            }
+            signature = (
+                row['oracle_px'], row['mark_px'], row['mid_px'],
+                row['open_interest'], row['funding'], row['premium'],
+            )
+            last_signature, last_kept = self._asset_ctx_last.get(symbol, (None, 0.0))
+            if signature == last_signature and now - last_kept < 60.0:
+                return
+            self._asset_ctx_last[symbol] = (signature, now)
+            with self.lock:
+                self.data_buffers[symbol]['asset_ctx'].append(row)
+            self.stats.update('asset_ctx_updates')
+        except Exception as e:
+            print(f"Error handling asset ctx data: {e}")
+
     def _flush_buffers(self):
         """Flush data buffers to Parquet files"""
         try:
@@ -514,33 +589,18 @@ class HyperliquidDataCollector:
                 for symbol in self.symbols:
                     symbol_buffers = self.data_buffers[symbol]
                     data_to_write[symbol] = {}
-                    
-                    if symbol_buffers['prices']:
-                        data_to_write[symbol]['prices'] = list(symbol_buffers['prices'])
-                        symbol_buffers['prices'].clear()
-                    
-                    if symbol_buffers['trades']:
-                        data_to_write[symbol]['trades'] = list(symbol_buffers['trades'])
-                        symbol_buffers['trades'].clear()
-                        
-                    if symbol_buffers['orderbooks']:
-                        data_to_write[symbol]['orderbooks'] = list(symbol_buffers['orderbooks'])
-                        symbol_buffers['orderbooks'].clear()
+                    for dtype in STREAMS:
+                        if symbol_buffers[dtype]:
+                            data_to_write[symbol][dtype] = list(symbol_buffers[dtype])
+                            symbol_buffers[dtype].clear()
             
             # Then write to files (outside the lock)
             flushed_count = 0
             for symbol, buffers in data_to_write.items():
-                if 'prices' in buffers:
-                    self.executor.submit(self._write_to_parquet, symbol, 'prices', buffers['prices'])
-                    flushed_count += 1
-                
-                if 'trades' in buffers:
-                    self.executor.submit(self._write_to_parquet, symbol, 'trades', buffers['trades'])
-                    flushed_count += 1
-                
-                if 'orderbooks' in buffers:
-                    self.executor.submit(self._write_to_parquet, symbol, 'orderbooks', buffers['orderbooks'])
-                    flushed_count += 1
+                for dtype in STREAMS:
+                    if dtype in buffers:
+                        self.executor.submit(self._write_to_parquet, symbol, dtype, buffers[dtype])
+                        flushed_count += 1
             
             if flushed_count > 0:
                 print(f"Flushed buffers for {flushed_count} data types across symbols")
@@ -567,7 +627,8 @@ class HyperliquidDataCollector:
             for symbol in self.symbols:
                 symbol_buffers = self.data_buffers[symbol]
                 total_buffered = sum(len(buffer) for buffer in symbol_buffers.values())
-                print(f"  {symbol}: {total_buffered} ({len(symbol_buffers['prices'])} prices, {len(symbol_buffers['trades'])} trades, {len(symbol_buffers['orderbooks'])} orderbooks)")
+                detail = ", ".join(f"{len(symbol_buffers[d])} {d}" for d in STREAMS)
+                print(f"  {symbol}: {total_buffered} ({detail})")
         
         print("="*60)
 
@@ -594,6 +655,14 @@ class HyperliquidDataCollector:
                 self._handle_orderbook_data
             )
             self.subscription_ids.append(l2book_id)
+
+            # Same WebSocket, one more multiplexed subscription -- this does
+            # not consume another connection against the 10-per-IP budget.
+            asset_ctx_id = self.info.subscribe(
+                {"type": "activeAssetCtx", "coin": symbol},
+                self._handle_asset_ctx_data
+            )
+            self.subscription_ids.append(asset_ctx_id)
 
         print(f"Subscribed to {len(self.subscription_ids)} data feeds")
 
@@ -749,7 +818,7 @@ class HyperliquidDataCollector:
         cutoff_ms = (time.time() - self.retention_minutes * 60.0) * 1000.0
         removed = 0
         for symbol in self.symbols:
-            for dtype in ('prices', 'trades', 'orderbooks'):
+            for dtype in STREAMS:
                 directory = os.path.join(self.output_dir, symbol, dtype)
                 if not os.path.isdir(directory):
                     continue
@@ -822,7 +891,7 @@ class HyperliquidDataCollector:
         reclaimed = 0
 
         for symbol in self.symbols:
-            for dtype in ('prices', 'trades', 'orderbooks'):
+            for dtype in STREAMS:
                 directory = os.path.join(self.output_dir, symbol, dtype)
                 if not os.path.isdir(directory):
                     continue

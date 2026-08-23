@@ -157,9 +157,18 @@ established now:
    *re-entry* quality (distinguishing "dislocated, will revert" from "repriced,
    stay out"), not earlier withdrawal.
 
-Verdict: DEFER. Worth recording only as an independent collector container in
-the HYPERLIQUID_DATA repo (own WS connection against the 10/IP budget) if the
-re-entry question ever becomes the binding constraint. No bot code.
+Verdict: DEFER — **and collection is now running** (2026-08-23). Rather than a
+new container, the existing collectors record it: `activeAssetCtx` is one more
+multiplexed subscription on the WebSocket each collector already holds (zero
+cost against the 10/IP budget), written as an `asset_ctx/` stream beside
+`prices/trades/orderbooks` for every collected symbol. Verified live: both
+containers healthy, 4 feeds on the CASHCAT collector, oracle/mark/mid, open
+interest, funding and premium landing in parquet. Details in
+`DATA_COLLECTION.md`. The pre-registered future test stands: when the recorded
+tape contains a cascade, measure oracle-vs-mid divergence and OI-drop timing
+against the mid breaker under the same criteria as candidates 1–3 —
+remembering that candidate 1's frozen-inventory lesson points its realistic
+role at *re-entry* quality, not earlier withdrawal. No bot code.
 
 ## Honest limits
 

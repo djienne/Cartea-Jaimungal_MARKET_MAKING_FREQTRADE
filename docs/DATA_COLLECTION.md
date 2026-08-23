@@ -39,7 +39,15 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\scripts\HL_data
 
 Verified identical: the newest shards listed through the junction and through
 the bind-mount source are the same files with the same timestamps. Streams
-collected are `orderbooks/`, `prices/`, `trades/`.
+collected are `orderbooks/`, `prices/`, `trades/`, and — since 2026-08-23 —
+`asset_ctx/` (oracle/mark/mid price, open interest, funding, premium from the
+`activeAssetCtx` channel; multiplexed on the same WebSocket, so it costs no
+extra connection). `asset_ctx` exists for the oracle-dislocation question
+deferred in `FLOW_GUARD_CANDIDATES.md`; rows are kept on change plus a 60 s
+heartbeat, carry only local receive `timestamp` (the venue does not stamp the
+channel), and the stream is deliberately outside both the container
+healthcheck and `validate_hl_data.py` while it is young — a failure in it must
+not restart the proven collectors.
 
 ## Independent of everything else
 
