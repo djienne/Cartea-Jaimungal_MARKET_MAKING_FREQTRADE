@@ -1,3 +1,6 @@
+# LIVE TEST configuration (2026-08-23): bounded 2h real-money canary.
+# ~11 USDC orders, <=99 USDC one-sided exposure, 15 USDC daily-loss stop,
+# latency ceiling 2000ms for this non-colocated dev machine.
 [instrument]
 profile = "cashcat"
 symbol = "CASHCAT"
@@ -24,11 +27,11 @@ log_json = false
 
 [latency]
 gate_enabled = true
-max_acceptable_p95_ms = 150.0
+max_acceptable_p95_ms = 2000.0
 minimum_samples = 20
-# 10, not 20: a 60s window at a 5s ping interval can hold at most 12
-# network samples, so 20 made the production gate unsatisfiable and
-# warm-up never completed. validate() now rejects impossible values.
+# 10, not 20: pings fire every 5s and the rolling window is 60s, so at most
+# 12 network samples can ever exist -- 20 was unsatisfiable and production
+# warm-up deadlocked on it (latent in the shipped config, found 2026-08-23)
 minimum_network_samples = 10
 max_sample_age_ms = 15000
 hot_sample_every = 16
@@ -68,7 +71,7 @@ shard_window_margin_seconds = 120
 max_shard_failure_rate = 0.05
 
 [model]
-q_max = 6
+q_max = 9
 horizon_seconds = 150.0
 phi_kappa_t = 200.0
 phi_kappa_t_max = 300.0
@@ -86,7 +89,7 @@ episode_reset_on_flat = true
 episode_min_elapsed_fraction = 0.25
 
 [quoting]
-available_capital_usdc = 1000.0
+available_capital_usdc = 66.9
 target_capital_utilisation = 0.74
 leverage = 2.0
 maker_fee_rate = 0.00015
@@ -100,15 +103,15 @@ replace_threshold_ticks = 1
 # the remediation plan; docs/requote_hysteresis_sweep.* holds the evidence run.
 replace_threshold_bps = 2.0
 min_order_lifetime_ms = 100
-reduce_only_threshold_q = 5.0
+reduce_only_threshold_q = 8.0
 
 [risk]
 kill_switch = false
-max_notional_usdc = 3200.0
-max_margin_usdc = 1600.0
+max_notional_usdc = 100.0
+max_margin_usdc = 60.0
 min_liquidation_buffer_usdc = 100.0
 maintenance_margin_rate = 0.05
-max_daily_loss_usdc = 200.0
+max_daily_loss_usdc = 15.0
 max_consecutive_losses = 25
 max_market_spread_bps = 100.0
 
@@ -122,7 +125,7 @@ funding_rate_per_hour = 0.0
 markout_horizons_ms = [100, 1000, 5000, 30000]
 
 [live]
-enabled = false
+enabled = true
 mode = "production"
 credentials_path = "../hyperliquid.env"
 state_path = "../run/cashcat-live.redb"
@@ -130,11 +133,11 @@ action_timeout_ms = 2000
 action_expiry_ms = 5000
 reconcile_interval_ms = 30000
 startup_warmup_seconds = 120
-deadman_enabled = true
+deadman_enabled = false
 deadman_deadline_ms = 30000
 deadman_refresh_ms = 10000
 max_maker_fee_rate = 0.0002
-flatten_on_stop = false
+flatten_on_stop = true
 emergency_flatten_max_slippage_bps = 250.0
 max_rest_weight_per_minute = 1000
 max_ws_messages_per_minute = 1600

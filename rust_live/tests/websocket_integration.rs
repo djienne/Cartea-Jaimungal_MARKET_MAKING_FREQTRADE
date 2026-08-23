@@ -76,6 +76,7 @@ async fn public_adapter_parses_mock_cashcat_stream_without_loss() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
         idle_timeout: std::time::Duration::from_secs(45),
+        max_trade_lag_ms: 2_000,
     }));
     let first = tokio::time::timeout(std::time::Duration::from_secs(2), events.pop())
         .await
@@ -153,6 +154,7 @@ async fn causal_ring_saturation_invalidates_the_session() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
         idle_timeout: std::time::Duration::from_secs(45),
+        max_trade_lag_ms: 2_000,
     }));
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while metrics.snapshot().dropped_causal_events == 0 {
@@ -259,6 +261,7 @@ async fn application_ping_and_protocol_pong_are_exercised() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_millis(20),
         idle_timeout: std::time::Duration::from_millis(200),
+        max_trade_lag_ms: 2_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), heartbeat_rx)
         .await
@@ -335,6 +338,7 @@ async fn idle_socket_reconnects_resubscribes_and_invalidates_evidence() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_millis(20),
         idle_timeout: std::time::Duration::from_millis(80),
+        max_trade_lag_ms: 2_000,
     }));
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.pop())
         .await
@@ -403,6 +407,7 @@ async fn initial_trade_snapshot_ignores_old_rows_in_any_order() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
         idle_timeout: std::time::Duration::from_secs(45),
+        max_trade_lag_ms: 2_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), sent_rx)
         .await

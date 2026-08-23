@@ -26,6 +26,11 @@ pub struct MarketStreamArgs {
     pub shutdown: watch::Receiver<bool>,
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
+    /// A trade print older than this on arrival marks causal evidence lost
+    /// and ends the stream (it reconnects). Fed from `runtime.market_stale_ms`
+    /// rather than its own setting: both express "this feed is too stale to
+    /// trust", and a separate knob would only ever be set to the same value.
+    pub max_trade_lag_ms: u64,
 }
 
 pub async fn run_market_stream(mut args: MarketStreamArgs) {
@@ -150,10 +155,13 @@ where
                                     if !initial_trade_frame
                                         && crate::types::unix_ms()
                                             .saturating_sub(trade.exchange_ms)
-                                            > 2_000
+                                            > args.max_trade_lag_ms
                                     {
                                         args.scientifically_valid.store(false, Ordering::Release);
-                                        bail!("live trade arrived more than two seconds late");
+                                        bail!(
+                                            "live trade arrived more than {}ms late",
+                                            args.max_trade_lag_ms
+                                        );
                                     }
                                     push_causal(args, MarketEvent::Trade(trade))?;
                                     args.metrics.trade_prints.fetch_add(1, Ordering::Relaxed);

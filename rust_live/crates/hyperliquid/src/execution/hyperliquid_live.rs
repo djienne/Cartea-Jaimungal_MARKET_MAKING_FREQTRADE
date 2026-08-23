@@ -51,6 +51,7 @@ pub struct LiveExecutionDiagnostics {
     pub funding_events: u64,
     pub unknown_outcomes: u64,
     pub deadman_refreshes: u64,
+    pub rate_limit_cooldowns: u64,
     pub actual_maker_fee_rate: f64,
     pub actual_taker_fee_rate: f64,
     pub campaign_turnover_usdc: f64,
@@ -66,6 +67,22 @@ pub struct LiveBootstrap {
     pub backend: HyperliquidLiveBackend,
     pub session_events: mpsc::Receiver<SessionEvent>,
     pub session_task: tokio::task::JoinHandle<()>,
+}
+
+/// After any rate-limit refusal, place no new orders for this long. The venue
+/// and local limiters both work on 60s rolling windows, so a refusal means the
+/// window is saturated; retrying immediately just re-triggers it. Cancels are
+/// never suppressed — reducing exposure must always be possible.
+const RATE_LIMIT_COOLDOWN_MS: u64 = 30_000;
+
+/// Whether a refusal reason describes a saturated rate/quota budget rather
+/// than an ordinary rejection. Matches the limiter messages raised by the
+/// session actor, the REST client, and the address-action reserve check.
+fn is_rate_limit_reason(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    ["rate limit", "budget", "reserve is below", "in-flight posts"]
+        .iter()
+        .any(|needle| reason.contains(needle))
 }
 
 /// Replay horizon for fill/funding dedup keys, in exchange time. Far beyond any
@@ -142,6 +159,10 @@ pub struct HyperliquidLiveBackend {
     last_quote_action_ms: u64,
     inventory_at_last_quote_action: i64,
     deferred_desired: Option<DesiredQuotes>,
+    /// No new orders are placed before this instant. Set on any rate-limit
+    /// refusal so the bot stays out of a saturated window instead of bouncing
+    /// straight back into the limiter once health is restored.
+    rate_limited_until_ms: u64,
 }
 
 impl HyperliquidLiveBackend {
@@ -290,6 +311,7 @@ impl HyperliquidLiveBackend {
             last_quote_action_ms: 0,
             inventory_at_last_quote_action: initial_inventory_units,
             deferred_desired: None,
+            rate_limited_until_ms: 0,
         };
         backend.initialize_campaign()?;
         Ok(LiveBootstrap {
@@ -303,6 +325,30 @@ impl HyperliquidLiveBackend {
     /// the same snapshot the quote decision used.
     pub fn attach_market_bbo(&mut self, slot: Arc<AtomicBbo>) {
         self.market_bbo = Some(slot);
+    }
+
+    /// Start the no-new-orders cooldown if `reason` describes a saturated
+    /// budget. Returns whether a cooldown is now in effect.
+    pub fn note_rate_limit_if_applicable(&mut self, now_ms: u64, reason: &str) -> bool {
+        if !is_rate_limit_reason(reason) {
+            return false;
+        }
+        let until = now_ms.saturating_add(RATE_LIMIT_COOLDOWN_MS);
+        if until > self.rate_limited_until_ms {
+            self.rate_limited_until_ms = until;
+            self.diagnostics.rate_limit_cooldowns += 1;
+            warn!(
+                reason,
+                cooldown_ms = RATE_LIMIT_COOLDOWN_MS,
+                "rate limit hit; suspending new orders (cancels still allowed)"
+            );
+        }
+        true
+    }
+
+    /// True while the post-rate-limit cooldown suppresses new orders.
+    pub const fn rate_limited(&self, now_ms: u64) -> bool {
+        now_ms < self.rate_limited_until_ms
     }
 
     pub const fn diagnostics(&self) -> &LiveExecutionDiagnostics {
@@ -651,6 +697,7 @@ impl HyperliquidLiveBackend {
             }
             SessionEvent::ActionRefused { reason, .. } => {
                 self.diagnostics.operationally_healthy = false;
+                self.note_rate_limit_if_applicable(unix_ms(), &reason);
                 self.diagnostics.invalid_reason = Some(reason);
             }
         }
@@ -1717,6 +1764,14 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 .saturating_add(canceled_actions);
             action_submitted = true;
         }
+        if !place.is_empty() && self.rate_limited(now_ms) {
+            // Cancels above (if any) still went out; only new exposure waits.
+            if action_submitted {
+                self.last_quote_action_ms = now_ms;
+                self.inventory_at_last_quote_action = self.account.inventory_units;
+            }
+            return Ok(());
+        }
         if !place.is_empty() {
             let placed_actions = place.len() as u64;
             // Prefer the hot path's shared slot: it is the exact snapshot the
@@ -1728,7 +1783,20 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 .and_then(|slot| slot.load())
                 .or(self.latest_bbo)
                 .context("cannot place live quote without BBO")?;
-            self.validate_new_orders(&place, bbo)?;
+            // A refused validation means "do not place this order", never
+            // "end the session": risk breaches and quota exhaustion both land
+            // here, and the address-action reserve check is itself a rate
+            // limit.
+            if let Err(error) = self.validate_new_orders(&place, bbo) {
+                let reason = error.to_string();
+                self.note_rate_limit_if_applicable(now_ms, &reason);
+                self.degrade("order validation refused", &error);
+                if action_submitted {
+                    self.last_quote_action_ms = now_ms;
+                    self.inventory_at_last_quote_action = self.account.inventory_units;
+                }
+                return Ok(());
+            }
             if let Err(error) = self.session.enqueue_orders(desired.quote_seq, place) {
                 self.degrade("order enqueue refused", &error);
                 // Cancels above may already be in flight; leaving the book
@@ -2082,6 +2150,7 @@ mod tests {
             last_quote_action_ms: 0,
             inventory_at_last_quote_action: 0,
             deferred_desired: None,
+            rate_limited_until_ms: 0,
         };
         (directory, backend, cloid)
     }
@@ -2247,6 +2316,61 @@ mod tests {
         feed(&mut backend, 3, checkpoint + 20, "4", "2");
         assert_eq!(backend.account.inventory_units, 6);
         assert_eq!(backend.last_inventory_update_exchange_ms, checkpoint + 20);
+    }
+
+    #[test]
+    fn rate_limit_reasons_are_recognised_and_ordinary_rejections_are_not() {
+        for reason in [
+            "Hyperliquid WebSocket message rate limit reached",
+            "Hyperliquid regular WebSocket message budget reached",
+            "configured Hyperliquid REST weight budget exhausted: used=1000",
+            "venue address-action reserve is below 100 requests",
+            "maximum live in-flight posts reached",
+        ] {
+            assert!(is_rate_limit_reason(reason), "{reason}");
+        }
+        for reason in [
+            "live order is below venue minimum notional",
+            "normal live quotes must be post-only",
+            "cannot place live quote without BBO",
+        ] {
+            assert!(!is_rate_limit_reason(reason), "{reason}");
+        }
+    }
+
+    /// After a rate-limit refusal the bot must stop adding exposure for the
+    /// cooldown, even once health is restored — otherwise it bounces straight
+    /// back into a saturated window. Cancels must keep working throughout.
+    #[tokio::test]
+    async fn rate_limit_cooldown_suspends_new_orders_but_never_cancels() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        backend
+            .process_session_event(SessionEvent::ActionRefused {
+                purpose: crate::hyperliquid::session::ActionPurpose::Order,
+                reason: "Hyperliquid regular WebSocket message budget reached".to_owned(),
+                received_ns: 1,
+            })
+            .unwrap();
+        assert_eq!(backend.diagnostics.rate_limit_cooldowns, 1);
+        let now = unix_ms();
+        assert!(backend.rate_limited(now));
+
+        // A quote that would add exposure places nothing while cooling down.
+        backend
+            .reconcile(bid_target(100_500, 200), now)
+            .await
+            .expect("cooldown must not end the session");
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
+
+        // A withdrawal still cancels: reducing exposure is never suspended.
+        backend
+            .reconcile(DesiredQuotes::empty(QuoteReason::RiskLimit, 9, 9), now)
+            .await
+            .unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+
+        // Past the cooldown, placement resumes.
+        assert!(!backend.rate_limited(now + RATE_LIMIT_COOLDOWN_MS + 1));
     }
 
     /// A full session command queue is backpressure, not a reason to end the

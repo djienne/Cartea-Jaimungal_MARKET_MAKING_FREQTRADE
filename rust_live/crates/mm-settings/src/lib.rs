@@ -214,7 +214,10 @@ impl Default for LatencyConfig {
             gate_enabled: true,
             max_acceptable_p95_ms: 150.0,
             minimum_samples: 20,
-            minimum_network_samples: 20,
+            // A 60s window with 5s pings can hold at most 12 samples, so 20
+            // was unsatisfiable and production could never finish warming up.
+            // AppConfig::validate now rejects impossible combinations.
+            minimum_network_samples: 10,
             max_sample_age_ms: 15_000,
             hot_sample_every: 16,
             window_seconds: 60,

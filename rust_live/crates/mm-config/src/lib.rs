@@ -119,6 +119,9 @@ pub enum LiveMode {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+// Config structs mirror the TOML surface; independent feature toggles are
+// clearer as named bools than as a state enum here.
+#[allow(clippy::struct_excessive_bools)]
 pub struct LiveConfig {
     pub enabled: bool,
     pub mode: LiveMode,
@@ -271,6 +274,23 @@ impl AppConfig {
         }
         if self.latency.minimum_network_samples == 0 {
             bail!("latency.minimum_network_samples must be positive");
+        }
+        // Network samples come from application pings, so the rolling window
+        // physically bounds how many can ever exist. Requiring more than that
+        // makes the production gate unsatisfiable and warm-up never completes.
+        let achievable_network_samples = self
+            .latency
+            .window_seconds
+            .saturating_mul(1_000)
+            .checked_div(self.runtime.ws_ping_interval_ms.max(1))
+            .unwrap_or(0);
+        if self.latency.minimum_network_samples > achievable_network_samples {
+            bail!(
+                "latency.minimum_network_samples ({}) exceeds the {achievable_network_samples}                  samples a {}s window can hold at a {}ms ping interval; the production gate                  could never open",
+                self.latency.minimum_network_samples,
+                self.latency.window_seconds,
+                self.runtime.ws_ping_interval_ms
+            );
         }
         if self.latency.max_sample_age_ms
             < self

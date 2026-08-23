@@ -1199,6 +1199,7 @@ async fn run_live(
         shutdown: shutdown_rx,
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+        max_trade_lag_ms: config.runtime.market_stale_ms,
     }));
     let inventory_units = Arc::new(AtomicI64::new(account.inventory_units));
     let risk_state = Arc::new(AtomicRiskState::default());
@@ -1246,6 +1247,12 @@ async fn run_live(
     let mut calibration_inflight = false;
     let (reconcile_tx, mut reconcile_rx) = tokio::sync::mpsc::channel(1);
     let mut reconcile_inflight = false;
+    // Backoff for failed authoritative reconciles: without it a venue blip
+    // turned the 100ms maintenance tick into a retry storm that ran until the
+    // REST weight limiter cut it off.
+    let mut reconcile_failures = 0_u32;
+    let mut reconcile_backoff_until = tokio::time::Instant::now();
+    let mut feed_evidence_lost = false;
     let shutdown_signal = wait_for_shutdown_signal();
     tokio::pin!(shutdown_signal);
     let deadline = (duration_seconds > 0)
@@ -1315,6 +1322,8 @@ async fn run_live(
                     let Some(result) = result else { continue };
                     match result {
                         Ok(snapshot) => {
+                            reconcile_failures = 0;
+                            reconcile_backoff_until = tokio::time::Instant::now();
                             backend.apply_reconciliation(snapshot)?;
                             let execution_events = backend.maintenance(unix_ms()).await?;
                             apply_live_execution_events(
@@ -1328,8 +1337,20 @@ async fn run_live(
                             )?;
                         }
                         Err(error) => {
-                            backend.invalidate(&format!("live reconciliation failed: {error}"));
-                            warn!(%error, "live reconciliation failed");
+                            // Exponential backoff, capped at 30s: reconcile
+                            // failures during venue blips must not become a
+                            // 100ms retry storm. Health stays degraded (quotes
+                            // paused) until a reconcile succeeds.
+                            reconcile_failures = reconcile_failures.saturating_add(1);
+                            let delay_ms = 2_000_u64
+                                .saturating_mul(1_u64 << reconcile_failures.min(4))
+                                .min(30_000);
+                            reconcile_backoff_until = tokio::time::Instant::now()
+                                + Duration::from_millis(delay_ms);
+                            let reason = format!("live reconciliation failed: {error}");
+                            backend.note_rate_limit_if_applicable(unix_ms(), &reason);
+                            backend.invalidate(&reason);
+                            warn!(reason, delay_ms, "live reconciliation failed; backing off");
                         }
                     }
                 }
@@ -1371,10 +1392,25 @@ async fn run_live(
                 }
                 _ = maintenance.tick() => {
                     let market_valid = market_evidence_valid.load(Ordering::Acquire);
-                    if !market_valid {
-                        backend.invalidate("public market stream lost causal continuity");
-                        warn!("public market evidence invalidated; stopping live session");
-                        break;
+                    if !market_valid && !feed_evidence_lost {
+                        // Continue-through-blips policy: taint the evidence
+                        // (report-level), pause quoting until an authoritative
+                        // reconcile confirms venue state, and keep the session.
+                        // The market stream reconnects on its own and stale-BBO
+                        // withdrawal protects quoting during the gap.
+                        // A feed blip must not end a live session: the stream
+                        // reconnects on its own, stale-BBO withdrawal protects
+                        // quoting through the gap, and an authoritative
+                        // reconcile re-establishes venue truth. Stopping would
+                        // abandon an open position with no bot managing it.
+                        // The report still records the evidence as invalid.
+                        feed_evidence_lost = true;
+                        backend.invalidate("public market feed lost continuity; session continues");
+                        warn!("market feed continuity lost; reconciling and continuing");
+                        if !reconcile_inflight {
+                            reconcile_inflight = true;
+                            backend.spawn_reconciliation(reconcile_tx.clone());
+                        }
                     }
                     let can_quote = armed
                         && backend.operationally_healthy()
@@ -1408,7 +1444,10 @@ async fn run_live(
                         &metrics,
                         &signal,
                     )?;
-                    if backend.reconciliation_requested() && !reconcile_inflight {
+                    if backend.reconciliation_requested()
+                        && !reconcile_inflight
+                        && tokio::time::Instant::now() >= reconcile_backoff_until
+                    {
                         reconcile_inflight = true;
                         backend.spawn_reconciliation(reconcile_tx.clone());
                     }
@@ -1938,6 +1977,7 @@ async fn run_public_dry_run(
         shutdown: shutdown_rx.clone(),
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+        max_trade_lag_ms: config.runtime.market_stale_ms,
     }));
     let mut backend = DryRunBackend::new(
         instrument.clone(),
