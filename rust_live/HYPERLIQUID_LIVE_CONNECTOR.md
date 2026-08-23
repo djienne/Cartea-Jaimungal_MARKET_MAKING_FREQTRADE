@@ -22,6 +22,16 @@ behavior in ways that supersede older statements in this document:
   slot per wire order (`None` where untracked), so a venue status array can no
   longer be applied to the wrong order when a cancel raced a fill; mismatched
   status lengths fail closed to `UnknownOutcome`.
+- **A cancel is sent once per outcome.** An order with a cancel still in
+  flight is skipped rather than re-cancelled, and a venue rejection that proves
+  the order left the book (`Order was never placed, already canceled, or
+  filled`) is recorded as `Canceled`, not `UnknownOutcome`. Without both, each
+  order was cancelled roughly three times: a live run spent 64% of its cancel
+  traffic (2440 of 3815 cloids) on duplicates the venue could only reject, and
+  the unresolved set grew until it would have tripped the authoritative
+  snapshot's 16-order REST fan-out limit. Marking the order terminal cannot
+  lose a fill — fills are booked from `userFills` keyed by fill id, never from
+  a cancel response.
 - **Durable state is bounded (schema 3).** Fill/funding dedup keys carry
   exchange time; the replay checkpoint advances after each authoritative
   reconcile (24h retention, fsynced before pruning) and aged terminal orders
@@ -630,7 +640,10 @@ UnknownOutcome
 ```
 
 `PartiallyFilled` is derived from unique fills and remaining size; never infer a
-fill merely because an order disappeared. Order updates and fill events can be
+fill merely because an order disappeared. The one venue answer that *is* proof
+of disappearance is the cancel rejection `Order was never placed, already
+canceled, or filled`: it is definitive that the order is not on the book, so it
+resolves to `Canceled` rather than leaving the order unresolved forever. Order updates and fill events can be
 duplicated or reordered relative to action responses.
 
 ### 10.3 Unknown outcomes

@@ -87,7 +87,11 @@ release profile unwinds on panic so a panicking task cannot bypass it.
 Consecutive-loss and daily-loss kill inputs are tracked durably from closing
 fills. `live-flatten` is the explicit CASHCAT-only reduce-only maintenance
 path and escalates IOC limits from 25 to 250 bps without allowing a position
-flip.
+flip. Because it can only reduce, it opens the durable store even when the
+configuration has drifted while orders are still working — the state a quoting
+session refuses to inherit is exactly the one flatten exists to clear. The
+stored fingerprint is adopted only once the store is flat, so an interrupted
+flatten still blocks the next quoting session.
 
 The current protocol research, exact signing specification, repository-wide
 connector audit, CASHCAT constraints, and staged release gates are consolidated
