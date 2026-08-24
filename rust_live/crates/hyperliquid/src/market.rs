@@ -36,6 +36,14 @@ pub struct MarketStreamArgs {
 pub async fn run_market_stream(mut args: MarketStreamArgs) {
     let mut backoff_ms = 250_u64;
     let mut connected_once = false;
+    // When the stream went away, so the gap can be measured on the way back in.
+    // A gap is missing data and must be recorded, but it is not the same thing
+    // as event loss: a run that reconnected in three seconds is incomplete by a
+    // knowable amount, whereas a saturated causal ring means the simulation
+    // processed the wrong sequence and is simply wrong. Only the latter is
+    // hard-invalid; gaps are counted and judged against a threshold at report
+    // time (`AppConfig::feed_health_verdict`).
+    let mut disconnected_at_ms: Option<u64> = None;
     loop {
         if *args.shutdown.borrow() {
             return;
@@ -43,7 +51,21 @@ pub async fn run_market_stream(mut args: MarketStreamArgs) {
         match connect_async(&args.ws_url).await {
             Ok((socket, _)) => {
                 if connected_once {
-                    args.scientifically_valid.store(false, Ordering::Release);
+                    if let Some(since) = disconnected_at_ms.take() {
+                        let gap_ms = crate::types::unix_ms().saturating_sub(since);
+                        args.metrics.feed_gaps.fetch_add(1, Ordering::Relaxed);
+                        args.metrics
+                            .feed_downtime_ms
+                            .fetch_add(gap_ms, Ordering::Relaxed);
+                        args.metrics
+                            .feed_longest_gap_ms
+                            .fetch_max(gap_ms, Ordering::Relaxed);
+                        info!(
+                            gap_ms,
+                            symbol = %args.instrument.symbol,
+                            "public market feed gap closed"
+                        );
+                    }
                 }
                 connected_once = true;
                 backoff_ms = 250;
@@ -51,13 +73,14 @@ pub async fn run_market_stream(mut args: MarketStreamArgs) {
                 match run_connected(&mut args, socket).await {
                     Ok(()) => return,
                     Err(error) => {
-                        args.scientifically_valid.store(false, Ordering::Release);
+                        disconnected_at_ms.get_or_insert_with(crate::types::unix_ms);
                         args.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
-                        warn!(%error, "public market stream interrupted; dry-run evidence invalidated");
+                        warn!(%error, "public market stream interrupted; measuring the gap");
                     }
                 }
             }
             Err(error) => {
+                disconnected_at_ms.get_or_insert_with(crate::types::unix_ms);
                 args.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
                 warn!(%error, "cannot connect public market WebSocket");
             }
@@ -157,7 +180,9 @@ where
                                             .saturating_sub(trade.exchange_ms)
                                             > args.max_trade_lag_ms
                                     {
-                                        args.scientifically_valid.store(false, Ordering::Release);
+                                        // A late trade means the feed fell
+                                        // behind; the reconnect that follows
+                                        // measures it as a gap. Not event loss.
                                         bail!(
                                             "live trade arrived more than {}ms late",
                                             args.max_trade_lag_ms

@@ -93,6 +93,18 @@ pub struct RuntimeConfig {
     pub execution_event_capacity: usize,
     pub stats_interval_ms: u64,
     pub log_json: bool,
+    /// Share of a run's wall time that may be lost to public-feed gaps before
+    /// the evidence is called invalid.
+    ///
+    /// A gap is missing data and is always recorded, but a binary latch made
+    /// the verdict useless: past about three hours a run is guaranteed at least
+    /// one venue connection recycle, so `scientifically_valid` was false for
+    /// every long run and therefore said nothing. The counters carry the truth;
+    /// this only decides where to draw the line.
+    pub max_feed_downtime_fraction: f64,
+    /// A single gap this long disqualifies a run regardless of the total: a
+    /// ten-minute hole is a different kind of problem from sixty short blips.
+    pub max_feed_gap_ms: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -107,6 +119,8 @@ impl Default for RuntimeConfig {
             execution_event_capacity: 16_384,
             stats_interval_ms: 5_000,
             log_json: false,
+            max_feed_downtime_fraction: 0.05,
+            max_feed_gap_ms: 60_000,
         }
     }
 }
@@ -254,6 +268,14 @@ impl AppConfig {
             if capacity == 0 || !capacity.is_power_of_two() {
                 bail!("{name} must be a positive power of two");
             }
+        }
+        if !(0.0..=1.0).contains(&self.runtime.max_feed_downtime_fraction)
+            || !self.runtime.max_feed_downtime_fraction.is_finite()
+        {
+            bail!("runtime.max_feed_downtime_fraction must be finite and inside [0, 1]");
+        }
+        if self.runtime.max_feed_gap_ms == 0 {
+            bail!("runtime.max_feed_gap_ms must be greater than zero");
         }
         if self.runtime.market_stale_ms < 50 {
             bail!("runtime.market_stale_ms must be >= 50");
@@ -583,4 +605,135 @@ struct ValidationEvidence {
     parameter_relative_tolerance: f64,
     hjb_relative_tolerance: f64,
     rounded_quotes_exact: bool,
+}
+
+/// How much of a run the public feed was missing, and whether that disqualifies
+/// the evidence.
+///
+/// Feed gaps used to latch `scientifically_valid` false forever, which made the
+/// flag meaningless for any run long enough to see a venue connection recycle —
+/// i.e. every run past about three hours. The counters below are the durable
+/// artefact; the verdict is a convenience derived from them, so a reader can
+/// see "9 gaps, 31 s total, worst 3.8 s over 72 h" instead of a bare `false`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FeedHealth {
+    pub gaps: u64,
+    pub downtime_ms: u64,
+    pub longest_gap_ms: u64,
+    pub run_ms: u64,
+    pub downtime_fraction: f64,
+    /// True when the causal event ring saturated. Unlike a gap, this means the
+    /// simulation processed the wrong sequence, so it is always disqualifying.
+    pub event_loss: bool,
+}
+
+impl FeedHealth {
+    pub fn new(
+        gaps: u64,
+        downtime_ms: u64,
+        longest_gap_ms: u64,
+        run_ms: u64,
+        event_loss: bool,
+    ) -> Self {
+        let downtime_fraction = if run_ms == 0 {
+            0.0
+        } else {
+            downtime_ms as f64 / run_ms as f64
+        };
+        Self {
+            gaps,
+            downtime_ms,
+            longest_gap_ms,
+            run_ms,
+            downtime_fraction,
+            event_loss,
+        }
+    }
+
+    /// Reasons this run's feed disqualifies its evidence. Empty means healthy.
+    pub fn failures(&self, runtime: &RuntimeConfig) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if self.event_loss {
+            reasons.push(
+                "causal market-event ring saturated: events were dropped, so the simulated \
+                 sequence is wrong rather than merely incomplete"
+                    .to_owned(),
+            );
+        }
+        if self.downtime_fraction > runtime.max_feed_downtime_fraction {
+            reasons.push(format!(
+                "public feed was down for {:.2}% of the run ({} gaps, {} ms total), over the {:.2}% limit",
+                self.downtime_fraction * 100.0,
+                self.gaps,
+                self.downtime_ms,
+                runtime.max_feed_downtime_fraction * 100.0
+            ));
+        }
+        if self.longest_gap_ms > runtime.max_feed_gap_ms {
+            reasons.push(format!(
+                "longest public feed gap was {} ms, over the {} ms limit",
+                self.longest_gap_ms, runtime.max_feed_gap_ms
+            ));
+        }
+        reasons
+    }
+
+    pub fn is_valid(&self, runtime: &RuntimeConfig) -> bool {
+        self.failures(runtime).is_empty()
+    }
+}
+
+#[cfg(test)]
+mod feed_health_tests {
+    use super::*;
+
+    fn runtime() -> RuntimeConfig {
+        RuntimeConfig::default()
+    }
+
+    #[test]
+    fn short_blips_over_a_long_run_stay_valid() {
+        // The case that made the old latch useless: a multi-day grid always
+        // sees venue connection recycles, so this must not disqualify it.
+        let health = FeedHealth::new(9, 31_402, 3_812, 72 * 60 * 60 * 1_000, false);
+        assert!(health.downtime_fraction < 0.001);
+        assert!(
+            health.is_valid(&runtime()),
+            "{:?}",
+            health.failures(&runtime())
+        );
+    }
+
+    #[test]
+    fn event_loss_is_always_disqualifying() {
+        // Zero downtime, but the ring dropped events: the sequence is wrong.
+        let health = FeedHealth::new(0, 0, 0, 3_600_000, true);
+        assert!(!health.is_valid(&runtime()));
+        assert!(health.failures(&runtime())[0].contains("ring saturated"));
+    }
+
+    #[test]
+    fn too_much_cumulative_downtime_is_disqualifying() {
+        // 10% of a one-hour run, against the 5% default.
+        let health = FeedHealth::new(20, 360_000, 30_000, 3_600_000, false);
+        assert!(!health.is_valid(&runtime()));
+        assert!(health.failures(&runtime())[0].contains("down for"));
+    }
+
+    #[test]
+    fn one_long_gap_is_disqualifying_even_when_the_total_is_small() {
+        // 90 s missing from a 24 h run is only 0.1% of it, but a gap that long
+        // is a different kind of problem from many short blips.
+        let health = FeedHealth::new(1, 90_000, 90_000, 24 * 60 * 60 * 1_000, false);
+        assert!(health.downtime_fraction < 0.05);
+        assert!(!health.is_valid(&runtime()));
+        assert!(health.failures(&runtime())[0].contains("longest"));
+    }
+
+    #[test]
+    fn a_zero_length_run_does_not_divide_by_zero() {
+        let health = FeedHealth::new(0, 0, 0, 0, false);
+        assert_eq!(health.downtime_fraction, 0.0);
+        assert!(health.is_valid(&runtime()));
+    }
 }

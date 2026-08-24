@@ -346,7 +346,18 @@ async fn idle_socket_reconnects_resubscribes_and_invalidates_evidence() {
     assert!(matches!(event, MarketEvent::Bbo(_)));
     assert!(metrics.snapshot().reconnects >= 1);
     assert!(metrics.snapshot().ws_idle_timeouts >= 1);
-    assert!(!valid.load(Ordering::Acquire));
+    // An idle socket that reconnects is a *measured gap*, not event loss: the
+    // run is incomplete by a knowable amount and stays judgeable. Only a
+    // saturated causal ring still hard-invalidates, because that means the
+    // simulated sequence is wrong rather than merely short.
+    assert!(
+        valid.load(Ordering::Acquire),
+        "a reconnect must no longer latch the run invalid"
+    );
+    assert!(
+        metrics.snapshot().feed_gaps >= 1,
+        "the gap must be counted instead"
+    );
     let _ = shutdown_tx.send(true);
     server.await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), client)

@@ -15,6 +15,16 @@ pub struct Metrics {
     pub application_pongs_received: AtomicU64,
     pub protocol_pings_received: AtomicU64,
     pub ws_idle_timeouts: AtomicU64,
+    /// Feed gaps: how many times the public stream went away and came back.
+    ///
+    /// Separate from `reconnects`, which cannot serve as a gap count: it misses
+    /// the reconnect-success case and double-counts a stale-trade bail. These
+    /// three exist so a finished run can be judged on how much data it actually
+    /// missed instead of on a boolean that any single blip latches false --
+    /// which, past about three hours, is every run.
+    pub feed_gaps: AtomicU64,
+    pub feed_downtime_ms: AtomicU64,
+    pub feed_longest_gap_ms: AtomicU64,
     pub quote_decisions: AtomicU64,
     pub quote_publications: AtomicU64,
     pub fills: AtomicU64,
@@ -38,6 +48,9 @@ pub struct MetricsSnapshot {
     pub application_pongs_received: u64,
     pub protocol_pings_received: u64,
     pub ws_idle_timeouts: u64,
+    pub feed_gaps: u64,
+    pub feed_downtime_ms: u64,
+    pub feed_longest_gap_ms: u64,
     pub quote_decisions: u64,
     pub quote_publications: u64,
     pub fills: u64,
@@ -64,6 +77,9 @@ impl Metrics {
             application_pongs_received: self.application_pongs_received.load(Ordering::Relaxed),
             protocol_pings_received: self.protocol_pings_received.load(Ordering::Relaxed),
             ws_idle_timeouts: self.ws_idle_timeouts.load(Ordering::Relaxed),
+            feed_gaps: self.feed_gaps.load(Ordering::Relaxed),
+            feed_downtime_ms: self.feed_downtime_ms.load(Ordering::Relaxed),
+            feed_longest_gap_ms: self.feed_longest_gap_ms.load(Ordering::Relaxed),
             quote_decisions: self.quote_decisions.load(Ordering::Relaxed),
             quote_publications: self.quote_publications.load(Ordering::Relaxed),
             fills: self.fills.load(Ordering::Relaxed),

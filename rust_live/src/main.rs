@@ -2181,7 +2181,31 @@ async fn run_dry_run_grid(
             .map(|bbo| instrument.price_from_units(bbo.mid_units()));
         history.force_record(&board, mid)?;
     }
-    let feed_valid = scientifically_valid.load(Ordering::Acquire);
+    // Feed gaps are measured and judged against a threshold rather than
+    // latching the run invalid: a multi-day grid always sees a venue connection
+    // recycle, so the old boolean was false for every long run and said nothing.
+    let feed_metrics = metrics.snapshot();
+    let feed_health = mm_live::config::FeedHealth::new(
+        feed_metrics.feed_gaps,
+        feed_metrics.feed_downtime_ms,
+        feed_metrics.feed_longest_gap_ms,
+        unix_ms().saturating_sub(started_at_ms),
+        !scientifically_valid.load(Ordering::Acquire),
+    );
+    let feed_failures = feed_health.failures(&config.runtime);
+    let feed_valid = feed_failures.is_empty();
+    if feed_valid {
+        info!(
+            gaps = feed_health.gaps,
+            downtime_ms = feed_health.downtime_ms,
+            longest_gap_ms = feed_health.longest_gap_ms,
+            "public feed health within limits"
+        );
+    } else {
+        for reason in &feed_failures {
+            warn!(reason = %reason, "public feed health disqualifies this run");
+        }
+    }
     for variant in &variants {
         let report = SessionReport {
             schema_version: 2,
@@ -2199,7 +2223,12 @@ async fn run_dry_run_grid(
             metrics: metrics.snapshot(),
             latency: (*latency.snapshot()).clone(),
             scientifically_valid: variant.backend.scientifically_valid() && feed_valid,
-            invalid_reasons: variant.failure.iter().cloned().collect(),
+            invalid_reasons: variant
+                .failure
+                .iter()
+                .cloned()
+                .chain(feed_failures.iter().cloned())
+                .collect(),
             event_log_path: out_dir.display().to_string(),
             market_event_ring_high_water: events.high_water_mark(),
         };

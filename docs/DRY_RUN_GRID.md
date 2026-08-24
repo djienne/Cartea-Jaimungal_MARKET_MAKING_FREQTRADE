@@ -46,6 +46,28 @@ of a burst does this take*.
 > destroys the profitable rung at 40 — which retired the `wide8slow30s`,
 > `wide8slow60s`, `slow30s` and `slow60s` variants.
 
+**Feed gaps are measured, not latched.** `scientifically_valid` used to be a
+one-way latch: any single blip marked the whole run invalid forever. Past about
+three hours a run is guaranteed at least one venue connection recycle, so the
+flag was false for every long run and carried no information — a 20 h grid with
+nine 3-second reconnects reported exactly the same verdict as a broken one.
+
+The four invalidation causes are not the same kind of event, and the fix is to
+stop pretending they are:
+
+| cause | kind | treatment |
+|---|---|---|
+| causal ring saturated | **event loss** — we processed the wrong sequence | always disqualifying |
+| reconnect / dead session / late trade | **downtime** — a bounded, knowable hole | counted, judged against a threshold |
+
+Every report now carries `feed_gaps`, `feed_downtime_ms` and
+`feed_longest_gap_ms`, and the verdict comes from
+`runtime.max_feed_downtime_fraction` (default 5% of wall time) and
+`runtime.max_feed_gap_ms` (default 60 s) — one long gap disqualifies even when
+the total is small, because a ten-minute hole is a different problem from sixty
+blips. When a run does fail, `invalid_reasons` says which limit and by how much
+instead of leaving a bare `false`.
+
 **A failing variant no longer kills the grid.** `variant.step(...)?` used to
 propagate, so one blown-up hypothesis aborted all the others — and with the
 cadence lever working, a liquidation-buffer breach is a realistic way to blow
