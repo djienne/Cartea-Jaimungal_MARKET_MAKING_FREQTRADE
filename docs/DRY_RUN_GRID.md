@@ -276,3 +276,76 @@ They also answer the question `spread_ladder_185h.md` left open: the replay's
 spread60 ended short 2,440 units — 130% of equity — because nothing capped
 inventory. In the grid `q_max = 6` binds, so these rungs test whether the wide
 edge survives a cap that actually holds.
+
+## The feed churn loop: measured before and after
+
+The fix in `0bfea13` suppressed venue-replayed trades on **every** frame rather
+than only the first. The claim was that the interruption rate would collapse,
+and that claim is only worth making if measured on the same thing before and
+after: a *continuous* grid run, counting feed interruptions per hour.
+
+| | pre-fix | post-fix |
+|---|---|---|
+| continuous runtime | 3.01 h | 2.84 h |
+| feed interruptions | **19** | **0** |
+| rate | **6.3 / h** | **0.0 / h** |
+| reconnects | — | 0 |
+| feed downtime | — | 0 ms |
+| longest gap | — | 0 ms |
+| replayed trades suppressed | — | 27 |
+| live trade prints | — | 37,754 |
+
+At the pre-fix rate a 2.84 h run would be expected to show ~17.9
+interruptions. Zero is not a marginal improvement.
+
+**Why this is a test and not just a quiet afternoon.** Zero reconnects could
+mean the fix works, or it could mean nothing happened to test it. It is the
+former, because of *where* the suppressed prints are: all 27 arrived in the
+first 45 seconds, on the initial subscribe, and the counter has not moved
+since. That is precisely the loop's ignition point. Pre-fix, that same
+subscribe backfill spilled past frame one, hit the lag check, and bailed —
+which forced a re-subscribe, which replayed more backfill. The ignition point
+was exercised once, and did not ignite.
+
+**What is still untested.** A reconnect triggered by an unrelated cause (a
+venue restart, a network drop) would exercise the suppression a second time,
+and none has occurred. The residual trade-lag trip rate — the reason
+`max_trade_lag_ms` was given its own key rather than a new default — is
+therefore still unmeasured, and the threshold stays at 5,000 ms until it is.
+One instrument, one venue, one window.
+
+### First live ladder result (single window — read with care)
+
+At 2.84 h into the 18-variant run, over a window containing a +9.7% rally with
+an 8.28% minute:
+
+```
+wide48      +29.07   381 fills        wide8      -15.49  1697
+wide24slow30s +15.18 1630             q9         -16.55  1748
+wide40      +14.54   576              wide4      -22.60  1755
+wide16slow30s +10.82 2085             baseline   -27.16  1804
+wide24      +10.73  1085              slow15s    -47.93  2937
+wide16       +9.01  1489              slow5s     -49.24  3218
+wide60       -2.39   195              q3         -49.34  2200
+```
+
+Three things this window says, none of them settled:
+
+- **Fill count runs inverse to P&L.** The winner took 381 fills; the three
+  worst took 2,200–3,218. This is the adverse-selection mechanism stated about
+  as plainly as this instrument states anything, and it matches the replay's
+  markout column rather than its P&L column.
+- **60 bps fails live where the replay ranked it best.** `wide60` is −2.39 on
+  195 fills with the grid's largest drawdown (39.97). Too few fills to manage
+  inventory through a move; it ends the window short 976 units. The replay's
+  spread60 had the same shape (−2,440 units) but no binding `q_max` to reveal
+  it. The live sweet spot so far is **40–48 bps**, not 60.
+- **The flow guard did not trip once.** `guarded` and `unguarded` are identical
+  to the cent across 1,804 fills, and the guarded variant logged zero
+  `toxic_flow` decisions in 17,147 quotes. An 8.28%-per-minute move never
+  approaches an 8%-per-**5s** tripwire. `risk_limit` fired 1,028 times instead.
+  See `TOXIC_FLOW_GUARD.md` — this is a live instance of the narrow-trigger
+  concern, not a new finding.
+
+One window, one direction, one instrument. The ladder has reordered twice
+already inside this run (`wide40` led at 1.5 h, `wide48` at 2.5 h).
