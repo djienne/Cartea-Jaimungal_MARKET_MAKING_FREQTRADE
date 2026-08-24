@@ -26,10 +26,16 @@ pub struct MarketStreamArgs {
     pub shutdown: watch::Receiver<bool>,
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
-    /// A trade print older than this on arrival marks causal evidence lost
-    /// and ends the stream (it reconnects). Fed from `runtime.market_stale_ms`
-    /// rather than its own setting: both express "this feed is too stale to
-    /// trust", and a separate knob would only ever be set to the same value.
+    /// A genuinely new trade print older than this on arrival ends the stream
+    /// (it reconnects). Replayed prints that predate the connection are
+    /// ignored before this check and never trigger it.
+    ///
+    /// Has its own `runtime.max_trade_lag_ms` setting. It used to be fed from
+    /// `runtime.market_stale_ms` on the theory that a separate knob "would only
+    /// ever be set to the same value", but the two answer different questions:
+    /// `market_stale_ms` is "is the top-of-book fresh enough to quote from",
+    /// while this is "is a new trade so late the feed is broken". They have no
+    /// reason to share a value.
     pub max_trade_lag_ms: u64,
 }
 
@@ -121,7 +127,6 @@ where
     let mut ping = tokio::time::interval(args.ping_interval);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_inbound = tokio::time::Instant::now();
-    let mut trade_stream_live = false;
     let mut pending_application_ping_ns = None;
     loop {
         tokio::select! {
@@ -165,24 +170,40 @@ where
                                 }
                             }
                             super::wire::PublicFrame::Trades(trades) => {
-                                let initial_trade_frame = !trade_stream_live;
                                 for trade in trades {
-                                    let startup_backlog =
+                                    // The venue replays recent trades after a
+                                    // re-subscribe, stamped with their original
+                                    // exchange time. Those predate this
+                                    // connection, so they say nothing about how
+                                    // fresh the feed is now and must never
+                                    // justify tearing it down.
+                                    //
+                                    // This used to apply only to the FIRST
+                                    // frame after connecting, but backfill
+                                    // spans several frames: frame two onward
+                                    // reached the lag check below and bailed,
+                                    // which forced a reconnect, which replayed
+                                    // more backfill. Measured over 183,344
+                                    // CASHCAT trades, 94% of "late" prints
+                                    // arrived within 2 s of another in 44
+                                    // bursts of ~21 -- the loop, not a slow
+                                    // feed. The body of the distribution is
+                                    // fast (p50 378 ms, p99 2.4 s).
+                                    let predates_connection =
                                         trade.exchange_ms.saturating_add(2_000) < connected_at_ms;
-                                    if initial_trade_frame && startup_backlog {
+                                    if predates_connection {
                                         args.metrics
                                             .historical_trade_prints_ignored
                                             .fetch_add(1, Ordering::Relaxed);
                                         continue;
                                     }
-                                    if !initial_trade_frame
-                                        && crate::types::unix_ms()
-                                            .saturating_sub(trade.exchange_ms)
-                                            > args.max_trade_lag_ms
+                                    // Only a genuinely new print can show the
+                                    // feed has fallen behind.
+                                    if crate::types::unix_ms().saturating_sub(trade.exchange_ms)
+                                        > args.max_trade_lag_ms
                                     {
-                                        // A late trade means the feed fell
-                                        // behind; the reconnect that follows
-                                        // measures it as a gap. Not event loss.
+                                        // The reconnect that follows measures
+                                        // this as a gap. Not event loss.
                                         bail!(
                                             "live trade arrived more than {}ms late",
                                             args.max_trade_lag_ms
@@ -191,7 +212,6 @@ where
                                     push_causal(args, MarketEvent::Trade(trade))?;
                                     args.metrics.trade_prints.fetch_add(1, Ordering::Relaxed);
                                 }
-                                trade_stream_live = true;
                             }
                             super::wire::PublicFrame::Book(book) => {
                                 push_causal(args, MarketEvent::Book(book))?;

@@ -1249,7 +1249,7 @@ async fn run_live(
         shutdown: shutdown_rx,
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
-        max_trade_lag_ms: config.runtime.market_stale_ms,
+        max_trade_lag_ms: config.runtime.max_trade_lag_ms,
     }));
     let inventory_units = Arc::new(AtomicI64::new(account.inventory_units));
     let risk_state = Arc::new(AtomicRiskState::default());
@@ -2022,7 +2022,7 @@ async fn run_dry_run_grid(
         shutdown: shutdown_rx.clone(),
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
-        max_trade_lag_ms: config.runtime.market_stale_ms,
+        max_trade_lag_ms: config.runtime.max_trade_lag_ms,
     }));
 
     // VPIN is a property of the market, not of a parameter set, so one tracker
@@ -2663,7 +2663,7 @@ async fn run_public_dry_run(
         shutdown: shutdown_rx.clone(),
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
-        max_trade_lag_ms: config.runtime.market_stale_ms,
+        max_trade_lag_ms: config.runtime.max_trade_lag_ms,
     }));
     let mut backend = DryRunBackend::new(
         instrument.clone(),

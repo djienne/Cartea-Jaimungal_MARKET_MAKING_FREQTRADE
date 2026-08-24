@@ -105,6 +105,16 @@ pub struct RuntimeConfig {
     /// A single gap this long disqualifies a run regardless of the total: a
     /// ten-minute hole is a different kind of problem from sixty short blips.
     pub max_feed_gap_ms: u64,
+    /// How late a *genuinely new* trade print may arrive before the public
+    /// stream is treated as broken and reconnected.
+    ///
+    /// Separate from `market_stale_ms`, which it used to share a value with.
+    /// That answers "is the top-of-book fresh enough to quote from"; this
+    /// answers "is a new trade so late the feed is broken". Replayed prints
+    /// that predate the connection are filtered out before this applies, so the
+    /// threshold only ever sees live delivery -- whose body is fast (p50
+    /// 378 ms, p99 2.4 s over 183,344 CASHCAT trades).
+    pub max_trade_lag_ms: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -121,6 +131,7 @@ impl Default for RuntimeConfig {
             log_json: false,
             max_feed_downtime_fraction: 0.05,
             max_feed_gap_ms: 60_000,
+            max_trade_lag_ms: 5_000,
         }
     }
 }
@@ -276,6 +287,9 @@ impl AppConfig {
         }
         if self.runtime.max_feed_gap_ms == 0 {
             bail!("runtime.max_feed_gap_ms must be greater than zero");
+        }
+        if self.runtime.max_trade_lag_ms < 50 {
+            bail!("runtime.max_trade_lag_ms must be >= 50");
         }
         if self.runtime.market_stale_ms < 50 {
             bail!("runtime.market_stale_ms must be >= 50");

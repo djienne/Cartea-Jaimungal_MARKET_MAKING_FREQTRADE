@@ -1587,22 +1587,6 @@ impl HyperliquidLiveBackend {
         Ok(())
     }
 
-    /// Requote hold window in price units: the larger of the tick threshold
-    /// (venue quantum multiples) and the price-relative bps threshold. With
-    /// `ticks = 1, bps = 0` the strict `<` comparison reproduces exact-price
-    /// matching bit for bit, so the sweep over `replace_threshold_bps` has a
-    /// true zero point.
-    fn requote_hold_window_units(&self, target_px_units: i64) -> i64 {
-        let ticks = self
-            .quoting
-            .replace_threshold_ticks
-            .max(0)
-            .saturating_mul(self.instrument.price_quantum(target_px_units));
-        let bps = (self.quoting.replace_threshold_bps.max(0.0) / 10_000.0 * target_px_units as f64)
-            as i64;
-        ticks.max(bps)
-    }
-
     fn active_orders_by_side(&self) -> Result<BTreeMap<Side, Vec<PersistedLiveOrder>>> {
         self.state.with_state(|state| {
             let mut by_side = BTreeMap::<Side, Vec<PersistedLiveOrder>>::new();
@@ -1707,7 +1691,10 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             //   reference, so drift beyond the window always triggers.
             let unchanged = target.is_some_and(|target| {
                 side_orders.iter().any(|order| {
-                    (order.px_units - target.px).abs() < self.requote_hold_window_units(target.px)
+                    (order.px_units - target.px).abs()
+                        < self
+                            .instrument
+                            .requote_hold_window_units(&self.quoting, target.px)
                         && order.remaining_qty_units == target.qty_units
                         && order.reduce_only == target.reduce_only
                         && matches!(
@@ -2218,20 +2205,6 @@ mod tests {
             }),
             ..DesiredQuotes::empty(QuoteReason::Market, 9, 9)
         }
-    }
-
-    /// The effective hold window is the larger of the tick and bps thresholds,
-    /// and `ticks = 1, bps = 0` reproduces exact-price matching (the sweep's
-    /// zero point).
-    #[test]
-    fn requote_hold_window_is_max_of_ticks_and_bps() {
-        let (_directory, mut backend) = requote_backend(100_000, 200);
-        // Defaults: 1 tick (quantum 10 in [0.1, 1)) and 2 bps of 100_015 = 20.
-        assert_eq!(backend.requote_hold_window_units(100_015), 20);
-        backend.quoting.replace_threshold_bps = 0.0;
-        assert_eq!(backend.requote_hold_window_units(100_015), 10);
-        backend.quoting.replace_threshold_ticks = 0;
-        assert_eq!(backend.requote_hold_window_units(100_015), 0);
     }
 
     #[tokio::test]

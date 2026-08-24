@@ -458,3 +458,104 @@ fn test_instrument() -> InstrumentSpec {
         metadata_fingerprint: String::new(),
     }
 }
+
+/// Backfill after a re-subscribe must not tear the connection down.
+///
+/// This is the case that had no test and therefore shipped broken: the venue
+/// replays recent trades on re-subscribe, stamped with their original exchange
+/// time. The replay suppression applied only to the FIRST frame, so a second
+/// backfill frame reached the lag check and bailed -- which forced a reconnect,
+/// which replayed more backfill. A self-sustaining churn loop that ran the live
+/// grid at roughly eleven gaps an hour.
+///
+/// Here the second frame is entirely old rows: it must be ignored and counted,
+/// with the connection intact and no reconnect.
+#[tokio::test]
+async fn replayed_trades_on_a_later_frame_are_ignored_not_fatal() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let now_ms = mm_live::types::unix_ms();
+    let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        for _ in 0..3 {
+            assert!(matches!(
+                socket.next().await.unwrap().unwrap(),
+                Message::Text(_)
+            ));
+        }
+        // Frame one: a live print, so the stream is established.
+        let live = format!(
+            r#"{{"channel":"trades","data":[
+                {{"coin":"CASHCAT","side":"B","px":"0.13220","sz":"2","time":{now_ms},"tid":201}}
+            ]}}"#
+        );
+        socket.send(Message::Text(live.into())).await.unwrap();
+        // Frame two: backfill, far older than max_trade_lag_ms. Before the fix
+        // this bailed and killed the connection.
+        let backfill = format!(
+            r#"{{"channel":"trades","data":[
+                {{"coin":"CASHCAT","side":"A","px":"0.13100","sz":"5","time":{},"tid":202}},
+                {{"coin":"CASHCAT","side":"B","px":"0.13110","sz":"7","time":{},"tid":203}}
+            ]}}"#,
+            now_ms.saturating_sub(76_000),
+            now_ms.saturating_sub(155_000)
+        );
+        socket.send(Message::Text(backfill.into())).await.unwrap();
+        let _ = sent_tx.send(());
+        while let Some(message) = socket.next().await {
+            if matches!(message, Ok(Message::Close(_))) {
+                break;
+            }
+        }
+    });
+
+    let events = Arc::new(AsyncRing::new(16));
+    let metrics = Arc::new(Metrics::default());
+    let valid = Arc::new(AtomicBool::new(true));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let client = tokio::spawn(run_market_stream(MarketStreamArgs {
+        ws_url: format!("ws://{address}"),
+        instrument: test_instrument(),
+        latest_bbo: Arc::new(AtomicBbo::default()),
+        events: events.clone(),
+        signal: Arc::new(HotPathSignal::default()),
+        clock: Arc::new(ProcessClock::default()),
+        metrics: metrics.clone(),
+        latency: None,
+        scientifically_valid: valid.clone(),
+        shutdown: shutdown_rx,
+        ping_interval: std::time::Duration::from_secs(30),
+        idle_timeout: std::time::Duration::from_secs(45),
+        max_trade_lag_ms: 2_000,
+    }));
+    tokio::time::timeout(std::time::Duration::from_millis(500), sent_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.trade_prints, 1,
+        "only the live print should be published"
+    );
+    assert_eq!(
+        snapshot.historical_trade_prints_ignored, 2,
+        "both replayed prints should be counted and dropped"
+    );
+    assert_eq!(
+        snapshot.reconnects, 0,
+        "backfill must not tear the connection down -- this is the churn loop"
+    );
+    assert_eq!(snapshot.feed_gaps, 0, "and therefore must not open a gap");
+    assert!(valid.load(Ordering::Acquire));
+
+    let _ = shutdown_tx.send(true);
+    server.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), client)
+        .await
+        .unwrap()
+        .unwrap();
+}

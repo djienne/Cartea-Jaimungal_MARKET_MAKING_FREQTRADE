@@ -150,6 +150,11 @@ vpin_threshold = 0.40
 cooldown_ms = 900000
 
 [live]
+# DELIBERATELY ARMED. tests/cli_safety.rs hands this config to `dry-run-grid`
+# to prove the grid never becomes a back door to real money even when the
+# live gate is open. Setting it to false would leave that test green while
+# testing nothing. This config is never used to trade; the live paths are
+# cashcat.toml and run/cashcat-live-2h.toml.
 enabled = true
 mode = "production"
 credentials_path = "../hyperliquid.env"

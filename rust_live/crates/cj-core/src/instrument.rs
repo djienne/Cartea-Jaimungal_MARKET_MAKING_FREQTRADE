@@ -1,3 +1,4 @@
+use crate::config::QuotingConfig;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +80,29 @@ impl InstrumentSpec {
         10_i64.pow(self.max_price_decimals - decimal_places)
     }
 
+    /// How far a target price may drift before a resting order is replaced,
+    /// in price units: the larger of the tick threshold and the price-relative
+    /// bps threshold.
+    ///
+    /// Shared by the live backend and the simulator deliberately. It lived as
+    /// two byte-identical copies, one in each, with a comment on both saying
+    /// they had to match -- the same arrangement that let
+    /// `min_order_lifetime_ms` be honored live and silently ignored in every
+    /// replay. One implementation cannot drift from itself.
+    ///
+    /// The zero point is `ticks = 1, bps = 0`, which reproduces exact-price
+    /// requoting.
+    #[inline]
+    pub fn requote_hold_window_units(&self, quoting: &QuotingConfig, target_px_units: i64) -> i64 {
+        let ticks = quoting
+            .replace_threshold_ticks
+            .max(0)
+            .saturating_mul(self.price_quantum(target_px_units));
+        let bps =
+            (quoting.replace_threshold_bps.max(0.0) / 10_000.0 * target_px_units as f64) as i64;
+        ticks.max(bps)
+    }
+
     #[inline]
     pub fn price_from_units(&self, value: i64) -> f64 {
         value as f64 / self.price_scale() as f64
@@ -107,6 +131,22 @@ impl InstrumentSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Moved here from the live backend when the helper was deduped: one
+    /// implementation, one test.
+    #[test]
+    fn requote_hold_window_is_max_of_ticks_and_bps() {
+        let instrument = valid();
+        let mut quoting = QuotingConfig::default();
+        quoting.replace_threshold_ticks = 1;
+        quoting.replace_threshold_bps = 2.0;
+        // 2 bps of 100_015 is 20 units; one tick is 10. The bps term wins.
+        assert_eq!(instrument.requote_hold_window_units(&quoting, 100_015), 20);
+        quoting.replace_threshold_bps = 0.0;
+        assert_eq!(instrument.requote_hold_window_units(&quoting, 100_015), 10);
+        quoting.replace_threshold_ticks = 0;
+        assert_eq!(instrument.requote_hold_window_units(&quoting, 100_015), 0);
+    }
 
     fn valid() -> InstrumentSpec {
         InstrumentSpec {
