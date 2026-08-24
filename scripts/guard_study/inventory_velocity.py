@@ -17,22 +17,27 @@ from __future__ import annotations
 
 import glob
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 
 import tape as T
 
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+
 WINDOWS_S = (10, 30, 60, 120)
 RUNS = T.TAPES_DIR / "runs"
 
 
 def fill_trajectory(jsonl_path: str) -> tuple[np.ndarray, np.ndarray]:
-    """(ts_ms, inventory_units) after each fill."""
+    """(ts_ms, inventory_units) after each fill. Handles .jsonl and .jsonl.zst."""
+    from grid_pnl_curve import open_log  # noqa: PLC0415
+
     ts: list[float] = []
     inv: list[float] = []
     running = 0.0
-    with open(jsonl_path, encoding="utf-8") as handle:
+    with open_log(Path(jsonl_path)) as handle:
         for line in handle:
             if '"execution_event"' not in line or '"fill"' not in line:
                 continue
@@ -79,8 +84,12 @@ def main() -> None:
         files = glob.glob(str(RUNS / leg / "replay-*.jsonl"))
         if files:
             sources[leg] = max(files)
-    for path in glob.glob("../../rust_live/reports/grid_live/grid-*.jsonl"):
-        sources[f"grid:{Path(path).name.split('-')[1]}"] = path
+    # Grid logs are zstd now and keep a stable stem; match both schemes.
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+    from grid_pnl_curve import variant_files  # noqa: PLC0415
+
+    for variant, path in variant_files(None).items():
+        sources[f"grid:{variant}"] = str(path)
 
     zone_lo, zone_hi = T.CASCADE_ZONE_MS
     print(f"{'source':22s} " + "  ".join(f"maxV({w}s)" for w in WINDOWS_S) + "   (benign = outside cascade zone)")

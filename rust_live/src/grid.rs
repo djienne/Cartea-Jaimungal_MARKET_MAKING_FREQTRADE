@@ -34,6 +34,10 @@ pub struct VariantOverrides {
     /// `model.phi_kappa_t` — running inventory penalty. Higher pushes back to
     /// flat harder.
     pub phi_kappa_t: Option<f64>,
+    /// `model.phi_kappa_t_max` — the ceiling that `hjb.rs` rescales φ against.
+    /// Without raising this, a `phi_kappa_t` above the base ceiling (300) is
+    /// silently clamped, so a variant asking for 1000 quietly runs 300.
+    pub phi_kappa_t_max: Option<f64>,
     /// `quoting.min_half_spread_bps` — floor on quoted depth. The losing window
     /// earned +683.89 of spread across 1,771 fills, about 0.39 per fill, which
     /// did not cover the adverse selection it took.
@@ -69,6 +73,9 @@ impl VariantOverrides {
         if let Some(value) = self.phi_kappa_t {
             config.model.phi_kappa_t = value;
         }
+        if let Some(value) = self.phi_kappa_t_max {
+            config.model.phi_kappa_t_max = value;
+        }
         if let Some(value) = self.min_half_spread_bps {
             config.quoting.min_half_spread_bps = value;
         }
@@ -99,6 +106,9 @@ impl VariantOverrides {
         }
         if let Some(value) = self.phi_kappa_t {
             parts.push(format!("phiKT={value}"));
+        }
+        if let Some(value) = self.phi_kappa_t_max {
+            parts.push(format!("phiKTmax={value}"));
         }
         if let Some(value) = self.min_half_spread_bps {
             parts.push(format!("minHalf={value}bps"));

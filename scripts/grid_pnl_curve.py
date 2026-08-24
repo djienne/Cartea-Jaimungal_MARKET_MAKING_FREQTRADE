@@ -49,18 +49,49 @@ DATA_DIR = REPO / "scripts" / "HL_data"
 PX_SCALE = 1e6
 
 
+def open_log(path: Path):
+    """Open a grid event log, transparently decompressing `.jsonl.zst`.
+
+    NEVER use `ZstdDecompressor.decompress()` on these files: the log appends a
+    new zstd frame on every restart, and the one-shot API stops at the first
+    frame and reports success -- silently returning a fraction of the data.
+    `stream_reader` reads across frames, and tolerates the final frame being
+    mid-write while the grid is still running.
+    """
+    if path.suffix != ".zst":
+        return open(path, encoding="utf-8")
+    import io
+
+    import zstandard
+
+    reader = zstandard.ZstdDecompressor().stream_reader(
+        path.open("rb"), read_across_frames=True
+    )
+    return io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
+
+
 def variant_files(names: list[str] | None) -> dict[str, Path]:
+    """Newest log per variant.
+
+    Two naming schemes coexist: the current stable `grid-<variant>.jsonl.zst`,
+    which appends across restarts, and the historical timestamped
+    `grid-<variant>-<ms>.jsonl` from runs before compression.
+    """
     found: dict[str, Path] = {}
-    for path in sorted(GRID_DIR.glob("grid-*.jsonl")):
-        match = re.match(r"grid-(.+)-\d{13}\.jsonl$", path.name)
-        if not match:
+    for path in sorted(GRID_DIR.glob("grid-*.jsonl*")):
+        name = path.name
+        for suffix in (".jsonl.zst", ".jsonl"):
+            if name.endswith(suffix):
+                stem = name[: -len(suffix)]
+                break
+        else:
             continue
-        name = match.group(1)
-        if names and name not in names:
+        # Strip the legacy trailing -<13-digit ms> if present.
+        variant = re.sub(r"-\d{13}$", "", stem[len("grid-") :])
+        if names and variant not in names:
             continue
-        # Keep the newest log per variant if a grid was restarted.
-        if name not in found or path.stat().st_mtime > found[name].stat().st_mtime:
-            found[name] = path
+        if variant not in found or path.stat().st_mtime > found[variant].stat().st_mtime:
+            found[variant] = path
     return found
 
 
@@ -68,7 +99,7 @@ def read_fills(path: Path) -> pd.DataFrame:
     """Fill stream for one variant. Only fill lines are parsed; the last line
     can be a partial write because the grid is still running."""
     rows = []
-    with open(path, encoding="utf-8") as handle:
+    with open_log(path) as handle:
         for line in handle:
             if '"kind":"fill"' not in line:
                 continue

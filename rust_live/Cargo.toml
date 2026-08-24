@@ -54,6 +54,10 @@ toml = "=0.8.23"
 tokio = { version = "=1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt", "json"] }
+# Already in the lockfile via cj-data's parquet "zstd" feature, so this adds no
+# new transitive dependencies. Used to compress the long-running dry-run event
+# logs (docs/DRY_RUN_GRID.md).
+zstd = "=0.13.3"
 cj-core = { path = "crates/cj-core" }
 cj-data = { path = "crates/cj-data" }
 mm-execution = { path = "crates/mm-execution" }

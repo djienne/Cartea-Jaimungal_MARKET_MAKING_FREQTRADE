@@ -17,7 +17,7 @@ is already shared with three collector containers and with any live session,
 which needs two. One `dry-run` process per variant would open one connection
 each and could take down data collection or block real trading.
 
-Measured on the running **10-variant** grid: **1 connection**, both collectors
+Measured on the running **20-variant** grid: **1 connection**, both collectors
 still `(healthy)`. The count does not grow with the number of variants — that is
 the whole point.
 
@@ -31,11 +31,46 @@ of a burst does this take*.
 
 | key | maps to | evidence |
 |---|---|---|
-| `q_max` | `model.q_max` | q=3 scored −279.11 against q=6's −585.61 on the same calibration |
+| `q_max` | `model.q_max` | replay: q=3 scored −279.11 against q=6's −585.61. **Live reversed this** — see below |
 | `phi_kappa_t` | `model.phi_kappa_t` | sweep winner used 300 against a grid topping out at 1000 |
 | `min_half_spread_bps` | `quoting.min_half_spread_bps` | the losing window earned +683.89 across 1,771 fills — ~0.39/fill, under its adverse selection |
 | `min_order_lifetime_ms`, `replace_threshold_bps` | `quoting.*` | the only positive latency-ladder rung was the 30 s-refresh one |
 | `flow_guard_enabled`, `vpin_threshold`, `fast_move_threshold_bps` | `flow_guard.*` | the toxic-flow guard (`TOXIC_FLOW_GUARD.md`); the shipped spec pairs `guarded`/`unguarded` so the A/B runs on one shared live feed |
+| `phi_kappa_t_max` | `model.phi_kappa_t_max` | `hjb.rs` rescales φ so φ·κ·T never exceeds this, so a `phi_kappa_t` above the base ceiling of 300 is silently clamped. Without this lever a variant asking for 1000 quietly runs 300 |
+
+### What the first 20 h changed
+
+The spec is evidence-led and gets re-cut when the evidence moves. After the
+first 20 h run:
+
+- **`slow30s` and `wide8slow30s` added.** The 162 h replay's latency ladder has
+  exactly one profitable rung — 30 000 ms refresh, +9.36, against −279 to −418
+  for every faster one — and the grid's slowest variant was 5 000 ms. The
+  single most important result in the sweep was untested live.
+- **`wide16`/`wide24` added.** Live spread results were strictly monotone with
+  no turning point (baseline −34.06, wide4 −26.99, wide8 −20.00) while
+  `max_half_spread_bps` allows 80. Stopping at 8 assumed an answer.
+- **`q2` removed.** −141 with a drawdown of 145, ~49% of equity. Live also
+  *reversed* the replay here: replay had q3 (−279) beating q6 (−585); live has
+  baseline q6 −34.06, q3 −78.36. A smaller `q_max` means a larger per-bucket
+  notional, so the "tighter" cap quotes coarser and bigger. `q3` stays only to
+  keep watching the disagreement.
+- **`defensive` removed.** It bundled `q2` with the good levers, so it could
+  never show whether they compose, and it latched its risk limit — 0 working
+  orders, 1,357 units frozen — so it stopped measuring a strategy at all.
+  `wide8slow30s` replaces it as a clean combined corner.
+- **The ladders were then filled out to 20 variants**, since compression and a
+  shared socket make the marginal variant nearly free (still one connection;
+  `policy.compute` at p99 0.02 ms x 20 x ~50 events/s is a few percent of a
+  core). That adds `slow15s`/`slow60s` on the cadence ladder, `wide40` on the
+  spread ladder, and a spread x cadence matrix (`wide16slow30s`,
+  `wide24slow30s`, `wide8slow60s`) to show whether the two levers keep
+  composing or one saturates the other.
+- **`q9` and `q12` follow the live gradient upward.** Every `q_max` test so far
+  went *down* from the base 6 and got steadily worse (q6 −34.06, q3 −78.36,
+  q2 −141.25). The gradient points up and had never been followed: a larger cap
+  means a *finer* per-bucket notional, so quotes get smaller and more granular —
+  the opposite of what made q2 fail.
 
 Every field is optional and inherits when absent, so a variant with no overrides
 is literally the shipped configuration — which is what makes `baseline` an
@@ -80,6 +115,43 @@ variant per `--history-seconds` (default 60; `0` disables it).
 python scripts/grid_pnl_curve.py                    # every variant
 python scripts/grid_pnl_curve.py wide8 baseline     # a subset
 ```
+
+### The event log
+
+Per-variant event logs are **zstd-compressed JSONL**, `grid-<variant>.jsonl.zst`.
+
+Plain JSONL cost 158 MB per variant per 20 h — 1.85 GB/day at ten variants,
+78 GB/month at fourteen. Measured on a real grid log, zstd-3 gives **~16x** at
+736 MB/s, roughly 350x the actual write rate, so the codec can never be the
+bottleneck. **Measured on the 12-variant smoke run: 18.0x.** That turns
+78 GB/month into about 5.
+
+Nothing is dropped to achieve it. Only 2.07% of `quote_decision` lines are
+reason transitions, so filtering to those would have given another ~48x — but
+compression already solves the disk problem while keeping every line, and a log
+that silently discarded 98% of its rows is worth much less the day a question
+needs it.
+
+Three properties the format was chosen for:
+
+| property | why it matters |
+|---|---|
+| **frames concatenate** | a restart opens the file with `append` and starts a new frame; readers see one continuous stream. This is what makes a multi-day grid survivable |
+| **flushed every 2,000 events** | the file is decodable *while the grid is still writing*, and a kill loses a bounded window rather than the whole tail |
+| **truncated tail degrades gracefully** | a reader gets every complete frame and discards only the frame in flight |
+
+A `run_started` event is written at each open, carrying the run's
+`started_at_ms`, the variant's overrides and the build — so run boundaries in an
+appended file are explicit rather than inferred from a timestamp gap.
+
+> **Never use one-shot `decompress()` on these files.** It stops at the first
+> frame and reports success, silently returning a fraction of the data. Use
+> `stream_reader(..., read_across_frames=True)`, which is what
+> `scripts/grid_pnl_curve.py:open_log` does.
+
+`live` and `replay` logs stay plain `.jsonl`: one is a money audit trail, the
+other is bounded by tape length. `scripts/compress_reports.py` converts
+historical plain logs, verifying each round trip before deleting the original.
 
 Choices that exist to survive a long run:
 

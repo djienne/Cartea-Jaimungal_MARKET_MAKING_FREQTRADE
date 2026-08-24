@@ -10,20 +10,33 @@
 # allows ten per IP and that budget is shared with the collector containers and
 # any live session (docs/DATA_COLLECTION.md).
 #
-# WHY THESE FOUR LEVERS. The 161.95 h staged sweep (docs/cashcat_sweep.md)
-# localised the entire loss to one six-hour burst window: 26 of 27 windows sum
-# to +35.28, and `08-22 03:57` alone is -241.17 on 1,771 fills. So the levers
-# worth testing are the ones that govern how much of a burst gets taken.
+# WHY THESE LEVERS. Two sources of evidence, and they disagree in one place.
 #
-#   q_max               inventory cap. q=3 scored -279.11 against q=6's -585.61
-#                       on the same calibration -- the clearest single effect.
-#   min_half_spread_bps the losing window earned +683.89 of spread across 1,771
-#                       fills, ~0.39 per fill, which did not cover the adverse
-#                       selection taken.
-#   min_order_lifetime  requote cadence. The only positive rung of the latency
-#   + replace_threshold ladder was the 30 s-refresh one.
-#   phi_kappa_t         running inventory penalty; the sweep winner used 300
-#                       against a grid that topped out at 1000.
+# The 161.95 h staged sweep (docs/cashcat_sweep.md) localised the entire loss to
+# one six-hour burst: 26 of 27 windows sum to +35.28, and `08-22 03:57` alone is
+# -241.17 on 1,771 fills. Its latency ladder is the single most important table
+# in the project -- exactly one rung is profitable:
+#
+#     colocated   50 ms /   100 ms refresh   -418.11
+#     good       100 ms /   250 ms refresh   -279.11
+#     mid        200 ms /   500 ms refresh   -388.59
+#     this_stack 500 ms /  1000 ms refresh   -398.20
+#     reality    500 ms / 30000 ms refresh     +9.36   <-- the only one
+#
+# Refresh cadence swings P&L by 407 USDC at constant latency, more than any
+# other lever measured anywhere. Hence slow30s and wide8slow30s.
+#
+# The first 20 h live grid then added two findings of its own:
+#
+#   * min_half_spread_bps is strictly monotone and had not turned: baseline
+#     (1.5 bps) -34.06, wide4 -26.99, wide8 -20.00, with max_half_spread_bps
+#     allowing 80. So the ladder continues to 16 and 24 rather than stopping
+#     while the gradient still points up.
+#   * q_max REVERSED the replay. Replay had q3 (-279) beating q6 (-585); live
+#     has baseline q6 -34.06, q3 -78.36, q2 -141.25 (drawdown 145, ~49% of
+#     equity). Smaller q_max means a larger per-bucket notional, so the
+#     "tighter" cap quotes coarser and bigger. q2 is retired; q3 stays only to
+#     keep watching the disagreement.
 
 # Control. No overrides: this is literally the shipped configuration, so it
 # stays honest as the baseline rather than being a separately maintained copy.
@@ -37,10 +50,6 @@ name = "q3"
 q_max = 3
 
 [[variant]]
-name = "q2"
-q_max = 2
-
-[[variant]]
 name = "wide4"
 min_half_spread_bps = 4.0
 
@@ -48,9 +57,13 @@ min_half_spread_bps = 4.0
 name = "wide8"
 min_half_spread_bps = 8.0
 
+# hjb.rs rescales phi so phi*kappa*T never exceeds phi_kappa_t_max, so without
+# raising the ceiling this variant asks for 1000 and silently runs 300 (1.5x
+# baseline's 200, not 5x). Raising both is what makes the name honest.
 [[variant]]
 name = "phi1000"
 phi_kappa_t = 1000.0
+phi_kappa_t_max = 1000.0
 
 # Slow requoting: hold a quote far longer and widen the hold window to match.
 [[variant]]
@@ -58,17 +71,33 @@ name = "slow5s"
 min_order_lifetime_ms = 5000
 replace_threshold_bps = 8.0
 
-# --- combined corner ---
-# Every defensive lever at once. If the burst is the whole problem, this is the
-# variant that should survive it; if it merely stops trading, that shows up as
-# near-zero fills rather than as a win.
+# Continue the spread ladder. Live results were still improving at 8 bps with
+# no turning point, so stopping there would have been assuming an answer. If a
+# rung simply stops trading, that shows up as near-zero fills, not as a win.
 [[variant]]
-name = "defensive"
-q_max = 2
-min_half_spread_bps = 4.0
-phi_kappa_t = 1000.0
-min_order_lifetime_ms = 5000
-replace_threshold_bps = 8.0
+name = "wide16"
+min_half_spread_bps = 16.0
+
+[[variant]]
+name = "wide24"
+min_half_spread_bps = 24.0
+
+# The replay's only profitable configuration, never yet run live. 30 s is 6x
+# slower than slow5s and 300x slower than the 100 ms base.
+[[variant]]
+name = "slow30s"
+min_order_lifetime_ms = 30000
+
+# --- combined corner ---
+# The two levers whose gradient points the same way in BOTH the replay and the
+# live grid, composed. Deliberately excludes q_max: the old `defensive` bundled
+# q2 with the good levers, so it could never show whether they compose -- and
+# q2 alone loses 141. On all current evidence this is the likeliest profitable
+# configuration in the grid.
+[[variant]]
+name = "wide8slow30s"
+min_half_spread_bps = 8.0
+min_order_lifetime_ms = 30000
 
 # --- toxic-flow guard A/B ---
 # The whole point of the guard is the one losing window, and a live grid is the
@@ -81,3 +110,52 @@ flow_guard_enabled = true
 [[variant]]
 name = "unguarded"
 flow_guard_enabled = false
+
+# --- cadence ladder, filled in ---
+# 5s and 30s left a 6x gap, and nothing tests whether the benefit continues
+# past the replay's 30s rung or turns over.
+[[variant]]
+name = "slow15s"
+min_order_lifetime_ms = 15000
+
+[[variant]]
+name = "slow60s"
+min_order_lifetime_ms = 60000
+
+# --- spread ladder, further out ---
+# max_half_spread_bps allows 80. If a rung simply stops trading that is a real
+# answer, visible as near-zero fills.
+[[variant]]
+name = "wide40"
+min_half_spread_bps = 40.0
+
+# --- spread x cadence matrix ---
+# wide8slow30s is the single best guess; these say whether the two levers keep
+# composing as each is pushed, or whether one saturates the other.
+[[variant]]
+name = "wide16slow30s"
+min_half_spread_bps = 16.0
+min_order_lifetime_ms = 30000
+
+[[variant]]
+name = "wide24slow30s"
+min_half_spread_bps = 24.0
+min_order_lifetime_ms = 30000
+
+[[variant]]
+name = "wide8slow60s"
+min_half_spread_bps = 8.0
+min_order_lifetime_ms = 60000
+
+# --- q_max UPWARD: the direction live evidence actually points ---
+# Everything so far tested q_max downward from the base 6 and it got steadily
+# worse: q6 -34.06, q3 -78.36, q2 -141.25. The live gradient points UP and has
+# never been followed. A larger cap means a finer per-bucket notional, so the
+# quotes get smaller and more granular -- the opposite of q2's problem.
+[[variant]]
+name = "q9"
+q_max = 9
+
+[[variant]]
+name = "q12"
+q_max = 12

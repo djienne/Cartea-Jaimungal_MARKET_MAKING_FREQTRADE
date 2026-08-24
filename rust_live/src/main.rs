@@ -33,7 +33,9 @@ use mm_live::parquet_io::{
 };
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
 use mm_live::replay::ParquetReplaySource;
-use mm_live::report::{JsonlEventLogger, LiveSessionReport, ModelReport, SessionReport};
+use mm_live::report::{
+    JsonlEventLogger, LiveSessionReport, LogBackpressure, LogFormat, ModelReport, SessionReport,
+};
 use mm_live::types::{unix_ms, Bbo, DesiredQuotes, MarketEvent, ProcessClock, QuoteReason};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1900,8 +1902,29 @@ async fn run_dry_run_grid(
             variant_config.quoting.clone(),
             variant_config.risk.clone(),
         )?;
-        let logger =
-            JsonlEventLogger::create(&out_dir, &format!("grid-{}", entry.name), started_at_ms)?;
+        // Stable stem (no timestamp) + zstd: a restart appends to the same
+        // stream instead of scattering the run across files, and the log costs
+        // ~1/16th of plain JSONL -- which at 158 MB per variant per 20 h is the
+        // difference between 78 GB/month and 5 GB/month.
+        let logger = JsonlEventLogger::create_with_format(
+            &out_dir,
+            &format!("grid-{}", entry.name),
+            LogBackpressure::RefuseWhenFull,
+            LogFormat::Zstd,
+        )?;
+        // The log appends across restarts, so mark where each run begins.
+        // Without this a reader would have to infer run boundaries from a gap
+        // in timestamps, which is guesswork.
+        logger.log(
+            "run_started",
+            None,
+            &serde_json::json!({
+                "started_at_ms": started_at_ms,
+                "variant": entry.name,
+                "overrides": entry.overrides.describe(),
+                "build": mm_live::BuildInfo::current(),
+            }),
+        )?;
         let guard_config = variant_config.flow_guard.clone();
         let guard_window_ms = guard_config.fast_move_window_ms;
         let mid_capacity = guard_window_ms
@@ -2529,8 +2552,15 @@ async fn run_public_dry_run(
             ))
         })
         .transpose()?;
-    let mut event_logger =
-        JsonlEventLogger::create(&config.storage.report_dir, "dry_run", started_at_ms)?;
+    // The other long-running dry-run accumulator: compressed for the same
+    // reason as the grid. One file per run here, since a dry run is a session
+    // rather than a series.
+    let mut event_logger = JsonlEventLogger::create_with_format(
+        &config.storage.report_dir,
+        &format!("dry_run-{started_at_ms}"),
+        LogBackpressure::RefuseWhenFull,
+        LogFormat::Zstd,
+    )?;
     let metrics = Arc::new(Metrics::default());
     let scientifically_valid = Arc::new(AtomicBool::new(true));
     let events = Arc::new(AsyncRing::new(config.runtime.market_event_capacity));
