@@ -229,3 +229,50 @@ consumption before any P&L difference appears.
   `live.enabled = true`. Real money is a single explicit config, never a grid.
 - **Never a Parquet writer.** Not a flag: the grid cannot contend with the
   reference collector (`DATA_COLLECTION.md`).
+
+## Reading the spread ladder: measure per side, never the average
+
+`min_half_spread_bps` is a floor applied to **each quoted side independently**,
+and CJ quotes are asymmetric: a non-zero inventory pulls one side toward the
+touch and pushes the other away. Averaging bid and ask therefore hides exactly
+the thing the lever acts on.
+
+Measured on the 3.01 h grid tape (`grid-baseline-1787508794016.jsonl`,
+38,692 sampled quoted sides), the two readings disagree completely:
+
+| statistic | bid/ask **average** | **per side** |
+|---|---|---|
+| range | 13.6 – 59.6 bps | 1.5 – 80.8 bps |
+| median | 38.8 | 40.7 |
+| 4 bps floor binds | 0.0% | 4.6% |
+| 8 bps | 0.0% | 5.4% |
+| 16 bps | 0.0% | 8.2% |
+| 24 bps | 3.0% | 16.1% |
+| 40 bps | 55.7% | 45.9% |
+| 48 bps | — | 74.9% |
+| 60 bps | 100% | 94.9% |
+
+Read as an average, the ladder looks **degenerate** — every rung below 40 bps
+appears never to bind, which would make `baseline`, `wide4`, `wide8` and
+`wide16` the same experiment. Read per side it is not: each rung binds, and the
+mechanism is specific. The lever is not "quote wider overall", it is **how far
+inventory skew is allowed to drag one quote toward the touch** — which is also
+why the ladder is monotone in markout while being noisy in P&L.
+
+A quick check that distinguishes the two: diff the `quote_decision` streams of
+two variants by `quote_seq`. Over one 4-minute window `baseline` and `wide8`
+agreed on 1,014 of 1,064 decisions and differed on 50 — all of them on the
+inside side while inventory was non-zero. Identical averages, different quotes.
+
+### Why `wide48` and `wide60` exist
+
+The 185 h replay's best post-fix rung was **60 bps (+33.11)**, with 40 bps
+second (+21.02), but the live ladder stopped at 40 — the winning rung had never
+been tested out of sample. `max_half_spread_bps` is 80, so both fit. `wide60`
+is close to a constant-60 quoter (binds 94.9% of sides) and `wide48` covers the
+band where the floor goes from occasional to dominant (45.9% → 74.9%).
+
+They also answer the question `spread_ladder_185h.md` left open: the replay's
+spread60 ended short 2,440 units — 130% of equity — because nothing capped
+inventory. In the grid `q_max = 6` binds, so these rungs test whether the wide
+edge survives a cap that actually holds.

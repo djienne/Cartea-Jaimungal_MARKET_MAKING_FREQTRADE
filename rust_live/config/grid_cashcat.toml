@@ -150,3 +150,25 @@ q_max = 9
 [[variant]]
 name = "q12"
 q_max = 12
+
+
+# --- the rung the replay actually liked, which the live grid never carried ---
+# The 185 h replay's best rung post-fix was 60 bps (+33.11), and 40 bps
+# (+21.02) was second; the live ladder stopped at 40, so the winner was never
+# out-of-sample tested. Measured on the 3.01 h grid tape, per *quoted side*
+# (not the bid/ask average -- CJ skews hard under inventory, and the floor
+# binds on the inside side): 40 bps binds on 45.9% of sides, 48 on 74.9%, 60 on
+# 94.9%. So wide60 is close to a constant-60 quoter and wide48 fills the gap
+# where the floor goes from occasional to dominant.
+#
+# These also answer the open question from spread_ladder_185h.md: the replay's
+# spread60 ended short 2,440 units (130% of equity) because nothing capped
+# inventory. Here q_max = 6 binds, so this says whether the edge survives a
+# cap that actually holds.
+[[variant]]
+name = "wide48"
+min_half_spread_bps = 48.0
+
+[[variant]]
+name = "wide60"
+min_half_spread_bps = 60.0
