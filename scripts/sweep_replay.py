@@ -253,10 +253,11 @@ def slice_tape(tape: ReplayTape, start: pd.Timestamp, end: pd.Timestamp) -> Repl
 def freeze_tape(tape: ReplayTape, directory: Path) -> Path:
     """Write a tape to disk so worker processes can share the exact same bytes.
 
-    One replay over a 100k-row tape takes about three minutes, so a grid of any
-    useful size has to run in parallel. Windows has no fork, which means a pool
-    would otherwise pickle the whole tape to every worker for every task. Freezing
-    it once and having each worker load it once is both faster and STRICTER: the
+    A grid of any useful size runs in parallel (a replay is ~26-28 us per price
+    event, so a full-train search is minutes, not hours -- see truncate_tape).
+    Windows has no fork, which means a pool would otherwise pickle the whole tape
+    to every worker for every task. Freezing it once and having each worker load
+    it once is both faster and STRICTER: the
     workers are provably scoring one immutable file rather than three DataFrames
     that were serialised separately per task.
     """
@@ -332,11 +333,22 @@ _FROZEN_TAPES: dict[str, Path] = {}
 def truncate_tape(tape: ReplayTape, max_price_rows: int | None) -> ReplayTape:
     """A contiguous prefix of a tape, bounded by price-event count.
 
-    Searching a grid on the full tape is not affordable -- one run over ~100k price
-    rows takes about three minutes -- and a random subsample would break the event
-    ordering the replay depends on. So the search runs on a shorter CONTIGUOUS
-    stretch and the finalists are re-scored on the untruncated held-out slice,
-    where the numbers that get quoted come from.
+    A random subsample would break the event ordering the replay depends on, so
+    when this is used it takes a contiguous stretch.
+
+    HISTORY, because the reason this existed was wrong for most of its life.
+    The original docstring said "one run over ~100k price rows takes about three
+    minutes" -- 1.8 ms per price event. That was the pre-optimisation replay.
+    Commit 5afa6f6 ("51x faster") and then b10fbc5 (numba) cut it to ~26-28 us
+    per event, and this module was written in the commit immediately AFTER
+    5afa6f6, so the figure was already stale the day it was recorded. It then
+    justified two deferrals of the fix.
+
+    Measured now: searching the full train split costs ~30 min at four workers,
+    not the ~32 h the stale figure implied. So truncation is no longer a cost
+    necessity, and `--search-max-price-events` now defaults to 0 (off). It is
+    kept as a knob for quick exploratory runs, where a deliberately partial
+    search is fine as long as the artifact says so -- which it now does.
     """
     if not max_price_rows or len(tape.prices) <= int(max_price_rows):
         return tape
@@ -791,9 +803,17 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     search_tape = truncate_tape(train, args.search_max_price_events)
+    search_identity = tape_identity(search_tape)
+    train_identity = tape_identity(train)
+    search_is_partial = len(search_tape.prices) < len(train.prices)
     print(
-        f"[search] scoring the grid on {tape_identity(search_tape)['hours']} h / "
-        f"{len(search_tape.prices)} price rows of the train slice",
+        f"[search] scoring the grid on {search_identity['hours']} h / "
+        f"{len(search_tape.prices)} price rows of the train slice"
+        + (
+            f"  ** PARTIAL: {train_identity['hours']} h available **"
+            if search_is_partial
+            else ""
+        ),
         flush=True,
     )
 
@@ -898,6 +918,16 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
             "tape": identity,
             "split_at": split_at.isoformat(),
             "search_scenario": dataclasses.asdict(search),
+        # What the grid was actually SELECTED on. Recorded because it was not:
+        # published artifacts said "tape: 161.951 h" while selection had run on
+        # ~3.2 h of it, and a reader had no way to tell.
+        "search_tape": {
+            "hours": search_identity["hours"],
+            "price_rows": int(len(search_tape.prices)),
+            "max_price_events": int(args.search_max_price_events),
+            "is_partial": bool(search_is_partial),
+            "train_hours": train_identity["hours"],
+        },
             "stage_a": stage_a,
         }
 
@@ -1031,12 +1061,23 @@ def _row(values: Iterable[Any]) -> str:
 
 def to_markdown(payload: dict[str, Any]) -> str:
     tape = payload.get("tape", {})
+    search_tape = payload.get("search_tape", {})
     lines = [
         f"# Parameter sweep — {payload.get('symbol', '?')}",
         "",
         f"- generated: `{payload.get('generated_at')}`",
         f"- tape: **{tape.get('hours')} h**, {tape.get('price_rows')} price rows, "
         f"{tape.get('trade_rows')} trades (`{tape.get('start')}` → `{tape.get('end')}`)",
+        (
+            f"- **selection ran on {search_tape.get('hours')} h of the "
+            f"{search_tape.get('train_hours')} h train slice "
+            f"({search_tape.get('price_rows')} price rows, "
+            f"`--search-max-price-events {search_tape.get('max_price_events')}`). "
+            "Stage A/B rankings below are a SHORTLIST from a partial tape, not a "
+            "ranking of the full one.**"
+            if search_tape.get("is_partial")
+            else f"- selection ran on the full {search_tape.get('hours')} h train slice"
+        ),
         f"- train/held-out split at `{payload.get('split_at')}` "
         f"({payload.get('train_fraction')} train)",
         f"- searched at scenario `{(payload.get('search_scenario') or {}).get('name')}` "
@@ -1244,10 +1285,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--search-max-price-events",
         type=int,
-        default=25000,
+        default=0,
         help=(
             "Price rows the SEARCH stages score, as a contiguous prefix of the train "
-            "slice. Finalists are always re-scored on the full held-out slice. 0 disables."
+            "slice. 0 (the default) scores the whole train slice. This used to default "
+            "to 25000 (~3.2 h of a ~113 h split) on a cost estimate that was stale by "
+            "~40x; the full search is ~30 min at four workers. Set it non-zero only for "
+            "quick exploratory runs -- the value is recorded in the artifact so a "
+            "partial search is never mistaken for a full one."
         ),
     )
     parser.add_argument(

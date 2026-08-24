@@ -1,5 +1,14 @@
 # Parameter sweep — CASHCAT
 
+> **SELECTION PROVENANCE (added 2026-08-24).** This sweep predates the fix that
+> records which tape the grid was selected on. Its Stage A and Stage B rankings
+> were produced by scoring ~3.2 h of the ~113 h train slice
+> (`--search-max-price-events 25000`), even though the header below says
+> "tape: 161.951 h" — that is the tape *loaded*, not the tape *selected on*.
+> The held-out numbers in Stage C are full-tape and unaffected. The truncation
+> was justified by a cost estimate that was stale by ~40x; the default is now 0
+> (full train slice) and every future artifact records this line itself.
+
 - generated: `2026-08-23T16:02:07Z`
 - tape: **161.951 h**, 918417 price rows, 417923 trades (`2026-08-16T21:57:55.999000+00:00` → `2026-08-23T15:54:59.556000+00:00`)
 - train/held-out split at `2026-08-21T15:19:52.488000+00:00` (0.7 train)
