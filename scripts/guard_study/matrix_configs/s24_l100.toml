@@ -1,0 +1,189 @@
+# CASHCAT dry-run base tuned for realism, for the dry-run grid.
+#
+# Differences from cashcat.toml are all MEASURED, not guessed -- each is
+# annotated with where the number came from. Everything here is held identical
+# across every grid variant so the comparison isolates the strategy levers.
+#
+# The venue action budget is deliberately NOT modelled: it is a lifetime
+# account allowance (docs/live_canary_20260823.md) and simulating it would
+# conflate a strategy question with an account-history one.
+
+[instrument]
+profile = "cashcat"
+symbol = "CASHCAT"
+dex = ""
+validated = true
+expected_sz_decimals = 0
+max_significant_figures = 5
+minimum_notional = 10.0
+evidence_path = "cashcat.validation.json"
+
+[runtime]
+network = "mainnet"
+# Dedicated hot-path core; tokio workers, the blocking pool, and writer
+# threads are pinned to the other cores. Pair with OS-level isolation for a
+# genuinely quiet core.
+hot_path_cpu = 4
+market_stale_ms = 5000
+ws_ping_interval_ms = 5000
+ws_idle_timeout_ms = 15000
+market_event_capacity = 65536
+execution_event_capacity = 16384
+stats_interval_ms = 5000
+log_json = false
+
+[latency]
+gate_enabled = true
+max_acceptable_p95_ms = 150.0
+minimum_samples = 20
+# 10, not 20: a 60s window at a 5s ping interval can hold at most 12
+# network samples, so 20 made the production gate unsatisfiable and
+# warm-up never completed. validate() now rejects impossible values.
+minimum_network_samples = 10
+max_sample_age_ms = 15000
+hot_sample_every = 16
+window_seconds = 60
+queue_capacity = 16384
+
+[storage]
+data_dir = "C:/Users/david/Desktop/freqtrade/Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/scripts/guard_study_tapes/full_tape_185h"
+state_path = "../run/cashcat-grid-dry-state.json"
+calibration_path = "../run/cashcat-grid-calibration.json"
+latency_path = "../run/cashcat-grid-latency.json"
+report_dir = "C:/Users/david/Desktop/freqtrade/Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/scripts/guard_study_tapes/matrix_runs/s24_l100"
+writer_lock_path = "../run/cashcat-collector.lock"
+flush_interval_seconds = 10
+compact_after_minutes = 15
+retention_minutes = 11199
+# Only affects `dry-run`. The `live` command never records Parquet and never
+# takes the writer lock, so a live session cannot disturb the reference
+# collector (the hl-cashcat-collector Docker container). See
+# docs/DATA_COLLECTION.md.
+write_parquet = false
+
+[calibration]
+window_minutes = 11139
+interval_seconds = 30
+epsilon_horizon_ms_plus = 200
+epsilon_horizon_ms_minus = 200
+support_quantile_lower_plus = 0.0
+support_quantile_lower_minus = 0.0
+support_quantile_upper_plus = 0.99
+support_quantile_upper_minus = 0.99
+outage_threshold_seconds = 60.0
+max_age_seconds = 120
+max_data_age_seconds = 120
+max_future_skew_seconds = 10
+min_kappa_fit_points = 6
+min_kappa_r2 = 0.30
+min_epsilon_events = 50
+max_toxicity = 1.5
+shard_window_margin_seconds = 120
+max_shard_failure_rate = 0.05
+
+[model]
+q_max = 6
+horizon_seconds = 150.0
+phi_kappa_t = 200.0
+phi_kappa_t_max = 300.0
+alpha_kappa = 0.05
+raw_phi_fallback = 0.0001
+raw_alpha_fallback = 0.001
+volatility_risk_coefficient = 0.05
+max_dt_seconds = 0.25
+min_steps = 200
+max_steps = 2000
+newton_max_iterations = 50
+newton_tolerance = 1e-8
+newton_damping = 0.7
+episode_reset_on_flat = true
+episode_min_elapsed_fraction = 0.25
+
+[quoting]
+available_capital_usdc = 297.88
+target_capital_utilisation = 0.74
+leverage = 2.0
+maker_fee_rate = 0.00015
+spread_multiplier = 1.0
+extra_cushion_bps = 0.0
+min_half_spread_bps = 24.0
+max_half_spread_bps = 80.0
+replace_threshold_ticks = 1
+# Hold a resting quote while the new target is within this window (max of
+# ticks and bps), preserving queue position and WebSocket budget. Default from
+# the remediation plan; docs/requote_hysteresis_sweep.* holds the evidence run.
+replace_threshold_bps = 2.0
+min_order_lifetime_ms = 100
+reduce_only_threshold_q = 5.0
+
+[risk]
+kill_switch = false
+max_notional_usdc = 3200.0
+max_margin_usdc = 1600.0
+min_liquidation_buffer_usdc = 100.0
+maintenance_margin_rate = 0.05
+max_daily_loss_usdc = 200.0
+max_consecutive_losses = 25
+max_market_spread_bps = 100.0
+
+[dry_run]
+# The real account value, not the 1000.0 placeholder -- order sizing and
+# the risk limits both scale off it.
+starting_equity_usdc = 297.88
+# 150/150: measured public_ws_ping_rtt p50 = 281 ms on this host, split
+# across the round trip (decision out, acknowledgement back). p95 is
+# 661 ms, so this is the typical machine and not the bad-patch one.
+decision_latency_ms = 150
+acknowledgement_latency_ms = 150
+cancel_latency_ms = 150
+queue_decay_per_second = 0.05
+# Measured from the venue (metaAndAssetCtxs, 2026-08-23). CASHCAT is not
+# a zero-funding instrument; 0.0 silently omitted a real cost.
+funding_rate_per_hour = 0.0000125
+markout_horizons_ms = [100, 1000, 5000, 30000]
+
+[flow_guard]
+# Toxic-flow guard. The 161.95 h tape had one losing six-hour window (-241.17
+# on 1,771 fills) and it was a liquidation cascade: mid -1% -> -31% in ten
+# seconds, -70% in sixty. Nothing predicts that; these bound how much of one
+# gets ridden down. See docs/TOXIC_FLOW_GUARD.md.
+enabled = true
+# Fast breaker. 800 bps (8%) in 5s was the tightest threshold with ZERO false
+# positives across the whole tape; 5% produced four. It fired at -14% where
+# VPIN needed -45%.
+fast_move_window_ms = 5000
+fast_move_threshold_bps = 800.0
+# VPIN. Bucket size is derived from observed volume (ADV / buckets_per_day), so
+# the threshold keeps its meaning as activity changes. The 6.8-day maximum
+# outside the cascade was 0.362; the cascade peaked at 0.663.
+vpin_buckets_per_day = 50
+vpin_window_buckets = 30
+vpin_threshold = 0.40
+# Re-entry needs BOTH this cooldown AND VPIN back under threshold: VPIN alone
+# can dip mid-cascade, and a timer alone would re-enter a live one.
+cooldown_ms = 900000
+
+[live]
+enabled = false
+mode = "production"
+credentials_path = "../hyperliquid.env"
+state_path = "../run/cashcat-live.redb"
+action_timeout_ms = 2000
+action_expiry_ms = 5000
+reconcile_interval_ms = 30000
+startup_warmup_seconds = 120
+deadman_enabled = true
+deadman_deadline_ms = 30000
+deadman_refresh_ms = 10000
+max_maker_fee_rate = 0.0002
+flatten_on_stop = false
+emergency_flatten_max_slippage_bps = 250.0
+max_rest_weight_per_minute = 1000
+max_ws_messages_per_minute = 1600
+max_inflight_posts = 64
+cancel_reserve_fraction = 0.25
+acceptance_max_order_notional_usdc = 12.0
+acceptance_max_directional_notional_usdc = 12.0
+acceptance_max_working_gross_usdc = 24.0
+acceptance_max_turnover_usdc = 60.0
+acceptance_max_realized_loss_usdc = 0.5

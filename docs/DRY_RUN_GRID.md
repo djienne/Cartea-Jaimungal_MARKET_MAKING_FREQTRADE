@@ -35,6 +35,22 @@ of a burst does this take*.
 | `phi_kappa_t` | `model.phi_kappa_t` | sweep winner used 300 against a grid topping out at 1000 |
 | `min_half_spread_bps` | `quoting.min_half_spread_bps` | the losing window earned +683.89 across 1,771 fills — ~0.39/fill, under its adverse selection |
 | `min_order_lifetime_ms`, `replace_threshold_bps` | `quoting.*` | the only positive latency-ladder rung was the 30 s-refresh one |
+
+> **`min_order_lifetime_ms` was inert in the simulator until 2026-08-24.**
+> Only the live backend honored it, so every `slow*` variant was a byte-identical
+> duplicate of its non-slow twin and every replay ever run ignored the lever.
+> Fixing it moved the 185 h spread ladder by −58.73 to +29.84 per rung, so
+> results recorded before that date are not comparable with ones after it
+> (`spread_ladder_185h.md`). It also showed the lever is **non-monotone in
+> width** — slowing helps at 24 bps, breaches the liquidation buffer at 8, and
+> destroys the profitable rung at 40 — which retired the `wide8slow30s`,
+> `wide8slow60s`, `slow30s` and `slow60s` variants.
+
+**A failing variant no longer kills the grid.** `variant.step(...)?` used to
+propagate, so one blown-up hypothesis aborted all the others — and with the
+cadence lever working, a liquidation-buffer breach is a realistic way to blow
+up. A variant that errors is now invalidated, stops trading, records the reason
+in its report's `invalid_reasons`, and the run continues.
 | `flow_guard_enabled`, `vpin_threshold`, `fast_move_threshold_bps` | `flow_guard.*` | the toxic-flow guard (`TOXIC_FLOW_GUARD.md`); the shipped spec pairs `guarded`/`unguarded` so the A/B runs on one shared live feed |
 | `phi_kappa_t_max` | `model.phi_kappa_t_max` | `hjb.rs` rescales φ so φ·κ·T never exceeds this, so a `phi_kappa_t` above the base ceiling of 300 is silently clamped. Without this lever a variant asking for 1000 quietly runs 300 |
 

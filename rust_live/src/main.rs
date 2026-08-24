@@ -1721,6 +1721,41 @@ struct GridVariant {
     /// the trip decision is per variant.
     guard: FlowGuard,
     mid_window: MidWindow,
+    /// Set once this variant has failed. It then stops trading while the rest
+    /// of the grid continues, and its report carries the reason.
+    failure: Option<String>,
+}
+
+/// One variant's slice of a market event, in a form whose errors can be caught
+/// per variant instead of aborting the whole grid.
+#[allow(clippy::too_many_arguments)]
+async fn step_grid_variant(
+    variant: &mut GridVariant,
+    event: &MarketEvent,
+    event_time: u64,
+    bbo: Option<Bbo>,
+    now_ns: u64,
+    simulated_now_ms: u64,
+    vpin_value: Option<f64>,
+) -> Result<()> {
+    let execution_events = variant.backend.on_market_event(event).await?;
+    for execution_event in &execution_events {
+        variant
+            .logger
+            .log("execution_event", Some(event_time), execution_event)?;
+    }
+    variant.fills = variant.fills.saturating_add(execution_events.len() as u64);
+    let reason = if execution_events.is_empty() {
+        QuoteReason::Market
+    } else {
+        QuoteReason::Fill
+    };
+    if let Some(bbo) = bbo {
+        variant
+            .step(bbo, now_ns, simulated_now_ms, reason, vpin_value)
+            .await?;
+    }
+    Ok(())
 }
 
 impl GridVariant {
@@ -1955,6 +1990,7 @@ async fn run_dry_run_grid(
             max_drawdown_usdc: 0.0,
             guard: FlowGuard::new(guard_config),
             mid_window: MidWindow::new(mid_capacity, guard_window_ms),
+            failure: None,
         });
     }
 
@@ -2075,25 +2111,35 @@ async fn run_dry_run_grid(
                         let now_ns = clock.now_ns();
                         let bbo = latest_bbo.load();
                         for variant in &mut variants {
-                            let execution_events = variant.backend.on_market_event(&event).await?;
-                            for execution_event in &execution_events {
-                                variant.logger.log(
-                                    "execution_event",
-                                    Some(event_time),
-                                    execution_event,
-                                )?;
+                            // A variant that has already failed is left alone.
+                            // The whole point of a grid is that variants are
+                            // independent hypotheses: one blowing up (a
+                            // liquidation-buffer breach is the realistic case)
+                            // must not take the other nineteen with it, which
+                            // is exactly what `?` here used to do.
+                            if variant.failure.is_some() {
+                                continue;
                             }
-                            variant.fills =
-                                variant.fills.saturating_add(execution_events.len() as u64);
-                            let reason = if execution_events.is_empty() {
-                                QuoteReason::Market
-                            } else {
-                                QuoteReason::Fill
-                            };
-                            if let Some(bbo) = bbo {
-                                variant
-                                    .step(bbo, now_ns, simulated_now_ms, reason, vpin_value)
-                                    .await?;
+                            let stepped = step_grid_variant(
+                                variant,
+                                &event,
+                                event_time,
+                                bbo,
+                                now_ns,
+                                simulated_now_ms,
+                                vpin_value,
+                            )
+                            .await;
+                            if let Err(error) = stepped {
+                                let reason = format!("{error:#}");
+                                warn!(
+                                    variant = %variant.name,
+                                    error = %reason,
+                                    "grid variant failed; it stops trading and the run continues"
+                                );
+                                variant.backend.invalidate(&reason);
+                                variant.failure = Some(reason);
+                                continue;
                             }
                             variant.observe_equity();
                         }
@@ -2153,7 +2199,7 @@ async fn run_dry_run_grid(
             metrics: metrics.snapshot(),
             latency: (*latency.snapshot()).clone(),
             scientifically_valid: variant.backend.scientifically_valid() && feed_valid,
-            invalid_reasons: Vec::new(),
+            invalid_reasons: variant.failure.iter().cloned().collect(),
             event_log_path: out_dir.display().to_string(),
             market_event_ring_high_water: events.high_water_mark(),
         };

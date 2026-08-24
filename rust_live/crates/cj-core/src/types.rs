@@ -115,6 +115,26 @@ pub enum QuoteReason {
     Shutdown,
 }
 
+impl QuoteReason {
+    /// Whether a replacement carrying this reason may wait out the requote
+    /// cooldown (`quoting.min_order_lifetime_ms`).
+    ///
+    /// Routine refreshes may wait. Everything that *withdraws* quotes — a risk
+    /// limit, a stale feed, the toxic-flow guard — must reach the venue
+    /// immediately, because an empty target is what cancels resting orders.
+    /// A fill may wait only when it did not actually move inventory; once
+    /// inventory changes the quotes are stale in the way that matters.
+    ///
+    /// Shared by the live backend and the simulator deliberately: they already
+    /// drifted once when only the live path implemented this gate, which left
+    /// the lever silently inert in every replay and grid run.
+    #[inline]
+    pub const fn replacement_may_wait(self, inventory_changed: bool) -> bool {
+        matches!(self, Self::Market | Self::Calibration | Self::Episode)
+            || (matches!(self, Self::Fill) && !inventory_changed)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DesiredQuotes {
     pub bid: Option<OrderIntent>,

@@ -98,6 +98,14 @@ pub struct DryRunBackend {
     current_day: Option<u64>,
     daily_realized_pnl_usdc: f64,
     restored_inventory_unit: Option<i64>,
+    /// Exchange time of the last *submitted* quote action, for the requote
+    /// cooldown. Only a real place/cancel advances it -- a held quote must not
+    /// restart the window, or a busy market would defer forever.
+    last_quote_action_ms: u64,
+    inventory_at_last_quote_action: i64,
+    /// A replacement that arrived inside the cooldown, applied on the next
+    /// market event. Mirrors the live backend's `deferred_desired`.
+    deferred_desired: Option<DesiredQuotes>,
 }
 
 impl DryRunBackend {
@@ -133,6 +141,9 @@ impl DryRunBackend {
             current_day: None,
             daily_realized_pnl_usdc: 0.0,
             restored_inventory_unit: None,
+            last_quote_action_ms: 0,
+            inventory_at_last_quote_action: 0,
+            deferred_desired: None,
         })
     }
 
@@ -209,6 +220,11 @@ impl DryRunBackend {
         self.restored_inventory_unit = Some(persisted.inventory_unit);
         self.orders.clear();
         self.pending_markouts.clear();
+        // A target deferred against the previous session's book is meaningless
+        // once the book is gone, and the cooldown restarts with the session.
+        self.deferred_desired = None;
+        self.last_quote_action_ms = 0;
+        self.inventory_at_last_quote_action = self.account.inventory_units;
         Ok(true)
     }
 
@@ -241,8 +257,12 @@ impl DryRunBackend {
             && (order.intent.px - intent.px).abs() < self.requote_hold_window_units(intent.px)
     }
 
-    fn reconcile_now(&mut self, desired: DesiredQuotes, now_ms: u64) {
+    /// Apply a target now. Returns whether any order was actually placed or
+    /// cancelled -- only a real action restarts the requote cooldown, matching
+    /// the live backend where a held quote deliberately does not.
+    fn reconcile_now(&mut self, desired: DesiredQuotes, now_ms: u64) -> bool {
         self.expire_cancels(now_ms);
+        let mut acted = false;
         for side in [Side::Buy, Side::Sell] {
             let next = match side {
                 Side::Buy => desired.bid,
@@ -270,6 +290,7 @@ impl DryRunBackend {
             {
                 if !held.contains(&order.id) {
                     order.cancel_effective_ms = Some(cancel_effective);
+                    acted = true;
                 }
             }
             if !unchanged {
@@ -290,15 +311,45 @@ impl DryRunBackend {
                         activated: false,
                     });
                     self.diagnostics.virtual_orders_created += 1;
+                    acted = true;
                 }
             }
         }
         self.diagnostics.max_working_orders =
             self.diagnostics.max_working_orders.max(self.orders.len());
+        acted
+    }
+
+    /// Apply a target, stamping the cooldown when it actually did something.
+    fn apply_desired(&mut self, desired: DesiredQuotes, now_ms: u64) {
+        if self.reconcile_now(desired, now_ms) {
+            self.last_quote_action_ms = now_ms;
+            self.inventory_at_last_quote_action = self.account.inventory_units;
+        }
+    }
+
+    /// Apply a quote deferred by the cooldown, once the window has elapsed.
+    ///
+    /// This lives on the market-event path rather than at the top of the next
+    /// `reconcile` because the public dry run only reconciles when the hot path
+    /// publishes a new quote sequence: a deferred target could otherwise sit
+    /// indefinitely while publication stalls.
+    fn flush_deferred(&mut self, now_ms: u64) {
+        if self.deferred_desired.is_none() {
+            return;
+        }
+        if now_ms.saturating_sub(self.last_quote_action_ms) < self.quoting.min_order_lifetime_ms {
+            return;
+        }
+        let Some(desired) = self.deferred_desired.take() else {
+            return;
+        };
+        self.apply_desired(desired, now_ms);
     }
 
     fn process_event(&mut self, event: &MarketEvent) -> Vec<ExecutionEvent> {
         let now_ms = event_exchange_ms(event);
+        self.flush_deferred(now_ms);
         self.roll_day(now_ms);
         self.expire_cancels(now_ms);
         self.activate_orders(now_ms);
@@ -595,7 +646,20 @@ impl ExecutionBackend for DryRunBackend {
         {
             bail!("cannot quote in an invalidated dry-run session");
         }
-        self.reconcile_now(desired, now_ms);
+        // Requote cooldown, mirroring the live backend. Withdrawals and
+        // inventory-moving fills are never deferred: an empty target is what
+        // cancels resting orders, so the toxic-flow guard and the risk limits
+        // depend on reaching the book immediately.
+        let inventory_changed = self.account.inventory_units != self.inventory_at_last_quote_action;
+        if desired.reason.replacement_may_wait(inventory_changed)
+            && self.last_quote_action_ms != 0
+            && now_ms.saturating_sub(self.last_quote_action_ms) < self.quoting.min_order_lifetime_ms
+        {
+            self.deferred_desired = Some(desired);
+            return Ok(());
+        }
+        self.deferred_desired = None;
+        self.apply_desired(desired, now_ms);
         Ok(())
     }
 
@@ -612,6 +676,7 @@ impl ExecutionBackend for DryRunBackend {
     }
 
     fn invalidate(&mut self, reason: &str) {
+        self.deferred_desired = None;
         self.diagnostics.scientifically_valid = false;
         self.diagnostics.invalid_reason = Some(reason.to_owned());
         self.orders.clear();
@@ -862,16 +927,123 @@ mod tests {
         let mut replacement = first;
         replacement.quote_seq = 2;
         replacement.bid.as_mut().unwrap().px -= 1;
-        backend.reconcile(replacement, 1_010).await.unwrap();
+        // Past the 100 ms requote cooldown: this test is about cancel-latency
+        // overlap, not the cooldown, so the replacement must actually be sent.
+        backend.reconcile(replacement, 1_101).await.unwrap();
         assert_eq!(backend.working_order_count(), 2);
         backend.process_event(&MarketEvent::Bbo(Bbo {
             bid_px: 9_999,
             bid_sz: 1,
             ask_px: 10_002,
             ask_sz: 1,
-            exchange_ms: 1_111,
+            // Past the replacement's 100 ms cancel latency.
+            exchange_ms: 1_202,
             recv_ns: 0,
         }));
         assert_eq!(backend.working_order_count(), 1);
+    }
+
+    fn bbo_at(exchange_ms: u64) -> MarketEvent {
+        MarketEvent::Bbo(Bbo {
+            bid_px: 10_000,
+            bid_sz: 1,
+            ask_px: 10_002,
+            ask_sz: 1,
+            exchange_ms,
+            recv_ns: 0,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_routine_requote_inside_the_cooldown_is_deferred_then_applied() {
+        let mut backend = backend_with_zero_latency();
+        backend.reconcile(bid_quotes(), 1_000).await.unwrap();
+        assert_eq!(backend.working_order_count(), 1);
+        let mut replacement = bid_quotes();
+        replacement.quote_seq = 2;
+        replacement.bid.as_mut().unwrap().px -= 5;
+        // 50 ms into the 100 ms window: held back, book unchanged.
+        backend.reconcile(replacement, 1_050).await.unwrap();
+        assert_eq!(backend.orders[0].intent.px, bid_quotes().bid.unwrap().px);
+        // The deferred target is applied on the first event past the window,
+        // not dropped.
+        backend.process_event(&bbo_at(1_150));
+        assert!(
+            backend
+                .orders
+                .iter()
+                .any(|order| order.intent.px == replacement.bid.unwrap().px),
+            "the deferred replacement must be applied, not lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_withdrawal_is_never_deferred() {
+        // The toxic-flow guard and every risk limit withdraw by publishing an
+        // empty target; if the cooldown could hold that back, the guard would
+        // keep quoting into exactly the conditions it exists to avoid.
+        let mut backend = backend_with_zero_latency();
+        backend.reconcile(bid_quotes(), 1_000).await.unwrap();
+        assert_eq!(backend.working_order_count(), 1);
+        let withdraw = DesiredQuotes::empty(QuoteReason::ToxicFlow, 2, 0);
+        backend.reconcile(withdraw, 1_010).await.unwrap();
+        assert!(
+            backend
+                .orders
+                .iter()
+                .all(|o| o.cancel_effective_ms.is_some()),
+            "an empty target must cancel immediately despite the cooldown"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fill_that_moved_inventory_bypasses_the_cooldown() {
+        let mut backend = backend_with_zero_latency();
+        backend.reconcile(bid_quotes(), 1_000).await.unwrap();
+        // Pretend a fill moved inventory since the last quote action.
+        backend.account.inventory_units += 1;
+        let mut after_fill = bid_quotes();
+        after_fill.quote_seq = 2;
+        after_fill.reason = QuoteReason::Fill;
+        after_fill.bid.as_mut().unwrap().px -= 5;
+        backend.reconcile(after_fill, 1_010).await.unwrap();
+        assert!(
+            backend
+                .orders
+                .iter()
+                .any(|order| order.intent.px == after_fill.bid.unwrap().px),
+            "a fill that changed inventory must requote immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_quote_does_not_restart_the_cooldown() {
+        // Only a submitted action restarts the window. If a held quote
+        // restarted it, a busy market would defer forever.
+        let mut backend = backend_with_zero_latency();
+        backend.reconcile(bid_quotes(), 1_000).await.unwrap();
+        // Same target inside the price hold window: nothing is submitted.
+        let mut nudge = bid_quotes();
+        nudge.quote_seq = 2;
+        backend.reconcile(nudge, 1_200).await.unwrap();
+        assert_eq!(
+            backend.last_quote_action_ms, 1_000,
+            "a held quote must not stamp a new action time"
+        );
+    }
+
+    fn backend_with_zero_latency() -> DryRunBackend {
+        DryRunBackend::new(
+            instrument(),
+            DryRunConfig {
+                decision_latency_ms: 0,
+                acknowledgement_latency_ms: 0,
+                cancel_latency_ms: 0,
+                ..DryRunConfig::default()
+            },
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap()
     }
 }

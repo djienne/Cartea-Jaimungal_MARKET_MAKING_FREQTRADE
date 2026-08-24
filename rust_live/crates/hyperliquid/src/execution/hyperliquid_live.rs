@@ -21,7 +21,7 @@ use crate::latency::{LatencyKind, LatencyMonitor};
 use crate::lockfree::AtomicBbo;
 use crate::types::{
     unix_ms, AccountState, Bbo, DesiredQuotes, ExecutionEvent, Fill, MarketEvent, ProcessClock,
-    QuoteReason, Side,
+    Side,
 };
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -1673,18 +1673,11 @@ fn live_directional_notional_cap(
     account_cap.min(allocation_cap).min(configured_cap)
 }
 
-const fn quote_replacement_may_wait(reason: QuoteReason, inventory_changed: bool) -> bool {
-    matches!(
-        reason,
-        QuoteReason::Market | QuoteReason::Calibration | QuoteReason::Episode
-    ) || (matches!(reason, QuoteReason::Fill) && !inventory_changed)
-}
-
 #[async_trait]
 impl ExecutionBackend for HyperliquidLiveBackend {
     async fn reconcile(&mut self, desired: DesiredQuotes, now_ms: u64) -> Result<()> {
         let inventory_changed = self.account.inventory_units != self.inventory_at_last_quote_action;
-        let replacement_may_wait = quote_replacement_may_wait(desired.reason, inventory_changed);
+        let replacement_may_wait = desired.reason.replacement_may_wait(inventory_changed);
         if replacement_may_wait
             && self.last_quote_action_ms != 0
             && now_ms.saturating_sub(self.last_quote_action_ms) < self.quoting.min_order_lifetime_ms
@@ -2046,6 +2039,7 @@ pub fn live_state_path(config: &AppConfig) -> &Path {
 mod tests {
     use super::*;
     use crate::config::{LatencyConfig, LiveConfig, Network};
+    use crate::types::QuoteReason;
     use proptest::prelude::*;
 
     fn lifecycle_backend() -> (tempfile::TempDir, HyperliquidLiveBackend, String) {
@@ -2840,11 +2834,20 @@ mod tests {
 
     #[test]
     fn only_real_inventory_changes_bypass_replacement_cooldown() {
-        assert!(quote_replacement_may_wait(QuoteReason::Market, false));
-        assert!(quote_replacement_may_wait(QuoteReason::Fill, false));
-        assert!(!quote_replacement_may_wait(QuoteReason::Fill, true));
-        assert!(!quote_replacement_may_wait(QuoteReason::RiskLimit, false));
-        assert!(!quote_replacement_may_wait(QuoteReason::Shutdown, false));
+        assert!(QuoteReason::replacement_may_wait(
+            QuoteReason::Market,
+            false
+        ));
+        assert!(QuoteReason::replacement_may_wait(QuoteReason::Fill, false));
+        assert!(!QuoteReason::replacement_may_wait(QuoteReason::Fill, true));
+        assert!(!QuoteReason::replacement_may_wait(
+            QuoteReason::RiskLimit,
+            false
+        ));
+        assert!(!QuoteReason::replacement_may_wait(
+            QuoteReason::Shutdown,
+            false
+        ));
     }
 
     proptest! {

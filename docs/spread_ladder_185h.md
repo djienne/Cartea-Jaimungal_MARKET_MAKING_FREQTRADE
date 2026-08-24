@@ -1,13 +1,58 @@
 # Spread ladder over 185 h — the first profitable configuration
 
-Replay of `min_half_spread_bps` from 1.5 to 60 over a frozen 185.1 h CASHCAT
-tape (08-16 21:59 → 08-24 15:07, 2,401 shards per stream). Everything else is
-the shipped `cashcat_dryrun_realistic.toml`: same latency (150/150/150 ms), same
-fees, same funding, flow guard on. One lever moves.
+> **RE-BASED 2026-08-24.** Every number below was first measured with a
+> simulator in which `min_order_lifetime_ms` was inert
+> (`DRY_RUN_GRID.md`). Fixing that changed the whole ladder by −58.73 to
+> +29.84 per rung, so the original figures are not comparable with anything
+> measured afterwards. The table now carries both. **The conclusion survives
+> in direction but is weaker and noisier than first reported**: 40–60 bps is
+> still the only profitable region, but at roughly half the magnitude, and the
+> middle of the ladder is no longer cleanly ordered.
 
-Run with `scripts/guard_study/make_spread_configs.py` + `mm-live replay`.
+| half-spread | pre-fix | **post-fix** | delta | fills | 5 s markout | end inv |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1.5 (shipped) | −109.20 | **−118.61** | −9.41 | 5,424 | −82.17 | 179 |
+| 4 | −88.91 | **−59.06** | +29.84 | 3,266 | −45.15 | 241 |
+| 8 | −61.53 | **−95.90** | −34.36 | 5,239 | −74.99 | −58 |
+| 16 | −62.29 | **−69.46** | −7.17 | 4,206 | −62.50 | −44 |
+| 24 | −62.50 | **−79.49** | −16.99 | 3,472 | −57.51 | −35 |
+| **40** | +40.78 | **+21.02** | −19.76 | 1,781 | −37.37 | −413 |
+| **60** | +91.84 | **+33.11** | −58.73 | 731 | −20.76 | −2,440 |
 
-## Result
+What changed in the reading:
+
+- **Only the wide end is still clearly positive** — 40 and 60 bps, at +21.02
+  and +33.11 rather than +40.78 and +91.84.
+- **The clean monotone shape is gone.** Post-fix, 4 bps (−59.06) beats 8
+  (−95.90), 16 (−69.46) and 24 (−79.49). The middle of the ladder is noise;
+  only the extremes carry signal. The pre-fix monotonicity was partly an
+  artefact of the broken gate.
+- **The markout mechanism survives intact** — 5 s markout still improves
+  monotonically with width, −82.17 → −20.76. That was and remains the reason
+  wide quotes work on this instrument.
+- spread60's ending short grew to 2,440 units, deepening the leverage caveat
+  below rather than relieving it.
+
+## Spread × cadence, post-fix
+
+Now that the cadence lever actually functions, the two can be crossed. They do
+**not** compose monotonically:
+
+| half-spread | 100 ms | 30 s | effect of slowing |
+|---:|---:|---:|---:|
+| 8 | −95.90 | **aborted** — liquidation-buffer breach | ruinous |
+| 24 | −79.49 | **−65.81** | +13.68 |
+| 40 | **+21.02** | −151.74 | −172.76 |
+
+Slowing helps only in the middle. At 8 bps a 30 s quote is run over hard enough
+to breach the liquidation buffer and abort the run; at 40 bps it destroys the
+only profitable rung. This kills the `wide8slow30s` hypothesis — the corner
+that looked most promising when the lever was inert — and it is a result that
+was simply unobtainable before the fix.
+
+## The original measurement
+
+### Original (pre-fix) table
 
 | half-spread | net P&L | gross (ex-fees) | fills | fills/h | per fill | 5 s markout | end inventory |
 |---:|---:|---:|---:|---:|---:|---:|---:|

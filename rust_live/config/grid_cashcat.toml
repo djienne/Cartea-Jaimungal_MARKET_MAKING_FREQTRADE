@@ -84,20 +84,18 @@ min_half_spread_bps = 24.0
 
 # The replay's only profitable configuration, never yet run live. 30 s is 6x
 # slower than slow5s and 300x slower than the 100 ms base.
-[[variant]]
-name = "slow30s"
-min_order_lifetime_ms = 30000
 
 # --- combined corner ---
-# The two levers whose gradient points the same way in BOTH the replay and the
-# live grid, composed. Deliberately excludes q_max: the old `defensive` bundled
-# q2 with the good levers, so it could never show whether they compose -- and
-# q2 alone loses 141. On all current evidence this is the likeliest profitable
-# configuration in the grid.
-[[variant]]
-name = "wide8slow30s"
-min_half_spread_bps = 8.0
-min_order_lifetime_ms = 30000
+# RETIRED HYPOTHESIS. `wide8slow30s` looked like the likeliest profitable
+# configuration while min_order_lifetime_ms was inert in the simulator. Once
+# the lever was fixed, the 185 h replay showed 8 bps + 30 s breaches the
+# liquidation buffer and aborts (spread_ladder_185h.md), so the corner is
+# actively ruinous rather than promising.
+#
+# The cadence lever turns out to be NON-MONOTONE in width: slowing helps at
+# 24 bps (-79.49 -> -65.81), breaches at 8, and destroys the only profitable
+# rung at 40 (+21.02 -> -151.74). So the surviving combined corner is the
+# middle one, and it is the only spread x cadence pair with replay support.
 
 # --- toxic-flow guard A/B ---
 # The whole point of the guard is the one losing window, and a live grid is the
@@ -118,9 +116,6 @@ flow_guard_enabled = false
 name = "slow15s"
 min_order_lifetime_ms = 15000
 
-[[variant]]
-name = "slow60s"
-min_order_lifetime_ms = 60000
 
 # --- spread ladder, further out ---
 # max_half_spread_bps allows 80. If a rung simply stops trading that is a real
@@ -142,10 +137,6 @@ name = "wide24slow30s"
 min_half_spread_bps = 24.0
 min_order_lifetime_ms = 30000
 
-[[variant]]
-name = "wide8slow60s"
-min_half_spread_bps = 8.0
-min_order_lifetime_ms = 60000
 
 # --- q_max UPWARD: the direction live evidence actually points ---
 # Everything so far tested q_max downward from the base 6 and it got steadily
