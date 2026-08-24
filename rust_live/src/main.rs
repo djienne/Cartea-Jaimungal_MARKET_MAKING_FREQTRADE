@@ -2057,6 +2057,12 @@ async fn run_dry_run_grid(
         config.runtime.stats_interval_ms.max(1_000),
     ));
     stats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Feed health is the grid's own evidence, not a nicety: a run that reports
+    // zero feed gaps is indistinguishable from one whose socket simply never
+    // reconnected unless the suppressed-backfill counter is visible beside it.
+    // Logged on change so a quiet feed costs one line per ten minutes.
+    let mut last_feed_counters = (0_u64, 0_u64, 0_u64);
+    let mut last_feed_log_ms = 0_u64;
     let deadline = (duration_seconds > 0)
         .then(|| tokio::time::Instant::now() + Duration::from_secs(duration_seconds));
     let shutdown_signal = wait_for_shutdown_signal();
@@ -2079,6 +2085,28 @@ async fn run_dry_run_grid(
                     }
                 } => break,
                 _ = stats.tick() => {
+                    let feed = metrics.snapshot();
+                    let counters = (
+                        feed.reconnects,
+                        feed.feed_gaps,
+                        feed.historical_trade_prints_ignored,
+                    );
+                    let now_ms = unix_ms();
+                    if counters != last_feed_counters
+                        || now_ms.saturating_sub(last_feed_log_ms) >= 600_000
+                    {
+                        last_feed_counters = counters;
+                        last_feed_log_ms = now_ms;
+                        info!(
+                            reconnects = feed.reconnects,
+                            feed_gaps = feed.feed_gaps,
+                            feed_downtime_ms = feed.feed_downtime_ms,
+                            feed_longest_gap_ms = feed.feed_longest_gap_ms,
+                            replayed_trades_ignored = feed.historical_trade_prints_ignored,
+                            trade_prints = feed.trade_prints,
+                            "grid feed health"
+                        );
+                    }
                     let board = write_grid_leaderboard(
                         &variants,
                         &leaderboard_path,
