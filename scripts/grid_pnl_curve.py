@@ -1,22 +1,27 @@
 """P&L curve over time for dry-run-grid variants.
 
-The grid rewrites `leaderboard.json` in place, so it only ever shows the
-*current* state -- there is no stored equity history. The per-variant JSONL
-logs do carry every fill, though, so the curve is reconstructed:
+Two sources, preferred in this order:
 
-    pnl(t) = cash(t) + inventory(t) * mid(t) - fees(t)
+1. **`equity_history.csv`** written by the grid itself (one row per variant
+   per `--history-seconds`, default 60). This is each variant's own view of
+   its equity, including funding and drawdown, and it needs nothing else on
+   disk. Always prefer it.
+2. **Reconstruction from the fill logs**, for runs that predate the history
+   file (or if it was disabled with `--history-seconds 0`):
 
-where cash/inventory/fees come from the fill stream and `mid(t)` comes from
-the collector's own `prices` tape rather than the log's `quote_decision`
-lines. Two reasons for that: withdrawn quotes log `mid: 0.0`
-(`DesiredQuotes::empty` hardcodes it), so the log's mid is unusable exactly
-when a variant is gated; and reading the tape avoids parsing ~300k decision
-lines per variant for one number.
+       pnl(t) = cash(t) + inventory(t) * mid(t) - fees(t)
+
+   where cash/inventory/fees come from the fill stream and `mid(t)` from the
+   collector's `prices` tape -- not the log's `quote_decision` lines, because
+   `DesiredQuotes::empty` hardcodes `mid: 0.0`, so the logged mid is unusable
+   exactly when a variant is gated. This path is slower, needs the tape to
+   still be within retention, and cannot recover funding.
 
 Usage:
     python scripts/grid_pnl_curve.py                       # every variant
     python scripts/grid_pnl_curve.py wide8 baseline        # a subset
     python scripts/grid_pnl_curve.py --out curve.png --minutes 5
+    python scripts/grid_pnl_curve.py --from-fills          # force source 2
 """
 
 from __future__ import annotations
@@ -96,13 +101,48 @@ def equity_curve(fills: pd.DataFrame, grid_ms: np.ndarray, mid: np.ndarray) -> n
     return out
 
 
+def curves_from_history(path: Path, names: list[str] | None):
+    """Read the grid's own equity history. Returns (hours, mid, curves, fills)."""
+    frame = pd.read_csv(path)
+    if names:
+        frame = frame[frame["variant"].isin(names)]
+    if frame.empty:
+        raise SystemExit(f"{path} has no rows for the requested variants")
+    # A restart appends to the same file; keep only the newest run so two
+    # series are never spliced into one misleading curve.
+    latest_run = frame["run_started_ms"].max()
+    runs = frame["run_started_ms"].nunique()
+    frame = frame[frame["run_started_ms"] == latest_run]
+    if runs > 1:
+        print(f"note: {path.name} holds {runs} runs; plotting the newest only")
+    grid_ms = np.sort(frame["ts_ms"].unique())
+    hours = (grid_ms - grid_ms[0]) / 3_600_000.0
+    mid_by_ts = frame.groupby("ts_ms")["mid"].last()
+    mid = mid_by_ts.reindex(grid_ms).to_numpy(dtype=float)
+    curves, fills = {}, {}
+    for name, group in frame.groupby("variant"):
+        series = group.set_index("ts_ms")["net_pnl_usdc"].reindex(grid_ms)
+        curves[str(name)] = series.ffill().fillna(0.0).to_numpy(dtype=float)
+        fills[str(name)] = int(group["fills"].iloc[-1])
+    return hours, mid, curves, fills
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("variants", nargs="*", help="variant names (default: all)")
     parser.add_argument("--out", default=str(GRID_DIR / "pnl_curve.png"))
-    parser.add_argument("--minutes", type=float, default=2.0, help="grid resolution")
+    parser.add_argument("--minutes", type=float, default=2.0, help="grid resolution (fill reconstruction only)")
     parser.add_argument("--csv", help="also write the curves as CSV")
+    parser.add_argument("--history", default=str(GRID_DIR / "equity_history.csv"))
+    parser.add_argument("--from-fills", action="store_true", help="ignore the history file")
     args = parser.parse_args()
+
+    history_path = Path(args.history)
+    if history_path.exists() and not args.from_fills:
+        hours, mid, curves, fill_counts = curves_from_history(history_path, args.variants or None)
+        print(f"source: {history_path.name} ({len(hours)} samples)")
+        render(hours, mid, curves, fill_counts, args)
+        return
 
     files = variant_files(args.variants or None)
     if not files:
@@ -126,12 +166,19 @@ def main() -> None:
 
     curves = {name: equity_curve(frame, grid_ms, mid) for name, frame in fills.items()}
     hours = (grid_ms - grid_ms[0]) / 3_600_000.0
+    print("source: fill logs (no equity_history.csv)")
+    render(hours, mid, curves, {n: len(f) for n, f in fills.items()}, args)
 
+
+def render(hours, mid, curves, fill_counts, args) -> None:
     ordered = sorted(curves, key=lambda n: -curves[n][-1])
     print(f"{'variant':11s}{'final':>10s}{'peak':>10s}{'trough':>10s}{'fills':>8s}")
     for name in ordered:
         curve = curves[name]
-        print(f"{name:11s}{curve[-1]:+10.2f}{curve.max():+10.2f}{curve.min():+10.2f}{len(fills[name]):8d}")
+        print(
+            f"{name:11s}{curve[-1]:+10.2f}{curve.max():+10.2f}"
+            f"{curve.min():+10.2f}{fill_counts.get(name, 0):8d}"
+        )
 
     import matplotlib
     matplotlib.use("Agg")
@@ -152,7 +199,10 @@ def main() -> None:
     ax.axhline(0, color="#444", linewidth=1.0, linestyle="--", zorder=1)
     ax.set_ylabel("net P&L (USDC)")
     ax.set_title(
-        f"CASHCAT dry-run grid — net P&L vs time ({hours[-1]:.1f} h, {args.minutes:g} min resolution)",
+        # Resolution comes from the data, not the flag: the history file has
+        # its own interval and --minutes does not apply to it.
+        f"CASHCAT dry-run grid — net P&L vs time "
+        f"({hours[-1]:.1f} h, {np.median(np.diff(hours)) * 60:.0f} min resolution)",
         fontsize=13, pad=12,
     )
     ax.legend(loc="lower left", fontsize=9, ncol=2, framealpha=0.9)

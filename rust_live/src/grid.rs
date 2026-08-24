@@ -16,6 +16,8 @@ use anyhow::{bail, Context, Result};
 use mm_live::config::AppConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::fs::OpenOptions;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 /// Sparse overrides applied on top of the base config.
@@ -212,6 +214,111 @@ pub struct Leaderboard {
     pub rows: Vec<LeaderboardRow>,
 }
 
+/// Append-only equity history — the time axis `leaderboard.json` does not have.
+///
+/// The leaderboard is rewritten in place every stats tick, so it only ever
+/// shows the *current* state. Reconstructing a P&L curve afterwards meant
+/// replaying every variant's fill log and joining it against the collector's
+/// price tape, which is slow, needs the tape to still exist, and cannot
+/// recover a variant's own view of its equity. One CSV row per variant per
+/// interval removes all of that.
+///
+/// Design notes, all of them about surviving a long run:
+///
+/// - **Append-only, never rewritten.** A crash loses at most the last row; the
+///   rest of the file is already durable. The leaderboard's write-temp-then-
+///   rename is right for a small snapshot and wrong for a growing log.
+/// - **Flushed every write.** The grid is expected to run for days and be
+///   killed abruptly; an unflushed `BufWriter` would silently discard the tail.
+/// - **CSV, not JSONL.** This is a dense numeric series whose only consumer is
+///   a plotting script. CSV is roughly a third the size of the equivalent JSON
+///   and `pandas.read_csv` reads it directly.
+/// - **Its own interval, coarser than the stats tick.** At the 5 s stats
+///   cadence ten variants would write ~15 MB/day; the default 60 s keeps a
+///   year under half a gigabyte while still resolving every move that matters
+///   at this strategy's timescale.
+/// - **`run_started_ms` on every row.** Restarting the grid appends to the same
+///   file, so a consumer needs to be able to tell two runs apart; `elapsed_s`
+///   alone resets and would silently splice them.
+/// - **`mid` on every row.** Without it the curve cannot be plotted against
+///   price unless the tape is still on disk, which retention does not
+///   guarantee.
+#[derive(Debug)]
+pub struct EquityHistory {
+    writer: BufWriter<std::fs::File>,
+    interval_ms: u64,
+    last_write_ms: u64,
+}
+
+impl EquityHistory {
+    pub const HEADER: &'static str = "ts_ms,run_started_ms,elapsed_s,variant,net_pnl_usdc,equity_usdc,realized_pnl_usdc,fees_usdc,funding_usdc,inventory_units,fills,working_orders,max_drawdown_usdc,mid,valid";
+
+    /// Open (or create) the history file. An existing file is appended to, not
+    /// truncated, so a restart extends the same series.
+    pub fn create(path: &Path, interval_ms: u64) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("cannot create {}", parent.display()))?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("cannot open equity history {}", path.display()))?;
+        let is_new = file.metadata().map(|meta| meta.len() == 0).unwrap_or(true);
+        let mut writer = BufWriter::new(file);
+        if is_new {
+            writeln!(writer, "{}", Self::HEADER)?;
+            writer.flush()?;
+        }
+        Ok(Self {
+            writer,
+            interval_ms,
+            last_write_ms: 0,
+        })
+    }
+
+    /// Write one row per variant when the interval has elapsed. Returns whether
+    /// anything was written, so callers can log at the same cadence.
+    pub fn record(&mut self, board: &Leaderboard, mid: Option<f64>) -> Result<bool> {
+        if board.generated_at_ms.saturating_sub(self.last_write_ms) < self.interval_ms {
+            return Ok(false);
+        }
+        self.force_record(board, mid)
+    }
+
+    /// Write a sample regardless of the interval. Used at shutdown so the curve
+    /// ends at the run's true end.
+    pub fn force_record(&mut self, board: &Leaderboard, mid: Option<f64>) -> Result<bool> {
+        self.last_write_ms = board.generated_at_ms;
+        for row in &board.rows {
+            // A variant name is validated against a strict character set at
+            // spec load, so it can never contain a comma or a quote.
+            writeln!(
+                self.writer,
+                "{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{:.6},{},{}",
+                board.generated_at_ms,
+                board.started_at_ms,
+                board.elapsed_seconds,
+                row.name,
+                row.net_pnl_usdc,
+                row.equity_usdc,
+                row.realized_pnl_usdc,
+                row.fees_usdc,
+                row.funding_usdc,
+                row.inventory_units,
+                row.fills,
+                row.working_orders,
+                row.max_drawdown_usdc,
+                mid.map_or_else(String::new, |value| format!("{value:.10}")),
+                u8::from(row.scientifically_valid),
+            )?;
+        }
+        self.writer.flush()?;
+        Ok(true)
+    }
+}
+
 impl Leaderboard {
     pub fn sort_by_net_pnl(&mut self) {
         self.rows.sort_by(|a, b| {
@@ -229,6 +336,11 @@ impl Leaderboard {
         std::fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
         std::fs::rename(&temporary, path)?;
         Ok(())
+    }
+
+    /// Append one sample per variant to the equity history.
+    pub fn append_history(&self, history: &mut EquityHistory, mid: Option<f64>) -> Result<bool> {
+        history.record(self, mid)
     }
 
     /// Fixed-width table for the terminal.
@@ -361,5 +473,106 @@ mod tests {
         board.sort_by_net_pnl();
         let order: Vec<&str> = board.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(order, vec!["b", "c", "a"]);
+    }
+
+    fn board_at(now_ms: u64, pnl: f64) -> Leaderboard {
+        Leaderboard {
+            generated_at_ms: now_ms,
+            started_at_ms: 1_000,
+            elapsed_seconds: (now_ms - 1_000) / 1_000,
+            symbol: "CASHCAT".to_owned(),
+            rows: vec![LeaderboardRow {
+                name: "wide8".to_owned(),
+                description: "minHalf=8bps".to_owned(),
+                net_pnl_usdc: pnl,
+                equity_usdc: 297.88 + pnl,
+                realized_pnl_usdc: pnl,
+                mark_to_market_pnl_usdc: pnl,
+                fees_usdc: 1.5,
+                funding_usdc: 0.0,
+                inventory_units: 640,
+                fills: 12,
+                working_orders: 2,
+                max_drawdown_usdc: 3.25,
+                scientifically_valid: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn equity_history_writes_a_header_once_and_then_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("equity_history.csv");
+        let mut history = EquityHistory::create(&path, 60_000).unwrap();
+        assert!(history
+            .record(&board_at(61_000, -1.0), Some(0.1234))
+            .unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], EquityHistory::HEADER);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].split(',').count(), lines[1].split(',').count());
+        assert!(
+            lines[1].starts_with("61000,1000,60,wide8,"),
+            "got {}",
+            lines[1]
+        );
+        assert!(lines[1].ends_with(",0.1234000000,1"), "got {}", lines[1]);
+    }
+
+    #[test]
+    fn equity_history_respects_its_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("equity_history.csv");
+        let mut history = EquityHistory::create(&path, 60_000).unwrap();
+        assert!(history.record(&board_at(60_000, -1.0), None).unwrap());
+        // Too soon: silently skipped, not an error.
+        assert!(!history.record(&board_at(90_000, -2.0), None).unwrap());
+        assert!(history.record(&board_at(120_000, -3.0), None).unwrap());
+        // ... but shutdown always gets its sample.
+        assert!(history
+            .force_record(&board_at(130_000, -4.0), None)
+            .unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text.lines().count(),
+            4,
+            "header + the two samples an interval apart + the forced one"
+        );
+    }
+
+    #[test]
+    fn equity_history_appends_across_restarts_without_a_second_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("equity_history.csv");
+        {
+            let mut first = EquityHistory::create(&path, 0).unwrap();
+            first.record(&board_at(2_000, -1.0), None).unwrap();
+        }
+        // A restart must extend the same series: the file is opened for append,
+        // and the header is written only when the file is new.
+        let mut second = EquityHistory::create(&path, 0).unwrap();
+        second.record(&board_at(3_000, -2.0), None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| **l == EquityHistory::HEADER)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn equity_history_leaves_mid_empty_when_the_book_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("equity_history.csv");
+        let mut history = EquityHistory::create(&path, 0).unwrap();
+        history.record(&board_at(2_000, -1.0), None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        // An empty field, never a zero: a zero mid would plot as a real price.
+        assert!(text.lines().nth(1).unwrap().ends_with(",,1"));
     }
 }

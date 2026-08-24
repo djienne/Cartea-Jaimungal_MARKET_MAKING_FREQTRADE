@@ -101,6 +101,9 @@ enum Command {
         /// Directory for per-variant reports and the leaderboard.
         #[arg(long)]
         out_dir: Option<PathBuf>,
+        /// Seconds between equity-history samples. Zero disables the history.
+        #[arg(long, default_value_t = 60)]
+        history_seconds: u64,
     },
     /// Exercise credential parsing, account REST reads, and the account WebSocket without actions.
     ConnectorCheck {
@@ -308,6 +311,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             grid,
             duration_seconds,
             out_dir,
+            history_seconds,
         } => {
             run_dry_run_grid(
                 &config,
@@ -315,6 +319,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
                 &grid,
                 duration_seconds,
                 out_dir.as_deref(),
+                history_seconds,
             )
             .await
         }
@@ -1838,6 +1843,7 @@ async fn run_dry_run_grid(
     grid_path: &Path,
     duration_seconds: u64,
     out_dir: Option<&Path>,
+    history_seconds: u64,
 ) -> Result<()> {
     let started_at_ms = unix_ms();
     let spec = grid::GridSpec::load(grid_path)?;
@@ -1978,6 +1984,16 @@ async fn run_dry_run_grid(
     }
 
     let leaderboard_path = out_dir.join("leaderboard.json");
+    // Append-only, so a restart extends the same series rather than replacing
+    // it -- the whole point is a curve that survives the run.
+    let mut history = (history_seconds > 0)
+        .then(|| {
+            grid::EquityHistory::create(
+                &out_dir.join("equity_history.csv"),
+                history_seconds.saturating_mul(1_000),
+            )
+        })
+        .transpose()?;
     let mut stats = tokio::time::interval(Duration::from_millis(
         config.runtime.stats_interval_ms.max(1_000),
     ));
@@ -2004,12 +2020,18 @@ async fn run_dry_run_grid(
                     }
                 } => break,
                 _ = stats.tick() => {
-                    write_grid_leaderboard(
+                    let board = write_grid_leaderboard(
                         &variants,
                         &leaderboard_path,
                         &instrument.symbol,
                         started_at_ms,
                     )?;
+                    if let Some(history) = history.as_mut() {
+                        let mid = latest_bbo
+                            .load()
+                            .map(|bbo| instrument.price_from_units(bbo.mid_units()));
+                        board.append_history(history, mid)?;
+                    }
                 }
                 event = events.pop() => {
                     let mut pending = Some(event);
@@ -2082,6 +2104,14 @@ async fn run_dry_run_grid(
         &instrument.symbol,
         started_at_ms,
     )?;
+    // Final sample regardless of the interval, so the curve ends where the run
+    // ended instead of up to one interval short of it.
+    if let Some(history) = history.as_mut() {
+        let mid = latest_bbo
+            .load()
+            .map(|bbo| instrument.price_from_units(bbo.mid_units()));
+        history.force_record(&board, mid)?;
+    }
     let feed_valid = scientifically_valid.load(Ordering::Acquire);
     for variant in &variants {
         let report = SessionReport {

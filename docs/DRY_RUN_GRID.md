@@ -70,6 +70,34 @@ max drawdown. Those are there because the staged sweep showed a single window
 can be the whole result, so a variant leading on total while carrying that shape
 should at least be visible.
 
+## P&L over time
+
+The leaderboard is rewritten in place, so it only ever shows the *current*
+state. `equity_history.csv` in the same directory is the time axis: one row per
+variant per `--history-seconds` (default 60; `0` disables it).
+
+```
+python scripts/grid_pnl_curve.py                    # every variant
+python scripts/grid_pnl_curve.py wide8 baseline     # a subset
+```
+
+Choices that exist to survive a long run:
+
+| property | why |
+|---|---|
+| append-only, flushed every write | a kill loses the last row, not the file; the grid is meant to run for days |
+| CSV | a dense numeric series whose only consumer is a plotting script — a third the size of the equivalent JSON |
+| own interval, coarser than stats | at the 5 s stats tick ten variants write ~15 MB/day; 60 s keeps a year under half a gigabyte |
+| `run_started_ms` on every row | a restart appends to the same file, and splicing two runs into one curve would be silently wrong — the plotter keeps the newest |
+| `mid` on every row | the curve plots against price without needing the tape, which retention does not keep forever |
+| empty `mid`, never zero | a zero would plot as a real price; the field is blank until the first book arrives |
+| a forced final sample at shutdown | the curve ends where the run ended, not up to one interval short |
+
+`grid_pnl_curve.py` falls back to reconstructing the curve from the per-variant
+fill logs (`pnl = cash + inventory·mid − fees`, mid from the collector tape) for
+runs recorded before this file existed, or with `--from-fills`. That path is
+slower, needs the tape still within retention, and cannot recover funding.
+
 Each variant also writes a full `SessionReport` (`<name>.json`) and its own
 JSONL event log, so a variant can be audited exactly like a single dry run.
 
