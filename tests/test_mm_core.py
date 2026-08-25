@@ -37,6 +37,9 @@ from mm_core import (  # noqa: E402
     inventory_to_q_exact,
     maker_safe,
     merged_params,
+    round_amount_down,
+    round_price_for_side,
+    side_is_buy,
     parse_utc_timestamp,
     select_delta,
     solve_hjb,
@@ -838,3 +841,46 @@ def test_compute_quotes_reports_the_residual_it_priced_from():
     # ...and it really priced off 1.4, not 1.
     integer = compute_quotes(MID, 1, hjb, config, tau_remaining=config.hjb_horizon_seconds)
     assert pair.ask.delta != pytest.approx(integer.ask.delta)
+
+
+# --- tick and lot rounding -------------------------------------------------
+#
+# Ported from tests/test_hyperliquid_alo_executor.py when the freqtrade trader
+# was retired. These functions moved into mm_core because the replay is the
+# only remaining caller; the assertions came with them so the move is covered
+# rather than merely compiling.
+
+
+def test_round_price_for_side_never_rounds_toward_the_touch():
+    # maker_safe: a bid floors, an ask ceils -- away from the mid either way.
+    assert round_price_for_side(side="bid", price=100.09, price_tick_size=0.1) == 100.0
+    assert round_price_for_side(side="ask", price=100.01, price_tick_size=0.1) == 100.1
+    # crossing_probe deliberately inverts it, to stay crossing.
+    assert (
+        round_price_for_side(
+            side="bid", price=100.01, price_tick_size=0.1, rounding_policy="crossing_probe"
+        )
+        == 100.1
+    )
+    assert (
+        round_price_for_side(
+            side="ask", price=100.09, price_tick_size=0.1, rounding_policy="crossing_probe"
+        )
+        == 100.0
+    )
+    # No tick means no rounding, not a crash.
+    assert round_price_for_side(side="bid", price=100.09, price_tick_size=None) == 100.09
+    assert round_price_for_side(side="bid", price=100.09, price_tick_size=0.0) == 100.09
+    with pytest.raises(ValueError):
+        round_price_for_side(
+            side="bid", price=100.0, price_tick_size=0.1, rounding_policy="nonsense"
+        )
+
+
+def test_round_amount_down_floors_and_side_is_buy_is_strict():
+    assert round_amount_down(0.0109, 0.001) == 0.01
+    assert round_amount_down(0.0109, None) == 0.0109
+    assert side_is_buy("bid") and side_is_buy("buy") and side_is_buy("long")
+    assert not side_is_buy("ask") and not side_is_buy("sell") and not side_is_buy("short")
+    with pytest.raises(ValueError):
+        side_is_buy("sideways")

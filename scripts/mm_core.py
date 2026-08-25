@@ -29,10 +29,10 @@ Conventions worth knowing before reading further:
   -- so ``solve_hjb`` derives them from live kappa via the dimensionless targets
   ``hjb_phi_kappa_t`` / ``hjb_alpha_kappa``. Tuning the raw values per symbol is
   how the quotes ended up pinned to the floor and the cap.
-- Tick and lot rounding delegate to hyperliquid_alo_executor, which does it in
-  Decimal. The float floor/ceil copies elsewhere are subject to binary
-  representation error at exactly the wrong moment -- a bid rounded one ULP up
-  can cross the ask and turn a post-only order into a reject.
+- Tick and lot rounding is done in Decimal, below. The float floor/ceil copies
+  elsewhere are subject to binary representation error at exactly the wrong
+  moment -- a bid rounded one ULP up can cross the ask and turn a post-only
+  order into a reject.
 """
 
 from __future__ import annotations
@@ -43,13 +43,65 @@ import math
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from hjb import compute_h_asymmetric, compute_h_symmetric
-from hyperliquid_alo_executor import round_amount_down, round_price_for_side
+
+
+# --- tick and lot rounding -------------------------------------------------
+#
+# These lived in hyperliquid_alo_executor until the freqtrade trader was
+# retired. They are the only part of that module the replay ever used, and
+# they are pure: no venue, no credentials, no order state. Kept in Decimal
+# deliberately -- see the note above about a bid rounded one ULP up.
+
+
+def side_is_buy(side: str) -> bool:
+    side_l = str(side).lower()
+    if side_l in {"buy", "bid", "long"}:
+        return True
+    if side_l in {"sell", "ask", "short"}:
+        return False
+    raise ValueError(f"unsupported side: {side}")
+
+
+def _round_to_step(value: float, step: float | None, *, rounding: str) -> float:
+    value_f = float(value)
+    if step is None or float(step) <= 0:
+        return value_f
+    step_dec = Decimal(str(float(step)))
+    value_dec = Decimal(str(value_f))
+    units = (value_dec / step_dec).to_integral_value(rounding=rounding)
+    return float(units * step_dec)
+
+
+def round_amount_down(size: float, amount_step_size: float | None) -> float:
+    return _round_to_step(float(size), amount_step_size, rounding=ROUND_FLOOR)
+
+
+def round_price_for_side(
+    *,
+    side: str,
+    price: float,
+    price_tick_size: float | None,
+    rounding_policy: str = "maker_safe",
+) -> float:
+    """Round price without weakening the intended post-only safety property."""
+    if price_tick_size is None or float(price_tick_size) <= 0:
+        return float(price)
+    is_buy = side_is_buy(side)
+    if rounding_policy == "maker_safe":
+        rounding = ROUND_FLOOR if is_buy else ROUND_CEILING
+    elif rounding_policy == "crossing_probe":
+        rounding = ROUND_CEILING if is_buy else ROUND_FLOOR
+    else:
+        raise ValueError(f"unsupported rounding_policy: {rounding_policy}")
+    return _round_to_step(float(price), float(price_tick_size), rounding=rounding)
+
 
 # Parameter snapshot schema this module consumes (scripts/param_utils.py).
 SUPPORTED_PARAM_SCHEMA_VERSION = 4
