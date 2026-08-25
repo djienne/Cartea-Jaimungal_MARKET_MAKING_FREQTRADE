@@ -53,10 +53,11 @@ not restart the proven collectors.
 
 - Its own compose project (`hyperliquid_data`) and its own network
   (`hyperliquid_data_default`).
-- **No `depends_on`**, no Redis, no link to the trading stack, which is a
-  separate project (`cartea-jaimungal_market_making_freqtrade`, whose services
-  do depend on `redis`). `docker compose down` on the trading stack cannot
-  touch the collector.
+- **No `depends_on`**, no Redis, no link to any trading stack. The compose
+  project that once sat beside it (`cartea-jaimungal_market_making_freqtrade`,
+  two freqtrade legs plus a param estimator and Redis) is retired; the trader
+  is now `rust_live/`, which runs as a plain process and owns no compose
+  services here. Nothing anyone does to the trader can touch the collector.
 - Nothing in `rust_live` writes here — see the next section.
 
 ## A live bot cannot disturb collection, by code

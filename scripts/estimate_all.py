@@ -17,7 +17,7 @@ toxicity diagnostic.
 
 --emit-params-json turns the whole cycle into a read-only calibration run: one
 window load, kappa/epsilon computed at whatever settings were asked for, and a
-single JSON written to the given path. Nothing under user_data/strategies or
+single JSON written to the given path. Nothing under scripts/ or
 scripts/ is touched and param_update.lock is never involved, so a sweep can run
 against the same data the live estimator container is using without the live
 legs ever seeing a parameter they did not ask for.

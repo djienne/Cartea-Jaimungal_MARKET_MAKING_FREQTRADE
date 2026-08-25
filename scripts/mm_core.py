@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Quoting core shared by the live engine and the replay harness.
 
-Every piece of quote arithmetic in this project existed two or three times over:
-``_assemble_half_spread`` in the strategy and ``assemble_half_spread`` in the
-replay, ``_maker_safe`` / ``post_only_check`` / ``maker_safe``, ``_inventory_level``
-/ ``inventory_q``, two tick-rounding implementations plus a third in the ALO
-executor, and three separate ``finite_float_or_none``. Parity was maintained by
-hand and asserted in one test (tests/test_quote_assembly.py). That is the wrong
-place for the guarantee: a backtest whose quoting differs from the live path
-tells you nothing, and the drift is silent until it costs money.
+Every piece of quote arithmetic in this project once existed two or three
+times over: ``_assemble_half_spread`` in the freqtrade strategy and
+``assemble_half_spread`` in the replay, ``_maker_safe`` / ``post_only_check`` /
+``maker_safe``, ``_inventory_level`` / ``inventory_q``, two tick-rounding
+implementations plus a third in the ALO executor, and three separate
+``finite_float_or_none``. Parity was maintained by hand and asserted in one
+test. That is the wrong place for the guarantee: a backtest whose quoting
+differs from the live path tells you nothing, and the drift is silent until it
+costs money.
 
-This module is the single implementation. Both the replay harness and the live
-strategy import it, so what a backtest simulates is literally the code that
-quotes.
+This module is the single implementation. The strategy that was its other
+caller is retired (tag ``freqtrade-trader-final``); the replay harness imports
+it, and rust_live/ carries the same arithmetic in Rust for the live path.
 
 Conventions worth knowing before reading further:
 
@@ -21,10 +22,11 @@ Conventions worth knowing before reading further:
   -q_max), and that must never be clamped into a real quote.
 - Depths are measured from the MID, in price units, on the same coordinate the
   estimators calibrate in.
-- ``q`` is signed and spans the full [-q_max, +q_max]. Freqtrade rests one order
-  per pair, so the two sides are run as two cooperating instances (a long leg
-  and a short leg on separate sub-accounts); ``route_sides`` decides which leg
-  owns which side, and ``allow_short=False`` reproduces a single long-only leg.
+- ``q`` is signed and spans the full [-q_max, +q_max]. ``route_sides`` splits
+  it across a long and a short leg for a venue adapter that can rest only one
+  order per pair, and ``allow_short=False`` reproduces a single long-only leg.
+  The retired freqtrade trader was the caller that needed this; the replay
+  quotes both sides from one instance.
 - ``phi`` and ``alpha`` are NOT kappa-invariant -- eq. 10.28 uses -phi*kappa*q^2
   -- so ``solve_hjb`` derives them from live kappa via the dimensionless targets
   ``hjb_phi_kappa_t`` / ``hjb_alpha_kappa``. Tuning the raw values per symbol is
@@ -786,8 +788,9 @@ def compute_quotes(
 ) -> QuotePair:
     """Both sides at once, which is the whole point of the rework.
 
-    The freqtrade strategy could only ever have one resting order per pair, so it
-    alternated: bid while flat, ask while long. That is not market making -- it
+    The retired freqtrade strategy could only ever have one resting order per
+    pair, so it alternated: bid while flat, ask while long. That is not market
+    making -- it
     halves the spread capture and turns the inventory dimension of the model into
     a two-state toggle. Here both sides are priced from the same mid, the same
     inventory and the same HJB surface, and either may be disabled independently
@@ -839,8 +842,11 @@ def compute_quotes(
 def route_sides(q_long: int, q_short: int, q_max: int) -> dict[str, str | None]:
     """Decide which leg of the two-instance pair rests which side this cycle.
 
-    Freqtrade rests one order per trade, so each instance can hold only ONE
-    side. The naive split -- long always bids, short always asks -- deadlocks:
+    Written for an adapter that rests one order per trade, so each instance
+    can hold only ONE side -- the freqtrade legs, now retired. Kept because the
+    constraint recurs on any venue adapter with the same limitation, and the
+    deadlock it avoids is not obvious. The naive split -- long always bids,
+    short always asks -- deadlocks:
     the long leg ratchets to +q_max and the short leg to -q_max and both stop.
 
     Each leg has two possible actions:

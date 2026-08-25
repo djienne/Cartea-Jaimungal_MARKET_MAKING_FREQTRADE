@@ -5,12 +5,25 @@ This does not make live trading safer by itself. It turns quote/fill audit logs
 into a small artifact that says whether the sample is good enough to tune replay
 fill probabilities, and if so what the observed fill rates look like by side and
 depth bucket.
+
+**No producer writes this schema today.** It parses the freqtrade strategy's
+`mm_debug.jsonl` -- flat records with `event: "quote_decision"` and
+`decision: "accept"` -- and that trader is retired (tag
+`freqtrade-trader-final`). The Rust stack logs `quote_decision` too, but nests
+the order under `payload` and carries a `reason` rather than a `decision`, so
+it is NOT a drop-in input; feeding it here yields zero matched quotes, not an
+error. Adapting the reader to the Rust schema is the work required to make this
+useful again. Until then the analysis and its tests are kept because the
+matching logic -- quotes to fills by side, depth bucket and time window -- is
+the part worth preserving, and `--input` must now be given explicitly rather
+than defaulting to a path nothing writes.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +33,6 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_LOG = Path("user_data/logs/mm_debug.jsonl")
 DEFAULT_OUTPUT = Path("docs/replay_log_calibration.json")
 
 
@@ -328,8 +340,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    inputs = args.input or [DEFAULT_LOG]
-    events = read_jsonl_events(inputs)
+    if not args.input:
+        parser_error = (
+            "--input is required: the freqtrade mm_debug.jsonl this used to "
+            "default to is no longer written by anything. See the module "
+            "docstring."
+        )
+        print(parser_error, file=sys.stderr)
+        return 2
+    events = read_jsonl_events(args.input)
     report = build_calibration_report(
         events,
         bucket_bps=args.bucket_bps,

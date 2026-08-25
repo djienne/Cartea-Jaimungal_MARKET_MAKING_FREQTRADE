@@ -197,7 +197,7 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30,
     ``emit_params_json`` / ``emit_sink`` switch on emit mode: the computed
     entries go to the given path (and/or into the given dict) and NOTHING is
     written to kappa.json or lambda.json, so a sweep can run alongside the live
-    estimator container without disturbing the snapshots two freqtrade legs read.
+    estimator container without disturbing any snapshot a live consumer reads.
     """
     support_upper_plus = (
         DEFAULT_SUPPORT_QUANTILE_UPPER if support_quantile_plus is None else float(support_quantile_plus)

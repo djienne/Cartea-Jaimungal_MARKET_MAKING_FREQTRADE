@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Compute bid/ask spreads (bps from mid) using the same logic as user_data/strategies/Market_Making.py.
+Compute bid/ask spreads (bps from mid) using mm_core, the same assembly the replay quotes from.
 
 Inputs:
 - Refreshes κ/ε and baseline λ₀ by calling get_kappa.py and get_epsilon.py.

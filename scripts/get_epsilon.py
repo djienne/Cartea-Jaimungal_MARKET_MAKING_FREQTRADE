@@ -409,7 +409,7 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
     goes to the given path (and/or into the given dict) and NOTHING is written to
     epsilon.json. That is the whole point — a calibration sweep must be able to
     recompute parameters at arbitrary settings while a live estimator container
-    and two freqtrade legs are using the real snapshot.
+    and a live consumer is using the real snapshot.
     """
     horizon_plus_ms, horizon_minus_ms = resolve_post_horizon_ms_pair(
         cli_scalar=post_horizon_ms,

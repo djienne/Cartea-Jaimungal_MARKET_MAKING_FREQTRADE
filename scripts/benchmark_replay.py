@@ -22,7 +22,7 @@ a different fix.
     python scripts/benchmark_replay.py --data-dir scripts/HL_data --symbol CASHCAT
 
 Timings are reported as the MINIMUM over the repeats, not the mean: this host
-runs a live estimator, two freqtrade legs and several collectors, so the spread
+runs the Rust dry-run grid and several collectors, so the spread
 between repeats is contention and the minimum is the closest available estimate
 of the work actually done. Run it with --repeats 1 and you are measuring the
 machine's mood as much as the code.

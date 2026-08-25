@@ -886,7 +886,7 @@ A weighted log-linear regression of the empirical survival function
 $\log S(\delta) = c - \kappa\delta$, weighted by $\sqrt{\text{tail count}}$:
 \end{booktocode}
 
-\snip{scripts/estimator_common.py}{756}{785}
+\snip{scripts/estimator_common.py}{735}{764}
 \begin{lstlisting}
     sorted_depths = np.sort(depths)
 
@@ -935,7 +935,7 @@ produces a strategy that skews the wrong way and is very hard to spot.
 
 Much simpler: count them and divide by the time actually covered.
 
-\snip{scripts/get_kappa.py}{271}{279}
+\snip{scripts/get_kappa.py}{266}{274}
 \begin{lstlisting}
         data_start_ms = max(window.window_start_ms or 0.0, float(window.mids["ts_ms"].min()))
         wall_seconds = max(((window.window_end_ms or 0.0) - data_start_ms) / 1000.0, 1e-6)
@@ -973,7 +973,7 @@ $\epsb^{\pm}$ is the average amount the mid moves right after a market order ---
 \emph{markout}, i.e.\ the price change measured a fixed interval after an event.
 It is measured over a $200$~ms window:
 
-\snip{scripts/get_epsilon.py}{198}{206}
+\snip{scripts/get_epsilon.py}{194}{202}
 \begin{lstlisting}
     post = pd.merge_asof(
         frame,
@@ -1003,7 +1003,7 @@ are computed anyway, but only as diagnostics.
 
 Variance of one-second mid increments, per second:
 
-\snip{scripts/estimator_common.py}{879}{885}
+\snip{scripts/estimator_common.py}{858}{864}
 \begin{lstlisting}
     sampled = np.where(fresh, mid[np.clip(idx, 0, None)], np.nan)
 
@@ -1153,7 +1153,7 @@ dimensionless $\phi\kappa T$ and $\alpha\kappa$ and derive the rest, then add th
 volatility term that \S10.3 calls for:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{413}{422}
+\snip{scripts/mm_core.py}{468}{477}
 \begin{lstlisting}
     if kappa_avg > 0:
         # Derive from the dimensionless targets so the same config expresses the
@@ -1536,7 +1536,7 @@ our own in between. The bracketing helper has two guards that look redundant and
 are not:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{464}{475}
+\snip{scripts/mm_core.py}{628}{639}
 \begin{lstlisting}
     n = len(axis)
     if n == 1 or value <= axis[0]:
@@ -1571,7 +1571,7 @@ reproduces the book exactly and only genuinely fractional inventory blends.
 
 And the blend itself refuses to average away a disabled side:
 
-\snip{scripts/mm_core.py}{492}{498}
+\snip{scripts/mm_core.py}{656}{662}
 \begin{lstlisting}
     if not np.isfinite(low) or not np.isfinite(high):
         return float("inf")
@@ -1668,7 +1668,7 @@ rejects orders.
 Everything below is ours, and every line of it can override the model:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{271}{285}
+\snip{scripts/mm_core.py}{326}{340}
 \begin{lstlisting}
 
     fee_cushion = float(config.maker_fee_rate) * mid
@@ -1759,7 +1759,7 @@ is post-only, so it cannot be obeyed. The floor is what stops it, and the
 
 \subsection{Rounding, safely}
 
-\snip{scripts/hyperliquid_alo_executor.py}{76}{93}
+\snip{scripts/mm_core.py}{88}{105}
 \begin{lstlisting}
 def round_price_for_side(
     *,
@@ -1788,7 +1788,7 @@ order into an exchange rejection.
 
 \subsection{The last check before posting}
 
-\snip{scripts/mm_core.py}{314}{325}
+\snip{scripts/mm_core.py}{369}{380}
 \begin{lstlisting}
     price_f = finite_float_or_none(price)
     bid_f = finite_float_or_none(best_bid)

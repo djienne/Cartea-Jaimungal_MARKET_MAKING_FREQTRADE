@@ -50,8 +50,11 @@ q       = round(q_exact)
 ```
 
 A two-sided leg (`can_short=true`) uses the signed value and clips to
-`[-hjb_q_max, +hjb_q_max]`. If the Freqtrade strategy sees a position pointing
-the wrong way for its role, it must fail closed.
+`[-hjb_q_max, +hjb_q_max]`. The single-sided form above is the retired
+freqtrade legs' convention, kept because `mm_core.route_sides` still implements
+it; a leg that saw a position pointing the wrong way for its role had to fail
+closed. `rust_live/` quotes both sides from one instance and uses the signed
+form throughout.
 
 ## Time and inventory: how `delta*(t,q)` is actually read
 

@@ -1,38 +1,100 @@
 ---
 name: dry-run-operation
-description: How to run the market-making dry run and the runtime gotchas that block quoting
+description: How to run the Rust market-making dry run and grid, and the runtime gotchas that bite
 metadata:
   type: project
 ---
 
-The Cartea-Jaimungal MM dry run only quotes when the data and the stack run together. This project's `docker-compose.yml` holds four services: `mm-long` (container MM_ADV_LONG) and `mm-short` (MM_ADV_SHORT) — two Freqtrade legs on separate Hyperliquid sub-accounts that read snapshots and quote — plus `param-estimator` (mm-param-estimator; writes status=ok kappa/epsilon/lambda into user_data/strategies and publishes them to Redis) and `redis` (mm-redis). The collectors are NOT here: `hl-cashcat-collector` (CASHCAT alone, 30-day retention) and `hl-collector` (ETH,ACE,CHIP,PENGU,NIL, 3 days) are operated from `HYPERLIQUID_DATA/docker-compose.yml` and write to the shared `./data/eth_mm` tree, reachable here as the `scripts/HL_data` junction. Their `SYMBOLS` lists must stay disjoint or every trade lands on disk twice (that doubled `n_trades` and λ± on 2026-08-16). `market_making.trading_enabled` must be `true` (safe under `dry_run: true`; live-only gates are bypassed when dry-run). The old single `hl-collector2` service was removed from this compose on 2026-08-16.
+**Rewritten 2026-08-25.** This file described the freqtrade stack — two legs on
+separate sub-accounts, a param-estimator publishing to Redis, and a docker
+compose project. That trader is retired (tag `freqtrade-trader-final`); its
+containers are stopped and removed. What follows is the stack that actually
+runs. The freqtrade-era gotchas that died with it — the `param_update.lock`
+abandoned-lock recovery, the ccxt 4.5.22 pin and its fee invariant, the
+gate-battery profiles, `docker compose up -d mm-long mm-short` — are gone with
+the code; look them up at the tag if a question about the old bot ever comes up.
 
-Runtime gotchas discovered and fixed (2026-05-28), all previously prevented any quoting:
-- Collector flushed every 60s but the strategy rejects collector data >30s old → made flush interval configurable (`FLUSH_INTERVAL_SEC`, default 10) + added retention pruning (`RETENTION_MINUTES`).
-- `collector_timestamp_cache_seconds` defaulted to 90 (> the 30s freshness window) so the cached timestamp aged past it → lowered default to 5.
-- `periodic_test_runner.py --loop` held `param_update.lock` / status `running` for the whole process lifetime; the strategy treats a present lock as "params invalid", so it NEVER quoted. Fixed: lock is now acquired/released per cycle (held only during compute+copy).
-- freqtrade does NOT set `self.exchange` on strategies (only on FreqtradeBot); the strategy's tick/lot rounding was dead at runtime → wired `self.exchange = self.dp._exchange` in `bot_start`.
-- Strategy assumed Hyperliquid maker fee 0.00015, but ccxt 4.4.77 reported 0.0001 → fee gate fail-closed. Made it a config knob `market_making.maker_fee_rate`. UPDATE 2026-06-11: ccxt is now pinned to 4.5.22 (see below), which reports the documented 0.00015 — config `fee`/`maker_fee_rate` are back to 0.00015. The invariant: these two must equal whatever the pinned ccxt's hyperliquid `swap` fee table says, or quoting fail-closes with `exchange_fee_mismatch`.
+## What runs
 
-Exit-side bugs (only surfaced once a bid actually filled; all three blocked the ask/exit side so the bot could enter but never unwind):
-- `_signed_base_position` called `Trade.get_trades(is_open=True, pair=pair)` — real freqtrade `Trade.get_trades` takes a SQLAlchemy filter list, not kwargs, so it raised TypeError, was swallowed by `except: pass`, and position read as 0 (q=0). Fixed: use `Trade.get_trades_proxy(...)` (the kwargs-safe, live/dry-run/backtest accessor) at all 3 sites. Tests missed it because DummyTrade stubbed `get_trades(**kwargs)`.
-- get_epsilon wrote slightly negative ε (short-window noise) with status=ok, but the strategy rejects ε<0 (invalid_epsilon) → kept stale params. Fixed: floor ε at 0 in get_epsilon (C-J model treats ε≥0).
-- freqtrade suppresses an exit signal when an entry signal is on the same candle (interface.py `exit_ and not enter`). The strategy set enter_long=1 at any q<3, cancelling exit_long at q=1. Fixed: only emit the bid when flat (q==0).
+The trader is `rust_live/`, a plain process, not a compose service. Three modes
+matter:
 
-Verified two-sided quoting (2026-06, on ETH): bids below mid + asks above mid, on the 0.1 tick, maker-safe, ~1.7-4 bps half-spread, all gates green; full loop = place passive quote → unfilled cancel → re-quote; fills flip q 0↔1 and the side switches. `exit_rejected: estimator_running` is the expected transient during a param-update lock window (re-quotes next loop). See [[mm-fee-assumption]]. Since 2026-08 the traded symbol is CASHCAT on a 1e-5 tick, the timeout is 3 s (not 15 s), and at the shipped `hjb_phi_kappa_t = 200` the flat-inventory half-spread is ~39 bps rather than 1.7-4.
+```
+mm-live --config config/cashcat_dryrun_realistic.toml dry-run
+mm-live --config config/cashcat_dryrun_realistic.toml dry-run-grid \
+        --grid config/grid_cashcat.toml --duration-seconds 0 --out-dir reports/grid_live
+mm-live --config config/cashcat.toml live          # real money, explicit, gated
+```
 
-Requote cadence: there is no refresh gate to configure. `unfilledtimeout` (3 s) plus `internals.process_throttle_secs` (2) measured p10 1.0 s / p50 5.5 s / p90 10.9 s between order placements on 2026-08-18, down from p50 30.3 s at 15 s / 15 s; tightening to 2 s / 1 s measured no faster while doubling API load, and an unexplained ~8.4 s floor remains. Since 2026-08-19 a third path also requotes: `process_open_trade_positions` → `adjust_trade_position` logs "Position adjust: about to create a new order" then "Buy order cancelled to be replaced by new limit order" — it cancels and re-places the resting order rather than stacking a second one, and unlike `replace_order` it is not candle-gated, so those percentiles are now an upper bound. `adjust_trade_position`'s docstring documents all three paths against freqtrade 2025.10.
+The grid opens **one** WebSocket no matter how many variants it runs. That is
+deliberate: Hyperliquid allows ten per IP and the budget is shared with the
+collectors and any live session. The grid never writes Parquet and never reads
+credentials.
 
-Two live bugs fixed 2026-08-19 (6d11888, d166bc2), both silent:
-- `adjust_trade_position` read `self._kill_switch_active`, an attribute assigned nowhere, so it raised AttributeError on EVERY call from d20b27d until 2026-08-19 — 520 raises in 12 h on the long leg, 410 on the short. freqtrade's `strategy_wrapper` catches that and returns None, which is indistinguishable from the callback declining, so the inventory-adjustment path was dead for weeks while the bot looked healthy. Fixed by using `trading_enabled` (which IS the kill switch) and adding `scripts/verify_strategy_attributes.py`, a static AST check that now runs as the `strategy_attribute_report` safety gate. Existing tests could not see it because none of them import the strategy.
-- With the crash fixed, the SHORT leg was inverted in every case: the stake sign was derived from the direction q moves, but freqtrade reads the sign as "grow or shrink the position", and a bid on the short leg buys back and SHRINKS it — so every cover was submitted as an add and every add as a cover. Only the positive branch was gated, so the short leg's adds ignored `q_max` entirely, an inventory-cap breach. Both fixed, with 18 tests in `tests/test_strategy_guards.py` (5 of them fail against pre-fix source).
+## Collectors — separate, and must stay that way
 
-Collector websocket gotcha (fixed 2026-08-19, 945648e): Hyperliquid expires a websocket session about every 3 hours and sends a close frame; the SDK logs it, its manager thread exits, and nothing in the SDK reconnects. The only recovery used to be the time-based `_watchdog_inactivity`, so every routine expiry cost a full `INACTIVITY_TIMEOUT_SEC` (180 s) of missing data — measured over 60.3 h of CASHCAT as 20 gaps of 3.1-3.5 min on a clockwork ~3 h cadence, 71% of all missing data and 2.5% of the span. `_websocket_is_down()` now reads the SDK's own state and the watchdog acts within ~10 s, guarded by two consecutive down readings and `WS_HEALTH_GRACE_SEC` (20 s) after any connect.
+Not operated from this repo. `hl-cashcat-collector` (CASHCAT alone, 30-day
+retention) and `hl-collector` (ETH, ACE, CHIP, PENGU, NIL, 3 days) live in
+`HYPERLIQUID_DATA/docker-compose.yml` and write to the shared `./data/eth_mm`
+tree, reachable here as the `scripts/HL_data` junction.
 
-Outage 2026-06-10/11 (~28h, RestartCount=6920): ccxt 4.4.77's `hyperliquid.fetch_spot_markets` crashed on new exchange spot metadata (`None` base token → TypeError) — `load_markets` died at startup, freqtrade crash-looped. Even ccxt 4.5.22 crashes on the same metadata; the durable fix (applied) is ccxt==4.5.22 pinned in Dockerfile.technical PLUS `exchange.ccxt_config.options.fetchMarkets.types=["swap"]` in config.json so the spot parser is never invoked (futures-only bot). Watch for: any freqtrade restart loop with `TypeError ... 'NoneType' and 'str'` in fetch_spot_markets.
+**Their `SYMBOLS` lists must stay disjoint** or every trade lands on disk twice:
+`estimator_common._load_parquet_dir()` concatenates every `*.parquet` and
+`normalize_trades()` does not de-duplicate, so `n_trades` and λ± inflate ~2x
+(measured 2104 rows / 1055 unique trade_ids on 2026-08-16).
 
-Abandoned-lock gotcha: docker stops containers with SIGTERM; python's default SIGTERM action skips `finally`, so an estimator killed mid-cycle left `param_update.lock` behind — the next estimator then skips every cycle until the stale window (1h) and quoting stalls (params age out). Fixed: runner now traps SIGTERM → KeyboardInterrupt (cleanup path releases the lock), and lock release is ownership-token-checked so no runner can delete another's active lock. If it ever recurs: verify the estimator is idle (CPU ~0) and remove `user_data/strategies/param_update.lock` manually.
+**`scripts/` is their Docker build context.** `HYPERLIQUID_DATA/docker-compose.yml`
+builds both with `context: ../Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/scripts`,
+`dockerfile: Dockerfile`, and the image copies exactly `hyperliquid_data_collector.py`
+and `run_collector.py`. Do not move or rename those three paths. The failure is
+silent — running containers keep going and only break at the next rebuild — so
+after touching `scripts/`, run
+`docker compose -f ../HYPERLIQUID_DATA/docker-compose.yml build hl-cashcat-collector`.
 
-Gate-battery: the fast profile (default, ~2.5 min, no smokes) is the only one that still matches the compose file. `--include-runtime` = full (~17 min) and `--include-runtime --reuse-smoke-artifacts` = rerun everything cheap against the last run's smoke artifacts (≤6 h, ~4 min). Always pass `--json-output docs/last_safety_gates.json` on runtime batteries or the audit evidence is not persisted.
+Collector websocket gotcha (fixed 2026-08-19, 945648e): Hyperliquid expires a
+websocket session about every 3 hours and sends a close frame; the SDK logs it,
+its manager thread exits, and nothing in the SDK reconnects. Recovery used to be
+the time-based `_watchdog_inactivity`, so every routine expiry cost a full
+`INACTIVITY_TIMEOUT_SEC` (180 s) of missing data — over 60.3 h of CASHCAT that
+was 20 gaps of 3.1–3.5 min on a clockwork ~3 h cadence, 71% of all missing data.
+`_websocket_is_down()` now reads the SDK's own state and the watchdog acts within
+~10 s.
 
-STALE, 2026-08-19: the runtime path names services and containers that no longer exist. `scripts/run_safety_gates.py` has `PRODUCTION_FREQTRADE_CONTAINER = "MM_ADV"`, `PRODUCTION_FREQTRADE_SERVICE = "freqtrade"`, `COLLECTOR_SERVICE = "hl-collector2"`; `verify_dry_run_disabled.py` and `verify_dry_run_enabled.py` do `docker rm -f MM_ADV`, `docker compose run -d --name MM_ADV ... freqtrade`, and `docker compose up -d --no-deps hl-collector2`. The compose file defines `mm-long` (MM_ADV_LONG), `mm-short` (MM_ADV_SHORT), `param-estimator` and `redis`, and the collectors moved to `HYPERLIQUID_DATA` on 2026-08-16. So the old warning — that a `--include-runtime` battery replaces the production bot — no longer holds: the docker gates fail on a missing service instead. `docs/last_safety_gates.json`, the only artifact a runtime battery writes, still carries `generated_at: 2026-06-11T16:49:31Z`. On the flip side, the documented manual recovery `docker rm -f MM_ADV` + `docker compose up -d freqtrade` is also dead; the real one is `docker compose up -d mm-long mm-short`, then confirm `Parameter source: redis` + `Trading symbol: CASHCAT` in the logs.
+## Gotchas that bite
+
+**Rebuilding while the grid runs fails.** `cargo build --release --target-dir
+target/measure` returns `Access is denied. (os error 5)` because the running
+`mm-live.exe` holds the file. Stop the grid, build, relaunch — and expect to
+lose the run's elapsed clock, which matters if you are mid-measurement.
+
+**Redirect the log into the run directory.** `... --out-dir reports/grid_live >
+reports/grid_live/run.log` — anything else and the feed-health lines land where
+the monitor does not read them.
+
+**Feed health is logged on change, not on a timer.** A `grid feed health` line
+appears when `reconnects`, `feed_gaps` or `replayed_trades_ignored` moves, plus
+a floor of one line per ten minutes. So `trade_prints` in that line is stale by
+design; it is a snapshot from the last time a health counter moved, not a live
+count.
+
+**Replayed trades are expected, not a fault.** The venue replays history on
+every subscribe — measured 27 prints on connect against 13 live ones, then a
+further ~30 on each reconnect. `replayed_trades_ignored` rising while
+`feed_gaps` stays flat is the system working.
+
+**Disk.** ~17 MB/h at 18 variants, so ~12 GB/month, with zstd holding 16×.
+`quote_decision` events are **99.1%** of the bytes (157k events / 79.7 MB against
+2.9k execution events / 0.7 MB), so sampling them is the only lever that matters
+if that ever needs to come down.
+
+**`equity_history.csv` is append-only across restarts** and stamps
+`run_started_ms`, so a P&L curve survives a relaunch — split on that column
+rather than assuming one run per file.
+
+## Calibration
+
+All-Rust now: `mm-live calibrate` solves κ/λ/ε and the HJB surface over Parquet
+history. The Python estimators (`estimate_all.py`, `get_{kappa,lambda,epsilon}.py`)
+are kept for replay and analysis, not for feeding a live bot — nothing consumes
+their snapshots any more. See [[cartea-jaimungal-phi-kappa-trap]] before
+touching φ, and [[hjb-alpha-untuned-after-episodic]] for α.

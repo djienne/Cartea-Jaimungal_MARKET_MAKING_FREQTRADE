@@ -496,11 +496,10 @@ def calibrate(
     """Estimate kappa/epsilon/lambda on one window at one calibration setting.
 
     Runs estimate_all.py in --emit-params-json mode, which computes exactly what
-    the live estimator computes but writes ONLY to the path given. That matters
-    more than it looks: a live estimator container is recalibrating against these
-    same scripts every 30 s and two freqtrade legs read its snapshots, so a sweep
-    that wrote to the live files would be changing the running bot's quotes while
-    measuring them.
+    the live estimator computes but writes ONLY to the path given. Kept that way
+    after the freqtrade legs retired: nothing reads the live snapshots today, but
+    a sweep that writes outside its own output path is one live consumer away
+    from changing the thing it is measuring.
 
     ``reuse`` lets a re-run skip the subprocess when the scratch directory
     already holds a fit made from the same arguments over shards that have not
@@ -835,9 +834,9 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
     # The estimator runs as a subprocess, so these are launched from a thread
     # pool: the work is entirely in the child processes and the parent only
     # waits on them. Concurrency is the SAME --workers budget the replay pool
-    # uses, for the same reason -- a live estimator, two freqtrade legs and
-    # several collectors share this host, and starving them would corrupt the
-    # data being measured. Results are collected back in grid order, so the
+    # uses, for the same reason -- the Rust dry-run grid and several
+    # collectors share this host, and starving them would corrupt the data
+    # being measured. Results are collected back in grid order, so the
     # report does not depend on which one finished first.
     reference_risk = RiskSetting()
     stage_a: list[dict[str, Any]] = []
@@ -1277,9 +1276,9 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help=(
-            "Parallel replay processes, capped at 4. This host runs a live estimator, "
-            "two freqtrade legs and several collectors; a sweep that starves them of CPU "
-            "would corrupt the very data it is measuring."
+            "Parallel replay processes, capped at 4. This host runs the Rust dry-run "
+            "grid and several collectors; a sweep that starves them of CPU would corrupt "
+            "the very data it is measuring."
         ),
     )
     parser.add_argument(

@@ -1,0 +1,2437 @@
+diff --git a/README.md b/README.md
+index f1c1ef0..4f769e0 100644
+--- a/README.md
++++ b/README.md
+@@ -509,4 +509,4 @@ This project implements academic market making models and is intended for resear
+ <!-- rust-live-engine -->
+ ## Exécution live Rust / Hyperliquid
+ 
+-La boucle live sans Freqtrade se trouve dans `rust_live/`. Elle fonctionne en dry-run par défaut, consomme les WebSockets Hyperliquid et accepte les snapshots produits par le code Python existant. Voir [`RUST_LIVE.md`](RUST_LIVE.md) pour l’architecture, les garde-fous et les commandes de lancement.
++La boucle live sans Freqtrade se trouve dans `rust_live/`. Elle fonctionne en dry-run par défaut, consomme les WebSockets Hyperliquid et accepte les snapshots produits par le code Python existant. Le chemin critique utilise des seqlocks atomiques, un bitset de réveil coalescent et des ring buffers bornés pour les probes et événements privés. Voir [`RUST_LIVE.md`](RUST_LIVE.md) pour l’architecture, les politiques de saturation, les garde-fous et les commandes de lancement.
+diff --git a/RUST_LIVE.md b/RUST_LIVE.md
+index 6c6fc57..5920ae6 100644
+--- a/RUST_LIVE.md
++++ b/RUST_LIVE.md
+@@ -7,33 +7,37 @@ Le mode par défaut est `dry_run`. Aucun ordre réel n'est possible sans trois a
+ ## Architecture
+ 
+ ```text
+-                        COLD PATH
+-  Python calibration / HJB / estimation
+-                 |
+-                 | atomic JSON snapshot
+-                 v
+-       snapshot watcher + validation ---- telemetry / state writer
+-                 | ArcSwap
+-                 v
+-+----------------+--------------------------------------------------+
+-|                        DEDICATED HOT PATH                         |
+-| public WS -> latest BBO seqlock -> quote/risk/inventory -> watch |
+-|                 ^                  (no disk, REST or logging)      |
+-|                 | private fills/position, priority queue          |
+-+-----------------+-------------------------------------------------+
+-                                  |
+-                                  v
+-                         EXECUTION COLD PATH
+-              dry-run queue simulator OR signed WS actions
+-                                  |
+-           private orderUpdates/userFills WS + scheduleCancel
++                         COLD PATH
++   Python calibration / HJB / estimation
++                  |
++                  | atomic JSON snapshot
++                  v
++        snapshot watcher + validation -------- telemetry / state writer
++                  | ArcSwap                         ^
++                  | atomic model bit                | state seqlock
++                  v                                 |
+++-----------------+---------------------------------+----------------+
++|                         DEDICATED HOT PATH                          |
++| public WS -> BBO seqlock -> atomic wake bitset -> quote/risk/state |
++|                                      ^                |             |
++|                                      | HotEvent ArrayQueue          |
+++--------------------------------------+----------------+-------------+
++                                                       |
++                                                       v
++                           EXECUTION / ACCOUNT PATH
++     dry-run MarketProbe ArrayQueue OR signed Hyperliquid WS actions
++                           ^                    |
++                           |          private-event ArrayQueue
++                           +------ public/private WebSockets
+ ```
+ 
+ ### Hot path
+ 
+-Le calcul de quotes tourne sur un thread OS dédié, éventuellement épinglé avec `runtime.hot_path_cpu`. Le BBO est publié dans un seqlock atomique : les mises à jour publiques peuvent être coalescées, mais une lecture n'observe jamais un carnet partiellement écrit. Les fills privés et resynchronisations de position utilisent une file distincte, prioritaire et non confondue avec le flux marché.
++Le calcul de quotes tourne sur un thread OS dédié, éventuellement épinglé avec `runtime.hot_path_cpu`. Le BBO, les quotes désirées et l'état persistant sont publiés dans trois seqlocks atomiques cache-alignés. Une lecture ne peut donc jamais observer un objet partiellement écrit, et aucune allocation `Arc` n'est nécessaire à chaque tick.
+ 
+-Le hot path ne fait aucun accès disque, appel HTTP/REST, parsing JSON, résolution HJB, signature, journalisation ni attente réseau. Il utilise des prix et quantités entiers, puis publie seulement le dernier état de quote via `tokio::watch`.
++Les réveils marché, modèle, événements privés et arrêt sont coalescés dans un bitset atomique. Le thread se parque lorsqu'aucun bit n'est actif ; `unpark` ne transporte aucune donnée et ne sert qu'à éviter le busy-spin. Les fills et resynchronisations de position passent par un `ArrayQueue` borné et prioritaire. Les événements qui entrent dans cette file sont de taille fixe : les chaînes et détails d'order management restent hors du hot path. En mode réel, la publication d'ordres reste bloquée jusqu'à ce que le flux privé soit connecté **et** qu'un snapshot de position autoritatif ait été reçu ; une déconnexion invalide les deux conditions.
++
++Le hot path ne fait aucun accès disque, appel HTTP/REST, parsing JSON, résolution HJB, signature, journalisation ni attente réseau. Il utilise des prix et quantités entiers et publie le dernier état de quote par atomiques lock-free, avec une notification Tokio uniquement pour réveiller le consommateur asynchrone lorsqu'il dort.
+ 
+ ### Cold path
+ 
+@@ -49,6 +53,18 @@ Le cold path assure :
+ 
+ Trois connexions spécialisées évitent le head-of-line blocking : marché public, événements privés et RPC WebSocket `post` pour les actions/info. HTTP n'est utilisé que par le script facultatif de découverte des métadonnées, jamais par la boucle live.
+ 
++### Ring buffers et politiques de saturation
++
++Trois capacités, toutes positives et puissances de deux, sont configurables dans `[runtime]` :
++
++- `market_probe_ring_capacity` : BBO/trades ordonnés utilisés uniquement par le simulateur dry-run. Le producteur WebSocket ne bloque jamais ; un probe refusé est compté dans `dropped_market_probes` ou `dropped_trades`. Le BBO est inséré dans le ring avant le réveil du calcul, et le simulateur traite ce probe avant la quote dérivée afin d'éviter un fill avec anticipation sur le même tick.
++- `private_event_ring_capacity` : `orderUpdates`, `userFills` et snapshots de position. Cette file applique une backpressure asynchrone bornée plutôt que de perdre un fill ou de croître sans limite.
++- `hot_event_ring_capacity` : sous-ensemble fixe et prioritaire des fills/positions/états de connexion transmis au thread hot. Cette file applique également une backpressure bornée.
++
++La publication BBO et quote reste « latest value » : les notifications redondantes sont coalescées par atomique, mais le consommateur lit toujours le snapshot complet le plus récent. Les rings maintiennent en outre un high-water mark atomique, journalisé à l'arrêt du backend pour dimensionner les capacités. Les attentes `not_empty`/`not_full` n'interviennent qu'en cas de ring vide ou plein ; plusieurs producteurs sont enregistrés explicitement avant la vérification de capacité afin de ne pas perdre un réveil coalescé.
++
++Le `tokio::mpsc` du client RPC est volontairement conservé : il transporte des commandes réseau peu fréquentes avec réponse `oneshot`, timeout et annulation ; ce chemin est dominé par l'I/O et n'appartient pas au calcul critique BBO → quote.
++
+ ## Démarrage dry-run
+ 
+ Depuis la racine du dépôt :
+@@ -197,7 +213,7 @@ cargo run --manifest-path rust_live/Cargo.toml \
+   --release --bin hot-path-bench
+ ```
+ 
+-Le résultat mesure seulement le calcul de quote local, pas la latence réseau ou l'acquittement exchange.
++Le binaire imprime séparément le coût du calcul de quote, du seqlock BBO, de la publication atomique des quotes et d'un cycle `push`/`pop` du ring. Il ne mesure ni la latence réseau, ni la signature, ni l'acquittement exchange.
+ 
+ ## Fichiers ajoutés
+ 
+diff --git a/VALIDATION.md b/VALIDATION.md
+index cf6ae56..12f0291 100644
+--- a/VALIDATION.md
++++ b/VALIDATION.md
+@@ -1,66 +1,69 @@
+-# Validation — moteur live Rust / Hyperliquid
+-
+-Généré le `2026-08-20T23:34:33.645666+00:00`.
+-
+-**Résultat des contrôles requis : ÉCHEC**
+-
+-| Contrôle | Requis | Code | État |
+-|---|:---:|---:|:---:|
+-| cargo fmt --check | oui | `127` | ÉCHEC |
+-| cargo test --all-targets | oui | `127` | ÉCHEC |
+-| cargo build --release | oui | `127` | ÉCHEC |
+-| Python py_compile | oui | `1` | ÉCHEC |
+-| Snapshot exporter CLI | oui | `0` | OK |
+-| Hyperliquid metadata CLI | oui | `0` | OK |
+-| Strategy-source exporter CLI | oui | `2` | ÉCHEC |
+-| Example config/model validation | oui | `127` | ÉCHEC |
+-| Live mode negative guard test | oui | `127` | ÉCHEC |
+-| 10 s dry-run network smoke | non | `77` | AVERTISSEMENT |
+-
+-Le test réseau dry-run est informatif : un hôte sans sortie Internet peut le faire échouer alors que la compilation et les tests déterministes réussissent.
+-
+-## Journaux
+-
+-Les journaux complets sont dans `validation/*.log`. En cas d’échec requis, les dernières lignes sont reproduites ci-dessous.
+-
+-### cargo fmt --check
+-
+-```text
+-bash: line 1: cargo: command not found
+-```
+-
+-### cargo test --all-targets
+-
+-```text
+-bash: line 1: cargo: command not found
++# Validation — ring buffers et état atomique lock-free
++
++Généré le `2026-08-21T06:16:26.944125+00:00`.
++
++## Résultat
++
++**Contrôles statiques et helpers : RÉUSSI** — `34` contrôles réussis, `0` échec, `3` contrôles de toolchain ignorés faute d'outil installé.
++
++**Compilation Rust vérifiée : NON.** Cet environnement ne contient ni `cargo`, ni `rustc`, ni `rustfmt`. Le code a donc fait l'objet d'une revue structurelle, lexicale, de concurrence et de portée des changements, mais pas d'une compilation ni d'une exécution des tests Rust dans cette session.
++
++**Ordres réels envoyés : NON.** Aucun flux live réel ni action signée n'a été lancé pendant cette modification.
++
++## Architecture validée
++
++- `crossbeam_queue::ArrayQueue` fournit les rings bornés MPMC pour les probes dry-run, les événements privés et les événements fixes destinés au hot path.
++- Le BBO, les quotes désirées et le snapshot d'état utilisent des seqlocks atomiques cache-alignés.
++- Les réveils marché, modèle, événements privés et arrêt sont coalescés dans un `AtomicUsize` ; `park/unpark` ne transporte aucune donnée.
++- `ArcSwap` reste le mécanisme de publication des paramètres Python validés vers le hot path.
++- Les rings privés et hot-event appliquent une backpressure bornée. Le ring de probes marché ne bloque pas le WebSocket et comptabilise explicitement les pertes en saturation.
++- Les attentes asynchrones enregistrent leurs producteurs/consommateurs avant la seconde vérification, avec `Notified::enable`, afin d'éviter un réveil perdu avec plusieurs producteurs.
++- Le hot thread ne dépend d'aucun `Mutex`, `RwLock`, canal async, JSON, journalisation ou accès disque.
++- Le seul `tokio::mpsc` conservé se situe dans le client RPC WebSocket, hors hot path, où les commandes portent une réponse `oneshot` et un timeout.
++- En live, une quote portant des ordres exige à la fois le flux privé connecté et un snapshot de position autoritatif.
++- En dry-run, le probe BBO est inséré avant le réveil de calcul et simulé avant l'application de la quote dérivée, évitant le look-ahead du même tick.
++
++## Contrôles exécutés
++
++| Famille | Résultat |
++|---|---:|
++| Inventaire et scan lexical Rust | OK |
++| Équilibrage des délimiteurs hors chaînes/commentaires | OK |
++| Absence de tabulations et espaces finaux | OK |
++| `#![forbid(unsafe_code)]` et absence de blocs `unsafe` | OK |
++| Absence de files non bornées et de `crossbeam-channel` | OK |
++| Absence de `Mutex`/`RwLock` dans `rust_live/src` | OK |
++| Invariants ring/seqlock/bitset atomique | OK |
++| Isolation du hot path | OK |
++| Gate live connexion + position | OK |
++| Capacités positives, puissances de deux et bornées | OK |
++| Parsing TOML et JSON des exemples | OK |
++| Compilation des deux helpers Python | OK |
++| `--help` des helpers Python | OK |
++| Syntaxe du script de validation Bash | OK |
++| Audit de portée des fichiers modifiés | OK |
++| `cargo fmt`, `cargo test`, build release | NON EXÉCUTÉ — toolchain absente |
++
++Le détail machine-lisible des `37` contrôles figure dans `LOCKFREE_RING_STATIC_VALIDATION.json` livré séparément.
++
++## Commandes à exécuter sur une machine Rust
++
++```bash
++cd Cartea-Jaimungal_MARKET_MAKING_FREQTRADE-main
++
++cargo fmt --manifest-path rust_live/Cargo.toml --all -- --check
++cargo test --manifest-path rust_live/Cargo.toml --all-targets
++cargo build --manifest-path rust_live/Cargo.toml \
++  --release --bin mm-live --bin hot-path-bench
++
++cargo run --manifest-path rust_live/Cargo.toml \
++  --release --bin hot-path-bench
+ ```
+ 
+-### cargo build --release
++Le script complet peut aussi être lancé depuis la racine :
+ 
+-```text
+-bash: line 1: cargo: command not found
++```bash
++./scripts/validate_rust_live.sh
+ ```
+ 
+-### Python py_compile
+-
+-```text
+-[Errno 2] No such file or directory: 'scripts/export_from_strategy_source.py'
+-```
+-
+-### Strategy-source exporter CLI
+-
+-```text
+-python3: can't open file '/mnt/data/mmrust_work/Cartea-Jaimungal_MARKET_MAKING_FREQTRADE-main/scripts/export_from_strategy_source.py': [Errno 2] No such file or directory
+-```
+-
+-### Example config/model validation
+-
+-```text
+-release binary unavailable
+-```
+-
+-### Live mode negative guard test
+-
+-```text
+-release binary unavailable
+-```
++Le faux échec préexistant lié à `scripts/export_from_strategy_source.py` a été supprimé du validateur, car ce fichier n'existe pas dans le dépôt livré. Les deux helpers effectivement présents restent compilés et testés via leur interface CLI.
+diff --git a/config/live.example.toml b/config/live.example.toml
+index 46fdadb..ac09302 100644
+--- a/config/live.example.toml
++++ b/config/live.example.toml
+@@ -12,6 +12,11 @@ snapshot_path = "strategy_snapshot.example.json"
+ state_path = "../run/mm-live-state.json"
+ # Pin the dedicated hot-path OS thread after checking the host CPU topology.
+ hot_path_cpu = 2
++# Bounded, power-of-two lock-free ring capacities. Increase only after
++# observing sustained backpressure/high-water marks on the target host.
++market_probe_ring_capacity = 8192
++private_event_ring_capacity = 4096
++hot_event_ring_capacity = 16384
+ initial_inventory_lots = 0
+ live_confirmation_env = "HL_LIVE_CONFIRMATION"
+ live_confirmation_value = "I_UNDERSTAND_THIS_SENDS_REAL_ORDERS"
+diff --git a/rust_live/Cargo.toml b/rust_live/Cargo.toml
+index 61c8aa3..867f0f8 100644
+--- a/rust_live/Cargo.toml
++++ b/rust_live/Cargo.toml
+@@ -24,7 +24,7 @@ anyhow = "1.0"
+ arc-swap = "1.7"
+ clap = { version = "4.5", features = ["derive"] }
+ core_affinity = "0.8"
+-crossbeam-channel = "0.5"
++crossbeam-queue = "0.3"
+ futures-util = "0.3"
+ rmp-serde = "1.3"
+ serde = { version = "1.0", features = ["derive"] }
+diff --git a/rust_live/src/bin/hot_path_bench.rs b/rust_live/src/bin/hot_path_bench.rs
+index dc973b1..1491d49 100644
+--- a/rust_live/src/bin/hot_path_bench.rs
++++ b/rust_live/src/bin/hot_path_bench.rs
+@@ -1,6 +1,7 @@
+ use mm_live::config::MarketConfig;
++use mm_live::lockfree::{AsyncRing, SharedQuotes};
+ use mm_live::model::{compute_desired_quotes, StrategySnapshot};
+-use mm_live::types::{Bbo, QuoteReason};
++use mm_live::types::{AtomicBbo, Bbo, QuoteReason};
+ use std::hint::black_box;
+ use std::time::Instant;
+ 
+@@ -22,8 +23,10 @@ fn main() {
+         recv_ns: 0,
+     };
+     let iterations = 5_000_000_u64;
++
+     let start = Instant::now();
+     let mut accumulator = 0_i64;
++    let mut last_quote = None;
+     for i in 0..iterations {
+         let quote = compute_desired_quotes(
+             black_box(&snapshot),
+@@ -35,11 +38,56 @@ fn main() {
+             QuoteReason::Market,
+         );
+         accumulator ^= quote.bid.map(|x| x.px).unwrap_or_default();
++        last_quote = Some(quote);
++    }
++    print_result("quote_compute", iterations, start.elapsed().as_nanos());
++
++    let atomic_bbo = AtomicBbo::default();
++    let start = Instant::now();
++    for i in 0..iterations {
++        let mut next = bbo;
++        next.recv_ns = i;
++        atomic_bbo.store(black_box(next));
++        accumulator ^= atomic_bbo
++            .load()
++            .map(|value| value.bid_px)
++            .unwrap_or_default();
++    }
++    print_result("bbo_seqlock_store_load", iterations, start.elapsed().as_nanos());
++
++    let shared_quotes = SharedQuotes::default();
++    let quote = last_quote.expect("quote loop must execute");
++    let start = Instant::now();
++    for i in 0..iterations {
++        let mut next = quote;
++        next.quote_seq = i;
++        shared_quotes.publish(black_box(next));
++        accumulator ^= shared_quotes
++            .load()
++            .bid
++            .map(|order| order.px)
++            .unwrap_or_default();
+     }
+-    let elapsed = start.elapsed();
++    print_result(
++        "quote_seqlock_publish_load",
++        iterations,
++        start.elapsed().as_nanos(),
++    );
++
++    let ring = AsyncRing::new(1_024);
++    let start = Instant::now();
++    for i in 0..iterations {
++        ring.try_push(black_box(i)).expect("ring has one free slot");
++        accumulator ^= ring.try_pop().expect("ring contains one item") as i64;
++    }
++    print_result("ring_push_pop", iterations, start.elapsed().as_nanos());
++
++    println!("guard={accumulator}");
++}
++
++fn print_result(name: &str, iterations: u64, total_ns: u128) {
+     println!(
+-        "iterations={iterations} total_ns={} ns_per_quote={:.2} guard={accumulator}",
+-        elapsed.as_nanos(),
+-        elapsed.as_nanos() as f64 / iterations as f64,
++        "benchmark={name} iterations={iterations} total_ns={total_ns} ns_per_iteration={:.2}",
++        total_ns as f64 / iterations as f64,
+     );
+ }
+diff --git a/rust_live/src/cold_path.rs b/rust_live/src/cold_path.rs
+index 1d0a360..beb2fa7 100644
+--- a/rust_live/src/cold_path.rs
++++ b/rust_live/src/cold_path.rs
+@@ -1,8 +1,8 @@
++use crate::lockfree::{HotPathSignal, HOT_SIGNAL_MODEL};
+ use crate::metrics::Metrics;
+ use crate::model::StrategySnapshot;
+-use crate::types::HotStateSnapshot;
++use crate::types::{AtomicHotStateSnapshot, HotStateSnapshot};
+ use arc_swap::ArcSwap;
+-use crossbeam_channel::Sender;
+ use std::path::{Path, PathBuf};
+ use std::sync::atomic::Ordering;
+ use std::sync::Arc;
+@@ -14,7 +14,7 @@ pub async fn watch_strategy_snapshot(
+     path: PathBuf,
+     poll_ms: u64,
+     snapshot: Arc<ArcSwap<StrategySnapshot>>,
+-    model_wake: Sender<()>,
++    hot_signal: Arc<HotPathSignal>,
+     metrics: Arc<Metrics>,
+     mut shutdown: watch::Receiver<bool>,
+ ) {
+@@ -34,7 +34,7 @@ pub async fn watch_strategy_snapshot(
+                                 snapshot.store(Arc::new(next));
+                                 last_modified = modified;
+                                 metrics.snapshot_reloads.fetch_add(1, Ordering::Relaxed);
+-                                let _ = model_wake.try_send(());
++                                hot_signal.notify(HOT_SIGNAL_MODEL);
+                                 info!(revision, path = %path.display(), "strategy snapshot reloaded");
+                             } else {
+                                 metrics.snapshot_errors.fetch_add(1, Ordering::Relaxed);
+@@ -58,7 +58,7 @@ pub async fn watch_strategy_snapshot(
+ pub async fn persist_hot_state(
+     path: PathBuf,
+     flush_ms: u64,
+-    mut state_rx: watch::Receiver<HotStateSnapshot>,
++    state: Arc<AtomicHotStateSnapshot>,
+     mut shutdown: watch::Receiver<bool>,
+ ) {
+     let mut interval = tokio::time::interval(Duration::from_millis(flush_ms.max(250)));
+@@ -66,22 +66,20 @@ pub async fn persist_hot_state(
+     loop {
+         tokio::select! {
+             _ = interval.tick() => {
+-                if let Err(error) = write_json_atomic(&path, &*state_rx.borrow()) {
++                let snapshot = state.load();
++                if let Err(error) = write_json_atomic(&path, &snapshot) {
+                     warn!(%error, path = %path.display(), "cannot persist live state");
+                 }
+             }
+             changed = shutdown.changed() => {
+                 if changed.is_err() || *shutdown.borrow() {
+-                    let state = *state_rx.borrow_and_update();
+-                    if let Err(error) = write_json_atomic(&path, &state) {
++                    let snapshot = state.load();
++                    if let Err(error) = write_json_atomic(&path, &snapshot) {
+                         warn!(%error, path = %path.display(), "cannot persist final live state");
+                     }
+                     break;
+                 }
+             }
+-            changed = state_rx.changed() => {
+-                if changed.is_err() { break; }
+-            }
+         }
+     }
+ }
+@@ -118,7 +116,10 @@ pub async fn log_metrics(
+                     ws_reconnects = snapshot.ws_reconnects,
+                     hot_latency_ns = snapshot.last_hot_latency_ns,
+                     max_hot_latency_ns = snapshot.max_hot_latency_ns,
++                    coalesced_market_signals = snapshot.coalesced_market_signals,
++                    dropped_market_probes = snapshot.dropped_market_probes,
+                     dropped_trades = snapshot.dropped_trades,
++                    ring_backpressure_events = snapshot.ring_backpressure_events,
+                     "runtime statistics"
+                 );
+             }
+diff --git a/rust_live/src/config.rs b/rust_live/src/config.rs
+index 8c036f0..43255ae 100644
+--- a/rust_live/src/config.rs
++++ b/rust_live/src/config.rs
+@@ -74,6 +74,12 @@ pub struct RuntimeConfig {
+     pub snapshot_path: PathBuf,
+     pub state_path: PathBuf,
+     pub hot_path_cpu: Option<usize>,
++    /// Power-of-two capacity of the dry-run market probe ring.
++    pub market_probe_ring_capacity: usize,
++    /// Power-of-two capacity of the private account event ring.
++    pub private_event_ring_capacity: usize,
++    /// Power-of-two capacity of the execution-to-hot-path event ring.
++    pub hot_event_ring_capacity: usize,
+     pub initial_inventory_lots: i64,
+     pub live_confirmation_env: String,
+     pub live_confirmation_value: String,
+@@ -92,6 +98,9 @@ impl Default for RuntimeConfig {
+             snapshot_path: PathBuf::from("config/strategy_snapshot.json"),
+             state_path: PathBuf::from("run/mm-live-state.json"),
+             hot_path_cpu: None,
++            market_probe_ring_capacity: 8_192,
++            private_event_ring_capacity: 4_096,
++            hot_event_ring_capacity: 16_384,
+             initial_inventory_lots: 0,
+             live_confirmation_env: "HL_LIVE_CONFIRMATION".to_owned(),
+             live_confirmation_value: "I_UNDERSTAND_THIS_SENDS_REAL_ORDERS".to_owned(),
+@@ -293,6 +302,27 @@ impl AppConfig {
+         if self.execution.max_pending_actions == 0 {
+             bail!("execution.max_pending_actions must be positive");
+         }
++        for (name, capacity) in [
++            (
++                "runtime.market_probe_ring_capacity",
++                self.runtime.market_probe_ring_capacity,
++            ),
++            (
++                "runtime.private_event_ring_capacity",
++                self.runtime.private_event_ring_capacity,
++            ),
++            (
++                "runtime.hot_event_ring_capacity",
++                self.runtime.hot_event_ring_capacity,
++            ),
++        ] {
++            if capacity == 0 || !capacity.is_power_of_two() {
++                bail!("{name} must be a positive power of two");
++            }
++            if capacity > 1_048_576 {
++                bail!("{name} must not exceed 1048576 entries");
++            }
++        }
+         Ok(())
+     }
+ 
+@@ -335,3 +365,21 @@ impl AppConfig {
+         Ok(())
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn default_ring_capacities_are_valid() {
++        assert!(AppConfig::default().validate_static().is_ok());
++    }
++
++    #[test]
++    fn rejects_non_power_of_two_ring_capacity() {
++        let mut config = AppConfig::default();
++        config.runtime.hot_event_ring_capacity = 3_000;
++        let error = config.validate_static().expect_err("capacity must be rejected");
++        assert!(error.to_string().contains("positive power of two"));
++    }
++}
+diff --git a/rust_live/src/execution/dry_run.rs b/rust_live/src/execution/dry_run.rs
+index 64f8b8f..c9cd442 100644
+--- a/rust_live/src/execution/dry_run.rs
++++ b/rust_live/src/execution/dry_run.rs
+@@ -1,13 +1,12 @@
+ use crate::config::{DryRunConfig, MarketConfig};
++use crate::lockfree::{AsyncRing, HotEventRing, SharedQuotes};
+ use crate::metrics::Metrics;
+ use crate::types::{
+-    AtomicBbo, BackendEvent, Bbo, DesiredOrder, DesiredQuotes, Fill, MarketProbe, Side,
+-    TakerSide,
++    AtomicBbo, Bbo, DesiredOrder, DesiredQuotes, Fill, HotEvent, MarketProbe, Side, TakerSide,
+ };
+-use crossbeam_channel::Sender as CrossbeamSender;
+ use std::sync::atomic::Ordering;
+ use std::sync::Arc;
+-use tokio::sync::{mpsc, watch};
++use tokio::sync::watch;
+ use tracing::info;
+ 
+ #[derive(Debug, Clone, Copy)]
+@@ -213,32 +212,58 @@ pub struct DryRunLoopArgs {
+     pub config: DryRunConfig,
+     pub market: MarketConfig,
+     pub latest_bbo: Arc<AtomicBbo>,
+-    pub desired_rx: watch::Receiver<DesiredQuotes>,
+-    pub probe_rx: mpsc::Receiver<MarketProbe>,
+-    pub hot_event_tx: CrossbeamSender<BackendEvent>,
++    pub desired: Arc<SharedQuotes>,
++    pub probe_ring: Arc<AsyncRing<MarketProbe>>,
++    pub hot_events: Arc<HotEventRing>,
+     pub metrics: Arc<Metrics>,
+     pub shutdown: watch::Receiver<bool>,
+ }
+ 
+ pub async fn run_dry_run(mut args: DryRunLoopArgs) {
+     let mut engine = DryRunEngine::new(args.config, args.market, args.latest_bbo);
+-    let _ = args.hot_event_tx.send(BackendEvent::Connected);
+-    info!("dry-run execution backend ready");
++    match args
++        .hot_events
++        .push_or_shutdown(HotEvent::Connected, &mut args.shutdown)
++        .await
++    {
++        Ok(backpressured) => {
++            if backpressured {
++                args.metrics
++                    .ring_backpressure_events
++                    .fetch_add(1, Ordering::Relaxed);
++            }
++        }
++        Err(_) => return,
++    }
++
++    let mut observed_quote_seq = args.desired.load().quote_seq;
++    info!(
++        probe_ring_capacity = args.probe_ring.capacity(),
++        hot_event_ring_capacity = args.hot_events.capacity(),
++        "dry-run execution backend ready"
++    );
+     loop {
+         tokio::select! {
+             biased;
+             changed = args.shutdown.changed() => {
+                 if changed.is_err() || *args.shutdown.borrow() { break; }
+             }
+-            changed = args.desired_rx.changed() => {
+-                if changed.is_err() { break; }
+-                engine.reconcile(*args.desired_rx.borrow_and_update());
+-            }
+-            probe = args.probe_rx.recv() => {
+-                let Some(probe) = probe else { break; };
++            probe = args.probe_ring.pop() => {
+                 for fill in engine.on_probe(probe) {
+-                    args.metrics.fills.fetch_add(1, Ordering::Relaxed);
+-                    let _ = args.hot_event_tx.send(BackendEvent::Fill(fill));
++                    match args
++                        .hot_events
++                        .push_or_shutdown(HotEvent::Fill(fill), &mut args.shutdown)
++                        .await
++                    {
++                        Ok(backpressured) => {
++                            if backpressured {
++                                args.metrics
++                                    .ring_backpressure_events
++                                    .fetch_add(1, Ordering::Relaxed);
++                            }
++                        }
++                        Err(_) => return,
++                    }
+                     info!(
+                         side = ?fill.side,
+                         px_units = fill.px,
+@@ -247,10 +272,26 @@ pub async fn run_dry_run(mut args: DryRunLoopArgs) {
+                         "dry-run fill"
+                     );
+                 }
++
++                // Coalesce to the newest quote only after the causal market
++                // probe has been simulated. This avoids same-tick look-ahead.
++                let latest = args.desired.load();
++                if latest.quote_seq != observed_quote_seq {
++                    observed_quote_seq = latest.quote_seq;
++                    engine.reconcile(latest);
++                }
++            }
++            desired = args.desired.changed_after(observed_quote_seq) => {
++                observed_quote_seq = desired.quote_seq;
++                engine.reconcile(desired);
+             }
+         }
+     }
+-    info!("dry-run execution backend stopped");
++    info!(
++        probe_ring_high_water = args.probe_ring.high_water_mark(),
++        hot_event_ring_high_water = args.hot_events.high_water_mark(),
++        "dry-run execution backend stopped"
++    );
+ }
+ 
+ #[cfg(test)]
+diff --git a/rust_live/src/execution/live.rs b/rust_live/src/execution/live.rs
+index 4055d26..576a305 100644
+--- a/rust_live/src/execution/live.rs
++++ b/rust_live/src/execution/live.rs
+@@ -6,17 +6,17 @@ use crate::hyperliquid::signing::{
+     ScheduleCancel,
+ };
+ use crate::hyperliquid::wire::{format_decimal_scaled, parse_decimal_scaled};
++use crate::lockfree::{AsyncRing, HotEventRing, SharedQuotes};
+ use crate::metrics::Metrics;
+ use crate::types::{
+-    unix_ms, BackendEvent, DesiredOrder, DesiredQuotes, MarketProbe, OrderStatus, Side,
++    unix_ms, BackendEvent, DesiredOrder, DesiredQuotes, HotEvent, OrderStatus, Side,
+ };
+ use anyhow::{bail, Context, Result};
+-use crossbeam_channel::Sender as CrossbeamSender;
+ use serde_json::{json, Value};
+ use std::sync::atomic::Ordering;
+ use std::sync::Arc;
+ use std::time::Duration;
+-use tokio::sync::{mpsc, watch};
++use tokio::sync::watch;
+ use tracing::{info, warn};
+ 
+ #[derive(Debug, Clone)]
+@@ -375,10 +375,9 @@ fn collect_open_order_oids(value: &Value, coin: &str, out: &mut Vec<u64>) {
+ 
+ pub struct LiveLoopArgs {
+     pub manager: LiveOrderManager,
+-    pub desired_rx: watch::Receiver<DesiredQuotes>,
+-    pub probe_rx: mpsc::Receiver<MarketProbe>,
+-    pub private_rx: mpsc::Receiver<BackendEvent>,
+-    pub hot_event_tx: CrossbeamSender<BackendEvent>,
++    pub desired: Arc<SharedQuotes>,
++    pub private_events: Arc<AsyncRing<BackendEvent>>,
++    pub hot_events: Arc<HotEventRing>,
+     pub metrics: Arc<Metrics>,
+     pub shutdown: watch::Receiver<bool>,
+ }
+@@ -393,7 +392,12 @@ pub async fn run_live(mut args: LiveLoopArgs) {
+     let interval_ms = args.manager.execution.schedule_cancel_interval_ms.max(1_000);
+     let mut dead_man = tokio::time::interval(Duration::from_millis(interval_ms));
+     dead_man.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+-    info!("live Hyperliquid execution backend ready");
++    let mut observed_quote_seq = args.desired.load().quote_seq;
++    info!(
++        private_ring_capacity = args.private_events.capacity(),
++        hot_event_ring_capacity = args.hot_events.capacity(),
++        "live Hyperliquid execution backend ready"
++    );
+ 
+     loop {
+         tokio::select! {
+@@ -401,18 +405,42 @@ pub async fn run_live(mut args: LiveLoopArgs) {
+             changed = args.shutdown.changed() => {
+                 if changed.is_err() || *args.shutdown.borrow() { break; }
+             }
+-            event = args.private_rx.recv() => {
+-                let Some(event) = event else { break; };
++            event = args.private_events.pop() => {
++                let hot_event = event.to_hot_event();
+                 args.manager.apply_private_event(&event);
+-                let _ = args.hot_event_tx.send(event);
++                if let Some(hot_event) = hot_event {
++                    match args.hot_events
++                        .push_or_shutdown(hot_event, &mut args.shutdown)
++                        .await
++                    {
++                        Ok(backpressured) => {
++                            if backpressured {
++                                args.metrics
++                                    .ring_backpressure_events
++                                    .fetch_add(1, Ordering::Relaxed);
++                            }
++                        }
++                        Err(_) => break,
++                    }
++                }
+             }
+-            changed = args.desired_rx.changed() => {
+-                if changed.is_err() { break; }
+-                let desired = *args.desired_rx.borrow_and_update();
++            desired = args.desired.changed_after(observed_quote_seq) => {
++                observed_quote_seq = desired.quote_seq;
+                 if let Err(error) = args.manager.reconcile(desired).await {
+                     args.metrics.action_rejections.fetch_add(1, Ordering::Relaxed);
+-                    let event = BackendEvent::ActionRejected { reason: error.to_string() };
+-                    let _ = args.hot_event_tx.send(event);
++                    match args.hot_events
++                        .push_or_shutdown(HotEvent::ActionRejected, &mut args.shutdown)
++                        .await
++                    {
++                        Ok(backpressured) => {
++                            if backpressured {
++                                args.metrics
++                                    .ring_backpressure_events
++                                    .fetch_add(1, Ordering::Relaxed);
++                            }
++                        }
++                        Err(_) => break,
++                    }
+                     warn!(%error, quote_seq = desired.quote_seq, "quote reconciliation failed");
+                 }
+             }
+@@ -422,11 +450,6 @@ pub async fn run_live(mut args: LiveLoopArgs) {
+                     warn!(%error, "cannot renew scheduleCancel dead-man switch");
+                 }
+             }
+-            probe = args.probe_rx.recv() => {
+-                if probe.is_none() { break; }
+-                // Public trades are intentionally drained but not used for real
+-                // account state; private fills are the source of truth.
+-            }
+         }
+     }
+ 
+@@ -436,7 +459,11 @@ pub async fn run_live(mut args: LiveLoopArgs) {
+     if let Err(error) = args.manager.disable_dead_man_switch().await {
+         warn!(%error, "cannot disable scheduleCancel during clean shutdown");
+     }
+-    info!("live Hyperliquid execution backend stopped");
++    info!(
++        private_ring_high_water = args.private_events.high_water_mark(),
++        hot_event_ring_high_water = args.hot_events.high_water_mark(),
++        "live Hyperliquid execution backend stopped"
++    );
+ }
+ 
+ #[cfg(test)]
+diff --git a/rust_live/src/hot_path.rs b/rust_live/src/hot_path.rs
+index c76a1cb..01faaab 100644
+--- a/rust_live/src/hot_path.rs
++++ b/rust_live/src/hot_path.rs
+@@ -1,30 +1,35 @@
+ use crate::config::MarketConfig;
++use crate::lockfree::{
++    HotEventRing, HotPathSignal, SharedQuotes, HOT_SIGNAL_EVENT, HOT_SIGNAL_MARKET,
++    HOT_SIGNAL_MODEL, HOT_SIGNAL_SHUTDOWN,
++};
+ use crate::metrics::Metrics;
+ use crate::model::{compute_desired_quotes, StrategySnapshot};
+ use crate::types::{
+-    unix_ms, AtomicBbo, BackendEvent, DesiredQuotes, HotStateSnapshot, ProcessClock, QuoteReason,
++    unix_ms, AtomicBbo, AtomicHotStateSnapshot, DesiredQuotes, HotEvent, HotStateSnapshot,
++    ProcessClock, QuoteReason,
+ };
+ use arc_swap::ArcSwap;
+-use crossbeam_channel::{Receiver, Sender};
+ use std::sync::atomic::Ordering;
+ use std::sync::Arc;
+ use std::thread::{self, JoinHandle};
+ use std::time::Duration;
+-use tokio::sync::watch;
+ 
+ pub struct HotPathInputs {
+     pub latest_bbo: Arc<AtomicBbo>,
+-    pub market_wake_rx: Receiver<()>,
+-    pub private_event_rx: Receiver<BackendEvent>,
+-    pub model_wake_rx: Receiver<()>,
+-    pub shutdown_rx: Receiver<()>,
+-    pub desired_tx: watch::Sender<DesiredQuotes>,
+-    pub state_tx: watch::Sender<HotStateSnapshot>,
++    pub events: Arc<HotEventRing>,
++    pub signal: Arc<HotPathSignal>,
++    pub desired: Arc<SharedQuotes>,
++    pub state: Arc<AtomicHotStateSnapshot>,
+     pub snapshot: Arc<ArcSwap<StrategySnapshot>>,
+     pub market: MarketConfig,
+     pub clock: Arc<ProcessClock>,
+     pub metrics: Arc<Metrics>,
+     pub initial_inventory_lots: i64,
++    pub initial_backend_ready: bool,
++    /// Real execution remains gated until an authoritative position snapshot
++    /// has been observed in addition to the private-stream connection.
++    pub require_position_sync: bool,
+     pub hot_path_cpu: Option<usize>,
+ }
+ 
+@@ -46,86 +51,118 @@ fn pin_current_thread(cpu: Option<usize>) {
+ 
+ fn run_hot_path(inputs: HotPathInputs) {
+     pin_current_thread(inputs.hot_path_cpu);
++    inputs.signal.register_current_thread();
++
+     let mut inventory_lots = inputs.initial_inventory_lots;
++    let mut private_connected = inputs.initial_backend_ready;
++    let mut position_synced = !inputs.require_position_sync;
++    let mut backend_ready = private_connected && position_synced;
+     let mut quote_seq = 0_u64;
+     let mut last_bbo = inputs.latest_bbo.load();
+     let mut last_quotes = DesiredQuotes::default();
+     let stale_ns = inputs.market.stale_after_ms.saturating_mul(1_000_000);
++    let idle_poll = Duration::from_millis(100);
++
+     inputs
+         .metrics
+         .inventory_lots
+         .store(inventory_lots, Ordering::Relaxed);
+ 
+     loop {
++        let mut pending = inputs.signal.take_pending();
++        if pending == 0 {
++            inputs.signal.park_timeout(idle_poll);
++            pending = inputs.signal.take_pending();
++        }
++
++        if pending & HOT_SIGNAL_SHUTDOWN != 0 {
++            quote_seq = quote_seq.wrapping_add(1);
++            inputs.desired.publish(DesiredQuotes::empty(
++                QuoteReason::Shutdown,
++                quote_seq,
++                inputs.clock.now_ns(),
++            ));
++            break;
++        }
++
+         let mut reason = None;
+-        crossbeam_channel::select_biased! {
+-            recv(inputs.shutdown_rx) -> _ => {
+-                quote_seq = quote_seq.wrapping_add(1);
+-                let empty = DesiredQuotes::empty(
+-                    QuoteReason::Shutdown,
+-                    quote_seq,
+-                    inputs.clock.now_ns(),
+-                );
+-                inputs.desired_tx.send_replace(empty);
+-                break;
+-            }
+-            recv(inputs.private_event_rx) -> event => {
++        if pending & HOT_SIGNAL_MARKET != 0 {
++            last_bbo = inputs.latest_bbo.load();
++            reason = Some(QuoteReason::Market);
++        }
++        if pending & HOT_SIGNAL_MODEL != 0 {
++            reason = Some(QuoteReason::ModelReload);
++        }
++
++        // Private/account events are drained as a batch and take precedence
++        // over coalescible market/model notifications.
++        if pending & HOT_SIGNAL_EVENT != 0 {
++            while let Some(event) = inputs.events.try_pop() {
+                 match event {
+-                    Ok(BackendEvent::Fill(fill)) => {
++                    HotEvent::Fill(fill) => {
+                         inventory_lots = inventory_lots.saturating_add(
+-                            fill.side.inventory_sign().saturating_mul(fill.qty_lots)
++                            fill.side
++                                .inventory_sign()
++                                .saturating_mul(fill.qty_lots),
+                         );
+                         inputs.metrics.fills.fetch_add(1, Ordering::Relaxed);
+-                        inputs.metrics.inventory_lots.store(inventory_lots, Ordering::Relaxed);
++                        inputs
++                            .metrics
++                            .inventory_lots
++                            .store(inventory_lots, Ordering::Relaxed);
+                         reason = Some(QuoteReason::Fill);
+                     }
+-                    Ok(BackendEvent::PositionSnapshot { inventory_lots: next }) => {
++                    HotEvent::PositionSnapshot {
++                        inventory_lots: next,
++                    } => {
+                         inventory_lots = next;
+-                        inputs.metrics.inventory_lots.store(inventory_lots, Ordering::Relaxed);
++                        position_synced = true;
++                        backend_ready = private_connected && position_synced;
++                        inputs
++                            .metrics
++                            .inventory_lots
++                            .store(inventory_lots, Ordering::Relaxed);
+                         reason = Some(QuoteReason::PositionSync);
+                     }
+-                    Ok(BackendEvent::Disconnected { .. }) => {
+-                        quote_seq = quote_seq.wrapping_add(1);
+-                        let empty = DesiredQuotes::empty(
+-                            QuoteReason::BackendDown,
+-                            quote_seq,
+-                            inputs.clock.now_ns(),
+-                        );
+-                        if empty != last_quotes {
+-                            inputs.desired_tx.send_replace(empty);
+-                            last_quotes = empty;
++                    HotEvent::Disconnected => {
++                        private_connected = false;
++                        if inputs.require_position_sync {
++                            position_synced = false;
+                         }
+-                        continue;
++                        backend_ready = false;
++                        reason = Some(QuoteReason::BackendDown);
+                     }
+-                    Ok(BackendEvent::Connected) => reason = Some(QuoteReason::Market),
+-                    Ok(BackendEvent::ActionRejected { .. }) => {
+-                        inputs.metrics.action_rejections.fetch_add(1, Ordering::Relaxed);
++                    HotEvent::Connected => {
++                        private_connected = true;
++                        backend_ready = private_connected && position_synced;
++                        reason = Some(if backend_ready {
++                            QuoteReason::Market
++                        } else {
++                            QuoteReason::BackendDown
++                        });
+                     }
+-                    Ok(BackendEvent::OrderUpdate(_)) => {}
+-                    Err(_) => break,
++                    HotEvent::ActionRejected => {}
+                 }
+             }
+-            recv(inputs.model_wake_rx) -> _ => {
+-                reason = Some(QuoteReason::ModelReload);
+-            }
+-            recv(inputs.market_wake_rx) -> _ => {
+-                last_bbo = inputs.latest_bbo.load();
+-                reason = Some(QuoteReason::Market);
+-            }
+-            default(Duration::from_millis(100)) => {
+-                reason = Some(QuoteReason::Market);
+-            }
+         }
+ 
+-        inputs.metrics.hot_iterations.fetch_add(1, Ordering::Relaxed);
++        inputs
++            .metrics
++            .hot_iterations
++            .fetch_add(1, Ordering::Relaxed);
+         let start_ns = inputs.clock.now_ns();
+         let Some(bbo) = last_bbo else {
+             continue;
+         };
+         let age_ns = start_ns.saturating_sub(bbo.recv_ns);
+         quote_seq = quote_seq.wrapping_add(1);
+-        let next = if age_ns > stale_ns {
+-            inputs.metrics.stale_market_events.fetch_add(1, Ordering::Relaxed);
++        let next = if !backend_ready {
++            DesiredQuotes::empty(QuoteReason::BackendDown, quote_seq, start_ns)
++        } else if age_ns > stale_ns {
++            inputs
++                .metrics
++                .stale_market_events
++                .fetch_add(1, Ordering::Relaxed);
+             DesiredQuotes::empty(QuoteReason::StaleMarket, quote_seq, start_ns)
+         } else {
+             let snapshot = inputs.snapshot.load();
+@@ -145,27 +182,24 @@ fn run_hot_path(inputs: HotPathInputs) {
+             || next.model_revision != last_quotes.model_revision
+             || next.reason != last_quotes.reason
+         {
+-            inputs.desired_tx.send_replace(next);
+-            inputs.metrics.quote_updates.fetch_add(1, Ordering::Relaxed);
++            inputs.desired.publish(next);
++            inputs
++                .metrics
++                .quote_updates
++                .fetch_add(1, Ordering::Relaxed);
+             last_quotes = next;
+         }
+-        let state = HotStateSnapshot {
++
++        inputs.state.store(HotStateSnapshot {
+             inventory_lots,
+             last_bid_px: bbo.bid_px,
+             last_ask_px: bbo.ask_px,
+             quote_seq,
+             model_revision: next.model_revision,
+             updated_unix_ms: unix_ms(),
+-        };
+-        inputs.state_tx.send_replace(state);
++        });
+         inputs
+             .metrics
+             .observe_hot_latency(inputs.clock.now_ns().saturating_sub(start_ns));
+     }
+ }
+-
+-pub struct HotPathWakers {
+-    pub market: Sender<()>,
+-    pub model: Sender<()>,
+-    pub shutdown: Sender<()>,
+-}
+diff --git a/rust_live/src/hyperliquid/market.rs b/rust_live/src/hyperliquid/market.rs
+index 35240ab..232baf8 100644
+--- a/rust_live/src/hyperliquid/market.rs
++++ b/rust_live/src/hyperliquid/market.rs
+@@ -1,14 +1,14 @@
+ use crate::config::{MarketConfig, Network};
+ use crate::hyperliquid::wire::{parse_bbo_message, parse_l2_top_message, parse_trade_messages};
++use crate::lockfree::{AsyncRing, HotPathSignal, HOT_SIGNAL_MARKET};
+ use crate::metrics::Metrics;
+ use crate::types::{AtomicBbo, MarketProbe, ProcessClock};
+-use crossbeam_channel::Sender as CrossbeamSender;
+ use futures_util::{SinkExt, StreamExt};
+ use serde_json::json;
+ use std::sync::atomic::Ordering;
+ use std::sync::Arc;
+ use std::time::Duration;
+-use tokio::sync::{mpsc, watch};
++use tokio::sync::watch;
+ use tokio_tungstenite::{connect_async, tungstenite::Message};
+ use tracing::{info, warn};
+ 
+@@ -17,8 +17,11 @@ pub struct MarketStreamArgs {
+     pub network: Network,
+     pub config: MarketConfig,
+     pub latest_bbo: Arc<AtomicBbo>,
+-    pub market_wake: CrossbeamSender<()>,
+-    pub probe_tx: mpsc::Sender<MarketProbe>,
++    pub hot_signal: Arc<HotPathSignal>,
++    /// Present in dry-run mode, where ordered BBO/trade probes feed the fill
++    /// simulator. Real execution uses private fills and does not allocate or
++    /// enqueue this optional stream.
++    pub probe_ring: Option<Arc<AsyncRing<MarketProbe>>>,
+     pub clock: Arc<ProcessClock>,
+     pub metrics: Arc<Metrics>,
+     pub shutdown: watch::Receiver<bool>,
+@@ -73,7 +76,12 @@ where
+         });
+         write.send(Message::Text(message.to_string().into())).await?;
+     }
+-    if args.config.subscribe_trades {
++
++    // Trades are consumed only by the dry-run queue simulator. In real mode,
++    // private user fills are authoritative and avoiding this subscription cuts
++    // parsing/allocation load from the execution process.
++    let consume_trades = args.config.subscribe_trades && args.probe_ring.is_some();
++    if consume_trades {
+         let message = json!({
+             "method": "subscribe",
+             "subscription": {"type": "trades", "coin": args.coin}
+@@ -101,20 +109,31 @@ where
+                             if bbo.is_valid() {
+                                 args.latest_bbo.store(bbo);
+                                 args.metrics.bbo_updates.fetch_add(1, Ordering::Relaxed);
+-                                if args.market_wake.try_send(()).is_err() {
+-                                    args.metrics.dropped_market_wakes.fetch_add(1, Ordering::Relaxed);
++                                // In dry-run, publish the causal market probe before waking
++                                // quote computation. The simulator can therefore process the
++                                // market event before applying the quote derived from it.
++                                if let Some(ring) = &args.probe_ring {
++                                    if ring.try_push(MarketProbe::Bbo(bbo)).is_err() {
++                                        args.metrics
++                                            .dropped_market_probes
++                                            .fetch_add(1, Ordering::Relaxed);
++                                    }
+                                 }
+-                                if args.probe_tx.try_send(MarketProbe::Bbo(bbo)).is_err() {
+-                                    // BBO probes are optional for real execution and coalescible for dry-run.
++                                if !args.hot_signal.notify(HOT_SIGNAL_MARKET) {
++                                    // A pending market bit means the hot thread will read
++                                    // the newer atomic BBO anyway; this is coalescing, not
++                                    // market-state loss.
++                                    args.metrics.coalesced_market_signals.fetch_add(1, Ordering::Relaxed);
+                                 }
+                             } else {
+                                 args.metrics.invalid_bbo.fetch_add(1, Ordering::Relaxed);
+                             }
+                         }
+-                        if args.config.subscribe_trades {
++                        if consume_trades {
+                             for trade in parse_trade_messages(&root, &args.coin, &args.config, recv_ns) {
+                                 args.metrics.trade_messages.fetch_add(1, Ordering::Relaxed);
+-                                if args.probe_tx.try_send(MarketProbe::Trade(trade)).is_err() {
++                                let Some(ring) = &args.probe_ring else { continue };
++                                if ring.try_push(MarketProbe::Trade(trade)).is_err() {
+                                     args.metrics.dropped_trades.fetch_add(1, Ordering::Relaxed);
+                                 }
+                             }
+diff --git a/rust_live/src/hyperliquid/private.rs b/rust_live/src/hyperliquid/private.rs
+index 8389f46..1c5fca9 100644
+--- a/rust_live/src/hyperliquid/private.rs
++++ b/rust_live/src/hyperliquid/private.rs
+@@ -1,11 +1,15 @@
+ use crate::config::{MarketConfig, Network};
+ use crate::hyperliquid::rpc::WsRpcClient;
+ use crate::hyperliquid::wire::{parse_decimal_scaled, parse_order_updates, parse_user_fills};
++use crate::lockfree::AsyncRing;
++use crate::metrics::Metrics;
+ use crate::types::BackendEvent;
+ use futures_util::{SinkExt, StreamExt};
+ use serde_json::{json, Value};
++use std::sync::atomic::Ordering;
++use std::sync::Arc;
+ use std::time::Duration;
+-use tokio::sync::{mpsc, watch};
++use tokio::sync::watch;
+ use tokio_tungstenite::{connect_async, tungstenite::Message};
+ use tracing::{info, warn};
+ 
+@@ -15,7 +19,8 @@ pub struct PrivateStreamArgs {
+     pub user: String,
+     pub coin: String,
+     pub market: MarketConfig,
+-    pub event_tx: mpsc::Sender<BackendEvent>,
++    pub event_ring: Arc<AsyncRing<BackendEvent>>,
++    pub metrics: Arc<Metrics>,
+     pub shutdown: watch::Receiver<bool>,
+ }
+ 
+@@ -33,25 +38,32 @@ pub async fn run_private_stream(mut args: PrivateStreamArgs) {
+             Ok((socket, _)) => {
+                 reconnect_ms = args.market.reconnect_min_ms.max(50);
+                 info!(user = %args.user, "private account WebSocket connected");
+-                let _ = args.event_tx.send(BackendEvent::Connected).await;
+                 if let Err(error) = run_connected(&mut args, socket).await {
+                     warn!(%error, "private account WebSocket disconnected");
+-                    let _ = args
+-                        .event_tx
+-                        .send(BackendEvent::Disconnected {
++                    if !publish_event(
++                        &mut args,
++                        BackendEvent::Disconnected {
+                             reason: error.to_string(),
+-                        })
+-                        .await;
++                        },
++                    )
++                    .await
++                    {
++                        return;
++                    }
+                 }
+             }
+             Err(error) => {
+                 warn!(%error, "cannot connect private account WebSocket");
+-                let _ = args
+-                    .event_tx
+-                    .send(BackendEvent::Disconnected {
++                if !publish_event(
++                    &mut args,
++                    BackendEvent::Disconnected {
+                         reason: error.to_string(),
+-                    })
+-                    .await;
++                    },
++                )
++                .await
++                {
++                    return;
++                }
+             }
+         }
+         tokio::select! {
+@@ -64,6 +76,21 @@ pub async fn run_private_stream(mut args: PrivateStreamArgs) {
+     }
+ }
+ 
++async fn publish_event(args: &mut PrivateStreamArgs, event: BackendEvent) -> bool {
++    let ring = args.event_ring.clone();
++    match ring.push_or_shutdown(event, &mut args.shutdown).await {
++        Ok(backpressured) => {
++            if backpressured {
++                args.metrics
++                    .ring_backpressure_events
++                    .fetch_add(1, Ordering::Relaxed);
++            }
++            true
++        }
++        Err(_) => false,
++    }
++}
++
+ async fn run_connected<S>(
+     args: &mut PrivateStreamArgs,
+     socket: tokio_tungstenite::WebSocketStream<S>,
+@@ -79,6 +106,9 @@ where
+         let message = json!({"method": "subscribe", "subscription": subscription});
+         write.send(Message::Text(message.to_string().into())).await?;
+     }
++    if !publish_event(args, BackendEvent::Connected).await {
++        return Ok(());
++    }
+     let mut ping = tokio::time::interval(Duration::from_secs(30));
+     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+     loop {
+@@ -89,10 +119,14 @@ where
+                     Message::Text(text) => {
+                         let Ok(root) = serde_json::from_str::<Value>(text.as_ref()) else { continue };
+                         for fill in parse_user_fills(&root, &args.coin, &args.market) {
+-                            args.event_tx.send(BackendEvent::Fill(fill)).await?;
++                            if !publish_event(args, BackendEvent::Fill(fill)).await {
++                                return Ok(());
++                            }
+                         }
+                         for update in parse_order_updates(&root, &args.coin, &args.market) {
+-                            args.event_tx.send(BackendEvent::OrderUpdate(update)).await?;
++                            if !publish_event(args, BackendEvent::OrderUpdate(update)).await {
++                                return Ok(());
++                            }
+                         }
+                     }
+                     Message::Ping(payload) => write.send(Message::Pong(payload)).await?,
+@@ -119,7 +153,8 @@ pub async fn run_position_sync(
+     coin: String,
+     market: MarketConfig,
+     interval_ms: u64,
+-    event_tx: mpsc::Sender<BackendEvent>,
++    event_ring: Arc<AsyncRing<BackendEvent>>,
++    metrics: Arc<Metrics>,
+     mut shutdown: watch::Receiver<bool>,
+ ) {
+     let mut interval = tokio::time::interval(Duration::from_millis(interval_ms.max(1_000)));
+@@ -131,7 +166,22 @@ pub async fn run_position_sync(
+                 match rpc.post_info(payload).await {
+                     Ok(response) => {
+                         if let Some(inventory_lots) = parse_position_lots(&response, &coin, &market) {
+-                            let _ = event_tx.send(BackendEvent::PositionSnapshot { inventory_lots }).await;
++                            match event_ring
++                                .push_or_shutdown(
++                                    BackendEvent::PositionSnapshot { inventory_lots },
++                                    &mut shutdown,
++                                )
++                                .await
++                            {
++                                Ok(backpressured) => {
++                                    if backpressured {
++                                        metrics
++                                            .ring_backpressure_events
++                                            .fetch_add(1, Ordering::Relaxed);
++                                    }
++                                }
++                                Err(_) => return,
++                            }
+                         }
+                     }
+                     Err(error) => warn!(%error, "position synchronization over WebSocket failed"),
+@@ -162,11 +212,7 @@ fn parse_position_lots(value: &Value, coin: &str, market: &MarketConfig) -> Opti
+         if position.get("coin").and_then(Value::as_str) != Some(coin) {
+             continue;
+         }
+-        let units = parse_decimal_scaled(
+-            position.get("szi")?.as_str()?,
+-            market.size_decimals,
+-        )
+-        .ok()?;
++        let units = parse_decimal_scaled(position.get("szi")?.as_str()?, market.size_decimals).ok()?;
+         return Some((units as f64 / market.size_step_units as f64).round() as i64);
+     }
+     Some(0)
+@@ -179,7 +225,11 @@ mod tests {
+     #[test]
+     fn parses_position_from_nested_ws_response() {
+         let value = json!({"payload":{"assetPositions":[{"position":{"coin":"ETH","szi":"-0.012"}}]}});
+-        let market = MarketConfig { size_decimals: 3, size_step_units: 1, ..MarketConfig::default() };
++        let market = MarketConfig {
++            size_decimals: 3,
++            size_step_units: 1,
++            ..MarketConfig::default()
++        };
+         assert_eq!(parse_position_lots(&value, "ETH", &market), Some(-12));
+     }
+ }
+diff --git a/rust_live/src/lib.rs b/rust_live/src/lib.rs
+index 6e4fcf3..4ae06c5 100644
+--- a/rust_live/src/lib.rs
++++ b/rust_live/src/lib.rs
+@@ -5,6 +5,7 @@ pub mod config;
+ pub mod execution;
+ pub mod hot_path;
+ pub mod hyperliquid;
++pub mod lockfree;
+ pub mod metrics;
+ pub mod model;
+ pub mod types;
+diff --git a/mnt/data/mmrust_ring_work/Cartea-Jaimungal_MARKET_MAKING_FREQTRADE-main/rust_live/src/lockfree.rs b/rust_live/src/lockfree.rs
+new file mode 100644
+index 0000000..a07107d
+--- /dev/null
++++ b/rust_live/src/lockfree.rs
+@@ -0,0 +1,476 @@
++use crate::types::{AtomicDesiredQuotes, DesiredQuotes, HotEvent};
++use crossbeam_queue::ArrayQueue;
++use std::sync::atomic::{AtomicUsize, Ordering};
++use std::sync::{Arc, OnceLock};
++use std::thread::{self, Thread};
++use std::time::Duration;
++use tokio::sync::{watch, Notify};
++
++pub const HOT_SIGNAL_MARKET: usize = 1 << 0;
++pub const HOT_SIGNAL_MODEL: usize = 1 << 1;
++pub const HOT_SIGNAL_EVENT: usize = 1 << 2;
++pub const HOT_SIGNAL_SHUTDOWN: usize = 1 << 3;
++
++/// Lock-free, coalescing wake state for the dedicated hot-path thread.
++///
++/// Producers only perform an atomic `fetch_or`. `Thread::unpark` is used solely
++/// to avoid busy-spinning while no work is pending; the state transfer itself
++/// is entirely atomic and coalesces redundant market/model notifications.
++#[derive(Debug, Default)]
++#[repr(align(64))]
++pub struct HotPathSignal {
++    pending: AtomicUsize,
++    hot_thread: OnceLock<Thread>,
++}
++
++impl HotPathSignal {
++    pub fn register_current_thread(&self) {
++        let current = thread::current();
++        let _ = self.hot_thread.set(current.clone());
++        if self.pending.load(Ordering::Acquire) != 0 {
++            current.unpark();
++        }
++    }
++
++    /// Marks `bits` pending and wakes the hot thread if it was idle.
++    /// Returns `true` when at least one bit was newly pending.
++    #[inline]
++    pub fn notify(&self, bits: usize) -> bool {
++        debug_assert!(bits != 0);
++        let previous = self.pending.fetch_or(bits, Ordering::Release);
++        if previous == 0 {
++            if let Some(thread) = self.hot_thread.get() {
++                thread.unpark();
++            }
++        }
++        previous & bits != bits
++    }
++
++    #[inline]
++    pub fn take_pending(&self) -> usize {
++        self.pending.swap(0, Ordering::AcqRel)
++    }
++
++    #[inline]
++    pub fn park_timeout(&self, timeout: Duration) {
++        thread::park_timeout(timeout);
++    }
++}
++
++
++struct AtomicWaiter<'a> {
++    counter: &'a AtomicUsize,
++}
++
++impl<'a> AtomicWaiter<'a> {
++    #[inline]
++    fn new(counter: &'a AtomicUsize) -> Self {
++        counter.fetch_add(1, Ordering::AcqRel);
++        Self { counter }
++    }
++}
++
++impl Drop for AtomicWaiter<'_> {
++    #[inline]
++    fn drop(&mut self) {
++        self.counter.fetch_sub(1, Ordering::AcqRel);
++    }
++}
++
++/// Bounded array-backed MPMC ring buffer.
++///
++/// Successful push/pop operations are handled by `ArrayQueue` without a
++/// mutex. Tokio notifications are touched only when a producer/consumer must
++/// sleep because the ring is full/empty.
++pub struct AsyncRing<T> {
++    queue: ArrayQueue<T>,
++    high_water: AtomicUsize,
++    waiting_producers: AtomicUsize,
++    waiting_consumers: AtomicUsize,
++    not_empty: Notify,
++    not_full: Notify,
++}
++
++impl<T> std::fmt::Debug for AsyncRing<T> {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("AsyncRing")
++            .field("capacity", &self.capacity())
++            .field("len", &self.len())
++            .field("high_water_mark", &self.high_water_mark())
++            .field(
++                "waiting_producers",
++                &self.waiting_producers.load(Ordering::Relaxed),
++            )
++            .field(
++                "waiting_consumers",
++                &self.waiting_consumers.load(Ordering::Relaxed),
++            )
++            .finish_non_exhaustive()
++    }
++}
++
++impl<T> AsyncRing<T> {
++    pub fn new(capacity: usize) -> Self {
++        assert!(capacity > 0, "ring capacity must be positive");
++        Self {
++            queue: ArrayQueue::new(capacity),
++            high_water: AtomicUsize::new(0),
++            waiting_producers: AtomicUsize::new(0),
++            waiting_consumers: AtomicUsize::new(0),
++            not_empty: Notify::new(),
++            not_full: Notify::new(),
++        }
++    }
++
++    #[inline]
++    pub fn capacity(&self) -> usize {
++        self.queue.capacity()
++    }
++
++    #[inline]
++    pub fn len(&self) -> usize {
++        self.queue.len()
++    }
++
++    #[inline]
++    pub fn is_empty(&self) -> bool {
++        self.queue.is_empty()
++    }
++
++    /// Best-effort peak observed depth. It is maintained with relaxed atomics
++    /// and is intended for capacity tuning, not correctness decisions.
++    #[inline]
++    pub fn high_water_mark(&self) -> usize {
++        self.high_water.load(Ordering::Relaxed)
++    }
++
++    #[inline]
++    fn observe_high_water(&self) {
++        let depth = self.queue.len();
++        let mut current = self.high_water.load(Ordering::Relaxed);
++        while depth > current {
++            match self.high_water.compare_exchange_weak(
++                current,
++                depth,
++                Ordering::Relaxed,
++                Ordering::Relaxed,
++            ) {
++                Ok(_) => break,
++                Err(next) => current = next,
++            }
++        }
++    }
++
++    #[inline]
++    fn notify_consumer_if_waiting(&self) {
++        if self.waiting_consumers.load(Ordering::Acquire) != 0 {
++            self.not_empty.notify_one();
++        }
++    }
++
++    #[inline]
++    fn notify_producer_if_waiting(&self) {
++        if self.waiting_producers.load(Ordering::Acquire) != 0 {
++            self.not_full.notify_one();
++        }
++    }
++
++    #[inline]
++    pub fn try_push(&self, value: T) -> Result<(), T> {
++        self.queue.push(value).map(|()| {
++            self.observe_high_water();
++            self.notify_consumer_if_waiting();
++        })
++    }
++
++    /// Pushes with bounded backpressure. The boolean reports whether the
++    /// producer had to wait for capacity at least once.
++    pub async fn push_or_shutdown(
++        &self,
++        mut value: T,
++        shutdown: &mut watch::Receiver<bool>,
++    ) -> Result<bool, T> {
++        let mut backpressured = false;
++
++        loop {
++            if *shutdown.borrow() {
++                return Err(value);
++            }
++
++            match self.queue.push(value) {
++                Ok(()) => {
++                    self.observe_high_water();
++                    self.notify_consumer_if_waiting();
++                    return Ok(backpressured);
++                }
++                Err(returned) => {
++                    value = returned;
++                    backpressured = true;
++                }
++            }
++
++            // Register the waiter before rechecking capacity. If a consumer
++            // popped between the failed push and registration, the second push
++            // observes that slot directly. The RAII counter is cancellation-safe.
++            let space_available = self.not_full.notified();
++            tokio::pin!(space_available);
++            let waiting = AtomicWaiter::new(&self.waiting_producers);
++            space_available.as_mut().enable();
++
++            match self.queue.push(value) {
++                Ok(()) => {
++                    drop(waiting);
++                    self.observe_high_water();
++                    self.notify_consumer_if_waiting();
++                    return Ok(backpressured);
++                }
++                Err(returned) => value = returned,
++            }
++
++            tokio::select! {
++                biased;
++                changed = shutdown.changed() => {
++                    if changed.is_err() || *shutdown.borrow() {
++                        return Err(value);
++                    }
++                }
++                _ = space_available.as_mut() => {}
++            }
++            drop(waiting);
++        }
++    }
++
++    #[inline]
++    pub fn try_pop(&self) -> Option<T> {
++        let value = self.queue.pop();
++        if value.is_some() {
++            self.notify_producer_if_waiting();
++        }
++        value
++    }
++
++    pub async fn pop(&self) -> T {
++        loop {
++            if let Some(value) = self.try_pop() {
++                return value;
++            }
++
++            // Register before rechecking the ring. A producer racing this
++            // transition either sees the waiter and notifies it, or the second
++            // pop observes the newly published item.
++            let item_available = self.not_empty.notified();
++            tokio::pin!(item_available);
++            let waiting = AtomicWaiter::new(&self.waiting_consumers);
++            item_available.as_mut().enable();
++
++            if let Some(value) = self.try_pop() {
++                drop(waiting);
++                return value;
++            }
++            item_available.as_mut().await;
++            drop(waiting);
++        }
++    }
++}
++
++/// Atomic latest-value publication for desired quotes. Intermediate versions
++/// are intentionally coalesced; execution always consumes the newest complete
++/// seqlock snapshot.
++pub struct SharedQuotes {
++    value: AtomicDesiredQuotes,
++    waiting_consumers: AtomicUsize,
++    changed: Notify,
++}
++
++impl Default for SharedQuotes {
++    fn default() -> Self {
++        Self {
++            value: AtomicDesiredQuotes::default(),
++            waiting_consumers: AtomicUsize::new(0),
++            changed: Notify::new(),
++        }
++    }
++}
++
++impl std::fmt::Debug for SharedQuotes {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("SharedQuotes")
++            .field("value", &self.load())
++            .field(
++                "waiting_consumers",
++                &self.waiting_consumers.load(Ordering::Relaxed),
++            )
++            .finish_non_exhaustive()
++    }
++}
++
++impl SharedQuotes {
++    #[inline]
++    pub fn publish(&self, quotes: DesiredQuotes) {
++        self.value.store(quotes);
++        if self.waiting_consumers.load(Ordering::Acquire) != 0 {
++            self.changed.notify_one();
++        }
++    }
++
++    #[inline]
++    pub fn load(&self) -> DesiredQuotes {
++        self.value.load()
++    }
++
++    pub async fn changed_after(&self, observed_quote_seq: u64) -> DesiredQuotes {
++        loop {
++            let current = self.load();
++            if current.quote_seq != observed_quote_seq {
++                return current;
++            }
++
++            let changed = self.changed.notified();
++            tokio::pin!(changed);
++            let waiting = AtomicWaiter::new(&self.waiting_consumers);
++            changed.as_mut().enable();
++
++            let current = self.load();
++            if current.quote_seq != observed_quote_seq {
++                drop(waiting);
++                return current;
++            }
++            changed.as_mut().await;
++            drop(waiting);
++        }
++    }
++}
++
++/// Priority ring between execution/account handling and the dedicated hot
++/// thread. Events are fixed-size and allocation-free after parsing.
++#[derive(Debug)]
++pub struct HotEventRing {
++    ring: AsyncRing<HotEvent>,
++    signal: Arc<HotPathSignal>,
++}
++
++impl HotEventRing {
++    pub fn new(capacity: usize, signal: Arc<HotPathSignal>) -> Self {
++        Self {
++            ring: AsyncRing::new(capacity),
++            signal,
++        }
++    }
++
++    pub async fn push_or_shutdown(
++        &self,
++        event: HotEvent,
++        shutdown: &mut watch::Receiver<bool>,
++    ) -> Result<bool, HotEvent> {
++        let result = self.ring.push_or_shutdown(event, shutdown).await;
++        if result.is_ok() {
++            self.signal.notify(HOT_SIGNAL_EVENT);
++        }
++        result
++    }
++
++    #[inline]
++    pub fn try_pop(&self) -> Option<HotEvent> {
++        self.ring.try_pop()
++    }
++
++    #[inline]
++    pub fn len(&self) -> usize {
++        self.ring.len()
++    }
++
++    #[inline]
++    pub fn capacity(&self) -> usize {
++        self.ring.capacity()
++    }
++
++    #[inline]
++    pub fn high_water_mark(&self) -> usize {
++        self.ring.high_water_mark()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::types::{DesiredOrder, QuoteReason, Side};
++
++    #[tokio::test]
++    async fn async_ring_is_fifo_and_bounded() {
++        let ring = AsyncRing::new(2);
++        assert!(ring.try_push(10).is_ok());
++        assert!(ring.try_push(20).is_ok());
++        assert_eq!(ring.try_push(30), Err(30));
++        assert_eq!(ring.high_water_mark(), 2);
++        assert_eq!(ring.pop().await, 10);
++        assert_eq!(ring.pop().await, 20);
++    }
++
++    #[tokio::test]
++    async fn full_ring_wakes_multiple_blocked_producers() {
++        let ring = Arc::new(AsyncRing::new(1));
++        ring.try_push(0_u64).expect("initial slot must be free");
++        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
++
++        let first_ring = ring.clone();
++        let mut first_shutdown = shutdown_rx.clone();
++        let first = tokio::spawn(async move {
++            first_ring
++                .push_or_shutdown(1, &mut first_shutdown)
++                .await
++        });
++        let second_ring = ring.clone();
++        let mut second_shutdown = shutdown_rx;
++        let second = tokio::spawn(async move {
++            second_ring
++                .push_or_shutdown(2, &mut second_shutdown)
++                .await
++        });
++
++        assert_eq!(ring.pop().await, 0);
++        let mut produced = tokio::time::timeout(Duration::from_secs(1), async {
++            vec![ring.pop().await, ring.pop().await]
++        })
++        .await
++        .expect("both blocked producers must be woken");
++        produced.sort_unstable();
++        assert_eq!(produced, vec![1, 2]);
++        assert!(first.await.expect("first producer task panicked").is_ok());
++        assert!(second.await.expect("second producer task panicked").is_ok());
++    }
++
++    #[tokio::test]
++    async fn shared_quotes_coalesces_to_latest_version() {
++        let shared = SharedQuotes::default();
++        shared.publish(DesiredQuotes {
++            bid: Some(DesiredOrder {
++                side: Side::Buy,
++                px: 100,
++                qty_lots: 2,
++                reduce_only: false,
++            }),
++            ask: None,
++            quote_seq: 1,
++            model_revision: 7,
++            generated_ns: 11,
++            reason: QuoteReason::Market,
++        });
++        shared.publish(DesiredQuotes {
++            quote_seq: 2,
++            ..shared.load()
++        });
++        assert_eq!(shared.changed_after(0).await.quote_seq, 2);
++    }
++
++    #[test]
++    fn hot_signal_coalesces_bits() {
++        let signal = HotPathSignal::default();
++        assert!(signal.notify(HOT_SIGNAL_MARKET));
++        assert!(!signal.notify(HOT_SIGNAL_MARKET));
++        assert!(signal.notify(HOT_SIGNAL_MODEL));
++        assert_eq!(
++            signal.take_pending(),
++            HOT_SIGNAL_MARKET | HOT_SIGNAL_MODEL
++        );
++    }
++}
+diff --git a/rust_live/src/main.rs b/rust_live/src/main.rs
+index bfe3ec4..425e4d4 100644
+--- a/rust_live/src/main.rs
++++ b/rust_live/src/main.rs
+@@ -1,7 +1,6 @@
+ use anyhow::{Context, Result};
+ use arc_swap::ArcSwap;
+ use clap::Parser;
+-use crossbeam_channel::{bounded, unbounded};
+ use mm_live::cold_path::{
+     log_metrics, persist_hot_state, restore_inventory, watch_strategy_snapshot,
+ };
+@@ -15,15 +14,19 @@ use mm_live::hyperliquid::private::{
+ };
+ use mm_live::hyperliquid::rpc::WsRpcClient;
+ use mm_live::hyperliquid::signing::ActionSigner;
++use mm_live::lockfree::{
++    AsyncRing, HotEventRing, HotPathSignal, SharedQuotes, HOT_SIGNAL_SHUTDOWN,
++};
+ use mm_live::metrics::Metrics;
+ use mm_live::model::StrategySnapshot;
+ use mm_live::types::{
+-    AtomicBbo, BackendEvent, DesiredQuotes, HotStateSnapshot, MarketProbe, ProcessClock,
++    unix_ms, AtomicBbo, AtomicHotStateSnapshot, BackendEvent, HotStateSnapshot, MarketProbe,
++    ProcessClock,
+ };
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::time::Duration;
+-use tokio::sync::{mpsc, watch};
++use tokio::sync::watch;
+ use tracing::{info, warn};
+ use tracing_subscriber::EnvFilter;
+ 
+@@ -62,15 +65,20 @@ async fn main() -> Result<()> {
+     let clock = Arc::new(ProcessClock::default());
+     let latest_bbo = Arc::new(AtomicBbo::default());
+     let strategy = Arc::new(ArcSwap::from_pointee(snapshot));
++    let desired = Arc::new(SharedQuotes::default());
++    let hot_state = Arc::new(AtomicHotStateSnapshot::default());
++    let hot_signal = Arc::new(HotPathSignal::default());
++    let hot_events = Arc::new(HotEventRing::new(
++        config.runtime.hot_event_ring_capacity,
++        hot_signal.clone(),
++    ));
++    let probe_ring = matches!(config.runtime.mode, RunMode::DryRun).then(|| {
++        Arc::new(AsyncRing::<MarketProbe>::new(
++            config.runtime.market_probe_ring_capacity,
++        ))
++    });
+ 
+     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+-    let (desired_tx, desired_rx) = watch::channel(DesiredQuotes::default());
+-    let (state_tx, state_rx) = watch::channel(HotStateSnapshot::default());
+-    let (market_wake_tx, market_wake_rx) = bounded::<()>(1);
+-    let (model_wake_tx, model_wake_rx) = bounded::<()>(1);
+-    let (hot_shutdown_tx, hot_shutdown_rx) = bounded::<()>(1);
+-    let (hot_event_tx, hot_event_rx) = unbounded::<BackendEvent>();
+-    let (probe_tx, probe_rx) = mpsc::channel::<MarketProbe>(8_192);
+ 
+     let initial_inventory = match config.runtime.mode {
+         RunMode::DryRun => restore_inventory(
+@@ -79,20 +87,28 @@ async fn main() -> Result<()> {
+         ),
+         RunMode::Live => config.runtime.initial_inventory_lots,
+     };
++    hot_state.store(HotStateSnapshot {
++        inventory_lots: initial_inventory,
++        updated_unix_ms: unix_ms(),
++        ..HotStateSnapshot::default()
++    });
+ 
+     let hot_thread = spawn_hot_path(HotPathInputs {
+         latest_bbo: latest_bbo.clone(),
+-        market_wake_rx,
+-        private_event_rx: hot_event_rx,
+-        model_wake_rx,
+-        shutdown_rx: hot_shutdown_rx,
+-        desired_tx,
+-        state_tx,
++        events: hot_events.clone(),
++        signal: hot_signal.clone(),
++        desired: desired.clone(),
++        state: hot_state.clone(),
+         snapshot: strategy.clone(),
+         market: config.market.clone(),
+         clock: clock.clone(),
+         metrics: metrics.clone(),
+         initial_inventory_lots: initial_inventory,
++        // Both backends explicitly publish Connected into the priority ring.
++        initial_backend_ready: false,
++        // Live mode requires both private connectivity and an authoritative
++        // position snapshot before any order-bearing quote can be published.
++        require_position_sync: matches!(config.runtime.mode, RunMode::Live),
+         hot_path_cpu: config.runtime.hot_path_cpu,
+     })
+     .context("cannot start dedicated hot-path thread")?;
+@@ -102,14 +118,14 @@ async fn main() -> Result<()> {
+         config.runtime.snapshot_path.clone(),
+         config.telemetry.snapshot_poll_ms,
+         strategy,
+-        model_wake_tx,
++        hot_signal.clone(),
+         metrics.clone(),
+         shutdown_rx.clone(),
+     )));
+     tasks.push(tokio::spawn(persist_hot_state(
+         config.runtime.state_path.clone(),
+         config.telemetry.state_flush_ms,
+-        state_rx,
++        hot_state,
+         shutdown_rx.clone(),
+     )));
+     tasks.push(tokio::spawn(log_metrics(
+@@ -122,8 +138,8 @@ async fn main() -> Result<()> {
+         network: config.runtime.network,
+         config: config.market.clone(),
+         latest_bbo: latest_bbo.clone(),
+-        market_wake: market_wake_tx,
+-        probe_tx,
++        hot_signal: hot_signal.clone(),
++        probe_ring: probe_ring.clone(),
+         clock,
+         metrics: metrics.clone(),
+         shutdown: shutdown_rx.clone(),
+@@ -135,9 +151,9 @@ async fn main() -> Result<()> {
+                 config: config.dry_run.clone(),
+                 market: config.market.clone(),
+                 latest_bbo,
+-                desired_rx,
+-                probe_rx,
+-                hot_event_tx,
++                desired,
++                probe_ring: probe_ring.expect("dry-run probe ring must exist"),
++                hot_events,
+                 metrics: metrics.clone(),
+                 shutdown: shutdown_rx.clone(),
+             })));
+@@ -154,6 +170,7 @@ async fn main() -> Result<()> {
+                 .runtime
+                 .wallet_address
+                 .clone()
++                .filter(|address| !address.trim().is_empty())
+                 .unwrap_or_else(|| signer.signer_address())
+                 .to_lowercase();
+             let ws_url = config.market.effective_ws_url(config.runtime.network);
+@@ -164,14 +181,17 @@ async fn main() -> Result<()> {
+                 metrics.clone(),
+                 shutdown_rx.clone(),
+             );
+-            let (private_tx, private_rx) = mpsc::channel::<BackendEvent>(4_096);
++            let private_events = Arc::new(AsyncRing::<BackendEvent>::new(
++                config.runtime.private_event_ring_capacity,
++            ));
+             tasks.push(tokio::spawn(run_private_stream(PrivateStreamArgs {
+                 network: config.runtime.network,
+                 ws_url: Some(ws_url),
+                 user: user.clone(),
+                 coin: config.runtime.coin.clone(),
+                 market: config.market.clone(),
+-                event_tx: private_tx.clone(),
++                event_ring: private_events.clone(),
++                metrics: metrics.clone(),
+                 shutdown: shutdown_rx.clone(),
+             })));
+             tasks.push(tokio::spawn(run_position_sync(
+@@ -180,7 +200,8 @@ async fn main() -> Result<()> {
+                 config.runtime.coin.clone(),
+                 config.market.clone(),
+                 config.execution.private_position_sync_ms,
+-                private_tx,
++                private_events.clone(),
++                metrics.clone(),
+                 shutdown_rx.clone(),
+             )));
+             let manager = LiveOrderManager::new(
+@@ -194,10 +215,9 @@ async fn main() -> Result<()> {
+             );
+             tasks.push(tokio::spawn(run_live(LiveLoopArgs {
+                 manager,
+-                desired_rx,
+-                probe_rx,
+-                private_rx,
+-                hot_event_tx,
++                desired,
++                private_events,
++                hot_events,
+                 metrics: metrics.clone(),
+                 shutdown: shutdown_rx.clone(),
+             })));
+@@ -209,11 +229,14 @@ async fn main() -> Result<()> {
+         network = ?config.runtime.network,
+         coin = %config.runtime.coin,
+         hot_path_cpu = ?config.runtime.hot_path_cpu,
++        market_probe_ring_capacity = config.runtime.market_probe_ring_capacity,
++        private_event_ring_capacity = config.runtime.private_event_ring_capacity,
++        hot_event_ring_capacity = config.runtime.hot_event_ring_capacity,
+         "mm-live started"
+     );
+     wait_for_shutdown_signal().await?;
+     info!("shutdown requested");
+-    let _ = hot_shutdown_tx.try_send(());
++    hot_signal.notify(HOT_SIGNAL_SHUTDOWN);
+     let _ = shutdown_tx.send(true);
+ 
+     for task in tasks {
+diff --git a/rust_live/src/metrics.rs b/rust_live/src/metrics.rs
+index c8508db..bdef95b 100644
+--- a/rust_live/src/metrics.rs
++++ b/rust_live/src/metrics.rs
+@@ -6,9 +6,11 @@ pub struct Metrics {
+     pub market_messages: AtomicU64,
+     pub bbo_updates: AtomicU64,
+     pub invalid_bbo: AtomicU64,
+-    pub dropped_market_wakes: AtomicU64,
++    pub coalesced_market_signals: AtomicU64,
++    pub dropped_market_probes: AtomicU64,
+     pub trade_messages: AtomicU64,
+     pub dropped_trades: AtomicU64,
++    pub ring_backpressure_events: AtomicU64,
+     pub hot_iterations: AtomicU64,
+     pub quote_updates: AtomicU64,
+     pub stale_market_events: AtomicU64,
+@@ -28,9 +30,11 @@ pub struct MetricsSnapshot {
+     pub market_messages: u64,
+     pub bbo_updates: u64,
+     pub invalid_bbo: u64,
+-    pub dropped_market_wakes: u64,
++    pub coalesced_market_signals: u64,
++    pub dropped_market_probes: u64,
+     pub trade_messages: u64,
+     pub dropped_trades: u64,
++    pub ring_backpressure_events: u64,
+     pub hot_iterations: u64,
+     pub quote_updates: u64,
+     pub stale_market_events: u64,
+@@ -68,9 +72,13 @@ impl Metrics {
+             market_messages: self.market_messages.load(Ordering::Relaxed),
+             bbo_updates: self.bbo_updates.load(Ordering::Relaxed),
+             invalid_bbo: self.invalid_bbo.load(Ordering::Relaxed),
+-            dropped_market_wakes: self.dropped_market_wakes.load(Ordering::Relaxed),
++            coalesced_market_signals: self.coalesced_market_signals.load(Ordering::Relaxed),
++            dropped_market_probes: self.dropped_market_probes.load(Ordering::Relaxed),
+             trade_messages: self.trade_messages.load(Ordering::Relaxed),
+             dropped_trades: self.dropped_trades.load(Ordering::Relaxed),
++            ring_backpressure_events: self
++                .ring_backpressure_events
++                .load(Ordering::Relaxed),
+             hot_iterations: self.hot_iterations.load(Ordering::Relaxed),
+             quote_updates: self.quote_updates.load(Ordering::Relaxed),
+             stale_market_events: self.stale_market_events.load(Ordering::Relaxed),
+diff --git a/rust_live/src/types.rs b/rust_live/src/types.rs
+index 35d1028..f01d93e 100644
+--- a/rust_live/src/types.rs
++++ b/rust_live/src/types.rs
+@@ -1,8 +1,9 @@
+ use serde::{Deserialize, Serialize};
+-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
+ use std::time::Instant;
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[repr(u8)]
+ #[serde(rename_all = "snake_case")]
+ pub enum Side {
+     Buy,
+@@ -17,6 +18,14 @@ impl Side {
+             Self::Sell => -1,
+         }
+     }
++
++    #[inline]
++    pub const fn from_u8(value: u8) -> Self {
++        match value {
++            1 => Self::Sell,
++            _ => Self::Buy,
++        }
++    }
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -51,6 +60,7 @@ impl Bbo {
+ /// may overwrite market data under pressure; the hot path always reads a
+ /// coherent latest snapshot without taking a mutex.
+ #[derive(Debug, Default)]
++#[repr(align(64))]
+ pub struct AtomicBbo {
+     seq: AtomicU64,
+     valid: AtomicBool,
+@@ -65,7 +75,7 @@ pub struct AtomicBbo {
+ impl AtomicBbo {
+     #[inline]
+     pub fn store(&self, bbo: Bbo) {
+-        self.seq.fetch_add(1, Ordering::Release); // odd: write in progress
++        self.seq.fetch_add(1, Ordering::AcqRel); // odd: write in progress
+         self.bid_px.store(bbo.bid_px, Ordering::Relaxed);
+         self.bid_sz.store(bbo.bid_sz, Ordering::Relaxed);
+         self.ask_px.store(bbo.ask_px, Ordering::Relaxed);
+@@ -162,6 +172,7 @@ impl Default for DesiredQuotes {
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[repr(u8)]
+ #[serde(rename_all = "snake_case")]
+ pub enum QuoteReason {
+     Startup,
+@@ -175,6 +186,23 @@ pub enum QuoteReason {
+     Shutdown,
+ }
+ 
++impl QuoteReason {
++    #[inline]
++    pub const fn from_u8(value: u8) -> Self {
++        match value {
++            1 => Self::Market,
++            2 => Self::Fill,
++            3 => Self::PositionSync,
++            4 => Self::ModelReload,
++            5 => Self::StaleMarket,
++            6 => Self::RiskLimit,
++            7 => Self::BackendDown,
++            8 => Self::Shutdown,
++            _ => Self::Startup,
++        }
++    }
++}
++
+ #[derive(Debug, Clone, Copy)]
+ pub struct Trade {
+     pub taker_side: TakerSide,
+@@ -227,7 +255,32 @@ pub enum BackendEvent {
+     OrderUpdate(OrderUpdate),
+     Connected,
+     Disconnected { reason: String },
+-    ActionRejected { reason: String },
++}
++
++/// Fixed-size subset of backend events consumed by the hot path. Strings and
++/// order-management details remain in the cold execution path.
++#[derive(Debug, Clone, Copy)]
++pub enum HotEvent {
++    Fill(Fill),
++    PositionSnapshot { inventory_lots: i64 },
++    Connected,
++    Disconnected,
++    ActionRejected,
++}
++
++impl BackendEvent {
++    #[inline]
++    pub fn to_hot_event(&self) -> Option<HotEvent> {
++        match self {
++            Self::Fill(fill) => Some(HotEvent::Fill(*fill)),
++            Self::PositionSnapshot { inventory_lots } => Some(HotEvent::PositionSnapshot {
++                inventory_lots: *inventory_lots,
++            }),
++            Self::Connected => Some(HotEvent::Connected),
++            Self::Disconnected { .. } => Some(HotEvent::Disconnected),
++            Self::OrderUpdate(_) => None,
++        }
++    }
+ }
+ 
+ #[derive(Debug, Clone, Copy)]
+@@ -259,6 +312,224 @@ impl Default for HotStateSnapshot {
+     }
+ }
+ 
++
++#[derive(Debug)]
++#[repr(align(64))]
++pub struct AtomicDesiredQuotes {
++    seq: AtomicU64,
++    bid_valid: AtomicBool,
++    bid_side: AtomicU8,
++    bid_px: AtomicI64,
++    bid_qty_lots: AtomicI64,
++    bid_reduce_only: AtomicBool,
++    ask_valid: AtomicBool,
++    ask_side: AtomicU8,
++    ask_px: AtomicI64,
++    ask_qty_lots: AtomicI64,
++    ask_reduce_only: AtomicBool,
++    quote_seq: AtomicU64,
++    model_revision: AtomicU64,
++    generated_ns: AtomicU64,
++    reason: AtomicU8,
++}
++
++impl Default for AtomicDesiredQuotes {
++    fn default() -> Self {
++        let value = Self {
++            seq: AtomicU64::new(0),
++            bid_valid: AtomicBool::new(false),
++            bid_side: AtomicU8::new(Side::Buy as u8),
++            bid_px: AtomicI64::new(0),
++            bid_qty_lots: AtomicI64::new(0),
++            bid_reduce_only: AtomicBool::new(false),
++            ask_valid: AtomicBool::new(false),
++            ask_side: AtomicU8::new(Side::Sell as u8),
++            ask_px: AtomicI64::new(0),
++            ask_qty_lots: AtomicI64::new(0),
++            ask_reduce_only: AtomicBool::new(false),
++            quote_seq: AtomicU64::new(0),
++            model_revision: AtomicU64::new(0),
++            generated_ns: AtomicU64::new(0),
++            reason: AtomicU8::new(QuoteReason::Startup as u8),
++        };
++        value.store(DesiredQuotes::default());
++        value
++    }
++}
++
++impl AtomicDesiredQuotes {
++    #[inline]
++    pub fn store(&self, quotes: DesiredQuotes) {
++        self.seq.fetch_add(1, Ordering::AcqRel);
++        store_desired_order(
++            &self.bid_valid,
++            &self.bid_side,
++            &self.bid_px,
++            &self.bid_qty_lots,
++            &self.bid_reduce_only,
++            quotes.bid,
++        );
++        store_desired_order(
++            &self.ask_valid,
++            &self.ask_side,
++            &self.ask_px,
++            &self.ask_qty_lots,
++            &self.ask_reduce_only,
++            quotes.ask,
++        );
++        self.quote_seq.store(quotes.quote_seq, Ordering::Relaxed);
++        self.model_revision
++            .store(quotes.model_revision, Ordering::Relaxed);
++        self.generated_ns
++            .store(quotes.generated_ns, Ordering::Relaxed);
++        self.reason.store(quotes.reason as u8, Ordering::Relaxed);
++        self.seq.fetch_add(1, Ordering::Release);
++    }
++
++    #[inline]
++    pub fn load(&self) -> DesiredQuotes {
++        loop {
++            let before = self.seq.load(Ordering::Acquire);
++            if before & 1 == 1 {
++                std::hint::spin_loop();
++                continue;
++            }
++
++            let value = DesiredQuotes {
++                bid: load_desired_order(
++                    &self.bid_valid,
++                    &self.bid_side,
++                    &self.bid_px,
++                    &self.bid_qty_lots,
++                    &self.bid_reduce_only,
++                ),
++                ask: load_desired_order(
++                    &self.ask_valid,
++                    &self.ask_side,
++                    &self.ask_px,
++                    &self.ask_qty_lots,
++                    &self.ask_reduce_only,
++                ),
++                quote_seq: self.quote_seq.load(Ordering::Relaxed),
++                model_revision: self.model_revision.load(Ordering::Relaxed),
++                generated_ns: self.generated_ns.load(Ordering::Relaxed),
++                reason: QuoteReason::from_u8(self.reason.load(Ordering::Relaxed)),
++            };
++
++            let after = self.seq.load(Ordering::Acquire);
++            if before == after && before & 1 == 0 {
++                return value;
++            }
++            std::hint::spin_loop();
++        }
++    }
++}
++
++#[inline]
++fn store_desired_order(
++    valid: &AtomicBool,
++    side: &AtomicU8,
++    px: &AtomicI64,
++    qty_lots: &AtomicI64,
++    reduce_only: &AtomicBool,
++    order: Option<DesiredOrder>,
++) {
++    if let Some(order) = order {
++        side.store(order.side as u8, Ordering::Relaxed);
++        px.store(order.px, Ordering::Relaxed);
++        qty_lots.store(order.qty_lots, Ordering::Relaxed);
++        reduce_only.store(order.reduce_only, Ordering::Relaxed);
++        valid.store(true, Ordering::Relaxed);
++    } else {
++        valid.store(false, Ordering::Relaxed);
++    }
++}
++
++#[inline]
++fn load_desired_order(
++    valid: &AtomicBool,
++    side: &AtomicU8,
++    px: &AtomicI64,
++    qty_lots: &AtomicI64,
++    reduce_only: &AtomicBool,
++) -> Option<DesiredOrder> {
++    valid.load(Ordering::Relaxed).then(|| DesiredOrder {
++        side: Side::from_u8(side.load(Ordering::Relaxed)),
++        px: px.load(Ordering::Relaxed),
++        qty_lots: qty_lots.load(Ordering::Relaxed),
++        reduce_only: reduce_only.load(Ordering::Relaxed),
++    })
++}
++
++#[derive(Debug)]
++#[repr(align(64))]
++pub struct AtomicHotStateSnapshot {
++    seq: AtomicU64,
++    inventory_lots: AtomicI64,
++    last_bid_px: AtomicI64,
++    last_ask_px: AtomicI64,
++    quote_seq: AtomicU64,
++    model_revision: AtomicU64,
++    updated_unix_ms: AtomicU64,
++}
++
++impl Default for AtomicHotStateSnapshot {
++    fn default() -> Self {
++        Self {
++            seq: AtomicU64::new(0),
++            inventory_lots: AtomicI64::new(0),
++            last_bid_px: AtomicI64::new(0),
++            last_ask_px: AtomicI64::new(0),
++            quote_seq: AtomicU64::new(0),
++            model_revision: AtomicU64::new(0),
++            updated_unix_ms: AtomicU64::new(0),
++        }
++    }
++}
++
++impl AtomicHotStateSnapshot {
++    #[inline]
++    pub fn store(&self, state: HotStateSnapshot) {
++        self.seq.fetch_add(1, Ordering::AcqRel);
++        self.inventory_lots
++            .store(state.inventory_lots, Ordering::Relaxed);
++        self.last_bid_px
++            .store(state.last_bid_px, Ordering::Relaxed);
++        self.last_ask_px
++            .store(state.last_ask_px, Ordering::Relaxed);
++        self.quote_seq.store(state.quote_seq, Ordering::Relaxed);
++        self.model_revision
++            .store(state.model_revision, Ordering::Relaxed);
++        self.updated_unix_ms
++            .store(state.updated_unix_ms, Ordering::Relaxed);
++        self.seq.fetch_add(1, Ordering::Release);
++    }
++
++    #[inline]
++    pub fn load(&self) -> HotStateSnapshot {
++        loop {
++            let before = self.seq.load(Ordering::Acquire);
++            if before & 1 == 1 {
++                std::hint::spin_loop();
++                continue;
++            }
++            let value = HotStateSnapshot {
++                inventory_lots: self.inventory_lots.load(Ordering::Relaxed),
++                last_bid_px: self.last_bid_px.load(Ordering::Relaxed),
++                last_ask_px: self.last_ask_px.load(Ordering::Relaxed),
++                quote_seq: self.quote_seq.load(Ordering::Relaxed),
++                model_revision: self.model_revision.load(Ordering::Relaxed),
++                updated_unix_ms: self.updated_unix_ms.load(Ordering::Relaxed),
++            };
++            let after = self.seq.load(Ordering::Acquire);
++            if before == after && before & 1 == 0 {
++                return value;
++            }
++            std::hint::spin_loop();
++        }
++    }
++}
++
+ pub fn unix_ms() -> u64 {
+     use std::time::{SystemTime, UNIX_EPOCH};
+     SystemTime::now()
+@@ -267,3 +538,50 @@ pub fn unix_ms() -> u64 {
+         .as_millis()
+         .min(u64::MAX as u128) as u64
+ }
++
++
++#[cfg(test)]
++mod atomic_tests {
++    use super::*;
++
++    #[test]
++    fn desired_quotes_atomic_round_trip() {
++        let shared = AtomicDesiredQuotes::default();
++        let expected = DesiredQuotes {
++            bid: Some(DesiredOrder {
++                side: Side::Buy,
++                px: 123,
++                qty_lots: 4,
++                reduce_only: false,
++            }),
++            ask: Some(DesiredOrder {
++                side: Side::Sell,
++                px: 127,
++                qty_lots: 5,
++                reduce_only: true,
++            }),
++            quote_seq: 9,
++            model_revision: 3,
++            generated_ns: 77,
++            reason: QuoteReason::Fill,
++        };
++        shared.store(expected);
++        assert_eq!(shared.load(), expected);
++    }
++
++    #[test]
++    fn hot_state_atomic_round_trip() {
++        let shared = AtomicHotStateSnapshot::default();
++        let expected = HotStateSnapshot {
++            inventory_lots: -12,
++            last_bid_px: 99,
++            last_ask_px: 101,
++            quote_seq: 8,
++            model_revision: 2,
++            updated_unix_ms: 1234,
++        };
++        shared.store(expected);
++        assert_eq!(shared.load().inventory_lots, expected.inventory_lots);
++        assert_eq!(shared.load().quote_seq, expected.quote_seq);
++    }
++}
+diff --git a/scripts/validate_rust_live.sh b/scripts/validate_rust_live.sh
+index a749194..ed89845 100755
+--- a/scripts/validate_rust_live.sh
++++ b/scripts/validate_rust_live.sh
+@@ -21,10 +21,9 @@ run_check() {
+ run_check rustfmt bash -lc 'cd rust_live && cargo fmt --all -- --check'
+ run_check rust_tests bash -lc 'cd rust_live && cargo test --all-targets'
+ run_check rust_release bash -lc 'cd rust_live && cargo build --release --bin mm-live --bin hot-path-bench'
+-run_check python_compile bash -lc 'python3 -m py_compile scripts/export_rust_live_snapshot.py scripts/fetch_hyperliquid_meta.py scripts/export_from_strategy_source.py'
++run_check python_compile bash -lc 'python3 -m py_compile scripts/export_rust_live_snapshot.py scripts/fetch_hyperliquid_meta.py'
+ run_check exporter_help bash -lc 'python3 scripts/export_rust_live_snapshot.py --help'
+ run_check metadata_help bash -lc 'python3 scripts/fetch_hyperliquid_meta.py --help'
+-run_check source_export_help bash -lc 'python3 scripts/export_from_strategy_source.py --help'
+ 
+ # Validate the shipped configuration/model with the compiled binary when available.
+ if [[ -x "$RUST_DIR/target/release/mm-live" ]]; then
+@@ -96,7 +95,6 @@ checks = [
+     ("python_compile", "Python py_compile", True),
+     ("exporter_help", "Snapshot exporter CLI", True),
+     ("metadata_help", "Hyperliquid metadata CLI", True),
+-    ("source_export_help", "Strategy-source exporter CLI", True),
+     ("config_validate", "Example config/model validation", True),
+     ("live_guard", "Live mode negative guard test", True),
+     ("dry_network_smoke", "10 s dry-run network smoke", False),

@@ -38,8 +38,8 @@ import pandas as pd
 from param_utils import atomic_write_json
 
 
-# Validation floors shared with the strategy (Market_Making.py mirrors these as
-# class attributes min_kappa_fit_points / min_kappa_r2 / min_epsilon_events).
+# Validation floors for a calibration to be usable. The retired freqtrade
+# strategy mirrored these as class attributes; they are now enforced here only.
 MIN_KAPPA_FIT_POINTS = 6
 MIN_KAPPA_R2 = 0.30
 MIN_EPSILON_EVENTS = 50
@@ -552,12 +552,11 @@ def load_market_window(
 # Emit mode (calibration sweeps)
 # --------------------------------------------------------------------------
 # A sweep needs parameter sets computed at many different calibration settings.
-# It must NOT reach the live snapshots: user_data/strategies/{kappa,epsilon,
-# lambda}.json are read by two running freqtrade legs, and scripts/*.json are
-# what periodic_test_runner copies there. Emit mode therefore writes ONE file at
-# a caller-chosen path and performs no other write at all — it also never takes
-# param_update.lock, because the estimator scripts never take it in the first
-# place (the runner owns it), so a sweep cannot stall quoting by holding it.
+# It must NOT reach any snapshot a live consumer reads. The freqtrade legs
+# that read them are retired, so nothing does today -- but emit mode still
+# writes ONE file at a caller-chosen path and performs no other write at all,
+# because a sweep that writes outside its own output is one live consumer away
+# from changing the thing it measures. It also never takes param_update.lock.
 #
 # The emitted blocks are byte-for-byte the entries that WOULD have been written
 # to the live files, so anything that can read a snapshot can read a sweep
