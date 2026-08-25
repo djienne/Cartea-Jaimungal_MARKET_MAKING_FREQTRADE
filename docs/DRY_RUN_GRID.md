@@ -354,23 +354,30 @@ Three things this window says, none of them settled:
   worst took 2,200–3,218. This is the adverse-selection mechanism stated about
   as plainly as this instrument states anything, and it matches the replay's
   markout column rather than its P&L column.
-- **~~60 bps fails live~~ — retracted 40 minutes later.** At 2.84 h `wide60`
-  was −2.39 on 195 fills and I read that as the replay's best rung failing out
-  of sample. By 3.51 h it was **+22.24** and the ladder had resolved into a
-  clean interior optimum, which is a better result than either reading:
+- **No ordering among the wide rungs is established, and I asserted one
+  twice.** At 2.84 h I wrote that 60 bps fails live; at 3.51 h I retracted that
+  for an interior optimum at 48; at 4.2 h `wide60` leads outright. The rungs
+  tracked through the run:
 
-  | rung | 4 | 8 | 16 | 24 | 40 | **48** | 60 |
-  |---|---:|---:|---:|---:|---:|---:|---:|
-  | net @ 3.51 h | −22.91 | −13.42 | +14.49 | +19.30 | +25.77 | **+39.31** | +22.24 |
+  | rung | 1.0 h | 2.0 h | 2.84 h | 3.5 h | 4.2 h |
+  |---|---:|---:|---:|---:|---:|
+  | wide16 | +7.68 | +3.47 | +9.03 | +14.41 | +11.99 |
+  | wide24 | +10.56 | +9.56 | +10.49 | +18.31 | +22.90 |
+  | wide40 | +18.94 | +17.69 | +14.81 | +24.44 | +35.14 |
+  | wide48 | +6.53 | +11.97 | +29.25 | +37.79 | +50.50 |
+  | wide60 | −8.37 | −14.70 | −2.71 | +21.51 | **+57.33** |
 
-  Monotone increasing to 48 bps, then turning down. So width pays until it
-  costs you the fills needed to manage inventory, and the turn is near **48**,
-  not at the edge of the tested range. `wide60` still carries the grid's
-  largest drawdown (39.97) on the fewest fills (218) — the thin-sample caveat
-  from `spread_ladder_185h.md` survives even though the sign flipped.
+  `wide60` travels −14.70 → +57.33 on 218-odd fills. Any ranking of 40 / 48 /
+  60 read off a single timestamp is a ranking of which rung most recently
+  caught a move. **What is stable across every timestamp is only the coarse
+  split**: everything ≤ 8 bps loses at every check, everything ≥ 16 bps is
+  positive at every check. That is the finding; the fine ordering is not one
+  yet, and this table is here so the next reader does not extract one.
 
-  The lesson is about the measurement, not the rung: a variant with 195 fills
-  has no stable P&L, and I stated a directional conclusion from one anyway.
+  The generalisable error is stating a directional conclusion from a variant
+  whose fill count is in the low hundreds — three times, in the same run,
+  in both directions.
+
 - **The flow guard did not trip once.** `guarded` and `unguarded` are identical
   to the cent across 1,804 fills, and the guarded variant logged zero
   `toxic_flow` decisions in 17,147 quotes. An 8.28%-per-minute move never
