@@ -354,11 +354,23 @@ Three things this window says, none of them settled:
   worst took 2,200–3,218. This is the adverse-selection mechanism stated about
   as plainly as this instrument states anything, and it matches the replay's
   markout column rather than its P&L column.
-- **60 bps fails live where the replay ranked it best.** `wide60` is −2.39 on
-  195 fills with the grid's largest drawdown (39.97). Too few fills to manage
-  inventory through a move; it ends the window short 976 units. The replay's
-  spread60 had the same shape (−2,440 units) but no binding `q_max` to reveal
-  it. The live sweet spot so far is **40–48 bps**, not 60.
+- **~~60 bps fails live~~ — retracted 40 minutes later.** At 2.84 h `wide60`
+  was −2.39 on 195 fills and I read that as the replay's best rung failing out
+  of sample. By 3.51 h it was **+22.24** and the ladder had resolved into a
+  clean interior optimum, which is a better result than either reading:
+
+  | rung | 4 | 8 | 16 | 24 | 40 | **48** | 60 |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | net @ 3.51 h | −22.91 | −13.42 | +14.49 | +19.30 | +25.77 | **+39.31** | +22.24 |
+
+  Monotone increasing to 48 bps, then turning down. So width pays until it
+  costs you the fills needed to manage inventory, and the turn is near **48**,
+  not at the edge of the tested range. `wide60` still carries the grid's
+  largest drawdown (39.97) on the fewest fills (218) — the thin-sample caveat
+  from `spread_ladder_185h.md` survives even though the sign flipped.
+
+  The lesson is about the measurement, not the rung: a variant with 195 fills
+  has no stable P&L, and I stated a directional conclusion from one anyway.
 - **The flow guard did not trip once.** `guarded` and `unguarded` are identical
   to the cent across 1,804 fills, and the guarded variant logged zero
   `toxic_flow` decisions in 17,147 quotes. An 8.28%-per-minute move never
