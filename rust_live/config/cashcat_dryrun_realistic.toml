@@ -25,6 +25,13 @@ network = "mainnet"
 # genuinely quiet core.
 hot_path_cpu = 4
 market_stale_ms = 5000
+# How late a genuinely NEW trade may arrive before the socket is treated as
+# broken and reconnected. Not the quoting guard -- market_stale_ms above is what
+# decides whether the book is fresh enough to quote from. Raised from 5000 on
+# 2026-08-25: six measured trips were 5336/5607/5966/6106/6301/9852 ms, all on
+# genuinely live trades, i.e. a delivery tail above the old line rather than a
+# broken feed. Set above the observed max with room, not against it.
+max_trade_lag_ms = 15000
 ws_ping_interval_ms = 5000
 ws_idle_timeout_ms = 15000
 market_event_capacity = 65536

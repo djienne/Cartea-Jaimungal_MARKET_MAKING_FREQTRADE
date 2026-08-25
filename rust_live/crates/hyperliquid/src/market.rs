@@ -222,15 +222,23 @@ where
                                         trade.exchange_ms <= connected_at_ms;
                                     // Only a genuinely new print can show the
                                     // feed has fallen behind.
-                                    if !born_before_connection
-                                        && crate::types::unix_ms().saturating_sub(trade.exchange_ms)
-                                            > args.max_trade_lag_ms
-                                    {
+                                    let lag_ms =
+                                        crate::types::unix_ms().saturating_sub(trade.exchange_ms);
+                                    if !born_before_connection && lag_ms > args.max_trade_lag_ms {
                                         // The reconnect that follows measures
                                         // this as a gap. Not event loss.
+                                        //
+                                        // The measured lag is in the message on
+                                        // purpose: choosing this threshold needs
+                                        // the distribution of what actually
+                                        // trips it, and "more than 5000ms" tells
+                                        // you nothing about whether the right
+                                        // number is 6 s or 60 s.
                                         bail!(
-                                            "live trade arrived more than {}ms late",
-                                            args.max_trade_lag_ms
+                                            "live trade arrived {}ms late (limit {}ms, born {}ms after connect)",
+                                            lag_ms,
+                                            args.max_trade_lag_ms,
+                                            trade.exchange_ms.saturating_sub(connected_at_ms)
                                         );
                                     }
                                     push_causal(args, MarketEvent::Trade(trade))?;
