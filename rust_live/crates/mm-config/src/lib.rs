@@ -115,26 +115,26 @@ pub struct RuntimeConfig {
     /// threshold only ever sees live delivery -- whose body is fast (p50
     /// 378 ms, p99 2.4 s over 183,344 CASHCAT trades).
     ///
-    /// Raised 5_000 -> 15_000 on 2026-08-25 from measurement, not taste. At
-    /// 5_000 the live feed tripped roughly every 40 s (~80/h), and once the
-    /// lag was actually logged every trip was on a trade born 6-100 s AFTER
-    /// the connection -- genuinely live, not replay. Six measured trips:
-    /// 5336, 5607, 5966, 6106, 6301, 9852 ms. So this is a delivery tail
-    /// sitting above the old line, not a broken feed, and each trip cost a
-    /// reconnect -- the downtime fraction reached the 5% invalidation
-    /// threshold and was destroying runs.
+    /// Raised from 5 s to 15 s on 2026-08-25 from measurement, not taste. At
+    /// the old value the live feed tripped roughly every 40 s (~80/h), and
+    /// once the lag was actually logged every trip was on a trade born
+    /// 6-100 s AFTER the connection -- genuinely live, not replay. Six
+    /// measured trips: 5336, 5607, 5966, 6106, 6301, 9852 ms. So this is a
+    /// delivery tail sitting above the old line, not a broken feed, and each
+    /// trip cost a reconnect -- the downtime fraction reached the 5%
+    /// invalidation threshold and was destroying runs.
     ///
-    /// 15_000 rather than 10_000 deliberately. The first five samples spanned
-    /// 5.3-6.3 s and 10_000 looked like generous headroom; the sixth was
+    /// 15 s rather than 10 s deliberately. The first five samples spanned
+    /// 5.3-6.3 s and 10 s looked like generous headroom; the sixth was
     /// 9852 ms and would have squeaked under it. Choosing a threshold from a
     /// handful of samples is the exact error that produced the original
-    /// 5_000, so the number is set above the observed max with room, not
-    /// against it.
+    /// value, so this one sits above the observed max with room, not against
+    /// it.
     ///
     /// Safe because it is not the quoting guard: `market_stale_ms` still
-    /// decides whether the top of book is fresh enough to quote from
-    /// (`hot_path.rs:193`) and stays at 5_000. This only decides when to
-    /// reconnect a socket.
+    /// decides whether the top of book is fresh enough to quote from (see
+    /// the hot path) and stays at 5 s. This only decides when to reconnect a
+    /// socket.
     pub max_trade_lag_ms: u64,
 }
 
