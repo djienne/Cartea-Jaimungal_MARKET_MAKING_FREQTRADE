@@ -77,6 +77,13 @@ a floor of one line per ten minutes. So `trade_prints` in that line is stale by
 design; it is a snapshot from the last time a health counter moved, not a live
 count.
 
+**A `tail -f` on `run.log` locks the run directory.** Windows will not rename
+or move a directory while any file inside it has an open handle, so a monitor
+tailing `reports/grid_live/run.log` makes `mv reports/grid_live reports/archive_x`
+fail with *Permission denied* — with no hint that your own monitor is the cause.
+Stop the tail first. If the rename still fails, `rm -f` the directory's contents
+(that works even while the handle is held) and then `rmdir` it.
+
 **Replayed trades are expected, not a fault.** The venue replays history on
 every subscribe — measured 27 prints on connect against 13 live ones, then a
 further ~30 on each reconnect. `replayed_trades_ignored` rising while

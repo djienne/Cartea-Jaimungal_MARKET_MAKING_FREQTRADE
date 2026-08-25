@@ -346,12 +346,44 @@ stating precisely because it is the churn loop's *shape* without its behaviour:
 `replayed_trades_ignored` rose 156 → 241 across those reconnects, so backfill
 was arriving each time and being suppressed rather than driving the next bail.
 
-**The threshold stays at 5,000 ms.** Total feed downtime is **14.5 s across
-15.2 h — 0.026%** — and the live-trade lag body sits at p99 = 2.4 s, far clear
-of the threshold. Raising it would buy a handful of reconnects a day at the
-price of a slower response to a genuinely stale feed, and these trips are
-detecting real lateness, not backfill. Revisit only if a cluster stops
-self-limiting or downtime becomes a material fraction of a run.
+**~~The threshold stays at 5,000 ms~~ — raised to 15,000 the same day.** The
+paragraph above ended "revisit only if a cluster stops self-limiting or downtime
+becomes a material fraction of a run". Within the hour it did both: 37
+interruptions in 15.9 h, the last 21 every ~35 s, downtime pinned at the 5%
+invalidation threshold.
+
+Two things were wrong with the reasoning, not just the number.
+
+First, **nothing logged the actual lag**, so "these trips are detecting real
+lateness" was an assumption. Adding the measured lag to the bail message
+settled it in minutes: seven trips at **5336, 5607, 5639, 5966, 6106, 6301,
+9852 ms**, each on a trade born 6–130 s *after* the connection — genuinely live,
+not replay, but clustered barely above a 5 s line. A delivery tail, not a broken
+feed.
+
+Second, I had just fixed a real hole in the replay suppression (a replayed trade
+inside the 2 s skew grace could still bail) and predicted it would stop the
+churn. It did not — the first bail on the fixed binary was a trade born 6,238 ms
+after connect. The fix is correct and has a regression test; it simply was not
+what production was hitting.
+
+**15,000 ms, not 10,000.** The first five samples spanned 5.3–6.3 s and 10 s
+looked like ample headroom; the sixth was 9,852 ms, 1.5% under that line.
+Picking a threshold off a handful of samples is exactly what produced the
+original 5,000.
+
+**It is not the quoting guard.** `runtime.market_stale_ms` still decides whether
+the top of book is fresh enough to quote from and stays at 5,000; this only
+decides when to reconnect a socket. That is why raising it is safe.
+
+**No threshold absorbs this tail.** At 15 s a trip still occurred — 17,754 ms,
+34 minutes into a connection — which matches the original 183,344-trade finding
+that p99.9 was 79 s. And on the 15 s binary the dominant interruption is no
+longer trade lag at all but the idle watchdog: *no inbound frame for 45 s*.
+Both detectors are reporting the same underlying thing, a venue feed that
+intermittently stalls and then delivers a burst of stale prints. 15 s removes
+the dense cluster and leaves the rare genuine outlier; it does not cure the
+stall.
 
 ### First live ladder result (single window — read with care)
 
