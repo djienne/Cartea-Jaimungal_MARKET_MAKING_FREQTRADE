@@ -39,9 +39,23 @@ retention) and `hl-collector` (ETH, ACE, CHIP, PENGU, NIL, 3 days) live in
 tree, reachable here as the `scripts/HL_data` junction.
 
 **Their `SYMBOLS` lists must stay disjoint** or every trade lands on disk twice:
-`estimator_common._load_parquet_dir()` concatenates every `*.parquet` and
-`normalize_trades()` does not de-duplicate, so `n_trades` and λ± inflate ~2x
-(measured 2104 rows / 1055 unique trade_ids on 2026-08-16).
+`estimator_common._load_parquet_dir()` concatenates every `*.parquet` in a
+directory blindly. On 2026-08-16 two collectors shared `scripts/HL_data` and
+doubled `n_trades` and λ± (2104 rows / 1055 unique trade_ids).
+
+That specific consequence is now corrected downstream, not upstream:
+`normalize_trades()` drops repeated `trade_id`s and reports the count as
+`MarketWindow.meta["duplicate_trade_ids_dropped"]`, and `cj-data` does the same
+in Rust. So the rule still holds — it wastes disk and the non-trade streams
+rely on collapsing by `ts_ms` — but a duplicate no longer silently biases a
+calibration.
+
+Expect a *small* non-zero drop count as normal: the venue replays trades after
+each reconnect and the collector has no suppression for it, so it appends the
+same trade with a new receive timestamp. Measured 2026-08-25 over 211 h:
+**1,123 of 752,532 rows, 0.149%**, all identical in price, size, side and
+exchange timestamp. A drop count near that scale is backfill; a drop count near
+half the rows is two collectors.
 
 **`scripts/` is their Docker build context.** `HYPERLIQUID_DATA/docker-compose.yml`
 builds both with `context: ../Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/scripts`,
