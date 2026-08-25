@@ -307,12 +307,31 @@ subscribe backfill spilled past frame one, hit the lag check, and bailed —
 which forced a re-subscribe, which replayed more backfill. The ignition point
 was exercised once, and did not ignite.
 
-**What is still untested.** A reconnect triggered by an unrelated cause (a
-venue restart, a network drop) would exercise the suppression a second time,
-and none has occurred. The residual trade-lag trip rate — the reason
-`max_trade_lag_ms` was given its own key rather than a new default — is
-therefore still unmeasured, and the threshold stays at 5,000 ms until it is.
-One instrument, one venue, one window.
+**The second exercise, which arrived on its own.** At 3.2 h the venue closed
+the stream itself — `server closed market stream: CloseFrame { code: Normal }`,
+an ordinary server-initiated close, not our own bail. This is the unrelated
+reconnect the paragraph above was waiting for, and it is the stronger test,
+because it forces a re-subscribe and therefore a fresh backfill burst:
+
+```
+23:42:27  reconnects=0 feed_gaps=0 downtime=0ms    replayed_ignored=27  trades=39,639
+23:43:39  WARN public market stream interrupted; measuring the gap
+23:43:42  reconnects=1 feed_gaps=1 downtime=772ms  replayed_ignored=57  trades=39,741
+23:53:47  reconnects=1 feed_gaps=1 downtime=772ms  replayed_ignored=57  trades=41,126
+```
+
+Thirty more replayed trades were suppressed on the re-subscribe, the feed was
+back in **772 ms**, and then every counter froze for the following ten minutes.
+That +30 burst is exactly what pre-fix would have hit the lag check, bailed,
+and re-subscribed on — the 6.3/h loop, ignited a second time. It did not
+ignite. The 772 ms gap is far inside `max_feed_gap_ms` (60 s), so no variant
+was invalidated.
+
+**What is still untested.** The residual trade-lag trip rate — the reason
+`max_trade_lag_ms` was given its own key rather than a new default — remains
+unmeasured, because in 3.2 h no *genuinely new* trade has ever exceeded the
+threshold. It stays at 5,000 ms until data says otherwise. One instrument, one
+venue, one window.
 
 ### First live ladder result (single window — read with care)
 
