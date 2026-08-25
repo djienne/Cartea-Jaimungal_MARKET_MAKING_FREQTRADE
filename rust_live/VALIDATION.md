@@ -1,5 +1,11 @@
 # Validation status
 
+> **Historical record.** Entries below are dated evidence and are left as
+> written. Where they mention concurrently running Freqtrade dry-run processes,
+> those were real at the time; that trader was retired on 2026-08-25
+> (`freqtrade-trader-final`) and the contention and consumer counts described
+> here no longer describe the host.
+
 Validated locally on 2026-08-22. The stateful continuous `live` backend is
 implemented but the tracked CASHCAT profile ships with `live.enabled=false`.
 An explicitly authorized acceptance campaign exercised minimum-notional real

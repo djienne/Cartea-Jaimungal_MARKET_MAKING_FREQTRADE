@@ -609,9 +609,9 @@ def inventory_q_exact(inventory_base: float, unit: float, q_max: int, q_min: int
 def hjb_quote_config(config: ReplayConfig) -> QuoteConfig:
     """The QuoteConfig the replay's solve runs on -- the live object, live values.
 
-    Built from ReplayConfig so a swept setting means the same thing here as in
-    user_data/strategies/Market_Making.py, which builds the same object from its
-    own attributes. Note ``inventory_unit_base`` and ``gamma_inventory_risk``
+    Built from ReplayConfig so a swept setting means the same thing here as
+    everywhere else that constructs a QuoteConfig. Note
+    ``inventory_unit_base`` and ``gamma_inventory_risk``
     matter to the SOLVE, not just to sizing: mm_core.effective_phi multiplies
     sigma2 by both.
     """

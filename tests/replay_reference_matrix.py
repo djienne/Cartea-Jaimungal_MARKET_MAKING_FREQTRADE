@@ -5,7 +5,7 @@ older copy of ``replay_market_maker`` to regenerate the reference. If this file
 and the reference JSON were ever regenerated together from the current code the
 check would be circular and worthless, so:
 
-    tests/data/replay_reference_metrics.json WAS RECORDED FROM THE PRE-OPTIMISATION
+    tests/data/replay_reference_metrics.json.gz WAS RECORDED FROM THE PRE-OPTIMISATION
     REPLAY (git 85bb564, 2026-08-17) AND MUST NOT BE REGENERATED FROM THE CURRENT
     ONE.
 

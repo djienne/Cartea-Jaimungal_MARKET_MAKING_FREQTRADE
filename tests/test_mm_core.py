@@ -845,8 +845,9 @@ def test_compute_quotes_reports_the_residual_it_priced_from():
 
 # --- tick and lot rounding -------------------------------------------------
 #
-# Ported from tests/test_hyperliquid_alo_executor.py when the freqtrade trader
-# was retired. These functions moved into mm_core because the replay is the
+# Ported from tests/test_hyperliquid_alo_executor.py, which retired with the
+# freqtrade trader and exists only at tag `freqtrade-trader-final`. These
+# functions moved into mm_core because the replay is the
 # only remaining caller; the assertions came with them so the move is covered
 # rather than merely compiling.
 

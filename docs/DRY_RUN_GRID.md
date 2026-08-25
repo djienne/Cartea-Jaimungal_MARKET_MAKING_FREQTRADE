@@ -225,7 +225,7 @@ consumption before any P&L difference appears.
   `dry-run` remains the latency-faithful path.
 - **Not a route to real money.** Grid mode never constructs the live backend,
   never reads credentials, and never opens an account socket —
-  `tests/cli_safety.rs` asserts this holds even when handed a config with
+  `rust_live/tests/cli_safety.rs` asserts this holds even when handed a config with
   `live.enabled = true`. Real money is a single explicit config, never a grid.
 - **Never a Parquet writer.** Not a flag: the grid cannot contend with the
   reference collector (`DATA_COLLECTION.md`).

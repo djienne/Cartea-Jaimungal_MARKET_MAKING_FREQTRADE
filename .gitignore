@@ -1,30 +1,17 @@
 HL_data/
 
-# Generated parameter/output JSON files.
-# The user_data/strategies copies are written every estimator cycle (~30s) by
-# periodic_test_runner; tracking them turned every commit into calibration churn
-# and made real changes hard to see in a diff.
+# Generated parameter/output JSON files. Tracking them turned every commit
+# into calibration churn and made real changes hard to see in a diff.
 scripts/*.json
-user_data/strategies/kappa.json
-user_data/strategies/epsilon.json
-user_data/strategies/lambda.json
-user_data/strategies/lambda_trades.json
 
-# Local secrets for docker-compose (API-server credentials).
+# The user_data/ rules that used to live here went with the freqtrade trader
+# (retired 2026-08-25, tag freqtrade-trader-final): the estimator's parameter
+# snapshots, mm_debug.jsonl, param_update.lock, the tradesv3 databases and the
+# compose override. Nothing writes any of those now.
+
+# Local secrets. The freqtrade API-server credentials this held are dead, but
+# the rule stays: a .env must never be committable regardless of what writes it.
 .env
-
-# Logs and debug output
-user_data/logs/
-user_data/logs/mm_debug.jsonl*
-user_data/strategies/param_update_status.json
-user_data/strategies/param_update.lock
-
-# Local trade database (+ -wal/-shm)
-user_data/tradesv3.sqlite*
-# Per-instance dry-run databases (mm-long / mm-short).
-user_data/tradesv3_*.sqlite*
-# Local-only compose overrides (e.g. mounting the collector's real data dir).
-docker-compose.override.yml
 
 # Python bytecode cache
 __pycache__/

@@ -1,10 +1,13 @@
 # Rust Cartea–Jaimungal Engine
 
-This directory contains the standalone Rust research runtime. The Freqtrade
-strategy, Python estimators, replay harness, tests, and evidence remain in their
-original folders and are the numerical reference oracle. Both runtimes now use
-the same schema-v4 direct-window calibration semantics: there is no EMA or other
-cross-window smoothing between the observed parameters and the HJB.
+This directory contains the Rust runtime, which is **the trader**. The
+Freqtrade strategy that used to hold that role was retired on 2026-08-25 and
+exists only at tag `freqtrade-trader-final`. What remains in the original
+folders -- the Python estimators, replay harness, tests and evidence -- is the
+numerical reference oracle, and `tests/python_parity.rs` pins this runtime
+against it. Both use the same schema-v4 direct-window calibration semantics:
+there is no EMA or other cross-window smoothing between the observed parameters
+and the HJB.
 
 The Rust model is intentionally singular: asymmetric Cartea–Jaimungal arrival
 and adverse-selection parameters feed the nonlinear backward-Euler HJB. The

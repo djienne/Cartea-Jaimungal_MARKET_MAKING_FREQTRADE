@@ -191,8 +191,12 @@ def test_replay_keys_off_the_exchange_clock_not_the_collector_receive_clock(tmp_
 
 
 def _live_quote_config(**overrides) -> QuoteConfig:
-    """Built the way user_data/strategies/Market_Making.py._quote_config builds
-    it, independently of hjb_quote_config, so a field dropped there fails here."""
+    """A QuoteConfig assembled independently of hjb_quote_config, so a field
+    dropped there fails here.
+
+    It used to mirror the freqtrade strategy's ``_quote_config``; that strategy
+    is retired (tag ``freqtrade-trader-final``) and this is now simply a second
+    construction path kept deliberately separate from the one under test."""
     base = dict(
         inventory_unit_base=2092.0,
         q_max=6,
