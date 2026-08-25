@@ -378,12 +378,29 @@ decides when to reconnect a socket. That is why raising it is safe.
 
 **No threshold absorbs this tail.** At 15 s a trip still occurred — 17,754 ms,
 34 minutes into a connection — which matches the original 183,344-trade finding
-that p99.9 was 79 s. And on the 15 s binary the dominant interruption is no
-longer trade lag at all but the idle watchdog: *no inbound frame for 45 s*.
-Both detectors are reporting the same underlying thing, a venue feed that
-intermittently stalls and then delivers a burst of stale prints. 15 s removes
-the dense cluster and leaves the rare genuine outlier; it does not cure the
-stall.
+that p99.9 was 79 s. 15 s removes the dense cluster and leaves the rare genuine
+outlier; it does not cure the stall.
+
+### Measured over 10 h on the 15 s threshold
+
+| cause | count | what it is |
+|---|---:|---|
+| `server closed market stream` | 3 | venue session expiry, ~3 h cadence |
+| `no inbound frame before idle timeout` | 3 | the venue feed going silent for 45 s |
+| `live trade arrived 17754ms late` | 1 | a genuine outlier, correctly caught |
+| **total** | **7** | **0.70 / h** |
+
+For comparison on the same instrument: **6.3/h** was the original pre-fix
+baseline, and **~80/h** was the degraded window that forced this change.
+
+Two things this settles. The threshold now *discriminates*: one trip in ten
+hours, on a real 17.75 s outlier, rather than several hundred on a 5–10 s
+delivery tail. And **six of seven interruptions are venue-side**, so what
+remains is not something a client-side threshold can fix — the dominant cause
+is no longer trade lag at all but the idle watchdog firing on a feed that
+simply stops sending. Both detectors are reporting one underlying thing: a
+venue feed that intermittently stalls and then delivers a burst of stale
+prints.
 
 ### First live ladder result (single window — read with care)
 
