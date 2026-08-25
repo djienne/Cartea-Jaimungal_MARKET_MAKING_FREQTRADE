@@ -197,10 +197,34 @@ where
                                             .fetch_add(1, Ordering::Relaxed);
                                         continue;
                                     }
+                                    // The 2 s above is clock-skew tolerance for
+                                    // the *ignore* decision, and it left a hole:
+                                    // a replayed trade from up to 2 s before we
+                                    // connected is fed through here, and if the
+                                    // backfill burst takes more than ~3 s to
+                                    // arrive it is already "5000ms late" and
+                                    // bails -- reconnect, new backfill, another
+                                    // near-boundary trade, bail again. Measured
+                                    // live on 2026-08-25: 37 gaps in 15.9 h, the
+                                    // last 21 of them every ~35 s, each
+                                    // reconnect suppressing ~28 replays while
+                                    // live trades kept flowing normally, and the
+                                    // downtime fraction pinned at exactly the 5%
+                                    // invalidation threshold.
+                                    //
+                                    // So the boundaries are separate on purpose:
+                                    // whether a trade is FED is skew-tolerant,
+                                    // whether it may KILL THE FEED is not. Any
+                                    // trade born at or before the connection
+                                    // instant is replay by definition and can
+                                    // say nothing about current freshness.
+                                    let born_before_connection =
+                                        trade.exchange_ms <= connected_at_ms;
                                     // Only a genuinely new print can show the
                                     // feed has fallen behind.
-                                    if crate::types::unix_ms().saturating_sub(trade.exchange_ms)
-                                        > args.max_trade_lag_ms
+                                    if !born_before_connection
+                                        && crate::types::unix_ms().saturating_sub(trade.exchange_ms)
+                                            > args.max_trade_lag_ms
                                     {
                                         // The reconnect that follows measures
                                         // this as a gap. Not event loss.

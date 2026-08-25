@@ -559,3 +559,108 @@ async fn replayed_trades_on_a_later_frame_are_ignored_not_fatal() {
         .unwrap()
         .unwrap();
 }
+
+/// The near-boundary replay that the 2 s ignore grace let through.
+///
+/// A trade whose exchange timestamp sits just *inside* the 2 s skew tolerance
+/// -- so it is not suppressed -- but which is older than `max_trade_lag_ms` by
+/// the time it arrives. It predates the connection, so it cannot say anything
+/// about current feed freshness, and must not bail.
+///
+/// Against the pre-fix code this reconnects: 37 gaps in 15.9 h live, the last
+/// 21 every ~35 s, with the downtime fraction pinned at the 5% invalidation
+/// threshold.
+#[tokio::test]
+async fn replay_inside_the_skew_grace_is_published_not_fatal() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let now_ms = mm_live::types::unix_ms();
+    let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        for _ in 0..3 {
+            assert!(matches!(
+                socket.next().await.unwrap().unwrap(),
+                Message::Text(_)
+            ));
+        }
+        // Frame one: a live print, so the stream is established exactly as it
+        // is after a real reconnect.
+        let live = format!(
+            r#"{{"channel":"trades","data":[
+                {{"coin":"CASHCAT","side":"B","px":"0.13220","sz":"2","time":{now_ms},"tid":300}}
+            ]}}"#
+        );
+        socket.send(Message::Text(live.into())).await.unwrap();
+        // Frame two: the backfill burst. 1500 ms before this connection, so it
+        // is inside the 2 s ignore grace and NOT suppressed -- but already
+        // older than the 1000 ms lag threshold. This is the print that was
+        // tearing the feed down every ~35 s.
+        let near_boundary = format!(
+            r#"{{"channel":"trades","data":[
+                {{"coin":"CASHCAT","side":"A","px":"0.13210","sz":"3","time":{},"tid":301}}
+            ]}}"#,
+            now_ms.saturating_sub(1_500)
+        );
+        socket
+            .send(Message::Text(near_boundary.into()))
+            .await
+            .unwrap();
+        let _ = sent_tx.send(());
+        while let Some(message) = socket.next().await {
+            if matches!(message, Ok(Message::Close(_))) {
+                break;
+            }
+        }
+    });
+
+    let events = Arc::new(AsyncRing::new(16));
+    let metrics = Arc::new(Metrics::default());
+    let valid = Arc::new(AtomicBool::new(true));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let client = tokio::spawn(run_market_stream(MarketStreamArgs {
+        ws_url: format!("ws://{address}"),
+        instrument: test_instrument(),
+        latest_bbo: Arc::new(AtomicBbo::default()),
+        events: events.clone(),
+        signal: Arc::new(HotPathSignal::default()),
+        clock: Arc::new(ProcessClock::default()),
+        metrics: metrics.clone(),
+        latency: None,
+        scientifically_valid: valid.clone(),
+        shutdown: shutdown_rx,
+        ping_interval: std::time::Duration::from_secs(30),
+        idle_timeout: std::time::Duration::from_secs(45),
+        // Deliberately tighter than the trade's age, so the pre-fix path bails.
+        max_trade_lag_ms: 1_000,
+    }));
+    tokio::time::timeout(std::time::Duration::from_millis(500), sent_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.reconnects, 0,
+        "a replay inside the skew grace must not tear the connection down"
+    );
+    assert_eq!(snapshot.feed_gaps, 0, "and therefore must not open a gap");
+    assert_eq!(
+        snapshot.trade_prints, 2,
+        "both are real trades and are still published to the simulator"
+    );
+    assert_eq!(
+        snapshot.historical_trade_prints_ignored, 0,
+        "it is inside the grace, so it is not counted as suppressed backfill"
+    );
+    assert!(valid.load(Ordering::Acquire));
+
+    let _ = shutdown_tx.send(true);
+    server.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), client)
+        .await
+        .unwrap()
+        .unwrap();
+}
