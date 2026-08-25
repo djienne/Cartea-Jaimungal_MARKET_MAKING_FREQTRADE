@@ -327,11 +327,31 @@ and re-subscribed on — the 6.3/h loop, ignited a second time. It did not
 ignite. The 772 ms gap is far inside `max_feed_gap_ms` (60 s), so no variant
 was invalidated.
 
-**What is still untested.** The residual trade-lag trip rate — the reason
-`max_trade_lag_ms` was given its own key rather than a new default — remains
-unmeasured, because in 3.2 h no *genuinely new* trade has ever exceeded the
-threshold. It stays at 5,000 ms until data says otherwise. One instrument, one
-venue, one window.
+**The residual trade-lag trip rate, now measured.** This is the number
+`max_trade_lag_ms` was given its own config key for, rather than a new default.
+Over 15.2 h the feed was interrupted nine times, and the causes split cleanly:
+
+| cause | count | shape |
+|---|---:|---|
+| `server closed market stream` (CloseFrame) | 4 | clockwork, every ~2h50m |
+| `live trade arrived more than 5000ms late` | 5 | two self-limiting clusters |
+
+The four server closes are the venue's ~3-hourly session expiry, the same
+cadence the collector work documented — 23:43, 02:33, 05:21, 10:37.
+
+The five lag trips are **not** that. They arrive in clusters: two at 07:41:50
+and 07:42:24 (34 s apart), then three at 11:51:57, 11:53:06 and 11:54:41 (~4 h
+later, spanning 2m44s). Both clusters stopped on their own. That is worth
+stating precisely because it is the churn loop's *shape* without its behaviour:
+`replayed_trades_ignored` rose 156 → 241 across those reconnects, so backfill
+was arriving each time and being suppressed rather than driving the next bail.
+
+**The threshold stays at 5,000 ms.** Total feed downtime is **14.5 s across
+15.2 h — 0.026%** — and the live-trade lag body sits at p99 = 2.4 s, far clear
+of the threshold. Raising it would buy a handful of reconnects a day at the
+price of a slower response to a genuinely stale feed, and these trips are
+detecting real lateness, not backfill. Revisit only if a cluster stops
+self-limiting or downtime becomes a material fraction of a run.
 
 ### First live ladder result (single window — read with care)
 
