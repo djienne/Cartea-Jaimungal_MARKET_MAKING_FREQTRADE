@@ -1,7 +1,0 @@
-{
-    "_comment": "Short leg of the two-sided market maker. Layered on top of config.json via a second --config flag. Rests asks to add short inventory and bids to cover it; own inventory q_S <= 0. A LONG position on this sub-account is a fault and trips the kill switch -- can_short=true does not mean 'both directions', it means 'short only'.",
-    "market_making": {
-        "role": "short",
-        "can_short": true
-    }
-}
