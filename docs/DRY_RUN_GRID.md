@@ -402,6 +402,48 @@ simply stops sending. Both detectors are reporting one underlying thing: a
 venue feed that intermittently stalls and then delivers a burst of stale
 prints.
 
+### Two full runs, 2026-08-25/26 — the ordering does not survive
+
+Two independent runs on the same instrument, days apart, both ~16 h at the
+point of comparison. The wide rungs rank in **exactly the opposite order**:
+
+| rung | run A (16.07 h) | run B (16.0 h) | run B final (23.09 h) |
+|---|---:|---:|---:|
+| wide40 | **+60.15** | +30.12 | +27.00 |
+| wide48 | +50.03 | +70.15 | +71.90 |
+| wide60 | +29.61 | **+97.63** | +83.81 |
+
+That is stronger than the within-run reversals recorded above: it is not a
+timestamp artefact, it is two complete day-length windows disagreeing about
+which rung wins. **No ranking of 40 / 48 / 60 is supported by this evidence.**
+
+What *does* survive both runs, and every checkpoint inside them:
+
+| | run B final, 23.09 h, 38,168 fills |
+|---|---|
+| ≥ 16 bps | wide60 +83.81, wide48 +71.90, wide40 +27.00, wide24 +24.00, wide16 −0.29 |
+| ≤ 8 bps | wide8 −22.71, wide4 −27.22, baseline −43.04 |
+| slow cadence | wide24slow30s −86.38, slow5s −114.48, slow15s −142.30 |
+
+**Fill count runs inverse to P&L, without exception.** The winner took 173
+fills; the three worst took 3,762–5,953. The shipped 1.5 bps baseline is
+−43.04 on 2,232 fills.
+
+**The flow guard has never fired.** `guarded`, `unguarded` and `baseline` are
+identical to the cent across both runs — 2,232 fills each — so nothing in the
+grid has yet exercised the toxic-flow breaker.
+
+**Inventory is the open risk, and it is not what the replay warned about.** All
+three wide rungs end run B *long* 1,658–1,909 units, not short; wide60's
+59.51 drawdown is the grid's largest. `q_max` binds, but the residual is
+material against ~298 USDC of equity.
+
+Feed over the same 23.09 h on the 15 s threshold: **14 interruptions (0.61/h),
+of which 2 were lag trips** (17,754 and 18,382 ms — both genuine outliers, both
+~3 s clear of the limit rather than grazing it). Total downtime **80.1 s =
+0.10%**, 435 replayed trades suppressed against 114,810 live prints, and no
+variant invalidated.
+
 ### First live ladder result (single window — read with care)
 
 At 2.84 h into the 18-variant run, over a window containing a +9.7% rally with
