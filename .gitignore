@@ -55,3 +55,10 @@ hyperliquid.env
 !hyperliquid.env.example
 scripts/guard_study_tapes/
 scripts/guard_study/run/
+
+# The lockfree ring-buffer export and its patch. Untracked in a583d55 because a
+# 19 MB zip does not belong in history, but never ignored -- so they sat in
+# every `git status` as untracked, one careless `git add -A` away from going
+# back in. The source they hold is in the tree; these are the export artefacts.
+Cartea-Jaimungal_MARKET_MAKING_RUST_HYPERLIQUID_LOCKFREE.zip
+Cartea-Jaimungal_lockfree_ring_buffers.patch
