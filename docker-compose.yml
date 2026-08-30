@@ -36,6 +36,12 @@ services:
     # backend.shutdown() and flushing its event log, and this grid runs 18.
     stop_signal: SIGINT
     stop_grace_period: 60s
+    # unless-stopped, not always: a container the daemon stopped (a reboot,
+    # Docker Desktop closing) comes back, while one you stopped on purpose stays
+    # stopped. The corollary is worth knowing -- verified 2026-08-30 by killing
+    # this container, which left it Exited(137) with RestartCount=0 -- so after
+    # a deliberate `docker compose stop`, run `up -d` before walking away or it
+    # will still be down after the next reboot.
     restart: unless-stopped
 
     # One WebSocket for the whole grid, by design -- Hyperliquid allows ten per
