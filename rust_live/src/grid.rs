@@ -13,7 +13,7 @@
 //! stays like-for-like.
 
 use anyhow::{bail, Context, Result};
-use mm_live::config::AppConfig;
+use mm_live::config::{AppConfig, FeedHealth};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
@@ -197,7 +197,7 @@ impl GridSpec {
 /// the ordering — they are here because the staged sweep showed a single
 /// six-hour window can be the entire result, so a variant leading on total
 /// while carrying that shape should at least be visible.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeaderboardRow {
     pub name: String,
     pub description: String,
@@ -214,12 +214,35 @@ pub struct LeaderboardRow {
     pub scientifically_valid: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Leaderboard {
     pub generated_at_ms: u64,
     pub started_at_ms: u64,
     pub elapsed_seconds: u64,
     pub symbol: String,
+    /// The feed's verdict on this run *so far*, recomputed on every write.
+    ///
+    /// It used to be evaluated only in the end-of-run teardown, and applied
+    /// only to the per-variant `SessionReport`s. That made `leaderboard.json`
+    /// -- the file that actually gets read and quoted into the write-ups --
+    /// incapable of ever saying a run was disqualified. The 2026-08-27 run was
+    /// killed by a host reboot before teardown and left 18 rows all claiming
+    /// `scientifically_valid: true` after 42.5% downtime, with a longest gap
+    /// 1,179x over the limit.
+    ///
+    /// A run can always die before its teardown, so the artifact that is
+    /// rewritten continuously has to be the honest one.
+    pub feed_health: FeedHealth,
+    /// Why the feed disqualifies this run; empty means it does not.
+    pub feed_failures: Vec<String>,
+    /// How long the feed has been down *at this instant*; 0 when it is up.
+    ///
+    /// Folded into `feed_health` as well, but kept separate because it answers
+    /// a different question: `feed_health` is "was this run's evidence any
+    /// good", this is "is it blind right now". The container healthcheck reads
+    /// this one -- a liveness check alone passes happily through a blackout,
+    /// since the process stays healthy and keeps rewriting this very file.
+    pub feed_down_for_ms: u64,
     /// Ranked by net P&L, best first.
     pub rows: Vec<LeaderboardRow>,
 }
@@ -384,6 +407,12 @@ impl Leaderboard {
                 },
             );
         }
+        // Printed under the table rather than per row: the reason is the same
+        // for every variant, and a reader who scrolls past 18 `[INVALID]` tags
+        // still needs to be told what disqualified them.
+        for reason in &self.feed_failures {
+            let _ = writeln!(out, "\n  [FEED INVALID] {reason}");
+        }
         out
     }
 }
@@ -395,6 +424,10 @@ mod tests {
     fn base() -> AppConfig {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat.toml");
         AppConfig::load(&path).expect("cashcat.toml must load")
+    }
+
+    fn healthy_feed() -> FeedHealth {
+        FeedHealth::new(0, 0, 0, 3_600_000, false)
     }
 
     #[test]
@@ -478,6 +511,9 @@ mod tests {
             started_at_ms: 0,
             elapsed_seconds: 0,
             symbol: "CASHCAT".to_owned(),
+            feed_health: healthy_feed(),
+            feed_failures: Vec::new(),
+            feed_down_for_ms: 0,
             rows: vec![row("a", -1.0), row("b", 2.0), row("c", 0.5)],
         };
         board.sort_by_net_pnl();
@@ -491,6 +527,9 @@ mod tests {
             started_at_ms: 1_000,
             elapsed_seconds: (now_ms - 1_000) / 1_000,
             symbol: "CASHCAT".to_owned(),
+            feed_health: healthy_feed(),
+            feed_failures: Vec::new(),
+            feed_down_for_ms: 0,
             rows: vec![LeaderboardRow {
                 name: "wide8".to_owned(),
                 description: "minHalf=8bps".to_owned(),

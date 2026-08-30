@@ -16,20 +16,39 @@ the code; look them up at the tag if a question about the old bot ever comes up.
 
 ## What runs
 
-The trader is `rust_live/`, a plain process, not a compose service. Three modes
-matter:
+The trader is `rust_live/`. **The grid is a compose service** as of 2026-08-30
+(`docker-compose.yml` at the repo root, container `mm-grid-dryrun`); the other
+modes are still run by hand.
 
 ```
+docker compose up -d                 # the grid, and the only thing this file starts
+docker compose logs -f               # watch it
+docker compose stop                  # SIGINT, 60 s grace, teardown runs
+
 mm-live --config config/cashcat_dryrun_realistic.toml dry-run
-mm-live --config config/cashcat_dryrun_realistic.toml dry-run-grid \
-        --grid config/grid_cashcat.toml --duration-seconds 0 --out-dir reports/grid_live
 mm-live --config config/cashcat.toml live          # real money, explicit, gated
 ```
 
+Why it is containerized: on 2026-08-27 a Windows-update reboot at 13:47 killed
+the bare-process grid and it stayed down, unnoticed, for 66 h. `restart:
+unless-stopped` brings it back when Docker starts (Docker Desktop must be set to
+start on login), `stop_signal: SIGINT` reaches the teardown path, and the
+`HEALTHCHECK` plus the existing `autoheal` container catch the case
+`restart:` cannot see — a process that is alive but blind. It is registered in
+`../folder_list.txt` so `start_all.bat` brings it up with the rest of the fleet.
+
+**Container paths are load-bearing.** Configs set
+`data_dir = "../../scripts/HL_data"`, resolved relative to the *config file*,
+not the CWD. So configs at `/opt/mm/config` require the tape at
+`/opt/scripts/HL_data`. Move one without the other and calibration dies with
+"no usable price data under ...". The grid calibrates from that tape at startup,
+so the mount is required, not optional.
+
 The grid opens **one** WebSocket no matter how many variants it runs. That is
 deliberate: Hyperliquid allows ten per IP and the budget is shared with the
-collectors and any live session. The grid never writes Parquet and never reads
-credentials.
+collectors and any live session. Bridge networking NATs through the host, so
+containerizing does not change that count. The grid never writes Parquet and
+never reads credentials.
 
 ## Collectors — separate, and must stay that way
 
@@ -76,20 +95,42 @@ was 20 gaps of 3.1–3.5 min on a clockwork ~3 h cadence, 71% of all missing dat
 
 ## Gotchas that bite
 
-**Rebuilding while the grid runs fails.** `cargo build --release --target-dir
-target/measure` returns `Access is denied. (os error 5)` because the running
-`mm-live.exe` holds the file. Stop the grid, build, relaunch — and expect to
-lose the run's elapsed clock, which matters if you are mid-measurement.
+**Rebuilding while the grid runs used to fail** with `Access is denied. (os
+error 5)`, because the running `mm-live.exe` held the binary. Containerizing
+removed that: the build happens in the image, so `docker compose build` never
+contends with a live run. Only the bare-process modes still have the problem.
 
-**Redirect the log into the run directory.** `... --out-dir reports/grid_live >
-reports/grid_live/run.log` — anything else and the feed-health lines land where
-the monitor does not read them.
+**Logs come from Docker now**, not a shell redirect — `docker compose logs -f`,
+capped at 3 × 10 MB. The old `... > reports/grid_live/run.log` pattern also only
+redirected *stdout*; panics go to stderr and would have been lost.
 
 **Feed health is logged on change, not on a timer.** A `grid feed health` line
 appears when `reconnects`, `feed_gaps` or `replayed_trades_ignored` moves, plus
 a floor of one line per ten minutes. So `trade_prints` in that line is stale by
 design; it is a snapshot from the last time a health counter moved, not a live
 count.
+
+**An outage that is still open used to be invisible in that line** — those three
+counters are only written when a gap *closes*. On 2026-08-26 the feed was down
+for 19.65 h and the line printed 117 byte-identical copies of
+`reconnects=28 feed_gaps=27 feed_downtime_ms=282835`; the only tell was
+`trade_prints` frozen, which you had to diff consecutive lines to see. Fixed
+2026-08-30: the line now carries `feed_down_for_ms`, switches to `WARN` and a
+60 s floor while down, and fires the moment the feed drops. So a
+`grid feed health` at `INFO` genuinely means the feed is up.
+
+**A leaderboard can now disqualify itself.** `feed_failures` and
+`feed_down_for_ms` are recomputed into `leaderboard.json` on every write, with
+open gaps counted, and ANDed into each row's `scientifically_valid`. Before, the
+verdict only existed in the teardown, so a run killed mid-flight left 18 rows
+claiming validity after 42.5% downtime. Check `feed_failures` before quoting any
+number out of that file.
+
+**Check a run is alive with `mm-live grid-health`**, not by looking for a
+process — that is what the container healthcheck runs. Liveness alone is not
+enough: through the 19.65 h blackout the process was healthy and rewriting the
+leaderboard every five seconds. `grid-health` fails on a stale
+`generated_at_ms` *or* a long `feed_down_for_ms`.
 
 **A `tail -f` on `run.log` locks the run directory.** Windows will not rename
 or move a directory while any file inside it has an open handle, so a monitor

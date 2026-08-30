@@ -269,6 +269,12 @@ pub struct SessionSpawnArgs {
     pub shutdown: watch::Receiver<bool>,
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
+    /// Deadline for one connect attempt. `connect_async` has none of its own,
+    /// so without this a wedged network stack hangs the loop below instead of
+    /// failing it -- see the note in `market.rs`, where that cost 19.65 h. It
+    /// matters most here: this is the socket that carries order actions, and a
+    /// hang leaves resting orders unmanageable rather than merely unobserved.
+    pub connect_timeout: Duration,
 }
 
 pub fn spawn_session(
@@ -316,8 +322,9 @@ async fn run_session(
         if *args.shutdown.borrow() {
             return;
         }
-        match connect_async(&args.ws_url).await {
-            Ok((socket, _)) => {
+        let attempt = tokio::time::timeout(args.connect_timeout, connect_async(&args.ws_url)).await;
+        match attempt {
+            Ok(Ok((socket, _))) => {
                 generation = generation.saturating_add(1);
                 backoff_ms = 250;
                 let result = run_connected(
@@ -357,7 +364,11 @@ async fn run_session(
                     return;
                 }
             }
-            Err(error) => warn!(%error, "cannot connect Hyperliquid live WebSocket"),
+            Ok(Err(error)) => warn!(%error, "cannot connect Hyperliquid live WebSocket"),
+            Err(_elapsed) => warn!(
+                timeout_ms = args.connect_timeout.as_millis(),
+                "Hyperliquid live WebSocket connect timed out"
+            ),
         }
         tokio::select! {
             () = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}

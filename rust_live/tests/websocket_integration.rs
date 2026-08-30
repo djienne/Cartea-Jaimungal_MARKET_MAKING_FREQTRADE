@@ -76,6 +76,7 @@ async fn public_adapter_parses_mock_cashcat_stream_without_loss() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
         idle_timeout: std::time::Duration::from_secs(45),
+        connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
     }));
     let first = tokio::time::timeout(std::time::Duration::from_secs(2), events.pop())
@@ -154,6 +155,7 @@ async fn causal_ring_saturation_invalidates_the_session() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
         idle_timeout: std::time::Duration::from_secs(45),
+        connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
     }));
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -261,6 +263,7 @@ async fn application_ping_and_protocol_pong_are_exercised() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_millis(20),
         idle_timeout: std::time::Duration::from_millis(200),
+        connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), heartbeat_rx)
@@ -338,6 +341,7 @@ async fn idle_socket_reconnects_resubscribes_and_invalidates_evidence() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_millis(20),
         idle_timeout: std::time::Duration::from_millis(80),
+        connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
     }));
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.pop())
@@ -418,6 +422,7 @@ async fn initial_trade_snapshot_ignores_old_rows_in_any_order() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
         idle_timeout: std::time::Duration::from_secs(45),
+        connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), sent_rx)
@@ -528,6 +533,7 @@ async fn replayed_trades_on_a_later_frame_are_ignored_not_fatal() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
         idle_timeout: std::time::Duration::from_secs(45),
+        connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), sent_rx)
@@ -632,6 +638,7 @@ async fn replay_inside_the_skew_grace_is_published_not_fatal() {
         shutdown: shutdown_rx,
         ping_interval: std::time::Duration::from_secs(30),
         idle_timeout: std::time::Duration::from_secs(45),
+        connect_timeout: std::time::Duration::from_secs(10),
         // Deliberately tighter than the trade's age, so the pre-fix path bails.
         max_trade_lag_ms: 1_000,
     }));

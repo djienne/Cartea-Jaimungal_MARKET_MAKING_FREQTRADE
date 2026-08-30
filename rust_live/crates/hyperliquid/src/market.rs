@@ -37,6 +37,27 @@ pub struct MarketStreamArgs {
     /// while this is "is a new trade so late the feed is broken". They have no
     /// reason to share a value.
     pub max_trade_lag_ms: u64,
+    /// How long a single connect attempt may take before it counts as failed.
+    ///
+    /// Without this the reconnect loop below is only as reliable as the host's
+    /// network stack: `connect_async` has no internal deadline, so a wedged
+    /// stack makes it hang rather than return an error, and the loop never
+    /// reaches its own retry. That is not hypothetical -- on 2026-08-26 one
+    /// such call hung for 19.65 h. The backoff caps at 8 s, so a loop that was
+    /// genuinely retrying would have logged thousands of failures; it logged
+    /// none, which is how a silent hang is told apart from a noisy outage.
+    pub connect_timeout: Duration,
+}
+
+/// Record that the public stream is down, both locally and where the stats loop
+/// can read it. Idempotent: the *first* moment of an outage is the one that
+/// matters, so a run of failed retries keeps the original timestamp.
+fn mark_disconnected(args: &MarketStreamArgs, disconnected_at_ms: &mut Option<u64>) {
+    let since = *disconnected_at_ms.get_or_insert_with(crate::types::unix_ms);
+    args.metrics
+        .feed_disconnected_since_ms
+        .store(since, Ordering::Relaxed);
+    args.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
 }
 
 pub async fn run_market_stream(mut args: MarketStreamArgs) {
@@ -48,14 +69,19 @@ pub async fn run_market_stream(mut args: MarketStreamArgs) {
     // knowable amount, whereas a saturated causal ring means the simulation
     // processed the wrong sequence and is simply wrong. Only the latter is
     // hard-invalid; gaps are counted and judged against a threshold at report
-    // time (`AppConfig::feed_health_verdict`).
+    // time (`FeedHealth::failures`, applied on every leaderboard write).
+    //
+    // `disconnected_at_ms` is mirrored into `metrics.feed_disconnected_since_ms`
+    // so the stats loop can see an outage while it is still open. Keeping it
+    // only here is what let a 19.65 h blackout look like a healthy heartbeat.
     let mut disconnected_at_ms: Option<u64> = None;
     loop {
         if *args.shutdown.borrow() {
             return;
         }
-        match connect_async(&args.ws_url).await {
-            Ok((socket, _)) => {
+        let attempt = tokio::time::timeout(args.connect_timeout, connect_async(&args.ws_url)).await;
+        match attempt {
+            Ok(Ok((socket, _))) => {
                 if connected_once {
                     if let Some(since) = disconnected_at_ms.take() {
                         let gap_ms = crate::types::unix_ms().saturating_sub(since);
@@ -73,22 +99,30 @@ pub async fn run_market_stream(mut args: MarketStreamArgs) {
                         );
                     }
                 }
+                args.metrics
+                    .feed_disconnected_since_ms
+                    .store(0, Ordering::Relaxed);
                 connected_once = true;
                 backoff_ms = 250;
                 info!(symbol = %args.instrument.symbol, "public market WebSocket connected");
                 match run_connected(&mut args, socket).await {
                     Ok(()) => return,
                     Err(error) => {
-                        disconnected_at_ms.get_or_insert_with(crate::types::unix_ms);
-                        args.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
+                        mark_disconnected(&args, &mut disconnected_at_ms);
                         warn!(%error, "public market stream interrupted; measuring the gap");
                     }
                 }
             }
-            Err(error) => {
-                disconnected_at_ms.get_or_insert_with(crate::types::unix_ms);
-                args.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
+            Ok(Err(error)) => {
+                mark_disconnected(&args, &mut disconnected_at_ms);
                 warn!(%error, "cannot connect public market WebSocket");
+            }
+            Err(_elapsed) => {
+                mark_disconnected(&args, &mut disconnected_at_ms);
+                warn!(
+                    timeout_ms = args.connect_timeout.as_millis(),
+                    "public market WebSocket connect timed out"
+                );
             }
         }
         tokio::select! {

@@ -273,6 +273,7 @@ impl HyperliquidLiveBackend {
             shutdown,
             ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
             idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+            connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
         });
         let maker_fee_rate = account.maker_fee_rate;
         let taker_fee_rate = account.taker_fee_rate;

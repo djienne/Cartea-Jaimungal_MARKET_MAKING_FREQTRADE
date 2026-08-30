@@ -92,6 +92,10 @@ pub struct AccountStreamArgs {
     pub shutdown: watch::Receiver<bool>,
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
+    /// Deadline for one connect attempt. `connect_async` has none of its own,
+    /// so without this a wedged network stack hangs the loop below instead of
+    /// failing it -- see the note in `market.rs`, where that cost 19.65 h.
+    pub connect_timeout: Duration,
 }
 
 pub async fn run_account_stream(mut args: AccountStreamArgs) {
@@ -101,8 +105,9 @@ pub async fn run_account_stream(mut args: AccountStreamArgs) {
         if *args.shutdown.borrow() {
             return;
         }
-        match connect_async(&args.ws_url).await {
-            Ok((socket, _)) => {
+        let attempt = tokio::time::timeout(args.connect_timeout, connect_async(&args.ws_url)).await;
+        match attempt {
+            Ok(Ok((socket, _))) => {
                 generation = generation.saturating_add(1);
                 if generation > 1 {
                     args.healthy.store(false, Ordering::Release);
@@ -126,10 +131,18 @@ pub async fn run_account_stream(mut args: AccountStreamArgs) {
                     }
                 }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 args.healthy.store(false, Ordering::Release);
                 args.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
                 warn!(%error, "cannot connect account WebSocket");
+            }
+            Err(_elapsed) => {
+                args.healthy.store(false, Ordering::Release);
+                args.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    timeout_ms = args.connect_timeout.as_millis(),
+                    "account WebSocket connect timed out"
+                );
             }
         }
         tokio::select! {

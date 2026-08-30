@@ -23,6 +23,11 @@ LABEL org.opencontainers.image.title="CASHCAT Cartea-Jaimungal Rust runtime" \
       org.opencontainers.image.vendor="local research" \
       org.opencontainers.image.revision=${MM_GIT_REVISION} \
       mm.build.flavor=${MM_BUILD_FLAVOR}
+# /opt/scripts/HL_data is not arbitrary and must track /opt/mm/config. Configs
+# set `data_dir = "../../scripts/HL_data"`, resolved relative to the *config
+# file*, so with configs at /opt/mm/config the tape must sit at
+# /opt/scripts/HL_data. Move either path without the other and calibration
+# fails with "no usable price data under ...".
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
@@ -30,9 +35,20 @@ RUN apt-get update \
     && mkdir -p /opt/mm/config /opt/mm/run /opt/mm/reports /opt/scripts/HL_data \
     && chown -R mm-live:mm-live /opt/mm /opt/scripts/HL_data
 COPY --from=builder /tmp/mm-live /usr/local/bin/mm-live
-COPY rust_live/config/cashcat.toml rust_live/config/cashcat.validation.json /opt/mm/config/
+# The whole config directory, not just cashcat.toml: dry-run-grid needs
+# cashcat_dryrun_realistic.toml and grid_cashcat.toml too.
+COPY rust_live/config/ /opt/mm/config/
 USER 10001
 WORKDIR /opt/mm
 VOLUME ["/opt/scripts/HL_data", "/opt/mm/run", "/opt/mm/reports"]
+
+# Liveness alone is not health here. A wedged `connect_async` leaves the process
+# responsive and the leaderboard advancing while the market feed is gone -- on
+# 2026-08-26 that state lasted 19.65 h. `grid-health` checks both, reading only
+# the leaderboard: no config, no runtime, no network.
+HEALTHCHECK --interval=60s --timeout=15s --retries=3 --start-period=300s \
+    CMD ["/usr/local/bin/mm-live", "grid-health", \
+         "--leaderboard", "/opt/mm/reports/grid_live/leaderboard.json"]
+
 ENTRYPOINT ["/usr/local/bin/mm-live"]
 CMD ["--config", "/opt/mm/config/cashcat.toml", "dry-run"]

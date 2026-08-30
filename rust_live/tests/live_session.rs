@@ -219,6 +219,7 @@ impl Fixture {
             shutdown: shutdown_rx,
             ping_interval: Duration::from_millis(50),
             idle_timeout: Duration::from_secs(2),
+            connect_timeout: Duration::from_secs(10),
         });
         Self {
             _directory: directory,

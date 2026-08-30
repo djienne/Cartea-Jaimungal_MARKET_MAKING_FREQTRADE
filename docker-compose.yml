@@ -1,0 +1,95 @@
+# The CASHCAT market-making dry-run grid, as a container.
+#
+# `docker compose up -d` starts the DRY RUN and nothing else. There is no live
+# service in this file at all: `mm-live live` places real orders, needs
+# credentials this image never receives, and must never be something an
+# unattended `start_all.bat` can bring up. Run it by hand, from the host.
+#
+# WHY THIS EXISTS. The grid used to run as a bare `mm-live.exe` in a console
+# window. On 2026-08-27 the machine was rebooted for a Windows update at 13:47
+# and the grid simply did not come back -- nobody noticed for 66 h. Three
+# separate things fix that here:
+#
+#   restart: unless-stopped  brings it back when Docker starts after a reboot
+#                            (Docker Desktop must be set to start on login)
+#   stop_signal: SIGINT      reaches the Linux SIGINT/SIGTERM handler the binary
+#                            already has, so teardown actually runs -- on Windows
+#                            a Start-menu shutdown bypassed it entirely
+#   healthcheck + autoheal   restarts a container that is alive but blind, which
+#                            `restart:` cannot see (see the healthcheck note)
+#
+# A side benefit: `cargo build` no longer fails with "Access is denied (os error
+# 5)" because the running mm-live.exe holds the binary. The build happens in the
+# image now, so a rebuild never contends with a live run.
+services:
+  mm-grid-dryrun:
+    build:
+      context: .
+      dockerfile: rust_live/Dockerfile
+    image: mm-live:local
+    container_name: mm-grid-dryrun
+    init: true
+
+    # SIGINT, because `wait_for_shutdown_signal` selects on ctrl_c()/SIGTERM and
+    # SIGINT is what ctrl_c() is on Linux. 60s rather than the 30s the sibling
+    # Lighter grid uses: teardown walks every variant in turn, calling
+    # backend.shutdown() and flushing its event log, and this grid runs 18.
+    stop_signal: SIGINT
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+    # One WebSocket for the whole grid, by design -- Hyperliquid allows ten per
+    # IP and that budget is shared with the collector containers. Bridge
+    # networking NATs through the host's address, so the count is unchanged.
+    network_mode: bridge
+
+    # --duration-seconds 0 runs until stopped. The out-dir is the path the
+    # healthcheck in the Dockerfile reads.
+    command:
+      - --config
+      - /opt/mm/config/cashcat_dryrun_realistic.toml
+      - dry-run-grid
+      - --grid
+      - /opt/mm/config/grid_cashcat.toml
+      - --duration-seconds
+      - "0"
+      - --out-dir
+      - /opt/mm/reports/grid_live
+
+    # The grid is CPU-bound on one hot path plus worker threads. A container
+    # sees every host core regardless of this quota, so `runtime.hot_path_cpu`
+    # still pins against the real topology -- check the "runtime configured"
+    # line on startup rather than assuming the two agree.
+    cpus: 8.0
+    mem_limit: 4g
+    memswap_limit: 4g
+
+    volumes:
+      # Read-only: a variant sweep is edited on the host and picked up on
+      # restart, without a rebuild.
+      - ./rust_live/config:/opt/mm/config:ro
+      - ./rust_live/reports:/opt/mm/reports
+      - ./rust_live/run:/opt/mm/run
+      # /opt/scripts, one level above the config mount above. Configs set
+      # data_dir = "../../scripts/HL_data", resolved relative to the config file
+      # rather than the CWD, so /opt/mm/config/../../scripts is /opt/scripts.
+      # The grid calibrates from this tape at startup and refuses to run without
+      # it. Read-only: the collectors own these files, this only reads them.
+      - ./scripts/HL_data:/opt/scripts/HL_data:ro
+
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      TZ: UTC
+
+    # Watched by the autoheal container in ../HYPERLIQUID_DATA/docker-compose.yml,
+    # which is scoped by this label. It restarts an unhealthy container --
+    # `restart: unless-stopped` only reacts to one that has exited, and the
+    # failure that cost 19.65 h of data never exited anything.
+    labels:
+      - autoheal=true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

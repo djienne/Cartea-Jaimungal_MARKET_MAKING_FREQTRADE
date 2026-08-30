@@ -89,6 +89,16 @@ pub struct RuntimeConfig {
     pub market_stale_ms: u64,
     pub ws_ping_interval_ms: u64,
     pub ws_idle_timeout_ms: u64,
+    /// How long a single WebSocket connect attempt may take before it is
+    /// abandoned and retried.
+    ///
+    /// Distinct from `ws_idle_timeout_ms`, which governs an *established*
+    /// socket that has stopped delivering. This governs one that never
+    /// establishes: `connect_async` carries no deadline of its own, so a wedged
+    /// host network stack leaves it pending forever and the reconnect loop --
+    /// backoff, logging and all -- simply never runs. On 2026-08-26 that turned
+    /// a routine outage into 19.65 h of silence with no error logged.
+    pub ws_connect_timeout_ms: u64,
     pub market_event_capacity: usize,
     pub execution_event_capacity: usize,
     pub stats_interval_ms: u64,
@@ -146,6 +156,7 @@ impl Default for RuntimeConfig {
             market_stale_ms: 5_000,
             ws_ping_interval_ms: 5_000,
             ws_idle_timeout_ms: 15_000,
+            ws_connect_timeout_ms: 10_000,
             market_event_capacity: 65_536,
             execution_event_capacity: 16_384,
             stats_interval_ms: 5_000,
@@ -308,6 +319,11 @@ impl AppConfig {
         }
         if self.runtime.max_feed_gap_ms == 0 {
             bail!("runtime.max_feed_gap_ms must be greater than zero");
+        }
+        // Zero would mean "time out instantly" and never connect at all; a
+        // sub-second budget cannot survive a TLS handshake over a slow link.
+        if self.runtime.ws_connect_timeout_ms < 1_000 {
+            bail!("runtime.ws_connect_timeout_ms must be >= 1000");
         }
         if self.runtime.max_trade_lag_ms < 50 {
             bail!("runtime.max_trade_lag_ms must be >= 50");

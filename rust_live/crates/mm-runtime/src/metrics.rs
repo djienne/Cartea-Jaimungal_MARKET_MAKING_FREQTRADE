@@ -25,6 +25,16 @@ pub struct Metrics {
     pub feed_gaps: AtomicU64,
     pub feed_downtime_ms: AtomicU64,
     pub feed_longest_gap_ms: AtomicU64,
+    /// Unix ms at which the public stream went away, or 0 while it is up.
+    ///
+    /// The three counters above are only written when a gap *closes*, so while
+    /// one is open they say nothing at all. On 2026-08-26 the feed was down for
+    /// 19.65 h and the grid's health line printed 117 times with byte-identical
+    /// values -- `reconnects=28 feed_gaps=27 feed_downtime_ms=282835` -- because
+    /// the only state that knew was a local variable inside the reconnect loop.
+    /// This is that state, published, so an in-progress outage is visible while
+    /// it is still happening rather than only in the post-mortem.
+    pub feed_disconnected_since_ms: AtomicU64,
     pub quote_decisions: AtomicU64,
     pub quote_publications: AtomicU64,
     pub fills: AtomicU64,
@@ -51,6 +61,7 @@ pub struct MetricsSnapshot {
     pub feed_gaps: u64,
     pub feed_downtime_ms: u64,
     pub feed_longest_gap_ms: u64,
+    pub feed_disconnected_since_ms: u64,
     pub quote_decisions: u64,
     pub quote_publications: u64,
     pub fills: u64,
@@ -80,6 +91,7 @@ impl Metrics {
             feed_gaps: self.feed_gaps.load(Ordering::Relaxed),
             feed_downtime_ms: self.feed_downtime_ms.load(Ordering::Relaxed),
             feed_longest_gap_ms: self.feed_longest_gap_ms.load(Ordering::Relaxed),
+            feed_disconnected_since_ms: self.feed_disconnected_since_ms.load(Ordering::Relaxed),
             quote_decisions: self.quote_decisions.load(Ordering::Relaxed),
             quote_publications: self.quote_publications.load(Ordering::Relaxed),
             fills: self.fills.load(Ordering::Relaxed),
@@ -91,9 +103,41 @@ impl Metrics {
     }
 }
 
+impl MetricsSnapshot {
+    /// How long the public feed has been down *right now*, in ms; 0 when up.
+    ///
+    /// `feed_downtime_ms` deliberately stays the closed-gap total -- every
+    /// recorded run's numbers are quoted against that meaning -- so the open
+    /// gap is reported beside it rather than folded into it.
+    #[must_use]
+    pub fn feed_down_for_ms(&self, now_ms: u64) -> u64 {
+        if self.feed_disconnected_since_ms == 0 {
+            0
+        } else {
+            now_ms.saturating_sub(self.feed_disconnected_since_ms)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feed_down_for_ms_is_zero_while_connected_and_grows_while_not() {
+        let metrics = Metrics::default();
+        assert_eq!(metrics.snapshot().feed_down_for_ms(10_000), 0);
+        metrics
+            .feed_disconnected_since_ms
+            .store(4_000, Ordering::Relaxed);
+        assert_eq!(metrics.snapshot().feed_down_for_ms(10_000), 6_000);
+        // A clock that steps backwards must not report a negative-turned-huge gap.
+        assert_eq!(metrics.snapshot().feed_down_for_ms(3_000), 0);
+        metrics
+            .feed_disconnected_since_ms
+            .store(0, Ordering::Relaxed);
+        assert_eq!(metrics.snapshot().feed_down_for_ms(10_000), 0);
+    }
 
     #[test]
     fn snapshot_reads_every_counter_without_side_effects() {

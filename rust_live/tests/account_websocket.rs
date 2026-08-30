@@ -127,6 +127,7 @@ async fn account_listener_subscribes_heartbeats_and_delivers_order_and_fill_even
         shutdown: shutdown_rx,
         ping_interval: Duration::from_millis(20),
         idle_timeout: Duration::from_millis(200),
+        connect_timeout: Duration::from_secs(10),
     }));
 
     let mut data_channels = BTreeSet::new();

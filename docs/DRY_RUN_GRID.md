@@ -444,6 +444,75 @@ of which 2 were lag trips** (17,754 and 18,382 ms — both genuine outliers, bot
 0.10%**, 435 replayed trades suppressed against 114,810 live prints, and no
 variant invalidated.
 
+### Run B past 24.6 h is void — a 19.65 h blackout, marked at a rally
+
+**The 23.09 h figures above stand.** Downtime to that point was 80.1 s, 0.10%.
+Everything in this section is about what happened *after* that checkpoint, and
+none of it is evidence.
+
+Run B was not stopped deliberately. It ran on to 46.4 h and died at **2026-08-27
+13:47 local**, when the machine was powered off from the Start menu — Windows
+event 1074, almost certainly for the update that had been downloading since
+13:00. Nobody noticed for 66 h. Its final `leaderboard.json` looks like a
+result and is not one:
+
+| rung | 23.09 h | 24.6 h | 46.4 h | inventory at the gap | inv × Δmid |
+|---|---:|---:|---:|---:|---:|
+| wide60 | +83.81 | +62.74 | **+124.01** | 2,307 | +62.5 vs +60.97 actual |
+| wide48 | +71.90 | +53.42 | **+114.09** | 2,285 | +61.9 vs +60.37 actual |
+| wide40 | +27.00 | +17.17 | **+60.87** | 1,658 | +44.9 vs +43.42 actual |
+| wide24 | +24.00 | +21.45 | +28.16 | 216 | +5.8 vs +4.45 actual |
+| baseline | −43.04 | −43.25 | −39.31 | 164 | +4.4 vs +3.04 actual |
+
+The public feed was down from `2026-08-26T14:00:42Z` to `2026-08-27T09:39:52Z` —
+**19.65 h, 42.5% of the run** — and CASHCAT's mid went 0.20569 → 0.23276,
+**+13.2%**, while the grid was blind. Every rung's gain over that stretch is its
+frozen inventory times that move, to within a percent. The rungs finish ranked
+in the order of how *long* they happened to be, and each took **one fill** after
+hour 23.
+
+Realized P&L, which is what a maker actually earns, had already turned over
+before the blackout:
+
+| rung | h4 | h8 | h16 | h23 | h46 |
+|---|---:|---:|---:|---:|---:|
+| wide60 | 47.27 | 70.24 | **97.90** | 86.71 | 86.47 |
+| wide48 | 23.51 | 58.34 | 70.22 | **78.97** | 72.77 |
+| wide40 | −0.94 | 26.19 | 30.67 | **31.86** | 22.50 |
+
+So wide60's headline +124.01 is +86.47 realized (below its own h16 peak) plus
++37.54 of mark-to-market on 2,255 units — roughly 515 USDC of notional against
+~298 USDC of equity, a 1.7× levered long. Its inventory had also swung from
+−1,621 at h16 to +1,909 at h23, a 3,530-unit flip. Whatever that is, it is not
+the market-making result the ladder was built to measure.
+
+Four defects had to line up, and all four are now fixed (2026-08-30):
+
+- **`connect_async` had no timeout.** The host network wedged and the call hung
+  rather than failing, so the reconnect loop never ran. The backoff caps at 8 s,
+  so a loop that was genuinely retrying would have logged ~8,800 failures; it
+  logged **zero**, then six in 40 s once the call started returning. Now bounded
+  by `runtime.ws_connect_timeout_ms` (10 s), at all three connect sites.
+- **An open gap was invisible.** `feed_gaps` / `feed_downtime_ms` /
+  `feed_longest_gap_ms` are only written when a gap *closes*, so the health line
+  printed 117 identical copies of `reconnects=28 feed_gaps=27
+  feed_downtime_ms=282835` across the blackout. Only `trade_prints`, frozen at
+  122,337, gave it away. The line now carries `feed_down_for_ms`, logs at `WARN`
+  and every 60 s while down, and fires the moment the feed drops.
+- **`leaderboard.json` could not be marked invalid.** `FeedHealth` would have
+  disqualified this run twice — 42.5% downtime against a 5% limit, a 70,750,528
+  ms gap against 60,000 — but it was only evaluated in the teardown, which the
+  power-off skipped. The verdict is now recomputed on every write, open gaps
+  included, and ANDed into every row.
+- **Windows killed the process without teardown.** `wait_for_shutdown_signal`
+  handled `CTRL_C_EVENT` alone; a Start-menu shutdown sends
+  `CTRL_SHUTDOWN_EVENT`. It now handles shutdown, close, logoff and break — and
+  the grid runs in a container, where SIGINT reaches the handler that always
+  worked.
+
+The run directory is kept at `rust_live/reports/archive_grid_15s_contaminated/`.
+Read the equity curve up to hour 23 and stop there.
+
 ### First live ladder result (single window — read with care)
 
 At 2.84 h into the 18-variant run, over a window containing a +9.7% rally with

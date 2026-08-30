@@ -68,6 +68,27 @@ struct Cli {
 enum Command {
     /// Print embedded optimization, target, toolchain, and revision metadata.
     BuildInfo,
+    /// Container healthcheck: is a running grid both alive and seeing the feed?
+    ///
+    /// Reads `leaderboard.json` only — no config, no runtime, no network — so it
+    /// is cheap enough to run every minute and cannot perturb the run it checks.
+    ///
+    /// It asks two questions, and the second is the one that matters. Liveness
+    /// alone would have passed for all 19.65 h of the 2026-08-26 blackout: the
+    /// process was healthy and the leaderboard was being rewritten every five
+    /// seconds; it was the market feed that was gone.
+    GridHealth {
+        #[arg(long, default_value = "reports/grid_live/leaderboard.json")]
+        leaderboard: PathBuf,
+        /// Staleness limit on `generated_at_ms`, which the grid rewrites every
+        /// `stats_interval_ms`. Catches a hung or dead process.
+        #[arg(long, default_value_t = 120)]
+        max_age_seconds: u64,
+        /// How long the public feed may be down before the container is called
+        /// unhealthy. Catches a live process quoting into the dark.
+        #[arg(long, default_value_t = 180)]
+        max_feed_down_seconds: u64,
+    },
     /// Validate configuration and current Hyperliquid metadata.
     Validate,
     /// Run one all-Rust calibration and HJB solve over Parquet history.
@@ -186,6 +207,29 @@ fn main() -> Result<()> {
         );
         return Ok(());
     }
+    // Before the config load: the healthcheck must work in a container that
+    // mounts only the reports directory, and must not fail for reasons that
+    // have nothing to do with the run it is judging.
+    if let Command::GridHealth {
+        leaderboard,
+        max_age_seconds,
+        max_feed_down_seconds,
+    } = &cli.command
+    {
+        return match grid_health_verdict(leaderboard, *max_age_seconds, *max_feed_down_seconds) {
+            Ok(summary) => {
+                println!("{summary}");
+                Ok(())
+            }
+            Err(reason) => {
+                // stderr and a non-zero exit: Docker records the last line of
+                // output against the failing probe, so the reason survives in
+                // `docker inspect` rather than only in this process's ashes.
+                eprintln!("{reason}");
+                std::process::exit(1);
+            }
+        };
+    }
     let config = AppConfig::load(&cli.config)?;
     init_tracing(config.runtime.log_json);
     // The runtime is built explicitly so hot-path isolation is real: the
@@ -266,6 +310,9 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
     }
     match cli.command {
         Command::BuildInfo => unreachable!("build-info returned before configuration loading"),
+        Command::GridHealth { .. } => {
+            unreachable!("grid-health returned before configuration loading")
+        }
         Command::Validate => {
             println!("{}", serde_json::to_string_pretty(&instrument)?);
             Ok(())
@@ -460,6 +507,7 @@ async fn run_connector_check(
         shutdown: shutdown_rx,
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+        connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
     }));
     let (
         clearinghouse,
@@ -713,6 +761,7 @@ async fn run_live_canary(
         shutdown: shutdown_rx,
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+        connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
     }));
     tokio::time::timeout(Duration::from_secs(5), async {
         while account_metrics.snapshot().subscription_acks < 8 {
@@ -1249,6 +1298,7 @@ async fn run_live(
         shutdown: shutdown_rx,
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+        connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
         max_trade_lag_ms: config.runtime.max_trade_lag_ms,
     }));
     let inventory_units = Arc::new(AtomicI64::new(account.inventory_units));
@@ -2022,6 +2072,7 @@ async fn run_dry_run_grid(
         shutdown: shutdown_rx.clone(),
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+        connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
         max_trade_lag_ms: config.runtime.max_trade_lag_ms,
     }));
 
@@ -2061,7 +2112,15 @@ async fn run_dry_run_grid(
     // zero feed gaps is indistinguishable from one whose socket simply never
     // reconnected unless the suppressed-backfill counter is visible beside it.
     // Logged on change so a quiet feed costs one line per ten minutes.
-    let mut last_feed_counters = (0_u64, 0_u64, 0_u64);
+    //
+    // "On change" used to mean only the three closed-gap counters, none of
+    // which move while a gap is *open*. On 2026-08-26 the feed was down for
+    // 19.65 h and this line printed 117 identical copies of
+    // `reconnects=28 feed_gaps=27 feed_downtime_ms=282835` -- a healthy-looking
+    // heartbeat throughout a total blackout. Whether the feed is down is now
+    // part of the change key, so entering an outage logs at once rather than up
+    // to ten minutes later, and the floor tightens to a minute while it lasts.
+    let mut last_feed_counters = (0_u64, 0_u64, 0_u64, false);
     let mut last_feed_log_ms = 0_u64;
     let deadline = (duration_seconds > 0)
         .then(|| tokio::time::Instant::now() + Duration::from_secs(duration_seconds));
@@ -2086,32 +2145,55 @@ async fn run_dry_run_grid(
                 } => break,
                 _ = stats.tick() => {
                     let feed = metrics.snapshot();
+                    let now_ms = unix_ms();
+                    let feed_down_for_ms = feed.feed_down_for_ms(now_ms);
+                    let feed_is_down = feed_down_for_ms > 0;
                     let counters = (
                         feed.reconnects,
                         feed.feed_gaps,
                         feed.historical_trade_prints_ignored,
+                        feed_is_down,
                     );
-                    let now_ms = unix_ms();
+                    // A minute is already too long to be blind; ten is how the
+                    // last blackout stayed invisible.
+                    let floor_ms = if feed_is_down { 60_000 } else { 600_000 };
                     if counters != last_feed_counters
-                        || now_ms.saturating_sub(last_feed_log_ms) >= 600_000
+                        || now_ms.saturating_sub(last_feed_log_ms) >= floor_ms
                     {
                         last_feed_counters = counters;
                         last_feed_log_ms = now_ms;
-                        info!(
-                            reconnects = feed.reconnects,
-                            feed_gaps = feed.feed_gaps,
-                            feed_downtime_ms = feed.feed_downtime_ms,
-                            feed_longest_gap_ms = feed.feed_longest_gap_ms,
-                            replayed_trades_ignored = feed.historical_trade_prints_ignored,
-                            trade_prints = feed.trade_prints,
-                            "grid feed health"
-                        );
+                        if feed_is_down {
+                            warn!(
+                                feed_down_for_ms,
+                                reconnects = feed.reconnects,
+                                feed_gaps = feed.feed_gaps,
+                                feed_downtime_ms = feed.feed_downtime_ms,
+                                feed_longest_gap_ms = feed.feed_longest_gap_ms,
+                                replayed_trades_ignored = feed.historical_trade_prints_ignored,
+                                trade_prints = feed.trade_prints,
+                                "grid feed health: public feed is DOWN"
+                            );
+                        } else {
+                            info!(
+                                feed_down_for_ms,
+                                reconnects = feed.reconnects,
+                                feed_gaps = feed.feed_gaps,
+                                feed_downtime_ms = feed.feed_downtime_ms,
+                                feed_longest_gap_ms = feed.feed_longest_gap_ms,
+                                replayed_trades_ignored = feed.historical_trade_prints_ignored,
+                                trade_prints = feed.trade_prints,
+                                "grid feed health"
+                            );
+                        }
                     }
                     let board = write_grid_leaderboard(
                         &variants,
                         &leaderboard_path,
                         &instrument.symbol,
                         started_at_ms,
+                        &metrics,
+                        &config.runtime,
+                        !scientifically_valid.load(Ordering::Acquire),
                     )?;
                     if let Some(history) = history.as_mut() {
                         let mid = latest_bbo
@@ -2200,6 +2282,9 @@ async fn run_dry_run_grid(
         &leaderboard_path,
         &instrument.symbol,
         started_at_ms,
+        &metrics,
+        &config.runtime,
+        !scientifically_valid.load(Ordering::Acquire),
     )?;
     // Final sample regardless of the interval, so the curve ends where the run
     // ended instead of up to one interval short of it.
@@ -2212,15 +2297,12 @@ async fn run_dry_run_grid(
     // Feed gaps are measured and judged against a threshold rather than
     // latching the run invalid: a multi-day grid always sees a venue connection
     // recycle, so the old boolean was false for every long run and said nothing.
-    let feed_metrics = metrics.snapshot();
-    let feed_health = mm_live::config::FeedHealth::new(
-        feed_metrics.feed_gaps,
-        feed_metrics.feed_downtime_ms,
-        feed_metrics.feed_longest_gap_ms,
-        unix_ms().saturating_sub(started_at_ms),
-        !scientifically_valid.load(Ordering::Acquire),
-    );
-    let feed_failures = feed_health.failures(&config.runtime);
+    //
+    // The verdict comes from the board rather than being recomputed here, so
+    // the session reports and the leaderboard cannot disagree about whether the
+    // same run was valid.
+    let feed_health = board.feed_health;
+    let feed_failures = board.feed_failures.clone();
     let feed_valid = feed_failures.is_empty();
     if feed_valid {
         info!(
@@ -2272,19 +2354,94 @@ async fn run_dry_run_grid(
     Ok(())
 }
 
+/// Decide whether a running grid is healthy, from its `leaderboard.json` alone.
+///
+/// `Ok` carries a one-line summary for the probe log; `Err` carries the reason
+/// it is unhealthy. Split out from the CLI branch so it can be tested without
+/// spawning a process or exiting one.
+fn grid_health_verdict(
+    leaderboard: &Path,
+    max_age_seconds: u64,
+    max_feed_down_seconds: u64,
+) -> std::result::Result<String, String> {
+    let text = std::fs::read_to_string(leaderboard)
+        .map_err(|error| format!("cannot read {}: {error}", leaderboard.display()))?;
+    let board: grid::Leaderboard = serde_json::from_str(&text)
+        .map_err(|error| format!("cannot parse {}: {error}", leaderboard.display()))?;
+
+    let now_ms = unix_ms();
+    // A leaderboard stamped in the future means the clock moved, not that the
+    // run is fresh; treat it as age zero rather than as a huge negative.
+    let age_ms = now_ms.saturating_sub(board.generated_at_ms);
+    if age_ms > max_age_seconds.saturating_mul(1_000) {
+        return Err(format!(
+            "leaderboard is {} s old (limit {max_age_seconds} s): the grid is hung or gone",
+            age_ms / 1_000
+        ));
+    }
+    if board.feed_down_for_ms > max_feed_down_seconds.saturating_mul(1_000) {
+        return Err(format!(
+            "public feed has been down {} s (limit {max_feed_down_seconds} s): the grid is \
+             running blind",
+            board.feed_down_for_ms / 1_000
+        ));
+    }
+    Ok(format!(
+        "grid healthy: leaderboard {} s old, feed up, {} variants, {} s elapsed",
+        age_ms / 1_000,
+        board.rows.len(),
+        board.elapsed_seconds
+    ))
+}
+
+/// Write `leaderboard.json`, with the feed's verdict on the run so far folded
+/// into every row.
+///
+/// The verdict is recomputed here, on every stats tick, rather than once in the
+/// teardown. A grid can be killed at any moment -- a host reboot ended the
+/// 2026-08-27 run mid-heartbeat -- and whatever it leaves behind is what gets
+/// read months later. An artifact that can only tell the truth if the process
+/// exits cleanly is an artifact that lies exactly when it matters.
 fn write_grid_leaderboard(
     variants: &[GridVariant],
     path: &Path,
     symbol: &str,
     started_at_ms: u64,
+    metrics: &Metrics,
+    runtime: &mm_live::config::RuntimeConfig,
+    event_loss: bool,
 ) -> Result<grid::Leaderboard> {
     let now = unix_ms();
+    let feed = metrics.snapshot();
+    let feed_down_for_ms = feed.feed_down_for_ms(now);
+    // An open gap counts against the run while it is still open. Otherwise a
+    // grid that is blind *right now* reports itself healthy until the socket
+    // happens to come back, which is the state the last run spent 19.65 h in.
+    let feed_health = mm_live::config::FeedHealth::new(
+        feed.feed_gaps,
+        feed.feed_downtime_ms.saturating_add(feed_down_for_ms),
+        feed.feed_longest_gap_ms.max(feed_down_for_ms),
+        now.saturating_sub(started_at_ms),
+        event_loss,
+    );
+    let feed_failures = feed_health.failures(runtime);
+    let feed_valid = feed_failures.is_empty();
     let mut board = grid::Leaderboard {
         generated_at_ms: now,
         started_at_ms,
         elapsed_seconds: now.saturating_sub(started_at_ms) / 1_000,
         symbol: symbol.to_owned(),
-        rows: variants.iter().map(GridVariant::leaderboard_row).collect(),
+        feed_health,
+        feed_failures,
+        feed_down_for_ms,
+        rows: variants
+            .iter()
+            .map(|variant| {
+                let mut row = variant.leaderboard_row();
+                row.scientifically_valid = row.scientifically_valid && feed_valid;
+                row
+            })
+            .collect(),
     };
     board.sort_by_net_pnl();
     board.write_atomic(path)?;
@@ -2691,6 +2848,7 @@ async fn run_public_dry_run(
         shutdown: shutdown_rx.clone(),
         ping_interval: Duration::from_millis(config.runtime.ws_ping_interval_ms),
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
+        connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
         max_trade_lag_ms: config.runtime.max_trade_lag_ms,
     }));
     let mut backend = DryRunBackend::new(
@@ -3154,6 +3312,20 @@ fn init_tracing(json: bool) {
     }
 }
 
+/// Wait for any signal that means "stop", so teardown gets a chance to run.
+///
+/// On Windows this used to await `ctrl_c()` alone, which is `CTRL_C_EVENT` and
+/// nothing else. A Start-menu shutdown sends `CTRL_SHUTDOWN_EVENT`, closing the
+/// console window sends `CTRL_CLOSE_EVENT`, and logging off sends
+/// `CTRL_LOGOFF_EVENT` -- so an ordinary reboot killed the process outright. On
+/// 2026-08-27 that ended a 46 h grid mid-heartbeat with no teardown: no session
+/// reports, no final equity sample, and no feed verdict on a run that was 42.5%
+/// blind.
+///
+/// These handlers run against a hard OS deadline (a few seconds for a close,
+/// the system shutdown timeout otherwise), so this widens the window, it does
+/// not guarantee one. That is why `write_grid_leaderboard` records the feed
+/// verdict on every tick instead of trusting teardown to happen.
 async fn wait_for_shutdown_signal() -> Result<()> {
     #[cfg(unix)]
     {
@@ -3164,7 +3336,22 @@ async fn wait_for_shutdown_signal() -> Result<()> {
             _ = terminate.recv() => {}
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_logoff, ctrl_shutdown};
+        let mut shutdown = ctrl_shutdown()?;
+        let mut close = ctrl_close()?;
+        let mut logoff = ctrl_logoff()?;
+        let mut brk = ctrl_break()?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = shutdown.recv() => info!("received Windows shutdown signal"),
+            _ = close.recv() => info!("received Windows console-close signal"),
+            _ = logoff.recv() => info!("received Windows logoff signal"),
+            _ = brk.recv() => info!("received Windows break signal"),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     tokio::signal::ctrl_c().await?;
     Ok(())
 }
@@ -3214,5 +3401,66 @@ mod tests {
         assert_eq!(first_action_status(&resting).unwrap()["resting"]["oid"], 7);
         let rejected = serde_json::json!({"status": "err", "response": "bad nonce"});
         assert!(ensure_top_level_action_ok(&rejected).is_err());
+    }
+}
+
+#[cfg(test)]
+mod grid_health_tests {
+    use super::*;
+
+    fn board(generated_at_ms: u64, feed_down_for_ms: u64) -> grid::Leaderboard {
+        grid::Leaderboard {
+            generated_at_ms,
+            started_at_ms: generated_at_ms.saturating_sub(3_600_000),
+            elapsed_seconds: 3_600,
+            symbol: "CASHCAT".to_owned(),
+            feed_health: mm_live::config::FeedHealth::new(
+                0,
+                feed_down_for_ms,
+                feed_down_for_ms,
+                3_600_000,
+                false,
+            ),
+            feed_failures: Vec::new(),
+            feed_down_for_ms,
+            rows: Vec::new(),
+        }
+    }
+
+    fn write(board: &grid::Leaderboard) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("leaderboard.json");
+        std::fs::write(&path, serde_json::to_string(board).unwrap()).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn fresh_leaderboard_with_a_live_feed_is_healthy() {
+        let (_dir, path) = write(&board(unix_ms(), 0));
+        assert!(grid_health_verdict(&path, 120, 180).is_ok());
+    }
+
+    #[test]
+    fn a_stale_leaderboard_means_the_grid_is_hung_or_gone() {
+        let (_dir, path) = write(&board(unix_ms().saturating_sub(600_000), 0));
+        let reason = grid_health_verdict(&path, 120, 180).unwrap_err();
+        assert!(reason.contains("hung or gone"), "{reason}");
+    }
+
+    /// The 2026-08-26 case, and the reason this check is not liveness alone:
+    /// the process was healthy and rewriting the leaderboard every five seconds
+    /// through 19.65 h of having no market data at all.
+    #[test]
+    fn a_fresh_leaderboard_is_still_unhealthy_when_the_feed_is_down() {
+        let (_dir, path) = write(&board(unix_ms(), 19 * 3_600 * 1_000));
+        let reason = grid_health_verdict(&path, 120, 180).unwrap_err();
+        assert!(reason.contains("running blind"), "{reason}");
+    }
+
+    #[test]
+    fn a_missing_leaderboard_is_unhealthy_rather_than_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let reason = grid_health_verdict(&dir.path().join("absent.json"), 120, 180).unwrap_err();
+        assert!(reason.contains("cannot read"), "{reason}");
     }
 }
