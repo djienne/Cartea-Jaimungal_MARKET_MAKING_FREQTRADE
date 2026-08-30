@@ -37,6 +37,29 @@ start on login), `stop_signal: SIGINT` reaches the teardown path, and the
 `restart:` cannot see — a process that is alive but blind. It is registered in
 `../folder_list.txt` so `start_all.bat` brings it up with the rest of the fleet.
 
+**A restart continues the run, it does not start a new one.** The grid
+checkpoints all 18 variants to `<out-dir>/grid_state.json` every stats tick, and
+on startup resumes from it: equity, inventory, fills, drawdown, markouts and the
+elapsed clock all carry forward, so a reboot costs a gap rather than the run.
+
+Three things bound that, and they are the point rather than an afterthought:
+
+- **The interruption is counted as feed downtime**, so it erodes the 5%
+  `max_feed_downtime_fraction` budget like any other blindness. It is
+  deliberately *not* added to `feed_longest_gap_ms` — that limit guards against
+  a long hole while *quoting* (stale resting orders, fills never seen), and a
+  restart has none of that, since the checkpoint restores a book with no working
+  orders. `resumes` and `resumed_downtime_ms` in `leaderboard.json` say how much
+  of the downtime was restarts, and the rendered table prints `[RESUMED]`.
+- **Beyond `--max-resume-gap-seconds` (default 900) it starts fresh instead.**
+  Resuming means marking held inventory at a price whose path was never
+  observed; across a long gap that is exactly the mechanism that made the 46.4 h
+  run report a 13.2% rally as profit.
+- **An edited grid spec starts fresh.** The checkpoint carries a fingerprint of
+  every variant's config, and resume is all-or-nothing — a partially-resumed
+  grid would have rows that are not comparable, which is the one thing the grid
+  exists to provide.
+
 **Container paths are load-bearing.** Configs set
 `data_dir = "../../scripts/HL_data"`, resolved relative to the *config file*,
 not the CWD. So configs at `/opt/mm/config` require the tape at
@@ -150,8 +173,10 @@ further ~30 on each reconnect. `replayed_trades_ignored` rising while
 if that ever needs to come down.
 
 **`equity_history.csv` is append-only across restarts** and stamps
-`run_started_ms`, so a P&L curve survives a relaunch — split on that column
-rather than assuming one run per file.
+`run_started_ms`. Since resume landed, a restart *keeps* the original
+`run_started_ms`, so the curve is genuinely continuous rather than two runs in
+one file — a change of that value now marks a real boundary (a refused resume:
+gap too long, or an edited spec), which is exactly when you do want to split.
 
 ## Calibration
 

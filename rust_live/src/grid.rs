@@ -243,8 +243,116 @@ pub struct Leaderboard {
     /// this one -- a liveness check alone passes happily through a blackout,
     /// since the process stays healthy and keeps rewriting this very file.
     pub feed_down_for_ms: u64,
+    /// How many times this run has been resumed from a checkpoint.
+    ///
+    /// Non-zero means the numbers below span more than one process lifetime.
+    /// Visible because a stitched run is a different object from a continuous
+    /// one and a reader must not have to guess which they are holding.
+    pub resumes: u32,
+    /// Total wall time the grid was *not running* across those resumes.
+    ///
+    /// Counted inside `feed_health.downtime_ms` as well — it is missing market
+    /// data however it went missing — but kept separately because the two have
+    /// different risk. A feed gap means the grid was quoting into the dark; a
+    /// restart gap means it was not quoting at all.
+    pub resumed_downtime_ms: u64,
     /// Ranked by net P&L, best first.
     pub rows: Vec<LeaderboardRow>,
+}
+
+/// One variant's accounting, checkpointed so a restart can carry it forward.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedVariant {
+    pub name: String,
+    /// Guards against resuming a variant whose parameters were edited in the
+    /// meantime, which would silently splice two different strategies into one
+    /// P&L curve.
+    pub config_fingerprint: String,
+    pub inventory_unit: i64,
+    pub account: mm_live::types::DryRunAccountState,
+    pub diagnostics: mm_live::execution::DryRunDiagnostics,
+    pub fills: u64,
+    pub peak_equity_usdc: f64,
+    pub max_drawdown_usdc: f64,
+    pub failure: Option<String>,
+}
+
+/// The whole grid's accounting at one instant, written every stats tick.
+///
+/// This exists so a reboot costs a gap rather than the run. Before it, the grid
+/// started from zero equity and a zero clock on every launch, so the 2026-08-27
+/// Windows-update reboot did not merely interrupt a 46 h measurement -- it
+/// meant any relaunch would have discarded it.
+///
+/// What it deliberately does *not* do is hide the interruption. The wall time
+/// between the last checkpoint and the resume is added to feed downtime, and a
+/// gap longer than the caller's threshold refuses to resume at all: carrying
+/// inventory across an unobserved price move is how the 46 h leaderboard came
+/// to report a 13.2% rally as trading profit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedGridState {
+    pub schema_version: u32,
+    pub symbol: String,
+    /// Identity of the whole grid: every variant name and config fingerprint.
+    /// A changed spec -- a variant added, removed or retuned -- starts fresh.
+    pub grid_fingerprint: String,
+    /// The *original* start, carried across every resume. This is what makes
+    /// elapsed time and the downtime fraction continuous.
+    pub started_at_ms: u64,
+    pub checkpoint_ms: u64,
+    pub resumes: u32,
+    pub resumed_downtime_ms: u64,
+    pub feed_gaps: u64,
+    pub feed_downtime_ms: u64,
+    pub feed_longest_gap_ms: u64,
+    pub trade_prints: u64,
+    pub replayed_trades_ignored: u64,
+    pub variants: Vec<PersistedVariant>,
+}
+
+impl PersistedGridState {
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    /// Read a checkpoint, or `None` if there is nothing usable there.
+    ///
+    /// A missing file is the ordinary first-run case. A corrupt one is treated
+    /// the same way rather than fatally: a half-written checkpoint must cost a
+    /// fresh run, not a grid that will not start.
+    pub fn load(path: &Path) -> Option<Self> {
+        let bytes = std::fs::read(path).ok()?;
+        let state: Self = serde_json::from_slice(&bytes).ok()?;
+        (state.schema_version == Self::SCHEMA_VERSION).then_some(state)
+    }
+
+    pub fn write_atomic(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
+        std::fs::rename(&temporary, path)?;
+        Ok(())
+    }
+
+    /// Why this checkpoint cannot be resumed into the grid as it now stands, or
+    /// `None` if it can.
+    #[must_use]
+    pub fn rejection(&self, symbol: &str, grid_fingerprint: &str) -> Option<String> {
+        if self.symbol != symbol {
+            return Some(format!(
+                "checkpoint is for {} but this grid trades {symbol}",
+                self.symbol
+            ));
+        }
+        if self.grid_fingerprint != grid_fingerprint {
+            return Some(
+                "grid spec or base config changed since the checkpoint; the variants are not \
+                 the same strategies"
+                    .to_owned(),
+            );
+        }
+        None
+    }
 }
 
 /// Append-only equity history — the time axis `leaderboard.json` does not have.
@@ -413,6 +521,15 @@ impl Leaderboard {
         for reason in &self.feed_failures {
             let _ = writeln!(out, "\n  [FEED INVALID] {reason}");
         }
+        if self.resumes > 0 {
+            let _ = writeln!(
+                out,
+                "\n  [RESUMED] {} restart(s), {:.1} min not running — these totals span more \
+                 than one process lifetime",
+                self.resumes,
+                self.resumed_downtime_ms as f64 / 60_000.0
+            );
+        }
         out
     }
 }
@@ -514,6 +631,8 @@ mod tests {
             feed_health: healthy_feed(),
             feed_failures: Vec::new(),
             feed_down_for_ms: 0,
+            resumes: 0,
+            resumed_downtime_ms: 0,
             rows: vec![row("a", -1.0), row("b", 2.0), row("c", 0.5)],
         };
         board.sort_by_net_pnl();
@@ -530,6 +649,8 @@ mod tests {
             feed_health: healthy_feed(),
             feed_failures: Vec::new(),
             feed_down_for_ms: 0,
+            resumes: 0,
+            resumed_downtime_ms: 0,
             rows: vec![LeaderboardRow {
                 name: "wide8".to_owned(),
                 description: "minHalf=8bps".to_owned(),
@@ -623,5 +744,81 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         // An empty field, never a zero: a zero mid would plot as a real price.
         assert!(text.lines().nth(1).unwrap().ends_with(",,1"));
+    }
+
+    fn checkpoint() -> PersistedGridState {
+        PersistedGridState {
+            schema_version: PersistedGridState::SCHEMA_VERSION,
+            symbol: "CASHCAT".to_owned(),
+            grid_fingerprint: "wide8=abc;wide16=def".to_owned(),
+            started_at_ms: 1_000,
+            checkpoint_ms: 3_600_000,
+            resumes: 0,
+            resumed_downtime_ms: 0,
+            feed_gaps: 2,
+            feed_downtime_ms: 500,
+            feed_longest_gap_ms: 400,
+            trade_prints: 9_000,
+            replayed_trades_ignored: 30,
+            variants: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_matching_checkpoint_is_resumable() {
+        assert!(checkpoint()
+            .rejection("CASHCAT", "wide8=abc;wide16=def")
+            .is_none());
+    }
+
+    /// The trap this guards: editing a variant and restarting would otherwise
+    /// splice two different strategies into one P&L curve, with nothing in the
+    /// output saying so.
+    #[test]
+    fn an_edited_grid_spec_is_not_resumable() {
+        let reason = checkpoint()
+            .rejection("CASHCAT", "wide8=abc;wide16=CHANGED")
+            .expect("a retuned grid must be refused");
+        assert!(reason.contains("not the same strategies"), "{reason}");
+    }
+
+    #[test]
+    fn a_checkpoint_from_another_instrument_is_not_resumable() {
+        let reason = checkpoint()
+            .rejection("ETH", "wide8=abc;wide16=def")
+            .expect("a different symbol must be refused");
+        assert!(reason.contains("CASHCAT"), "{reason}");
+    }
+
+    #[test]
+    fn a_checkpoint_round_trips_through_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid_state.json");
+        checkpoint().write_atomic(&path).unwrap();
+        let loaded = PersistedGridState::load(&path).expect("must reload");
+        assert_eq!(loaded.started_at_ms, 1_000);
+        assert_eq!(loaded.feed_downtime_ms, 500);
+        assert_eq!(loaded.trade_prints, 9_000);
+    }
+
+    /// A half-written or stale-schema checkpoint must cost a fresh run, never a
+    /// grid that refuses to start.
+    #[test]
+    fn a_corrupt_checkpoint_reads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid_state.json");
+        std::fs::write(&path, b"{\"schema_version\":1,\"symbol\":").unwrap();
+        assert!(PersistedGridState::load(&path).is_none());
+        assert!(PersistedGridState::load(&dir.path().join("absent.json")).is_none());
+    }
+
+    #[test]
+    fn a_resumed_board_says_so_in_the_render() {
+        let mut board = board_at(2_000, 1.0);
+        board.resumes = 2;
+        board.resumed_downtime_ms = 600_000;
+        let text = board.render();
+        assert!(text.contains("[RESUMED] 2 restart(s), 10.0 min"), "{text}");
+        assert!(!board_at(2_000, 1.0).render().contains("[RESUMED]"));
     }
 }

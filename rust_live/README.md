@@ -109,7 +109,9 @@ extensions were studied and rejected or deferred in
 feed and ranks them by net P&L. One WebSocket regardless of variant count,
 because the venue allows ten per IP and that budget is shared with the
 collectors and any live session; it never records Parquet and never touches
-credentials. See [`../docs/DRY_RUN_GRID.md`](../docs/DRY_RUN_GRID.md).
+credentials. It runs as a container (`docker compose up -d` at the repo root)
+and **resumes** its run across a restart, so a reboot costs a gap rather than
+the measurement. See [`../docs/DRY_RUN_GRID.md`](../docs/DRY_RUN_GRID.md).
 
 Market data is **not** produced by this binary. The reference recorder is the
 `hl-cashcat-collector` Docker container, and `storage.data_dir`

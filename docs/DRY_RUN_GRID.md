@@ -1,5 +1,14 @@
 # Dry-run grid — several parameter sets, one feed
 
+Normally run as a container, which is what survives a reboot:
+
+```
+docker compose up -d          # from the repo root
+docker compose logs -f
+```
+
+Directly, for a one-off:
+
 ```
 mm-live --config rust_live/config/cashcat_dryrun_realistic.toml \
         dry-run-grid --grid rust_live/config/grid_cashcat.toml \
@@ -8,7 +17,9 @@ mm-live --config rust_live/config/cashcat_dryrun_realistic.toml \
 
 Runs every variant in the grid spec against **one** shared public market feed,
 simulating each independently, and rewrites a leaderboard ranked by net P&L
-every stats interval. `--duration-seconds 0` (the default) runs until Ctrl-C.
+every stats interval. `--duration-seconds 0` (the default) runs until stopped,
+and a restart **resumes** the run rather than beginning a new one — see
+[A restart continues the run](#a-restart-continues-the-run).
 
 ## Why one process rather than N
 
@@ -153,6 +164,36 @@ variant per `--history-seconds` (default 60; `0` disables it).
 python scripts/grid_pnl_curve.py                    # every variant
 python scripts/grid_pnl_curve.py wide8 baseline     # a subset
 ```
+
+### A restart continues the run
+
+The grid checkpoints every variant's accounting to `grid_state.json` on each
+stats tick, and resumes from it on startup. Equity, inventory, fills, drawdown,
+markouts and the elapsed clock all carry across, so a reboot costs a gap rather
+than the measurement — which is what the 2026-08-27 Windows update cost before
+this existed.
+
+Resuming is bounded, because a resumed run is not the same object as an
+uninterrupted one:
+
+| | |
+|---|---|
+| the interruption | counted in `feed_health.downtime_ms`, so it erodes the 5% budget |
+| | **not** added to `feed_longest_gap_ms` — that limit is about a long hole *while quoting*, and a restart leaves no working orders |
+| visible as | `resumes`, `resumed_downtime_ms`, and `[RESUMED]` in the rendered table |
+| gap > `--max-resume-gap-seconds` (900) | starts fresh instead |
+| grid spec edited | starts fresh — the checkpoint fingerprints every variant's config |
+| resume failure | all-or-nothing; a half-resumed grid has rows that are not comparable |
+
+The long-gap refusal is the important one. Resuming means marking held inventory
+at a price whose path was never observed, and that is precisely the mechanism
+that turned the 46.4 h leaderboard into a 13.2% rally reported as trading
+profit. Fifteen minutes covers a reboot; hours do not, and are not worth
+pretending about.
+
+`run_started_ms` in `equity_history.csv` now stays constant across a restart, so
+a *change* in it marks a genuine boundary — a refused resume — rather than
+merely a relaunch.
 
 ### The event log
 

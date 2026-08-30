@@ -175,13 +175,17 @@ cargo run --release -- --config config/cashcat.toml replay       # deterministic
 cargo run --release -- --config config/cashcat_dryrun_realistic.toml dry-run
 
 # N parameter sets against ONE shared WebSocket, ranked live.
+# Normally run as a container instead: `docker compose up -d` from the repo root.
 cargo run --release -- --config config/cashcat_dryrun_realistic.toml dry-run-grid \
     --grid config/grid_cashcat.toml --duration-seconds 0 --out-dir reports/grid_live
 ```
 
 The grid opens **one** socket regardless of variant count — the venue allows ten
 per IP and that budget is shared with the collectors. It never writes Parquet and
-never touches credentials. Real money is a single explicit config
+never touches credentials. It checkpoints every stats tick and **resumes** on
+restart, so a reboot costs a gap rather than the run; interruptions longer than
+`--max-resume-gap-seconds` (900) start fresh instead of marking held inventory
+across a price move nobody saw. Real money is a single explicit config
 (`config/cashcat.toml` with `live.enabled = true`), never a grid;
 `rust_live/tests/cli_safety.rs` asserts grid mode cannot reach the live backend
 even when handed a live-enabled config.

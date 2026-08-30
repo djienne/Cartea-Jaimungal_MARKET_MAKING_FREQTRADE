@@ -151,6 +151,51 @@ impl DryRunBackend {
         &self.diagnostics
     }
 
+    /// The account as it stands, for a caller that checkpoints it itself.
+    ///
+    /// `save_account_state` owns a whole file and one variant's identity, which
+    /// suits `dry-run`. The grid checkpoints eighteen variants plus run-level
+    /// feed counters into a single document, so it needs the parts rather than
+    /// the file.
+    pub const fn account_snapshot(&self) -> DryRunAccountState {
+        self.account
+    }
+
+    /// Restore from a caller-held checkpoint, the counterpart of
+    /// `account_snapshot`.
+    ///
+    /// Deliberately keeps `restore_account_state`'s reset of live state:
+    /// resting orders, pending markouts and a deferred target all belonged to a
+    /// book that no longer exists. Only the *accounting* -- cash, inventory,
+    /// realized P&L, fees, and the diagnostics that summarise them -- carries
+    /// across, which is exactly what makes a resumed run continuous without
+    /// pretending the intervening market was observed.
+    pub fn restore_from_snapshot(
+        &mut self,
+        account: DryRunAccountState,
+        diagnostics: DryRunDiagnostics,
+        inventory_unit: i64,
+    ) -> Result<()> {
+        if !account.cash_usdc.is_finite()
+            || !account.equity_usdc.is_finite()
+            || !account.average_entry_px.is_finite()
+        {
+            bail!("checkpointed dry-run state contains non-finite values");
+        }
+        if inventory_unit <= 0 {
+            bail!("checkpointed dry-run state has a non-positive inventory unit");
+        }
+        self.account = account;
+        self.diagnostics = diagnostics;
+        self.restored_inventory_unit = Some(inventory_unit);
+        self.orders.clear();
+        self.pending_markouts.clear();
+        self.deferred_desired = None;
+        self.last_quote_action_ms = 0;
+        self.inventory_at_last_quote_action = self.account.inventory_units;
+        Ok(())
+    }
+
     pub const fn daily_realized_pnl_usdc(&self) -> f64 {
         self.daily_realized_pnl_usdc
     }
