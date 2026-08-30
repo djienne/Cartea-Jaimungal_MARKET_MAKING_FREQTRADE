@@ -62,3 +62,9 @@ scripts/guard_study/run/
 # back in. The source they hold is in the tree; these are the export artefacts.
 Cartea-Jaimungal_MARKET_MAKING_RUST_HYPERLIQUID_LOCKFREE.zip
 Cartea-Jaimungal_lockfree_ring_buffers.patch
+
+# In-progress period archives. The archiver builds in `<period>.partial` and
+# renames on completion, so a period directory only ever exists finished -- a
+# `git add docs/history` during a 30-minute sweep must not commit a half-written
+# one.
+docs/history/*.partial/

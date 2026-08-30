@@ -1,0 +1,37 @@
+# The period archiver. NOT `scripts/Dockerfile` -- that one is the collectors'
+# build context (HYPERLIQUID_DATA/docker-compose.yml builds both hl-collector and
+# hl-cashcat-collector from it) and breaking it fails silently: the running
+# containers keep going and only break at their next rebuild. The collectors name
+# `dockerfile: Dockerfile` explicitly, so a second file beside it cannot affect
+# them.
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# git is for the uncommitted-periods count only, and is used read-only.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+# The scripts themselves are bind-mounted at run time so a fix does not need a
+# rebuild; only the dependency set is baked in. requirements.txt already carries
+# pandas, numpy, scipy, matplotlib and pyarrow -- everything sweep_replay.py and
+# grid_pnl_curve.py import. zstandard is added here: the archiver compresses the
+# equity curve, and the grid's own logs are zstd frames.
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt zstandard
+
+WORKDIR /app
+
+# The container mirrors the repo layout, because both scripts derive their roots
+# from __file__: sweep_replay.py takes ROOT = parents[1] and grid_pnl_curve.py
+# takes REPO = SCRIPTS.parent. With scripts at /app/scripts, their defaults for
+# the tape (/app/scripts/HL_data) and the grid (/app/rust_live/reports/grid_live)
+# resolve without overrides.
+#
+# The archiver runs as root: it writes into a bind-mounted docs/history owned by
+# the host user, and matching an arbitrary host UID is more trouble than it is
+# worth for a container that touches no credentials and no network.
+ENTRYPOINT ["python", "/app/scripts/archive_period.py"]
+CMD ["--loop"]

@@ -99,3 +99,69 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Period archiver. The CASHCAT collector keeps 30 days and deletes the rest, so
+  # a replay window is destroyed on a clock: once August rolls off, no sweep can
+  # ever score August again. Every 21 days this runs a fresh full sweep and saves
+  # it with the grid's P&L curve under docs/history/, which is tracked.
+  #
+  # 21 against 30 leaves 9 days of slack, so a skipped or failed cycle still
+  # loses nothing -- the next window reaches back over the gap.
+  # ---------------------------------------------------------------------------
+  mm-archiver:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.archive
+    image: mm-archiver:local
+    container_name: mm-archiver
+    init: true
+    restart: unless-stopped
+
+    # No network at all. It reads local Parquet and writes local files; the only
+    # thing an outbound socket could do here is surprise us.
+    network_mode: none
+
+    # The sweep is a four-worker ~30 min job and the grid pins a hot-path core.
+    # Without a cap the archiver would contend with a measurement in progress --
+    # and the grid is the thing whose numbers must not be perturbed.
+    cpus: 4.0
+    mem_limit: 6g
+    memswap_limit: 6g
+
+    volumes:
+      # Mirrors the repo layout, because sweep_replay.py and grid_pnl_curve.py
+      # both derive their roots from __file__ and their defaults then resolve.
+      - ./scripts:/app/scripts:ro
+      # Mounted again, nested, because scripts/HL_data is an NTFS junction onto
+      # ../HYPERLIQUID_DATA. The mount above hands the container a dangling
+      # symlink -- Docker does not follow a host link out of the mounted tree --
+      # so the tape needs its own bind, exactly as mm-grid-dryrun does.
+      - ./scripts/HL_data:/app/scripts/HL_data:ro
+      - ./rust_live/reports:/app/rust_live/reports:ro
+      # The one writable mount: where the archives land.
+      - ./docs/history:/app/docs/history
+      # Read-only, and only for the uncommitted-periods count. The archiver
+      # deliberately does not commit -- that would mean an SSH key in a
+      # container -- so it reports the count and leaves the commit to a human.
+      - ./.git:/app/.git:ro
+
+    environment:
+      TZ: UTC
+      PYTHONUNBUFFERED: "1"
+      # git refuses a repo owned by another user unless told otherwise, and the
+      # bind mount always looks that way from inside.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /app
+
+    command:
+      - --loop
+      - --cadence-days
+      - "21"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
