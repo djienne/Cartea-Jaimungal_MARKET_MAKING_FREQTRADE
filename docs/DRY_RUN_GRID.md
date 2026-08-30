@@ -195,6 +195,12 @@ pretending about.
 a *change* in it marks a genuine boundary — a refused resume — rather than
 merely a relaunch.
 
+The checkpoint itself does not accumulate: `grid_state.json` is ~27 KB at
+eighteen variants, rewritten in place each tick, plus one `.bak` generation — a
+constant ~54 KB. The `.bak` is what makes a checkpoint torn by something outside
+the process (a full disk, power loss mid-write) cost one stats interval instead
+of the whole run; `load` falls back to it automatically.
+
 ### The event log
 
 Per-variant event logs are **zstd-compressed JSONL**, `grid-<variant>.jsonl.zst`.
@@ -222,6 +228,32 @@ Three properties the format was chosen for:
 A `run_started` event is written at each open, carrying the run's
 `started_at_ms`, the variant's overrides and the build — so run boundaries in an
 appended file are explicit rather than inferred from a timestamp gap.
+
+#### Rotation — the disk ceiling
+
+Compression fixed the *rate*; it did not bound the *total*. Once the grid began
+resuming across restarts, the append stream had no natural end, and 0.31 MB/h
+per variant is 3.9 GB/month across eighteen — forever.
+
+Each log now rolls at `--log-max-mb` (64) and keeps `--log-keep` (3)
+generations, `grid-wide8.jsonl.zst` → `.1` → `.2` → `.3`, deleting what falls
+off:
+
+| | |
+|---|---|
+| per variant | 64 MB live + 3 rolled = **256 MB** |
+| eighteen variants | **4.5 GB ceiling**, independent of how long the run lasts |
+| history retained | ~206 h per file, ~34 days total |
+
+The roll happens at a flush boundary, where the frame is already terminated, so
+a rolled generation is complete and readable rather than a truncated frame. Each
+rotation logs the size rolled and that the oldest generation was deleted —
+nothing is dropped silently. `--log-max-mb 0` disables rotation and restores the
+old unbounded behaviour.
+
+`equity_history.csv` is deliberately *not* rotated. At ~129 KB/h it is 91
+MB/month, two orders of magnitude smaller, and it is the P&L curve itself — the
+artifact the run exists to produce.
 
 > **Never use one-shot `decompress()` on these files.** It stops at the first
 > frame and reports success, silently returning a fraction of the data. Use

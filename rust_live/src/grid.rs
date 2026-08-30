@@ -313,21 +313,44 @@ pub struct PersistedGridState {
 impl PersistedGridState {
     pub const SCHEMA_VERSION: u32 = 1;
 
-    /// Read a checkpoint, or `None` if there is nothing usable there.
+    /// Read a checkpoint, falling back to the previous generation.
     ///
-    /// A missing file is the ordinary first-run case. A corrupt one is treated
-    /// the same way rather than fatally: a half-written checkpoint must cost a
+    /// A missing file is the ordinary first-run case, and a corrupt one is
+    /// treated the same way rather than fatally: a bad checkpoint must cost a
     /// fresh run, not a grid that will not start.
+    ///
+    /// The `.bak` fallback is what makes that cost one stats interval instead
+    /// of the whole run. `write_atomic` already rules out a torn file — the
+    /// rename is atomic within a directory — but not a file torn by something
+    /// outside this process: a full disk, a killed container mid-rename, a
+    /// half-synced bind mount on a host that lost power. Those are exactly the
+    /// circumstances this whole mechanism exists for.
     pub fn load(path: &Path) -> Option<Self> {
+        Self::read_one(path).or_else(|| Self::read_one(&Self::backup_path(path)))
+    }
+
+    fn read_one(path: &Path) -> Option<Self> {
         let bytes = std::fs::read(path).ok()?;
         let state: Self = serde_json::from_slice(&bytes).ok()?;
         (state.schema_version == Self::SCHEMA_VERSION).then_some(state)
     }
 
+    fn backup_path(path: &Path) -> std::path::PathBuf {
+        path.with_extension("json.bak")
+    }
+
+    /// Write the checkpoint, keeping the previous one as `.bak`.
+    ///
+    /// Two files of a fixed size, overwritten in place — this rotation is a
+    /// constant ~54 KB at eighteen variants, not something that accumulates.
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Demote the current generation before replacing it. Best-effort: on
+        // the first write there is nothing to demote, and a failure here must
+        // not stop the checkpoint that matters from being written.
+        let _ = std::fs::rename(path, Self::backup_path(path));
         let temporary = path.with_extension("json.tmp");
         std::fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
         std::fs::rename(&temporary, path)?;
@@ -810,6 +833,51 @@ mod tests {
         std::fs::write(&path, b"{\"schema_version\":1,\"symbol\":").unwrap();
         assert!(PersistedGridState::load(&path).is_none());
         assert!(PersistedGridState::load(&dir.path().join("absent.json")).is_none());
+    }
+
+    /// The reason the checkpoint keeps one previous generation: a file torn by
+    /// something outside this process — a full disk, power loss mid-write —
+    /// should cost one stats interval, not the whole run.
+    #[test]
+    fn a_corrupt_checkpoint_falls_back_to_the_previous_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid_state.json");
+        let mut first = checkpoint();
+        first.checkpoint_ms = 1_000;
+        first.write_atomic(&path).unwrap();
+        let mut second = checkpoint();
+        second.checkpoint_ms = 2_000;
+        second.write_atomic(&path).unwrap();
+        // The live generation is now unreadable; the `.bak` still holds the one
+        // before it.
+        std::fs::write(&path, b"torn").unwrap();
+        let loaded = PersistedGridState::load(&path).expect("must fall back to .bak");
+        assert_eq!(loaded.checkpoint_ms, 1_000);
+    }
+
+    /// Two fixed-size files, overwritten in place — the checkpoint is bounded,
+    /// not something that accumulates with run length.
+    #[test]
+    fn checkpointing_repeatedly_leaves_exactly_two_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid_state.json");
+        for tick in 0..50_u64 {
+            let mut state = checkpoint();
+            state.checkpoint_ms = tick;
+            state.write_atomic(&path).unwrap();
+        }
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "grid_state.json".to_owned(),
+                "grid_state.json.bak".to_owned()
+            ]
+        );
     }
 
     #[test]

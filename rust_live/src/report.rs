@@ -13,6 +13,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
+use tracing::{info, warn};
 
 const EVENT_LOG_QUEUE_CAPACITY: usize = 8_192;
 /// The sink is `dyn Write` rather than a concrete `BufWriter<File>` so the same
@@ -34,6 +35,73 @@ enum WriterMessage {
     Event(EventWrite),
     Flush(SyncSender<std::result::Result<(), String>>),
     Shutdown,
+}
+
+/// Size-based rotation for an append-mode event log.
+///
+/// The grid's logs append to a stable stem so a restart extends the same
+/// stream, and since the grid resumes across restarts that stream now has no
+/// natural end. Measured on the 46.4 h run: 0.31 MB/h per variant compressed,
+/// which is 3.9 GB/month across eighteen. Without a bound the only thing that
+/// ever stopped it was losing the run.
+///
+/// `grid-wide8.jsonl.zst` rolls to `grid-wide8.1.jsonl.zst`, that to `.2.`, and
+/// the oldest past `keep` is deleted -- so the worst case is `(keep + 1) *
+/// max_bytes` per log, and total disk is bounded by construction rather than by
+/// how long the run happens to last.
+#[derive(Debug, Clone, Copy)]
+pub struct LogRotation {
+    /// Roll once the live file is at least this large. Zero disables rotation.
+    pub max_bytes: u64,
+    /// How many rolled generations to keep behind the live file.
+    pub keep: usize,
+}
+
+impl LogRotation {
+    /// Off — the log grows without limit.
+    ///
+    /// Correct for the bounded callers: `replay` and `live` embed a start
+    /// timestamp in the filename and never reopen the same path, so their logs
+    /// are already one-per-run.
+    pub const DISABLED: Self = Self {
+        max_bytes: 0,
+        keep: 0,
+    };
+
+    const fn enabled(self) -> bool {
+        self.max_bytes > 0
+    }
+}
+
+/// Roll `path` to `path.1`, `path.1` to `path.2`, and so on, deleting the
+/// generation that falls off the end.
+///
+/// Renames from the oldest backwards so no generation is ever overwritten while
+/// something still points at it. A failure to roll is reported but not fatal:
+/// losing the ability to rotate is better than losing the run, and the caller
+/// carries on writing to the file it already holds.
+fn rotate_log_files(path: &Path, keep: usize) -> std::io::Result<()> {
+    let generation = |index: usize| -> PathBuf {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(format!(".{index}"));
+        path.with_file_name(name)
+    };
+    let oldest = generation(keep);
+    if oldest.exists() {
+        std::fs::remove_file(&oldest)?;
+    }
+    for index in (1..keep).rev() {
+        let from = generation(index);
+        if from.exists() {
+            std::fs::rename(&from, generation(index + 1))?;
+        }
+    }
+    if keep > 0 {
+        std::fs::rename(path, generation(1))?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 /// Where an event log's bytes end up.
@@ -229,28 +297,34 @@ impl JsonlEventLogger {
         backpressure: LogBackpressure,
         format: LogFormat,
     ) -> Result<Self> {
+        Self::create_with_rotation(directory, stem, backpressure, format, LogRotation::DISABLED)
+    }
+
+    /// As [`Self::create_with_format`], with a size bound on the log.
+    ///
+    /// Rotation is only meaningful for a log that appends across restarts, so
+    /// it is off by default and requested explicitly by the grid.
+    pub fn create_with_rotation(
+        directory: &Path,
+        stem: &str,
+        backpressure: LogBackpressure,
+        format: LogFormat,
+        rotation: LogRotation,
+    ) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
         let path = directory.join(format!("{stem}.{}", format.extension()));
-        let sink = match format {
-            LogFormat::Plain => EventSink::Plain(BufWriter::new(File::create(&path)?)),
-            LogFormat::Zstd => {
-                let file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)?;
-                // Level 3: measured 15.8x on real grid logs at 736 MB/s, some
-                // 350x the actual write rate, so the ratio is free here.
-                EventSink::Zstd(Some(zstd::Encoder::new(BufWriter::new(file), 3)?))
-            }
-        };
+        let sink = open_sink(&path, format)?;
         let (sender, receiver) = mpsc::sync_channel(EVENT_LOG_QUEUE_CAPACITY);
         let flush_every = match format {
             LogFormat::Plain => 0,
             LogFormat::Zstd => COMPRESSED_FLUSH_EVERY_EVENTS,
         };
+        let writer_path = path.clone();
         let writer_thread = thread::Builder::new()
             .name("jsonl-event-writer".to_owned())
-            .spawn(move || run_event_writer(sink, &receiver, flush_every))?;
+            .spawn(move || {
+                run_event_writer(sink, &receiver, flush_every, &writer_path, format, rotation);
+            })?;
         Ok(Self {
             path,
             sender,
@@ -321,10 +395,81 @@ impl Drop for JsonlEventLogger {
     }
 }
 
+/// Open the sink for `path`, appending for zstd and truncating for plain.
+fn open_sink(path: &Path, format: LogFormat) -> Result<EventSink> {
+    Ok(match format {
+        LogFormat::Plain => EventSink::Plain(BufWriter::new(File::create(path)?)),
+        LogFormat::Zstd => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            // Level 3: measured 15.8x on real grid logs at 736 MB/s, some
+            // 350x the actual write rate, so the ratio is free here.
+            EventSink::Zstd(Some(zstd::Encoder::new(BufWriter::new(file), 3)?))
+        }
+    })
+}
+
+/// Roll the log if it has outgrown its bound, returning the fresh sink.
+///
+/// Called only at a flush boundary, where the frame is already terminated, so
+/// the size on disk is the real size and the rolled file is complete and
+/// readable rather than a truncated frame.
+fn rotate_if_oversized(
+    sink: EventSink,
+    path: &Path,
+    format: LogFormat,
+    rotation: LogRotation,
+) -> EventSink {
+    if !rotation.enabled() {
+        return sink;
+    }
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return sink;
+    };
+    if metadata.len() < rotation.max_bytes {
+        return sink;
+    }
+    // finish(), not flush(): the current frame has to be terminated before the
+    // file is renamed, or the rolled generation's tail is unreadable.
+    let mut sink = sink;
+    let _ = sink.finish();
+    if let Err(error) = rotate_log_files(path, rotation.keep) {
+        // Reopen what we just closed and carry on unbounded rather than lose
+        // the run over a filesystem hiccup.
+        warn!(
+            path = %path.display(),
+            %error,
+            "cannot rotate the event log; continuing on the existing file"
+        );
+        return open_sink(path, format).unwrap_or(sink);
+    }
+    // Say what was dropped. A rotation that silently deletes the oldest
+    // generation reads, later, as a run that simply has no history that far
+    // back.
+    info!(
+        path = %path.display(),
+        rolled_bytes = metadata.len(),
+        keep = rotation.keep,
+        "event log rotated; the oldest generation beyond `keep` was deleted"
+    );
+    match open_sink(path, format) {
+        Ok(fresh) => fresh,
+        Err(error) => {
+            warn!(path = %path.display(), %error, "cannot reopen the event log after rotating");
+            sink
+        }
+    }
+}
+
 fn run_event_writer(
     mut sink: EventSink,
     receiver: &mpsc::Receiver<WriterMessage>,
     flush_every: u64,
+    path: &Path,
+    format: LogFormat,
+    rotation: LogRotation,
 ) {
     let mut since_flush = 0_u64;
     while let Ok(message) = receiver.recv() {
@@ -344,12 +489,14 @@ fn run_event_writer(
                     // dropping events because a flush hiccuped would lose more
                     // than it protects.
                     let _ = sink.flush();
+                    sink = rotate_if_oversized(sink, path, format, rotation);
                 }
             }
             WriterMessage::Flush(reply) => {
                 since_flush = 0;
                 let result = sink.flush().map_err(|error| error.to_string());
                 let _ = reply.send(result);
+                sink = rotate_if_oversized(sink, path, format, rotation);
             }
             WriterMessage::Shutdown => {
                 // finish(), not flush(): a zstd frame left unterminated makes
@@ -577,5 +724,124 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let logger = JsonlEventLogger::create(directory.path(), "live", 7).unwrap();
         assert_eq!(logger.path().file_name().unwrap(), "live-7.jsonl");
+    }
+
+    fn generations(directory: &Path, stem: &str) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(directory)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+                name.starts_with(stem).then_some(name)
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn rotate_log_files_shifts_generations_and_drops_the_oldest() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("grid-wide8.jsonl.zst");
+        // Three rolls with keep=2: the third must evict the first.
+        for generation in ["first", "second", "third"] {
+            std::fs::write(&path, generation).unwrap();
+            rotate_log_files(&path, 2).unwrap();
+        }
+        assert_eq!(
+            generations(directory.path(), "grid-wide8"),
+            vec![
+                "grid-wide8.jsonl.zst.1".to_owned(),
+                "grid-wide8.jsonl.zst.2".to_owned()
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("grid-wide8.jsonl.zst.1")).unwrap(),
+            "third"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("grid-wide8.jsonl.zst.2")).unwrap(),
+            "second"
+        );
+    }
+
+    /// `keep: 0` means "bound the log, retain no history" — the live file is
+    /// discarded rather than renamed, so disk stays bounded by `max_bytes`.
+    #[test]
+    fn rotate_log_files_with_no_retention_discards_the_live_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("grid-wide8.jsonl.zst");
+        std::fs::write(&path, "only").unwrap();
+        rotate_log_files(&path, 0).unwrap();
+        assert!(generations(directory.path(), "grid-wide8").is_empty());
+    }
+
+    #[test]
+    fn an_oversized_log_rotates_and_keeps_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let rotation = LogRotation {
+            max_bytes: 1_024,
+            keep: 2,
+        };
+        {
+            let mut logger = JsonlEventLogger::create_with_rotation(
+                directory.path(),
+                "grid-wide8",
+                LogBackpressure::BlockWhenFull,
+                LogFormat::Zstd,
+                rotation,
+            )
+            .unwrap();
+            // Flush is a rotation boundary, so drive several of them.
+            for round in 0..12_u64 {
+                for sequence in 0..500_u64 {
+                    logger
+                        .log("sequence", Some(sequence), &(round, sequence))
+                        .unwrap();
+                }
+                logger.flush().unwrap();
+            }
+        }
+        let names = generations(directory.path(), "grid-wide8");
+        assert!(
+            names.contains(&"grid-wide8.jsonl.zst".to_owned()),
+            "the live log must exist after rotating: {names:?}"
+        );
+        // keep=2 bounds it at the live file plus two generations, however long
+        // the run goes on.
+        assert!(
+            names.len() <= 3,
+            "rotation must bound the file count: {names:?}"
+        );
+        assert!(
+            names.len() > 1,
+            "the log should have rotated at least once: {names:?}"
+        );
+    }
+
+    #[test]
+    fn rotation_is_off_by_default_so_bounded_callers_are_unaffected() {
+        assert!(!LogRotation::DISABLED.enabled());
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let mut logger = JsonlEventLogger::create_with_format(
+                directory.path(),
+                "grid-x",
+                LogBackpressure::BlockWhenFull,
+                LogFormat::Zstd,
+            )
+            .unwrap();
+            for round in 0..12_u64 {
+                for sequence in 0..500_u64 {
+                    logger
+                        .log("sequence", Some(sequence), &(round, sequence))
+                        .unwrap();
+                }
+                logger.flush().unwrap();
+            }
+        }
+        assert_eq!(
+            generations(directory.path(), "grid-x"),
+            vec!["grid-x.jsonl.zst".to_owned()]
+        );
     }
 }

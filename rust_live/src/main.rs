@@ -139,6 +139,18 @@ enum Command {
         /// Zero disables resuming entirely.
         #[arg(long, default_value_t = 900)]
         max_resume_gap_seconds: u64,
+        /// Roll each variant's event log once it reaches this many MB.
+        ///
+        /// The logs append across restarts and the run now resumes across
+        /// them, so without a bound nothing ever ends the stream. Measured at
+        /// 0.31 MB/h per variant compressed — 3.9 GB/month across eighteen.
+        /// Zero disables rotation.
+        #[arg(long, default_value_t = 64)]
+        log_max_mb: u64,
+        /// Rolled generations kept behind each live log. Worst-case disk is
+        /// `(keep + 1) * log_max_mb` per variant.
+        #[arg(long, default_value_t = 3)]
+        log_keep: usize,
     },
     /// Exercise credential parsing, account REST reads, and the account WebSocket without actions.
     ConnectorCheck {
@@ -374,6 +386,8 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             out_dir,
             history_seconds,
             max_resume_gap_seconds,
+            log_max_mb,
+            log_keep,
         } => {
             run_dry_run_grid(
                 &config,
@@ -383,6 +397,10 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
                 out_dir.as_deref(),
                 history_seconds,
                 max_resume_gap_seconds,
+                mm_live::report::LogRotation {
+                    max_bytes: log_max_mb.saturating_mul(1024 * 1024),
+                    keep: log_keep,
+                },
             )
             .await
         }
@@ -1946,6 +1964,7 @@ async fn run_dry_run_grid(
     out_dir: Option<&Path>,
     history_seconds: u64,
     max_resume_gap_seconds: u64,
+    log_rotation: mm_live::report::LogRotation,
 ) -> Result<()> {
     let launched_at_ms = unix_ms();
     // Overwritten by a resumed checkpoint below, so that elapsed time, the
@@ -2043,11 +2062,12 @@ async fn run_dry_run_grid(
         // stream instead of scattering the run across files, and the log costs
         // ~1/16th of plain JSONL -- which at 158 MB per variant per 20 h is the
         // difference between 78 GB/month and 5 GB/month.
-        let logger = JsonlEventLogger::create_with_format(
+        let logger = JsonlEventLogger::create_with_rotation(
             &out_dir,
             &format!("grid-{}", entry.name),
             LogBackpressure::RefuseWhenFull,
             LogFormat::Zstd,
+            log_rotation,
         )?;
         // The log appends across restarts, so mark where each run begins.
         // Without this a reader would have to infer run boundaries from a gap

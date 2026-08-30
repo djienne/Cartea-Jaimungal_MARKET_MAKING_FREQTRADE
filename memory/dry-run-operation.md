@@ -167,10 +167,25 @@ every subscribe — measured 27 prints on connect against 13 live ones, then a
 further ~30 on each reconnect. `replayed_trades_ignored` rising while
 `feed_gaps` stays flat is the system working.
 
-**Disk.** ~17 MB/h at 18 variants, so ~12 GB/month, with zstd holding 16×.
-`quote_decision` events are **99.1%** of the bytes (157k events / 79.7 MB against
-2.9k execution events / 0.7 MB), so sampling them is the only lever that matters
-if that ever needs to come down.
+**Disk is now bounded, and the bound is on the event logs.** Measured over the
+46.4 h run: 0.31 MB/h per variant compressed, 5.5 MB/h across eighteen — 3.9
+GB/month, and since the grid resumes across restarts that stream had no natural
+end. `--log-max-mb` (64) and `--log-keep` (3) roll each log at 64 MB and keep
+three generations, so the ceiling is **4.5 GB total, whatever the run length**,
+covering ~34 days of history. A rotation logs what it deleted; it never drops a
+generation silently. `quote_decision` events are **99.1%** of the bytes (157k
+events / 79.7 MB against 2.9k execution events / 0.7 MB), so sampling them is
+the lever if the ceiling ever needs to come down further.
+
+**The checkpoint does not grow.** `grid_state.json` is ~27 KB at eighteen
+variants, overwritten in place each tick, plus one `.bak` generation — a
+constant ~54 KB, not an accumulator. The only part that grows at all is
+`fills_by_depth_bps`, one entry per 0.1 bps depth bucket ever filled at, which
+tops out in the low thousands of entries.
+
+**`equity_history.csv` is the one thing still unbounded**, at ~129 KB/h = 91
+MB/month. Left that way deliberately: it is the P&L curve, the primary result
+artifact, and it is two orders of magnitude smaller than the logs were.
 
 **`equity_history.csv` is append-only across restarts** and stamps
 `run_started_ms`. Since resume landed, a restart *keeps* the original
