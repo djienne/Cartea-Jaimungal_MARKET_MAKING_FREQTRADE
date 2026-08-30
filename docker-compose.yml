@@ -62,11 +62,23 @@ services:
       - --out-dir
       - /opt/mm/reports/grid_live
 
-    # The grid is CPU-bound on one hot path plus worker threads. A container
-    # sees every host core regardless of this quota, so `runtime.hot_path_cpu`
-    # still pins against the real topology -- check the "runtime configured"
-    # line on startup rather than assuming the two agree.
-    cpus: 8.0
+    # Deliberately tiny (user, 2026-08-30) -- host headroom matters more here
+    # than speed. Measured steady state is 0.48% of a core, so a 25% quota is
+    # roughly fifty times the idle draw and the simulated 150 ms latencies mean
+    # real compute time does not enter the economics.
+    #
+    # THE RISK THIS TAKES, and the thing to watch: the grid is bursty, and if it
+    # cannot drain the feed fast enough the causal market-event ring saturates.
+    # That is the one failure this project never tolerates -- downtime is
+    # counted and judged, but event loss means the simulation processed the
+    # wrong *sequence*, so it is always disqualifying. Watch
+    # `market_event_ring_high_water` in the session reports and
+    # `dropped_causal_events` in the metrics; if either moves, raise this back.
+    #
+    # A container still sees every host core regardless of the quota, so
+    # `runtime.hot_path_cpu` pins against the real topology -- read the
+    # "runtime configured" line rather than assuming the two agree.
+    cpus: 0.25
     mem_limit: 4g
     memswap_limit: 4g
 
@@ -122,10 +134,17 @@ services:
     # thing an outbound socket could do here is surprise us.
     network_mode: none
 
-    # The sweep is a four-worker ~30 min job and the grid pins a hot-path core.
-    # Without a cap the archiver would contend with a measurement in progress --
-    # and the grid is the thing whose numbers must not be perturbed.
-    cpus: 4.0
+    # Deliberately tiny (user, 2026-08-30). This is the *Python* sweep, not the
+    # Rust grid: sweep_replay.py is numpy/pandas and will use every core it is
+    # given -- measured at 388% and 5.4 GiB with four workers. The archive is a
+    # background job on a 21-day cadence, so wall-clock is nearly free here and
+    # host headroom is not. Expect a sweep to take many hours rather than the
+    # ~30 min the four-worker figure implies.
+    #
+    # --workers 1 goes with it: four workers sharing a quarter core only
+    # context-switch, and each holds its own slice of a 2.6M-row tape, which is
+    # what the 5.4 GiB was.
+    cpus: 0.25
     mem_limit: 6g
     memswap_limit: 6g
 
@@ -159,6 +178,8 @@ services:
       - --loop
       - --cadence-days
       - "21"
+      - --workers
+      - "1"
 
     logging:
       driver: json-file
