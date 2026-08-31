@@ -228,7 +228,9 @@ impl Default for LiveConfig {
             action_timeout_ms: 2_000,
             action_expiry_ms: 5_000,
             max_quote_command_age_ms: 1_000,
-            reconcile_interval_ms: 30_000,
+            // Account WebSocket events are primary; REST is a drift audit and
+            // recovery path rather than a second polling data plane.
+            reconcile_interval_ms: 300_000,
             startup_warmup_seconds: 120,
             deadman_enabled: true,
             deadman_deadline_ms: 30_000,

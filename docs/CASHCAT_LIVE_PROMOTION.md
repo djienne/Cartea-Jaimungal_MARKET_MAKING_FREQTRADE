@@ -50,3 +50,26 @@ scripts\Manage-CashcatLive.ps1 -Action Arm
 scripts\Manage-CashcatLive.ps1 -Action Status
 scripts\Manage-CashcatLive.ps1 -Action Disarm
 ```
+
+## Hyperliquid transport choices
+
+- Typed `orderUpdates`, `userFills`, `userFundings`, `clearinghouseState`,
+  `openOrders`, `activeAssetData`, ledger, and notification subscriptions are
+  the steady-state account data plane. Their snapshot markers make reconnect
+  recovery explicit. `webData3` was rejected because it is a larger frontend
+  aggregate and its documented type explicitly warns that undocumented fields
+  will be removed.
+- Signed order/cancel/dead-man actions already use WebSocket `post`. The API also
+  permits info requests through WebSocket `post`, but steady state does not need
+  polling equivalents of subscribed streams. REST remains only for the initial
+  identity/fee/quota/flatness snapshot and degraded-state drift recovery;
+  `userRole`, `userFees`, and `userRateLimit` have no equivalent typed stream.
+- Batching reduces IP request weight but not the per-address action count, so it
+  is used for paired quotes without pretending it creates address quota.
+- Nonce invalidation (`noop`) is useful for pending transactions, not as a
+  replacement for confirmed `cancelByCloid` of resting orders. Safety cancels
+  therefore keep their documented separate allowance.
+- A local non-validating node/order-book server requires roughly 32 logical
+  cores and high disk throughput. It would improve latency and depth but is
+  disproportionate for this minimum-notional, quota-constrained test account;
+  the existing public feed plus causal-loss gates remains the justified path.

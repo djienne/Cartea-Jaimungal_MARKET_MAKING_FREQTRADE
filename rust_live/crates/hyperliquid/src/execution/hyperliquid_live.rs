@@ -157,6 +157,13 @@ enum RejectionRecovery {
     AwaitingReconcile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupReconciliation {
+    CleanSnapshot,
+    Required,
+    Complete,
+}
+
 pub struct AuthoritativeSnapshot {
     clearinghouse: crate::hyperliquid::exchange::ClearinghouseState,
     open_orders: Vec<OpenOrder>,
@@ -209,6 +216,7 @@ pub struct HyperliquidLiveBackend {
     next_placement_allowed_ms: u64,
     consecutive_rejections: u32,
     rejection_recovery: RejectionRecovery,
+    startup_reconciliation: StartupReconciliation,
 }
 
 impl HyperliquidLiveBackend {
@@ -314,6 +322,24 @@ impl HyperliquidLiveBackend {
         let maker_fee_rate = account.maker_fee_rate;
         let taker_fee_rate = account.taker_fee_rate;
         let initial_inventory_units = account.inventory_units;
+        let startup_reconciliation = if account.inventory_units == 0
+            && account.open_orders.is_empty()
+            && state.with_state(|persisted| {
+                persisted
+                    .orders
+                    .values()
+                    .all(|order| order.status.terminal())
+            })? {
+            StartupReconciliation::CleanSnapshot
+        } else {
+            StartupReconciliation::Required
+        };
+        let initial_reconcile_ms = if startup_reconciliation == StartupReconciliation::CleanSnapshot
+        {
+            unix_ms()
+        } else {
+            0
+        };
         let mut backend = Self {
             instrument,
             live: config.live.clone(),
@@ -336,7 +362,7 @@ impl HyperliquidLiveBackend {
             market_bbo: None,
             session_started_at_ms: unix_ms(),
             pending_events: Vec::new(),
-            last_reconcile_ms: 0,
+            last_reconcile_ms: initial_reconcile_ms,
             deadman_armed: false,
             last_deadman_refresh_ms: 0,
             clock,
@@ -358,6 +384,7 @@ impl HyperliquidLiveBackend {
             next_placement_allowed_ms: 0,
             consecutive_rejections: 0,
             rejection_recovery: RejectionRecovery::Idle,
+            startup_reconciliation,
         };
         backend.initialize_campaign()?;
         Ok(LiveBootstrap {
@@ -770,14 +797,28 @@ impl HyperliquidLiveBackend {
             SessionEvent::Connected { generation, .. } => {
                 self.diagnostics.connection_generation = generation;
                 if generation > 1 {
+                    self.startup_reconciliation = StartupReconciliation::Required;
                     self.diagnostics.scientifically_valid = false;
                     self.diagnostics.invalid_reason = Some("live WebSocket reconnected".to_owned());
                 }
             }
             SessionEvent::Ready { generation, .. } => {
                 self.diagnostics.connection_generation = generation;
-                self.diagnostics.operationally_healthy = false;
-                self.reconcile_requested = true;
+                if generation == 1
+                    && self.startup_reconciliation == StartupReconciliation::CleanSnapshot
+                    && self.state.persistence_healthy()
+                {
+                    // Bootstrap already proved the dedicated account flat with
+                    // no working or durable orders. The acknowledged account
+                    // WebSocket is now the steady-state authority; avoid an
+                    // immediate duplicate REST fan-out.
+                    self.startup_reconciliation = StartupReconciliation::Complete;
+                    self.last_reconcile_ms = unix_ms();
+                    self.diagnostics.operationally_healthy = true;
+                } else {
+                    self.diagnostics.operationally_healthy = false;
+                    self.reconcile_requested = true;
+                }
             }
             SessionEvent::Disconnected { reason, .. } => {
                 self.diagnostics.operationally_healthy = false;
@@ -869,7 +910,13 @@ impl HyperliquidLiveBackend {
                                 .filter(|status| status.get("error").is_some())
                                 .count() as u64
                         });
-                    if rejected > 0 {
+                    if rejected > 0
+                        && matches!(
+                            purpose,
+                            crate::hyperliquid::session::ActionPurpose::Order
+                                | crate::hyperliquid::session::ActionPurpose::ReduceOnly
+                        )
+                    {
                         self.diagnostics.orders_rejected =
                             self.diagnostics.orders_rejected.saturating_add(rejected);
                         self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
@@ -1118,6 +1165,7 @@ impl HyperliquidLiveBackend {
         self.account.inventory_units = inventory;
         self.account.open_orders = open_orders;
         self.last_reconcile_ms = unix_ms();
+        self.startup_reconciliation = StartupReconciliation::Complete;
         self.diagnostics.reconciliations = self.diagnostics.reconciliations.saturating_add(1);
         Ok(())
     }
@@ -1875,6 +1923,23 @@ impl HyperliquidLiveBackend {
         })
     }
 
+    fn mark_cancel_pending(&self, cloids: &[String], now_ms: u64) -> Result<()> {
+        self.state.update(|state| {
+            for cloid in cloids {
+                if let Some(order) = state.orders.get_mut(cloid) {
+                    if order
+                        .status
+                        .can_transition_to(LiveOrderStatus::CancelPending)
+                    {
+                        order.status = LiveOrderStatus::CancelPending;
+                        order.last_update_ms = now_ms;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
     async fn cancel_cloids_resilient(&mut self, cloids: Vec<String>) -> Result<ActionOutcome> {
         if self.session.healthy() {
             return self.session.cancel_cloids(cloids).await;
@@ -2019,6 +2084,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
         let mut action_submitted = false;
         if !cancel.is_empty() {
             let canceled_actions = cancel.len() as u64;
+            self.mark_cancel_pending(&cancel, now_ms)?;
             if self.session.healthy() {
                 // A momentarily full command queue is a transient condition, not
                 // a reason to stop trading. Degrade and let the maintenance tick
@@ -2128,14 +2194,41 @@ impl ExecutionBackend for HyperliquidLiveBackend {
     }
 
     async fn shutdown(&mut self, _now_ms: u64) -> Result<()> {
-        let cloids = self.state.with_state(|state| {
-            state
-                .orders
-                .values()
-                .filter(|order| !order.status.terminal())
-                .map(|order| order.cloid.clone())
-                .collect::<Vec<String>>()
-        })?;
+        // A known cancel response updates durable state inside the session
+        // actor before its event reaches the strategy loop. Give that state a
+        // bounded moment to settle; an immediate REST snapshot can lag the
+        // successful WS cancel and provoke a duplicate.
+        for _ in 0..15 {
+            let only_cancel_pending = self.state.with_state(|state| {
+                let mut working = state
+                    .orders
+                    .values()
+                    .filter(|order| !order.status.terminal());
+                let Some(first) = working.next() else {
+                    return false;
+                };
+                first.status == LiveOrderStatus::CancelPending
+                    && working.all(|order| order.status == LiveOrderStatus::CancelPending)
+            })?;
+            if !only_cancel_pending {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // One safety-priority REST confirmation catches a genuinely lost or
+        // unknown cancel after the bounded WS wait.
+        self.reconcile_safety_position().await?;
+        let mut cloids = Vec::new();
+        for order in &self.account.open_orders {
+            let cloid = order
+                .cloid
+                .as_deref()
+                .context("foreign open order without CLOID during shutdown")?;
+            if !is_bot_cloid(cloid) {
+                bail!("foreign open order {cloid} during shutdown");
+            }
+            cloids.push(cloid.to_owned());
+        }
         if !cloids.is_empty() {
             let canceled_actions = cloids.len() as u64;
             let outcome = self.cancel_cloids_resilient(cloids).await?;
@@ -2368,6 +2461,63 @@ mod tests {
         .is_err());
         assert!(parse_user_rate_limit(&serde_json::json!({})).is_err());
     }
+
+    #[test]
+    fn terminal_cancel_errors_are_not_counted_as_order_rejections() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend.diagnostics.operationally_healthy = true;
+        backend
+            .process_session_event(SessionEvent::ActionCompleted {
+                purpose: crate::hyperliquid::session::ActionPurpose::Cancel,
+                outcome: ActionOutcome::Response {
+                    nonce: 1,
+                    http_status: 200,
+                    body: serde_json::json!({
+                        "status":"ok",
+                        "response":{"data":{"statuses":[
+                            {"error":"Order was never placed, already canceled, or filled."}
+                        ]}}
+                    }),
+                },
+                received_ns: 1,
+            })
+            .unwrap();
+        assert_eq!(backend.diagnostics.orders_rejected, 0);
+        assert!(backend.operationally_healthy());
+        assert!(!backend.reconciliation_requested());
+    }
+
+    #[test]
+    fn clean_bootstrap_uses_ready_websocket_without_duplicate_rest_reconcile() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend.startup_reconciliation = StartupReconciliation::CleanSnapshot;
+        backend.diagnostics.operationally_healthy = false;
+        backend.reconcile_requested = false;
+        backend
+            .process_session_event(SessionEvent::Ready {
+                generation: 1,
+                received_ns: 1,
+            })
+            .unwrap();
+        assert!(backend.operationally_healthy());
+        assert!(!backend.reconciliation_requested());
+        assert_eq!(
+            backend.startup_reconciliation,
+            StartupReconciliation::Complete
+        );
+
+        backend.startup_reconciliation = StartupReconciliation::Required;
+        backend.diagnostics.operationally_healthy = false;
+        backend.reconcile_requested = false;
+        backend
+            .process_session_event(SessionEvent::Ready {
+                generation: 2,
+                received_ns: 2,
+            })
+            .unwrap();
+        assert!(!backend.operationally_healthy());
+        assert!(backend.reconciliation_requested());
+    }
     use crate::config::{LatencyConfig, LiveConfig, Network};
     use crate::types::QuoteReason;
     use proptest::prelude::*;
@@ -2516,6 +2666,7 @@ mod tests {
             next_placement_allowed_ms: 0,
             consecutive_rejections: 0,
             rejection_recovery: RejectionRecovery::Idle,
+            startup_reconciliation: StartupReconciliation::Complete,
         };
         (directory, backend, cloid)
     }
@@ -2749,14 +2900,13 @@ mod tests {
         assert!(!backend.rate_limited(now + RATE_LIMIT_COOLDOWN_MS + 1));
     }
 
-    /// A full session command queue is backpressure, not a reason to end the
-    /// session. Before this, the `?` on `enqueue_cancel_cloids` unwound
-    /// `run_live` and abandoned resting orders to the dead-man deadline.
+    /// Marking the first cancel pending before enqueue prevents a second quote
+    /// decision from filling the priority queue with the same cancel.
     #[tokio::test]
-    async fn a_full_command_queue_degrades_instead_of_ending_the_session() {
+    async fn a_pending_cancel_is_not_enqueued_twice() {
         let (_directory, mut backend, _cloid) = lifecycle_backend();
         // `test_stub` backs both command queues with a capacity of one, so the
-        // first cancel fills the priority queue and the second is refused.
+        // first cancel fills the priority queue and the second is coalesced.
         // `RiskLimit` withdraws both sides and bypasses the requote cooldown.
         backend
             .reconcile(DesiredQuotes::empty(QuoteReason::RiskLimit, 1, 0), 1_000)
@@ -2767,15 +2917,10 @@ mod tests {
         backend
             .reconcile(DesiredQuotes::empty(QuoteReason::RiskLimit, 2, 0), 2_000)
             .await
-            .expect("a refused enqueue must not end the session");
-        assert!(
-            !backend.operationally_healthy(),
-            "a refused action must pause quoting"
-        );
-        assert!(
-            backend.reconciliation_requested(),
-            "a refused action must schedule a reconcile"
-        );
+            .expect("duplicate cancel must be coalesced");
+        assert!(backend.operationally_healthy());
+        assert!(!backend.reconciliation_requested());
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
     }
 
     /// The venue never reports a loss streak, so it is derived here from closing
