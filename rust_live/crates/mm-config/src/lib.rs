@@ -191,6 +191,7 @@ pub struct LiveConfig {
     pub max_quote_command_age_ms: u64,
     pub reconcile_interval_ms: u64,
     pub startup_warmup_seconds: u64,
+    pub account_snapshot_timeout_ms: u64,
     pub deadman_enabled: bool,
     pub deadman_deadline_ms: u64,
     pub deadman_refresh_ms: u64,
@@ -232,6 +233,7 @@ impl Default for LiveConfig {
             // recovery path rather than a second polling data plane.
             reconcile_interval_ms: 300_000,
             startup_warmup_seconds: 120,
+            account_snapshot_timeout_ms: 10_000,
             deadman_enabled: true,
             deadman_deadline_ms: 30_000,
             deadman_refresh_ms: 10_000,
@@ -274,6 +276,8 @@ pub struct StorageConfig {
     pub compact_after_minutes: u64,
     pub retention_minutes: u64,
     pub write_parquet: bool,
+    pub live_log_max_mb: u64,
+    pub live_log_keep: usize,
 }
 
 impl Default for StorageConfig {
@@ -289,6 +293,8 @@ impl Default for StorageConfig {
             compact_after_minutes: 15,
             retention_minutes: 180,
             write_parquet: true,
+            live_log_max_mb: 64,
+            live_log_keep: 3,
         }
     }
 }
@@ -412,6 +418,11 @@ impl AppConfig {
         if self.storage.retention_minutes < self.calibration.window_minutes + 30 {
             bail!("storage retention must exceed the calibration window by at least 30 minutes");
         }
+        if !(1..=4_096).contains(&self.storage.live_log_max_mb)
+            || !(1..=32).contains(&self.storage.live_log_keep)
+        {
+            bail!("storage live-log rotation must use 1..=4096 MB and keep 1..=32 generations");
+        }
         if self.live.action_timeout_ms == 0 || self.live.action_expiry_ms == 0 {
             bail!("live action timeout and expiry must be positive");
         }
@@ -420,6 +431,15 @@ impl AppConfig {
         }
         if self.live.reconcile_interval_ms < 500 {
             bail!("live.reconcile_interval_ms must be at least 500");
+        }
+        if self.live.account_snapshot_timeout_ms < 1_000
+            || (self.live.startup_warmup_seconds != 0
+                && self.live.account_snapshot_timeout_ms
+                    > self.live.startup_warmup_seconds.saturating_mul(1_000))
+        {
+            bail!(
+                "live.account_snapshot_timeout_ms must be at least 1000 and fit inside startup warm-up"
+            );
         }
         if self.live.deadman_enabled
             && (self.live.deadman_deadline_ms < 5_000
@@ -506,6 +526,15 @@ impl AppConfig {
         }
         if !self.model.horizon_seconds.is_finite() || self.model.horizon_seconds <= 0.0 {
             bail!("model.horizon_seconds must be finite and positive");
+        }
+        if self.model.min_steps == 0 {
+            bail!("model.min_steps must be at least one");
+        }
+        if self.model.max_steps < self.model.min_steps {
+            bail!("model.max_steps must be greater than or equal to min_steps");
+        }
+        if self.model.newton_max_iterations == 0 {
+            bail!("model.newton_max_iterations must be at least one");
         }
         if self.quoting.min_half_spread_bps >= self.quoting.max_half_spread_bps {
             bail!("minimum half-spread must be below maximum half-spread");

@@ -4,7 +4,7 @@ use crate::hjb::HjbSurface;
 use crate::instrument::InstrumentSpec;
 use crate::latency::{HotLatencySampler, LatencyKind, LatencyMonitor};
 use crate::lockfree::{
-    AtomicBbo, HotPathSignal, SharedQuotes, HOT_SIGNAL_EXECUTION, HOT_SIGNAL_MODEL,
+    BboReader, HotPathSignal, QuoteWriter, HOT_SIGNAL_ACCOUNT, HOT_SIGNAL_FILL, HOT_SIGNAL_MODEL,
     HOT_SIGNAL_SHUTDOWN,
 };
 use crate::metrics::Metrics;
@@ -64,13 +64,13 @@ impl ModelBundle {
 /// a separate flag rather than a magic number.
 #[derive(Debug, Default)]
 #[repr(align(64))]
-pub struct AtomicFlowState {
+struct AtomicFlowState {
     vpin_bits: AtomicU64,
     ready: AtomicBool,
 }
 
 impl AtomicFlowState {
-    pub fn store(&self, vpin: Option<f64>) {
+    fn store(&self, vpin: Option<f64>) {
         match vpin {
             Some(value) => {
                 self.vpin_bits.store(value.to_bits(), Ordering::Release);
@@ -80,7 +80,7 @@ impl AtomicFlowState {
         }
     }
 
-    pub fn load(&self) -> Option<f64> {
+    fn load(&self) -> Option<f64> {
         if !self.ready.load(Ordering::Acquire) {
             return None;
         }
@@ -88,9 +88,31 @@ impl AtomicFlowState {
     }
 }
 
+pub struct FlowWriter(Arc<AtomicFlowState>);
+
+#[derive(Clone)]
+pub struct FlowReader(Arc<AtomicFlowState>);
+
+pub fn flow_channel() -> (FlowWriter, FlowReader) {
+    let inner = Arc::new(AtomicFlowState::default());
+    (FlowWriter(inner.clone()), FlowReader(inner))
+}
+
+impl FlowWriter {
+    pub fn store(&self, vpin: Option<f64>) {
+        self.0.store(vpin);
+    }
+}
+
+impl FlowReader {
+    pub fn load(&self) -> Option<f64> {
+        self.0.load()
+    }
+}
+
 #[derive(Debug, Default)]
 #[repr(align(64))]
-pub struct AtomicRiskState {
+struct AtomicRiskState {
     seq: AtomicU64,
     equity_usdc: AtomicU64,
     daily_realized_pnl_usdc: AtomicU64,
@@ -98,7 +120,7 @@ pub struct AtomicRiskState {
 }
 
 impl AtomicRiskState {
-    pub fn store(&self, value: RiskState) {
+    fn store(&self, value: RiskState) {
         self.seq.fetch_add(1, Ordering::AcqRel);
         self.equity_usdc
             .store(value.equity_usdc.to_bits(), Ordering::Release);
@@ -109,7 +131,7 @@ impl AtomicRiskState {
         self.seq.fetch_add(1, Ordering::Release);
     }
 
-    pub fn load(&self) -> RiskState {
+    fn load(&self) -> RiskState {
         loop {
             let before = self.seq.load(Ordering::Acquire);
             if before & 1 == 1 {
@@ -132,18 +154,40 @@ impl AtomicRiskState {
     }
 }
 
+pub struct RiskWriter(Arc<AtomicRiskState>);
+
+#[derive(Clone)]
+pub struct RiskReader(Arc<AtomicRiskState>);
+
+pub fn risk_channel() -> (RiskWriter, RiskReader) {
+    let inner = Arc::new(AtomicRiskState::default());
+    (RiskWriter(inner.clone()), RiskReader(inner))
+}
+
+impl RiskWriter {
+    pub fn store(&self, value: RiskState) {
+        self.0.store(value);
+    }
+}
+
+impl RiskReader {
+    pub fn load(&self) -> RiskState {
+        self.0.load()
+    }
+}
+
 pub struct HotPathInputs {
-    pub latest_bbo: Arc<AtomicBbo>,
+    pub latest_bbo: BboReader,
     pub signal: Arc<HotPathSignal>,
-    pub desired: Arc<SharedQuotes>,
+    pub desired: QuoteWriter,
     pub model: Arc<ArcSwapOption<ModelBundle>>,
     pub instrument: InstrumentSpec,
     pub quoting: QuotingConfig,
     pub risk: RiskConfig,
     pub model_config: ModelConfig,
     pub inventory_units: Arc<AtomicI64>,
-    pub risk_state: Arc<AtomicRiskState>,
-    pub flow_state: Arc<AtomicFlowState>,
+    pub risk_state: RiskReader,
+    pub flow_state: FlowReader,
     pub flow_guard: FlowGuardConfig,
     pub scientifically_valid: Arc<AtomicBool>,
     pub market_stale_ms: u64,
@@ -180,37 +224,58 @@ pub fn spawn_hot_path(inputs: HotPathInputs) -> Result<JoinHandle<()>> {
     }
 }
 
+pub struct HotPathEngine {
+    policy: CarteaJaimungalPolicy,
+    market_stale_ns: u64,
+    mid_window: MidWindow,
+    flow_guard: FlowGuard,
+    quote_seq: u64,
+    last_quotes: DesiredQuotes,
+    episode_start_ns: u64,
+    latency_sample_mask: u64,
+    latency_counter: u64,
+    latency_sampler: HotLatencySampler,
+    unreported_quote_decisions: u64,
+    last_flow_bbo_recv_ns: u64,
+}
+
+impl HotPathEngine {
+    pub fn new(inputs: &HotPathInputs) -> Result<Self> {
+        let policy = CarteaJaimungalPolicy::new(
+            inputs.instrument.clone(),
+            inputs.quoting.clone(),
+            inputs.risk.clone(),
+        )?;
+        let mid_capacity = inputs
+            .flow_guard
+            .fast_move_window_ms
+            .saturating_mul(200)
+            .div_ceil(1_000)
+            .clamp(64, 8_192) as usize;
+        Ok(Self {
+            policy,
+            market_stale_ns: inputs.market_stale_ms.saturating_mul(1_000_000),
+            mid_window: MidWindow::new(mid_capacity, inputs.flow_guard.fast_move_window_ms),
+            flow_guard: FlowGuard::new(inputs.flow_guard.clone()),
+            quote_seq: 0,
+            last_quotes: DesiredQuotes::default(),
+            episode_start_ns: inputs.clock.now_ns(),
+            latency_sample_mask: inputs.latency_sample_every.saturating_sub(1),
+            latency_counter: 0,
+            latency_sampler: HotLatencySampler::default(),
+            unreported_quote_decisions: 0,
+            last_flow_bbo_recv_ns: 0,
+        })
+    }
+}
+
 fn run_hot_path(inputs: &HotPathInputs) {
     inputs.signal.register_current_thread();
-    let Ok(policy) = CarteaJaimungalPolicy::new(
-        inputs.instrument.clone(),
-        inputs.quoting.clone(),
-        inputs.risk.clone(),
-    ) else {
+    let Ok(mut engine) = HotPathEngine::new(inputs) else {
         inputs.scientifically_valid.store(false, Ordering::Release);
         return;
     };
-    let market_stale_ns = inputs.market_stale_ms.saturating_mul(1_000_000);
-    // Sized for the observed ~50 BBO updates/second with generous headroom, so
-    // the window holds its full span. If it ever overflows the reference
-    // becomes younger, which understates the move -- it delays a trip, never
-    // invents one.
-    let mid_capacity = inputs
-        .flow_guard
-        .fast_move_window_ms
-        .saturating_mul(200)
-        .div_ceil(1_000)
-        .clamp(64, 8_192) as usize;
-    let mut mid_window = MidWindow::new(mid_capacity, inputs.flow_guard.fast_move_window_ms);
-    let mut flow_guard = FlowGuard::new(inputs.flow_guard.clone());
     let idle_poll = Duration::from_millis(100);
-    let mut quote_seq = 0_u64;
-    let mut last_quotes = DesiredQuotes::default();
-    let mut episode_start_ns = inputs.clock.now_ns();
-    let latency_sample_mask = inputs.latency_sample_every.saturating_sub(1);
-    let mut latency_counter = 0_u64;
-    let mut latency_sampler = HotLatencySampler::default();
-    let mut unreported_quote_decisions = 0_u64;
     loop {
         let mut pending = inputs.signal.take_pending();
         if pending == 0 {
@@ -218,45 +283,52 @@ fn run_hot_path(inputs: &HotPathInputs) {
             pending = inputs.signal.take_pending();
         }
         if pending & HOT_SIGNAL_SHUTDOWN != 0 {
-            latency_sampler.flush(&inputs.latency);
-            if unreported_quote_decisions != 0 {
+            engine.latency_sampler.flush(&inputs.latency);
+            if engine.unreported_quote_decisions != 0 {
                 inputs
                     .metrics
                     .quote_decisions
-                    .fetch_add(unreported_quote_decisions, Ordering::Relaxed);
+                    .fetch_add(engine.unreported_quote_decisions, Ordering::Relaxed);
             }
-            quote_seq = quote_seq.wrapping_add(1);
+            engine.quote_seq = engine.quote_seq.wrapping_add(1);
             inputs.desired.publish(DesiredQuotes::empty(
                 QuoteReason::Shutdown,
-                quote_seq,
+                engine.quote_seq,
                 inputs.clock.now_ns(),
             ));
             return;
         }
-        let now_ns = inputs.clock.now_ns();
+        engine.step(inputs, pending, inputs.clock.now_ns());
+    }
+}
+
+impl HotPathEngine {
+    #[inline]
+    pub fn step(&mut self, inputs: &HotPathInputs, pending: usize, now_ns: u64) {
         let started_ns = now_ns;
         let Some(bbo) = inputs.latest_bbo.load() else {
-            continue;
+            return;
         };
-        quote_seq = quote_seq.wrapping_add(1);
+        self.quote_seq = self.quote_seq.wrapping_add(1);
         let bundle_guard = inputs.model.load();
         let Some(bundle) = bundle_guard.as_ref() else {
-            let mut next = DesiredQuotes::empty(QuoteReason::StaleCalibration, quote_seq, now_ns);
+            let mut next =
+                DesiredQuotes::empty(QuoteReason::StaleCalibration, self.quote_seq, now_ns);
             next.source_recv_ns = bbo.recv_ns;
             next.source_exchange_ms = bbo.exchange_ms;
-            if quote_changed(last_quotes, next) {
+            if quote_changed(self.last_quotes, next) {
                 inputs.desired.publish(next);
                 inputs
                     .metrics
                     .quote_publications
                     .fetch_add(1, Ordering::Relaxed);
-                last_quotes = next;
+                self.last_quotes = next;
             }
-            continue;
+            return;
         };
         let inventory = inputs.inventory_units.load(Ordering::Relaxed);
         let q_exact = inventory as f64 / bundle.inventory_unit as f64;
-        let elapsed = now_ns.saturating_sub(episode_start_ns) as f64 / 1_000_000_000.0;
+        let elapsed = now_ns.saturating_sub(self.episode_start_ns) as f64 / 1_000_000_000.0;
         let minimum_elapsed =
             inputs.model_config.horizon_seconds * inputs.model_config.episode_min_elapsed_fraction;
         let episode_rolled = elapsed >= inputs.model_config.horizon_seconds
@@ -264,7 +336,7 @@ fn run_hot_path(inputs: &HotPathInputs) {
                 && q_exact.round() == 0.0
                 && elapsed >= minimum_elapsed);
         let elapsed = if episode_rolled {
-            episode_start_ns = now_ns;
+            self.episode_start_ns = now_ns;
             0.0
         } else {
             elapsed
@@ -272,14 +344,18 @@ fn run_hot_path(inputs: &HotPathInputs) {
         let tau = (inputs.model_config.horizon_seconds - elapsed).max(0.0);
         let calibration_fresh = now_ns <= bundle.valid_until_ns;
         let market_age_ns = now_ns.saturating_sub(bbo.recv_ns);
-        // Fast breaker: how far has the mid moved against the oldest sample
-        // still inside the window. Cheap, allocation-free, and the earliest
-        // signal available -- 16 s ahead of VPIN on the 2026-08-22 cascade.
-        let move_bps = mid_window.observe(now_ns, bbo.mid_units());
+        if bbo.recv_ns != self.last_flow_bbo_recv_ns {
+            self.mid_window.observe(bbo.recv_ns, bbo.mid_units());
+            self.last_flow_bbo_recv_ns = bbo.recv_ns;
+        }
+        let move_bps = self.mid_window.advance(now_ns, bbo.mid_units());
         let flow_tripped =
-            flow_guard.evaluate(now_ns / 1_000_000, move_bps, inputs.flow_state.load());
-        let reason = if pending & HOT_SIGNAL_EXECUTION != 0 {
+            self.flow_guard
+                .evaluate(now_ns / 1_000_000, move_bps, inputs.flow_state.load());
+        let reason = if pending & HOT_SIGNAL_FILL != 0 {
             QuoteReason::Fill
+        } else if pending & HOT_SIGNAL_ACCOUNT != 0 {
+            QuoteReason::AccountUpdate
         } else if pending & HOT_SIGNAL_MODEL != 0 {
             QuoteReason::Calibration
         } else if episode_rolled {
@@ -288,26 +364,24 @@ fn run_hot_path(inputs: &HotPathInputs) {
             QuoteReason::Market
         };
         let mut next = if !inputs.scientifically_valid.load(Ordering::Acquire) {
-            DesiredQuotes::empty(QuoteReason::InvalidRun, quote_seq, now_ns)
+            DesiredQuotes::empty(QuoteReason::InvalidRun, self.quote_seq, now_ns)
         } else if !calibration_fresh {
-            DesiredQuotes::empty(QuoteReason::StaleCalibration, quote_seq, now_ns)
-        } else if market_age_ns > market_stale_ns {
-            DesiredQuotes::empty(QuoteReason::StaleMarket, quote_seq, now_ns)
+            DesiredQuotes::empty(QuoteReason::StaleCalibration, self.quote_seq, now_ns)
+        } else if market_age_ns > self.market_stale_ns {
+            DesiredQuotes::empty(QuoteReason::StaleMarket, self.quote_seq, now_ns)
         } else if !inputs.latency.trading_allowed() {
-            DesiredQuotes::empty(QuoteReason::LatencyLimit, quote_seq, now_ns)
+            DesiredQuotes::empty(QuoteReason::LatencyLimit, self.quote_seq, now_ns)
         } else if flow_tripped {
-            // Empty quotes cancel resting orders immediately: the requote hold
-            // window is explicitly bypassed for a `None` target.
-            DesiredQuotes::empty(QuoteReason::ToxicFlow, quote_seq, now_ns)
+            DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, now_ns)
         } else {
-            policy
+            self.policy
                 .compute(
                     &bundle.surface,
                     bbo,
                     inventory,
                     bundle.inventory_unit,
                     tau,
-                    quote_seq,
+                    self.quote_seq,
                     now_ns,
                     reason,
                     inputs.risk_state.load(),
@@ -323,26 +397,26 @@ fn run_hot_path(inputs: &HotPathInputs) {
         if next.reason == QuoteReason::RiskLimit {
             inputs.metrics.risk_refusals.fetch_add(1, Ordering::Relaxed);
         }
-        unreported_quote_decisions += 1;
-        if unreported_quote_decisions == 64 {
+        self.unreported_quote_decisions += 1;
+        if self.unreported_quote_decisions == 64 {
             inputs
                 .metrics
                 .quote_decisions
-                .fetch_add(unreported_quote_decisions, Ordering::Relaxed);
-            unreported_quote_decisions = 0;
+                .fetch_add(self.unreported_quote_decisions, Ordering::Relaxed);
+            self.unreported_quote_decisions = 0;
         }
-        if quote_changed(last_quotes, next) {
+        if quote_changed(self.last_quotes, next) {
             inputs.desired.publish(next);
             inputs
                 .metrics
                 .quote_publications
                 .fetch_add(1, Ordering::Relaxed);
-            last_quotes = next;
+            self.last_quotes = next;
         }
-        latency_counter = latency_counter.wrapping_add(1);
-        if latency_counter & latency_sample_mask == 0 {
+        self.latency_counter = self.latency_counter.wrapping_add(1);
+        if self.latency_counter & self.latency_sample_mask == 0 {
             let finished_ns = inputs.clock.now_ns();
-            latency_sampler.record(
+            self.latency_sampler.record(
                 &inputs.latency,
                 LatencyKind::HotDecision,
                 finished_ns.saturating_sub(started_ns),
@@ -379,7 +453,7 @@ mod tests {
     use super::*;
     use crate::config::{LatencyConfig, ModelConfig, QuotingConfig, RiskConfig};
     use crate::instrument::InstrumentSpec;
-    use crate::lockfree::HOT_SIGNAL_MARKET;
+    use crate::lockfree::{bbo_channel, quote_channel, HOT_SIGNAL_MARKET};
 
     #[test]
     fn atomic_risk_state_round_trips() {
@@ -388,9 +462,9 @@ mod tests {
             daily_realized_pnl_usdc: -2.0,
             consecutive_losses: 3,
         };
-        let atomic = AtomicRiskState::default();
-        atomic.store(value);
-        assert_eq!(atomic.load(), value);
+        let (writer, reader) = risk_channel();
+        writer.store(value);
+        assert_eq!(reader.load(), value);
     }
 
     #[test]
@@ -425,13 +499,12 @@ mod tests {
 
     #[test]
     fn concurrent_risk_publication_is_coherent() {
-        let state = Arc::new(AtomicRiskState::default());
-        state.store(RiskState {
+        let (writer_state, state) = risk_channel();
+        writer_state.store(RiskState {
             equity_usdc: 1.0,
             daily_realized_pnl_usdc: 10.0,
             consecutive_losses: 100,
         });
-        let writer_state = state.clone();
         let writer = std::thread::spawn(move || {
             for index in 0..100_000 {
                 let base = if index & 1 == 0 { 1.0 } else { 2.0 };
@@ -452,8 +525,8 @@ mod tests {
 
     #[test]
     fn absent_calibration_publishes_no_orders() {
-        let bbo = Arc::new(AtomicBbo::default());
-        bbo.store(crate::types::Bbo {
+        let (bbo_writer, bbo) = bbo_channel();
+        bbo_writer.store(crate::types::Bbo {
             bid_px: 100,
             bid_sz: 10,
             ask_px: 102,
@@ -462,14 +535,14 @@ mod tests {
             recv_ns: 0,
         });
         let signal = Arc::new(HotPathSignal::default());
-        let desired = Arc::new(SharedQuotes::default());
-        let risk_state = Arc::new(AtomicRiskState::default());
-        risk_state.store(RiskState {
+        let (desired_writer, desired) = quote_channel();
+        let (risk_writer, risk_state) = risk_channel();
+        risk_writer.store(RiskState {
             equity_usdc: 1_000.0,
             ..RiskState::default()
         });
         let handle = spawn_hot_path(HotPathInputs {
-            flow_state: Arc::new(AtomicFlowState::default()),
+            flow_state: flow_channel().1,
             // The guard is off in this test: it exercises the publication path,
             // and an armed breaker would withdraw quotes on the synthetic jumps.
             flow_guard: FlowGuardConfig {
@@ -478,7 +551,7 @@ mod tests {
             },
             latest_bbo: bbo,
             signal: signal.clone(),
-            desired: desired.clone(),
+            desired: desired_writer,
             model: Arc::new(ArcSwapOption::empty()),
             instrument: InstrumentSpec {
                 symbol: "SYN".to_owned(),

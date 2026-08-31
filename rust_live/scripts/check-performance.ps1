@@ -1,39 +1,34 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Baseline,
-    [int]$Cpu = -1
+    [int]$Cpu = 4,
+    [int]$Runs = 7
 )
 
 $ErrorActionPreference = "Stop"
 $temporary = [System.IO.Path]::GetTempFileName()
 try {
-    $env:MM_BENCH_OUTPUT = $temporary
-    if ($Cpu -ge 0) {
-        $env:MM_BENCH_CPU = "$Cpu"
-    } else {
-        Remove-Item Env:MM_BENCH_CPU -ErrorAction SilentlyContinue
-    }
-    cargo run --locked --release --bin hot-path-bench | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-        throw "hot-path benchmark failed"
-    }
+    & "$PSScriptRoot\run-performance-study.ps1" -Output $temporary -Cpu $Cpu -Runs $Runs
+    if ($LASTEXITCODE -ne 0) { throw "performance study failed" }
     $reference = Get-Content -Raw -LiteralPath $Baseline | ConvertFrom-Json
     $candidate = Get-Content -Raw -LiteralPath $temporary | ConvertFrom-Json
-
-    $p50Regression = $candidate.quote_batch_ns_per_decision.p50 / $reference.quote_batch_ns_per_decision.p50 - 1.0
-    $p99Regression = $candidate.quote_batch_ns_per_decision.p99 / $reference.quote_batch_ns_per_decision.p99 - 1.0
-    if ($p50Regression -gt 0.05) {
-        throw ("quote p50 regressed by {0:P2}; limit is 5%" -f $p50Regression)
+    foreach ($field in @("study_schema_version", "benchmark_schema_version", "pinned_cpu", "cpu_model")) {
+        if ($candidate.$field -ne $reference.$field) { throw "incompatible baseline: $field" }
     }
-    if ($p99Regression -gt 0.10) {
-        throw ("quote p99 regressed by {0:P2}; limit is 10%" -f $p99Regression)
+    foreach ($field in @("profile", "opt_level", "target", "target_features", "rustc")) {
+        if ($candidate.build.$field -ne $reference.build.$field) { throw "incompatible baseline build: $field" }
     }
-    if ($candidate.monitoring_overhead_percent -gt 5.0) {
-        throw ("latency monitoring overhead is {0:N2}%; limit is 5%" -f $candidate.monitoring_overhead_percent)
+    foreach ($name in @("policy_kernel_p50_ns", "hot_step_p50_ns")) {
+        $regression = $candidate.metrics.$name / $reference.metrics.$name - 1.0
+        if ($regression -gt 0.05) { throw "$name regressed by $($regression.ToString('P2')); limit is 5%" }
     }
-    Write-Host ("Performance gates passed: p50={0:P2}, p99={1:P2}, monitoring={2:N2}%" -f $p50Regression, $p99Regression, $candidate.monitoring_overhead_percent)
+    foreach ($name in @("policy_kernel_p99_ns", "hot_step_p99_ns")) {
+        $regression = $candidate.metrics.$name / $reference.metrics.$name - 1.0
+        if ($regression -gt 0.10) { throw "$name regressed by $($regression.ToString('P2')); limit is 10%" }
+    }
+    $overheadIncrease = $candidate.metrics.monitoring_overhead_percent - $reference.metrics.monitoring_overhead_percent
+    if ($overheadIncrease -gt 5.0) { throw "monitoring overhead increased by $overheadIncrease percentage points; limit is 5" }
+    Write-Host "Performance gates passed against $Baseline"
 } finally {
-    Remove-Item Env:MM_BENCH_OUTPUT -ErrorAction SilentlyContinue
-    Remove-Item Env:MM_BENCH_CPU -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
 }

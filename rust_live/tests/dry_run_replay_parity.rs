@@ -146,18 +146,15 @@ fn fill_events(events: &[ExecutionEvent]) -> Vec<(i64, i64, u64, bool)> {
         .collect()
 }
 
-/// Replay drives `reconcile` with the triggering event's exchange time; the
-/// dry run drives it with the decision's `source_exchange_ms`. On this fixture
-/// those are the same instant, so the two paths must produce identical fills
-/// and identical equity.
+/// Hand-check the exchange-time fixture directly. This deliberately does not
+/// claim top-level replay/public-path parity: both modes share this backend,
+/// and running the same helper twice would be tautological evidence.
 #[tokio::test]
-async fn dry_run_and_replay_time_bases_produce_identical_fills() {
-    let replay_style = run_fixture(1_000).await; // event_ms of the trigger
-    let dry_run_style = run_fixture(decision(bbo(1_000)).source_exchange_ms).await;
+async fn exchange_time_fixture_produces_the_expected_fill() {
+    let result = run_fixture(1_000).await;
     let expected = vec![(100_000, 4, 2_000, true)];
-    assert_eq!(fill_events(&replay_style.0), expected);
-    assert_eq!(fill_events(&dry_run_style.0), expected);
-    assert_eq!(replay_style.1, dry_run_style.1);
+    assert_eq!(fill_events(&result.0), expected);
+    assert!(result.1.is_finite());
 }
 
 /// The old dry-run bug in one assertion: reconciling on a clock that runs

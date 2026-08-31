@@ -17,7 +17,7 @@ use crate::hyperliquid::signing::{
 };
 use crate::instrument::InstrumentSpec;
 use crate::latency::{LatencyKind, LatencyMonitor};
-use crate::lockfree::AtomicBbo;
+use crate::lockfree::BboReader;
 use crate::types::{
     unix_ms, AccountState, Bbo, DesiredQuotes, ExecutionEvent, Fill, MarketEvent, ProcessClock,
     Side,
@@ -187,7 +187,7 @@ pub struct HyperliquidLiveBackend {
     /// The hot path's shared BBO slot, when attached. Quote validation reads
     /// this so decision and validation see one snapshot; `latest_bbo` (fed by
     /// the drained event ring) is the fallback and can lag under backlog.
-    market_bbo: Option<Arc<AtomicBbo>>,
+    market_bbo: Option<BboReader>,
     session_started_at_ms: u64,
     pending_events: Vec<ExecutionEvent>,
     last_reconcile_ms: u64,
@@ -396,7 +396,7 @@ impl HyperliquidLiveBackend {
 
     /// Attach the hot path's shared BBO slot so order validation prices from
     /// the same snapshot the quote decision used.
-    pub fn attach_market_bbo(&mut self, slot: Arc<AtomicBbo>) {
+    pub fn attach_market_bbo(&mut self, slot: BboReader) {
         self.market_bbo = Some(slot);
     }
 
@@ -478,9 +478,24 @@ impl HyperliquidLiveBackend {
             self.diagnostics.cancel_requests_used.saturating_add(count);
     }
 
-    async fn refresh_user_rate_limit(&mut self, now_ms: u64) -> Result<()> {
-        let value = self.client.user_rate_limit().await?;
-        let (volume, used, cap) = parse_user_rate_limit(&value)?;
+    pub fn user_rate_limit_refresh_due(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.last_user_rate_limit_refresh_ms)
+            >= self.live.user_rate_limit_refresh_ms
+    }
+
+    pub fn spawn_user_rate_limit_refresh(&self, sender: mpsc::Sender<Result<serde_json::Value>>) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _ = sender.send(client.user_rate_limit().await).await;
+        });
+    }
+
+    pub fn apply_user_rate_limit_refresh(
+        &mut self,
+        value: &serde_json::Value,
+        now_ms: u64,
+    ) -> Result<()> {
+        let (volume, used, cap) = parse_user_rate_limit(value)?;
         self.diagnostics.cumulative_volume_usdc = volume;
         // Never move the local estimate backwards between authoritative
         // refreshes: actions submitted concurrently with this info request may
@@ -490,6 +505,10 @@ impl HyperliquidLiveBackend {
         self.diagnostics.quota_refreshes = self.diagnostics.quota_refreshes.saturating_add(1);
         self.last_user_rate_limit_refresh_ms = now_ms;
         Ok(())
+    }
+
+    pub fn note_user_rate_limit_refresh_failure(&mut self, error: &anyhow::Error) {
+        self.degrade("userRateLimit refresh failed", error);
     }
 
     pub const fn diagnostics(&self) -> &LiveExecutionDiagnostics {
@@ -947,6 +966,28 @@ impl HyperliquidLiveBackend {
                 self.diagnostics.operationally_healthy = false;
                 self.note_rate_limit_if_applicable(unix_ms(), &reason);
                 self.diagnostics.invalid_reason = Some(reason);
+                self.reconcile_requested = true;
+            }
+            SessionEvent::RateLimitPressure {
+                retry_after_ms,
+                reason,
+                ..
+            } => {
+                let now_ms = unix_ms();
+                self.rate_limited_until_ms = self
+                    .rate_limited_until_ms
+                    .max(now_ms.saturating_add(retry_after_ms));
+                self.diagnostics.rate_limit_cooldowns =
+                    self.diagnostics.rate_limit_cooldowns.saturating_add(1);
+                self.diagnostics.operationally_healthy = false;
+                self.diagnostics.invalid_reason = Some(reason);
+            }
+            SessionEvent::InitialSnapshotTimeout { .. } => {
+                self.startup_reconciliation = StartupReconciliation::Required;
+                self.diagnostics.operationally_healthy = false;
+                self.diagnostics.invalid_reason =
+                    Some("initial account WebSocket snapshots timed out".to_owned());
+                self.reconcile_requested = true;
             }
         }
         Ok(std::mem::take(&mut self.pending_events))
@@ -959,12 +1000,12 @@ impl HyperliquidLiveBackend {
                 Some("live-state persistence is degraded; new exposure paused".to_owned());
             self.reconcile_requested = true;
         }
-        if now_ms.saturating_sub(self.last_user_rate_limit_refresh_ms)
-            >= self.live.user_rate_limit_refresh_ms
+        if self.rate_limited_until_ms != 0
+            && now_ms >= self.rate_limited_until_ms
+            && !self.diagnostics.operationally_healthy
         {
-            if let Err(error) = self.refresh_user_rate_limit(now_ms).await {
-                self.degrade("userRateLimit refresh failed", &error);
-            }
+            self.rate_limited_until_ms = 0;
+            self.reconcile_requested = true;
         }
         if self.deferred_desired.is_some()
             && now_ms.saturating_sub(self.last_quote_action_ms)
@@ -1299,7 +1340,7 @@ impl HyperliquidLiveBackend {
                 .values()
                 .any(|order| order.status == LiveOrderStatus::UnknownOutcome)
         })?;
-        if self.session.healthy() && !unresolved {
+        if self.session.healthy() && !unresolved && !self.rate_limited(unix_ms()) {
             self.diagnostics.operationally_healthy = true;
             if self.rejection_recovery == RejectionRecovery::AwaitingReconcile {
                 self.rejection_recovery = RejectionRecovery::Idle;
@@ -2143,7 +2184,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             let bbo = self
                 .market_bbo
                 .as_ref()
-                .and_then(|slot| slot.load())
+                .and_then(mm_runtime::lockfree::BboReader::load)
                 .or(self.latest_bbo)
                 .context("cannot place live quote without BBO")?;
             // A refused validation means "do not place this order", never
@@ -2863,6 +2904,24 @@ mod tests {
         ] {
             assert!(!is_rate_limit_reason(reason), "{reason}");
         }
+    }
+
+    #[tokio::test]
+    async fn ping_budget_pressure_preserves_session_and_schedules_recovery() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        let now = unix_ms();
+        backend
+            .process_session_event(SessionEvent::RateLimitPressure {
+                retry_after_ms: 10,
+                reason: "Hyperliquid WebSocket message budget reached; retry after 10ms".to_owned(),
+                received_ns: 1,
+            })
+            .unwrap();
+        assert!(backend.session.healthy());
+        assert!(!backend.operationally_healthy());
+        backend.maintenance(now.saturating_add(20)).await.unwrap();
+        assert!(backend.reconciliation_requested());
+        assert_eq!(backend.rate_limited_until_ms, 0);
     }
 
     /// After a rate-limit refusal the bot must stop adding exposure for the

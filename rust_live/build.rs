@@ -35,8 +35,27 @@ fn main() {
     println!("cargo:rustc-env=MM_TARGET_FEATURES={target_features}");
     println!("cargo:rustc-env=MM_RUSTC_VERSION={rustc}");
     println!("cargo:rustc-env=MM_GIT_REVISION={revision}");
-    if std::path::Path::new("../.git/HEAD").exists() {
-        println!("cargo:rerun-if-changed=../.git/HEAD");
+    // Watching only `.git/HEAD` is insufficient on a branch: that file keeps
+    // saying `ref: refs/heads/main` while the referenced file changes on every
+    // commit. Ask Git for worktree-aware paths and watch both representations.
+    let head_path = command_output("git", &["rev-parse", "--git-path", "HEAD"], "");
+    if !head_path.is_empty() {
+        println!("cargo:rerun-if-changed={head_path}");
+    }
+    let symbolic_ref = command_output("git", &["symbolic-ref", "-q", "HEAD"], "");
+    if !symbolic_ref.is_empty() {
+        let ref_path = command_output(
+            "git",
+            &["rev-parse", "--git-path", symbolic_ref.as_str()],
+            "",
+        );
+        if !ref_path.is_empty() {
+            println!("cargo:rerun-if-changed={ref_path}");
+        }
+        let packed_refs = command_output("git", &["rev-parse", "--git-path", "packed-refs"], "");
+        if !packed_refs.is_empty() {
+            println!("cargo:rerun-if-changed={packed_refs}");
+        }
     }
     println!("cargo:rerun-if-env-changed=RUSTFLAGS");
     println!("cargo:rerun-if-env-changed=MM_GIT_REVISION");

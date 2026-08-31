@@ -14,6 +14,7 @@ use crate::transport::{
 use crate::types::{unix_ms, ProcessClock};
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +24,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::warn;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
     Connected {
         generation: u64,
@@ -49,6 +51,15 @@ pub enum SessionEvent {
         reason: String,
         received_ns: u64,
     },
+    RateLimitPressure {
+        retry_after_ms: u64,
+        reason: String,
+        received_ns: u64,
+    },
+    InitialSnapshotTimeout {
+        generation: u64,
+        received_ns: u64,
+    },
     Disconnected {
         generation: u64,
         received_ns: u64,
@@ -56,7 +67,8 @@ pub enum SessionEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountChannel {
     OrderUpdates,
     UserFills,
@@ -85,7 +97,8 @@ impl AccountChannel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ActionPurpose {
     Order,
     ReduceOnly,
@@ -468,6 +481,10 @@ where
         },
     )?;
     let mut subscription_acks = HashSet::<String>::new();
+    let mut snapshot_channels = HashSet::<String>::new();
+    let mut subscriptions_ready = false;
+    let mut ready_sent = false;
+    let mut snapshot_deadline = None;
     let mut request_id = 1_u64;
     let mut inflight = InflightBook::new(args.state.clone());
     let mut ping = tokio::time::interval(args.ping_interval);
@@ -533,9 +550,22 @@ where
                                     })
                                     .context("subscriptionResponse has no subscription type")?;
                                 subscription_acks.insert(subscription.to_owned());
-                                if subscription_acks.len() == ACCOUNT_SUBSCRIPTION_COUNT {
+                                if subscription_acks.len() == ACCOUNT_SUBSCRIPTION_COUNT
+                                    && !subscriptions_ready
+                                {
+                                    subscriptions_ready = true;
                                     healthy.store(true, Ordering::Release);
-                                    deliver_event(&args.events, healthy, SessionEvent::Ready { generation, received_ns })?;
+                                    snapshot_deadline = Some(
+                                        tokio::time::Instant::now()
+                                            + Duration::from_millis(
+                                                args.config.account_snapshot_timeout_ms,
+                                            ),
+                                    );
+                                    if initial_snapshots_complete(&snapshot_channels) {
+                                        ready_sent = true;
+                                        snapshot_deadline = None;
+                                        deliver_event(&args.events, healthy, SessionEvent::Ready { generation, received_ns })?;
+                                    }
                                 }
                             }
                             "post" => {
@@ -578,6 +608,9 @@ where
                             }
                             "" => {}
                             _ => {
+                                if required_initial_snapshot(&channel) {
+                                    snapshot_channels.insert(channel.clone());
+                                }
                                 deliver_event(&args.events, healthy, SessionEvent::AccountData {
                                     generation,
                                     received_ns,
@@ -589,6 +622,21 @@ where
                                         .map(serde_json::Value::take)
                                         .unwrap_or_default(),
                                 })?;
+                                if subscriptions_ready
+                                    && !ready_sent
+                                    && initial_snapshots_complete(&snapshot_channels)
+                                {
+                                    ready_sent = true;
+                                    snapshot_deadline = None;
+                                    deliver_event(
+                                        &args.events,
+                                        healthy,
+                                        SessionEvent::Ready {
+                                            generation,
+                                            received_ns,
+                                        },
+                                    )?;
+                                }
                             }
                         }
                     }
@@ -658,7 +706,7 @@ where
                 if let Err(error) = rate.consume(purpose.safety_critical()) {
                     let reason = error.to_string();
                     if let Some(response) = command.response {
-                        let _ = response.send(Err(error));
+                        let _ = response.send(Err(error.into()));
                     } else {
                         deliver_event(&args.events, healthy, SessionEvent::ActionRefused {
                             purpose,
@@ -743,11 +791,35 @@ where
                         write.send(Message::Text(application_ping().into())).await?;
                     }
                     Err(error) => {
-                        healthy.store(false, Ordering::Release);
                         warn!(%error, "skipping application ping: WebSocket message budget exhausted");
-                        return Err(error);
+                        deliver_event(
+                            &args.events,
+                            healthy,
+                            SessionEvent::RateLimitPressure {
+                                retry_after_ms: error.retry_after_ms,
+                                reason: error.to_string(),
+                                received_ns: args.clock.now_ns(),
+                            },
+                        )?;
                     }
                 }
+            }
+            () = async {
+                if let Some(deadline) = snapshot_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if !ready_sent => {
+                snapshot_deadline = None;
+                deliver_event(
+                    &args.events,
+                    healthy,
+                    SessionEvent::InitialSnapshotTimeout {
+                        generation,
+                        received_ns: args.clock.now_ns(),
+                    },
+                )?;
             }
             () = tokio::time::sleep_until(last_inbound + args.idle_timeout) => {
                 bail!("live WebSocket idle timeout");
@@ -797,6 +869,19 @@ where
     }
 }
 
+fn required_initial_snapshot(channel: &str) -> bool {
+    matches!(
+        channel,
+        "clearinghouseState" | "openOrders" | "activeAssetData"
+    )
+}
+
+fn initial_snapshots_complete(channels: &HashSet<String>) -> bool {
+    ["clearinghouseState", "openOrders", "activeAssetData"]
+        .iter()
+        .all(|channel| channels.contains(*channel))
+}
+
 const fn command_age_ms(dequeued_ns: u64, enqueued_ns: u64) -> u64 {
     dequeued_ns.saturating_sub(enqueued_ns) / 1_000_000
 }
@@ -812,6 +897,8 @@ const fn session_event_kind(event: &SessionEvent) -> &'static str {
         SessionEvent::AccountData { .. } => "account_data",
         SessionEvent::ActionCompleted { .. } => "action_completed",
         SessionEvent::ActionRefused { .. } => "action_refused",
+        SessionEvent::RateLimitPressure { .. } => "rate_limit_pressure",
+        SessionEvent::InitialSnapshotTimeout { .. } => "initial_snapshot_timeout",
         SessionEvent::Disconnected { .. } => "disconnected",
     }
 }
@@ -1128,6 +1215,29 @@ struct SentWebSocketMessage {
     safety_critical: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WebSocketBudgetExhausted {
+    retry_after_ms: u64,
+    regular_only: bool,
+}
+
+impl std::fmt::Display for WebSocketBudgetExhausted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let budget = if self.regular_only {
+            "regular WebSocket message"
+        } else {
+            "WebSocket message"
+        };
+        write!(
+            formatter,
+            "Hyperliquid {budget} budget reached; retry after {}ms",
+            self.retry_after_ms
+        )
+    }
+}
+
+impl std::error::Error for WebSocketBudgetExhausted {}
+
 impl WebSocketRateLimiter {
     fn new(maximum_per_minute: u64, reserve_fraction: f64) -> Self {
         Self {
@@ -1138,7 +1248,10 @@ impl WebSocketRateLimiter {
         }
     }
 
-    fn consume(&mut self, safety_critical: bool) -> Result<()> {
+    fn consume(
+        &mut self,
+        safety_critical: bool,
+    ) -> std::result::Result<(), WebSocketBudgetExhausted> {
         let now = tokio::time::Instant::now();
         let cutoff = now - Duration::from_secs(60);
         while self.sent.front().is_some_and(|sent| sent.at < cutoff) {
@@ -1149,10 +1262,19 @@ impl WebSocketRateLimiter {
             }
         }
         if self.sent.len() as u64 >= self.maximum_per_minute {
-            bail!("Hyperliquid WebSocket message rate limit reached");
+            return Err(WebSocketBudgetExhausted {
+                retry_after_ms: retry_after_ms(self.sent.front(), now),
+                regular_only: false,
+            });
         }
         if !safety_critical && self.regular_in_window >= self.regular_limit {
-            bail!("Hyperliquid regular WebSocket message budget reached");
+            return Err(WebSocketBudgetExhausted {
+                retry_after_ms: retry_after_ms(
+                    self.sent.iter().find(|sent| !sent.safety_critical),
+                    now,
+                ),
+                regular_only: true,
+            });
         }
         if !safety_critical {
             self.regular_in_window += 1;
@@ -1163,6 +1285,15 @@ impl WebSocketRateLimiter {
         });
         Ok(())
     }
+}
+
+fn retry_after_ms(sent: Option<&SentWebSocketMessage>, now: tokio::time::Instant) -> u64 {
+    sent.map_or(1, |sent| {
+        sent.at
+            .checked_add(Duration::from_secs(60))
+            .and_then(|deadline| deadline.checked_duration_since(now))
+            .map_or(1, |remaining| remaining.as_millis().max(1) as u64)
+    })
 }
 
 #[cfg(test)]
@@ -1188,6 +1319,17 @@ mod tests {
     }
 
     #[test]
+    fn readiness_requires_all_authoritative_account_snapshots() {
+        let mut channels = HashSet::new();
+        channels.insert("clearinghouseState".to_owned());
+        channels.insert("openOrders".to_owned());
+        assert!(!initial_snapshots_complete(&channels));
+        channels.insert("activeAssetData".to_owned());
+        assert!(initial_snapshots_complete(&channels));
+        assert!(!required_initial_snapshot("userFills"));
+    }
+
+    #[test]
     fn rate_limiter_preserves_safety_reserve() {
         let mut limiter = WebSocketRateLimiter::new(4, 0.25);
         limiter.consume(false).unwrap();
@@ -1209,6 +1351,16 @@ mod tests {
         limiter.consume(false).unwrap();
         assert!(limiter.consume(false).is_err());
         assert!(limiter.consume(true).is_err());
+    }
+
+    #[test]
+    fn exhausted_budget_reports_when_capacity_returns() {
+        let mut limiter = WebSocketRateLimiter::new(2, 0.5);
+        limiter.consume(false).unwrap();
+        limiter.consume(true).unwrap();
+        let exhausted = limiter.consume(true).unwrap_err();
+        assert!(!exhausted.regular_only);
+        assert!((1..=60_000).contains(&exhausted.retry_after_ms));
     }
 
     #[tokio::test(start_paused = true)]

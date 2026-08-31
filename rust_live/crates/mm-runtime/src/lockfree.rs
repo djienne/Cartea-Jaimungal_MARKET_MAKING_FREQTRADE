@@ -1,6 +1,7 @@
 use crate::types::{Bbo, DesiredQuotes, OrderIntent, QuoteReason, Side};
 use crossbeam_queue::ArrayQueue;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::thread::{self, Thread};
 use std::time::Duration;
@@ -8,9 +9,10 @@ use tokio::sync::Notify;
 
 pub const HOT_SIGNAL_MARKET: usize = 1 << 0;
 pub const HOT_SIGNAL_MODEL: usize = 1 << 1;
-pub const HOT_SIGNAL_EXECUTION: usize = 1 << 2;
+pub const HOT_SIGNAL_FILL: usize = 1 << 2;
 pub const HOT_SIGNAL_EPISODE: usize = 1 << 3;
 pub const HOT_SIGNAL_SHUTDOWN: usize = 1 << 4;
+pub const HOT_SIGNAL_ACCOUNT: usize = 1 << 5;
 
 #[derive(Debug, Default)]
 #[repr(align(64))]
@@ -54,7 +56,7 @@ impl HotPathSignal {
 /// Single-writer coherent latest-value publication for the BBO.
 #[derive(Debug, Default)]
 #[repr(align(64))]
-pub struct AtomicBbo {
+struct AtomicBbo {
     seq: AtomicU64,
     valid: AtomicBool,
     bid_px: AtomicI64,
@@ -67,7 +69,7 @@ pub struct AtomicBbo {
 
 impl AtomicBbo {
     #[inline]
-    pub fn store(&self, bbo: Bbo) {
+    fn store(&self, bbo: Bbo) {
         self.seq.fetch_add(1, Ordering::AcqRel);
         self.bid_px.store(bbo.bid_px, Ordering::Release);
         self.bid_sz.store(bbo.bid_sz, Ordering::Release);
@@ -80,7 +82,7 @@ impl AtomicBbo {
     }
 
     #[inline]
-    pub fn load(&self) -> Option<Bbo> {
+    fn load(&self) -> Option<Bbo> {
         loop {
             let before = self.seq.load(Ordering::Acquire);
             if before & 1 == 1 {
@@ -102,6 +104,41 @@ impl AtomicBbo {
             }
             std::hint::spin_loop();
         }
+    }
+}
+
+/// The sole publisher for one coherent BBO slot. Deliberately not `Clone`:
+/// the seqlock algorithm is correct only with exactly one writer.
+pub struct BboWriter {
+    inner: Arc<AtomicBbo>,
+}
+
+#[derive(Clone)]
+pub struct BboReader {
+    inner: Arc<AtomicBbo>,
+}
+
+pub fn bbo_channel() -> (BboWriter, BboReader) {
+    let inner = Arc::new(AtomicBbo::default());
+    (
+        BboWriter {
+            inner: inner.clone(),
+        },
+        BboReader { inner },
+    )
+}
+
+impl BboWriter {
+    #[inline]
+    pub fn store(&self, bbo: Bbo) {
+        self.inner.store(bbo);
+    }
+}
+
+impl BboReader {
+    #[inline]
+    pub fn load(&self) -> Option<Bbo> {
+        self.inner.load()
     }
 }
 
@@ -276,7 +313,7 @@ impl Drop for WaiterGuard<'_> {
     }
 }
 
-pub struct SharedQuotes {
+struct SharedQuotes {
     value: AtomicDesiredQuotes,
     waiters: AtomicUsize,
     changed: Notify,
@@ -294,7 +331,7 @@ impl Default for SharedQuotes {
 
 impl SharedQuotes {
     #[inline]
-    pub fn publish(&self, quotes: DesiredQuotes) {
+    fn publish(&self, quotes: DesiredQuotes) {
         self.value.store(quotes);
         if self.waiters.load(Ordering::Acquire) != 0 {
             self.changed.notify_one();
@@ -302,11 +339,11 @@ impl SharedQuotes {
     }
 
     #[inline]
-    pub fn load(&self) -> DesiredQuotes {
+    fn load(&self) -> DesiredQuotes {
         self.value.load()
     }
 
-    pub async fn changed_after(&self, observed_quote_seq: u64) -> DesiredQuotes {
+    async fn changed_after(&self, observed_quote_seq: u64) -> DesiredQuotes {
         loop {
             let current = self.load();
             if current.quote_seq != observed_quote_seq {
@@ -329,6 +366,49 @@ impl SharedQuotes {
     #[cfg(test)]
     pub(crate) fn waiter_count(&self) -> usize {
         self.waiters.load(Ordering::Acquire)
+    }
+}
+
+/// Sole desired-quote publisher, owned by the dedicated hot thread.
+pub struct QuoteWriter {
+    inner: Arc<SharedQuotes>,
+}
+
+#[derive(Clone)]
+pub struct QuoteReader {
+    inner: Arc<SharedQuotes>,
+}
+
+pub fn quote_channel() -> (QuoteWriter, QuoteReader) {
+    let inner = Arc::new(SharedQuotes::default());
+    (
+        QuoteWriter {
+            inner: inner.clone(),
+        },
+        QuoteReader { inner },
+    )
+}
+
+impl QuoteWriter {
+    #[inline]
+    pub fn publish(&self, quotes: DesiredQuotes) {
+        self.inner.publish(quotes);
+    }
+}
+
+impl QuoteReader {
+    #[inline]
+    pub fn load(&self) -> DesiredQuotes {
+        self.inner.load()
+    }
+
+    pub async fn changed_after(&self, observed_quote_seq: u64) -> DesiredQuotes {
+        self.inner.changed_after(observed_quote_seq).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiter_count(&self) -> usize {
+        self.inner.waiter_count()
     }
 }
 
@@ -438,6 +518,7 @@ const fn reason_to_u8(reason: QuoteReason) -> u8 {
         QuoteReason::Startup => 0,
         QuoteReason::Market => 1,
         QuoteReason::Fill => 2,
+        QuoteReason::AccountUpdate => 12,
         QuoteReason::Calibration => 3,
         QuoteReason::Episode => 4,
         QuoteReason::StaleMarket => 5,
@@ -454,6 +535,7 @@ const fn reason_from_u8(value: u8) -> QuoteReason {
     match value {
         1 => QuoteReason::Market,
         2 => QuoteReason::Fill,
+        12 => QuoteReason::AccountUpdate,
         3 => QuoteReason::Calibration,
         4 => QuoteReason::Episode,
         5 => QuoteReason::StaleMarket,
@@ -481,6 +563,7 @@ mod tests {
             QuoteReason::Startup,
             QuoteReason::Market,
             QuoteReason::Fill,
+            QuoteReason::AccountUpdate,
             QuoteReason::Calibration,
             QuoteReason::Episode,
             QuoteReason::StaleMarket,
@@ -508,14 +591,14 @@ mod tests {
         // fails when a variant is added without extending this test.
         assert_eq!(
             codes.len(),
-            12,
+            13,
             "a QuoteReason variant is missing from this test"
         );
     }
 
     #[test]
     fn atomic_bbo_round_trip() {
-        let slot = AtomicBbo::default();
+        let (writer, slot) = bbo_channel();
         let bbo = Bbo {
             bid_px: 100,
             bid_sz: 4,
@@ -524,14 +607,14 @@ mod tests {
             exchange_ms: 7,
             recv_ns: 9,
         };
-        slot.store(bbo);
+        writer.store(bbo);
         assert_eq!(slot.load(), Some(bbo));
     }
 
     #[test]
     fn atomic_bbo_remains_coherent_under_contention() {
-        let slot = std::sync::Arc::new(AtomicBbo::default());
-        slot.store(Bbo {
+        let (writer_slot, slot) = bbo_channel();
+        writer_slot.store(Bbo {
             bid_px: 1,
             bid_sz: 10,
             ask_px: 2,
@@ -539,7 +622,6 @@ mod tests {
             exchange_ms: 1,
             recv_ns: 100,
         });
-        let writer_slot = slot.clone();
         let writer = std::thread::spawn(move || {
             for value in 1..=100_000_i64 {
                 writer_slot.store(Bbo {
@@ -573,8 +655,8 @@ mod tests {
 
     #[tokio::test]
     async fn shared_quotes_coalesces() {
-        let shared = SharedQuotes::default();
-        shared.publish(DesiredQuotes {
+        let (writer, shared) = quote_channel();
+        writer.publish(DesiredQuotes {
             quote_seq: 2,
             generated_ns: 11,
             source_recv_ns: 7,
@@ -588,8 +670,8 @@ mod tests {
 
     #[test]
     fn latency_limit_reason_survives_atomic_publication() {
-        let shared = SharedQuotes::default();
-        shared.publish(DesiredQuotes {
+        let (writer, shared) = quote_channel();
+        writer.publish(DesiredQuotes {
             quote_seq: 1,
             reason: QuoteReason::LatencyLimit,
             ..DesiredQuotes::default()
@@ -603,7 +685,7 @@ mod tests {
     /// permanently defeated the notify-elision.
     #[tokio::test]
     async fn dropped_waiters_release_their_counter_slots() {
-        let shared = SharedQuotes::default();
+        let (writer, shared) = quote_channel();
         for _ in 0..8 {
             let waiting = shared.changed_after(0);
             tokio::pin!(waiting);
@@ -623,7 +705,7 @@ mod tests {
         assert_eq!(ring.waiter_count(), 0);
 
         // Wakeups still work after churn.
-        shared.publish(DesiredQuotes {
+        writer.publish(DesiredQuotes {
             quote_seq: 5,
             ..DesiredQuotes::default()
         });

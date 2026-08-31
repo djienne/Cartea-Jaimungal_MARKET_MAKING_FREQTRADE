@@ -8,9 +8,12 @@
   },
   "vpin": {
     "bucket_volume": 2404277.099980851,
-    "breaches": 39,
+    "breaches": 38,
     "outside_zone": 0,
-    "first_breach_ms": 1787375491560.0,
-    "max_outside": 0.37114732893336266
+    "first_breach_ms": 1787375490371.0,
+    "max_outside": 0.36659111120492,
+    "peak_inside": 0.6549446672926303,
+    "recommended_threshold": 0.4,
+    "tier_valid": true
   }
 }

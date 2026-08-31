@@ -205,6 +205,9 @@ pub struct LiveSessionReport {
     pub latency: LatencySnapshot,
     pub scientifically_valid: bool,
     pub event_log_path: String,
+    pub event_log_format: &'static str,
+    pub event_log_max_bytes: u64,
+    pub event_log_keep: usize,
     pub market_event_ring_high_water: usize,
 }
 
@@ -220,6 +223,8 @@ pub struct ModelReport {
     pub phi_effective: f64,
     pub alpha_effective: f64,
     pub kappa_average: f64,
+    pub max_newton_iterations_used: usize,
+    pub max_final_residual: f64,
 }
 
 impl ModelReport {
@@ -235,6 +240,8 @@ impl ModelReport {
             phi_effective: surface.phi_effective,
             alpha_effective: surface.alpha_effective,
             kappa_average: surface.kappa_average,
+            max_newton_iterations_used: surface.max_newton_iterations_used,
+            max_final_residual: surface.max_final_residual,
         }
     }
 }
@@ -337,8 +344,16 @@ impl JsonlEventLogger {
     where
         T: Serialize + Clone + Send + 'static,
     {
+        self.log_owned(event_type, exchange_ms, payload.clone())
+    }
+
+    /// Queue an owned payload so serialization stays on the writer thread and
+    /// the caller does not pay an additional clone.
+    pub fn log_owned<T>(&self, event_type: &str, exchange_ms: Option<u64>, payload: T) -> Result<()>
+    where
+        T: Serialize + Send + 'static,
+    {
         let event_type = event_type.to_owned();
-        let payload = payload.clone();
         let logged_at_ms = crate::types::unix_ms();
         let job: EventWrite = Box::new(move |writer| {
             let envelope = serde_json::json!({

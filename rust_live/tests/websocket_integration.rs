@@ -3,7 +3,7 @@ use mm_live::config::LatencyConfig;
 use mm_live::hyperliquid::market::{run_market_stream, MarketStreamArgs};
 use mm_live::instrument::InstrumentSpec;
 use mm_live::latency::{LatencyMonitor, LatencyObserver};
-use mm_live::lockfree::{AsyncRing, AtomicBbo, HotPathSignal};
+use mm_live::lockfree::{bbo_channel, AsyncRing, HotPathSignal};
 use mm_live::metrics::Metrics;
 use mm_live::types::{MarketEvent, ProcessClock};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,14 +59,14 @@ async fn public_adapter_parses_mock_cashcat_stream_without_loss() {
         metadata_fingerprint: String::new(),
     };
     let events = Arc::new(AsyncRing::new(16));
-    let latest_bbo = Arc::new(AtomicBbo::default());
+    let (latest_bbo_writer, latest_bbo) = bbo_channel();
     let metrics = Arc::new(Metrics::default());
     let valid = Arc::new(AtomicBool::new(true));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let client = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: format!("ws://{address}"),
         instrument,
-        latest_bbo: latest_bbo.clone(),
+        latest_bbo: latest_bbo_writer,
         events: events.clone(),
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
@@ -145,7 +145,7 @@ async fn causal_ring_saturation_invalidates_the_session() {
             is_delisted: false,
             metadata_fingerprint: String::new(),
         },
-        latest_bbo: Arc::new(AtomicBbo::default()),
+        latest_bbo: bbo_channel().0,
         events,
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
@@ -253,7 +253,7 @@ async fn application_ping_and_protocol_pong_are_exercised() {
     let client = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: format!("ws://{address}"),
         instrument: test_instrument(),
-        latest_bbo: Arc::new(AtomicBbo::default()),
+        latest_bbo: bbo_channel().0,
         events: Arc::new(AsyncRing::new(16)),
         signal: Arc::new(HotPathSignal::default()),
         clock,
@@ -331,7 +331,7 @@ async fn idle_socket_reconnects_resubscribes_and_invalidates_evidence() {
     let client = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: format!("ws://{address}"),
         instrument: test_instrument(),
-        latest_bbo: Arc::new(AtomicBbo::default()),
+        latest_bbo: bbo_channel().0,
         events: events.clone(),
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
@@ -412,7 +412,7 @@ async fn initial_trade_snapshot_ignores_old_rows_in_any_order() {
     let client = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: format!("ws://{address}"),
         instrument: test_instrument(),
-        latest_bbo: Arc::new(AtomicBbo::default()),
+        latest_bbo: bbo_channel().0,
         events: events.clone(),
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
@@ -523,7 +523,7 @@ async fn replayed_trades_on_a_later_frame_are_ignored_not_fatal() {
     let client = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: format!("ws://{address}"),
         instrument: test_instrument(),
-        latest_bbo: Arc::new(AtomicBbo::default()),
+        latest_bbo: bbo_channel().0,
         events: events.clone(),
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),
@@ -628,7 +628,7 @@ async fn replay_inside_the_skew_grace_is_published_not_fatal() {
     let client = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: format!("ws://{address}"),
         instrument: test_instrument(),
-        latest_bbo: Arc::new(AtomicBbo::default()),
+        latest_bbo: bbo_channel().0,
         events: events.clone(),
         signal: Arc::new(HotPathSignal::default()),
         clock: Arc::new(ProcessClock::default()),

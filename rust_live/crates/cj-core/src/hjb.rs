@@ -1,6 +1,6 @@
 use crate::config::ModelConfig;
 use crate::types::Side;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -55,6 +55,10 @@ pub struct HjbSurface {
     pub phi_effective: f64,
     pub alpha_effective: f64,
     pub kappa_average: f64,
+    /// Largest number of Newton updates used by any backward time slice.
+    pub max_newton_iterations_used: usize,
+    /// Largest accepted infinity-norm residual across all time slices.
+    pub max_final_residual: f64,
     pub t_grid: Vec<f64>,
     pub h_surface: Box<[f64]>,
     pub delta_plus_surface: Box<[f64]>,
@@ -178,12 +182,16 @@ pub fn solve_asymmetric(
         .collect();
     let mut reverse_slices = Vec::with_capacity(n_steps + 1);
     reverse_slices.push(h.clone());
+    let mut max_newton_iterations_used = 0_usize;
+    let mut max_final_residual = 0.0_f64;
 
-    for _ in 0..n_steps {
+    for time_step in 0..n_steps {
         normalize_slice(&mut h);
         let h_old = h.clone();
         let mut h_new = h_old.clone();
-        for _ in 0..config.newton_max_iterations {
+        let mut iterations_used = 0_usize;
+        let mut final_residual = f64::INFINITY;
+        for iteration in 0..config.newton_max_iterations {
             let (g, jac_lower, jac_diag, jac_upper) =
                 compute_g_and_jac(&h_new, &q_grid, parameters, phi_effective);
             let residual: Vec<f64> = h_new
@@ -192,7 +200,8 @@ pub fn solve_asymmetric(
                 .zip(&g)
                 .map(|((new, old), value)| new - old - dt * value)
                 .collect();
-            if max_abs(&residual) < config.newton_tolerance {
+            final_residual = max_abs(&residual);
+            if final_residual <= config.newton_tolerance {
                 break;
             }
 
@@ -210,26 +219,43 @@ pub fn solve_asymmetric(
             }
             let rhs: Vec<f64> = residual.iter().map(|value| -value).collect();
             let step = solve_tridiagonal(&lower, &diagonal, &upper, &rhs)
-                .unwrap_or_else(|| residual.iter().map(|value| -value).collect());
-            let mut trial: Vec<f64> = h_new
+                .with_context(|| {
+                    format!(
+                        "singular HJB Newton system at backward step {time_step}, iteration {iteration}"
+                    )
+                })?;
+            let trial: Vec<f64> = h_new
                 .iter()
                 .zip(step)
                 .map(|(value, change)| value + config.newton_damping * change)
                 .collect();
-            normalize_slice(&mut trial);
-            let change = trial
-                .iter()
-                .zip(&h_new)
-                .map(|(next, previous)| next - previous)
-                .collect::<Vec<_>>();
             h_new = trial;
-            if max_abs(&change) < config.newton_tolerance {
-                break;
-            }
+            iterations_used = iteration + 1;
+        }
+        // An update on the final allowed iteration has not yet had its
+        // residual evaluated. Recompute it once and accept only the governing
+        // equation, never a merely small Newton step.
+        if final_residual > config.newton_tolerance {
+            let (g, _, _, _) = compute_g_and_jac(&h_new, &q_grid, parameters, phi_effective);
+            final_residual = h_new
+                .iter()
+                .zip(&h_old)
+                .zip(&g)
+                .map(|((new, old), value)| new - old - dt * value)
+                .map(f64::abs)
+                .fold(0.0, f64::max);
+        }
+        if !final_residual.is_finite() || final_residual > config.newton_tolerance {
+            bail!(
+                "HJB Newton solve did not converge at backward step {time_step}: residual={final_residual:.6e}, tolerance={:.6e}, iterations={iterations_used}",
+                config.newton_tolerance
+            );
         }
         if h_new.iter().any(|value| !value.is_finite()) {
             bail!("asymmetric HJB solve produced a non-finite value");
         }
+        max_newton_iterations_used = max_newton_iterations_used.max(iterations_used);
+        max_final_residual = max_final_residual.max(final_residual);
         h = h_new;
         reverse_slices.push(h.clone());
     }
@@ -265,6 +291,8 @@ pub fn solve_asymmetric(
         phi_effective,
         alpha_effective,
         kappa_average,
+        max_newton_iterations_used,
+        max_final_residual,
         t_grid,
         h_surface: reverse_slices
             .into_iter()
@@ -305,6 +333,15 @@ fn validate_model_config(config: &ModelConfig, inventory_unit_base: f64) -> Resu
         || inventory_unit_base <= 0.0
     {
         bail!("positive model scales must be strictly greater than zero");
+    }
+    if config.min_steps == 0 {
+        bail!("min_steps must be at least one");
+    }
+    if config.max_steps < config.min_steps {
+        bail!("max_steps must be greater than or equal to min_steps");
+    }
+    if config.newton_max_iterations == 0 {
+        bail!("newton_max_iterations must be at least one");
     }
     if !(0.0..=1.0).contains(&config.newton_damping) || config.newton_damping == 0.0 {
         bail!("newton_damping must be in (0,1]");
@@ -667,5 +704,43 @@ mod tests {
             - fine.depth(Side::Sell, 2.0, 20.0).unwrap())
         .abs();
         assert!(medium_error < coarse_error);
+    }
+
+    #[test]
+    fn invalid_iteration_and_step_limits_fail_without_panicking() {
+        let mut config = ModelConfig::default();
+        config.newton_max_iterations = 0;
+        assert!(solve_asymmetric(parameters(), &config, 2_430.0, 1).is_err());
+
+        let mut config = ModelConfig::default();
+        config.min_steps = 10;
+        config.max_steps = 9;
+        assert!(solve_asymmetric(parameters(), &config, 2_430.0, 1).is_err());
+
+        let mut config = ModelConfig::default();
+        config.min_steps = 0;
+        assert!(solve_asymmetric(parameters(), &config, 2_430.0, 1).is_err());
+    }
+
+    #[test]
+    fn exhausted_newton_budget_is_an_error_not_a_finite_surface() {
+        let mut config = ModelConfig::default();
+        config.newton_max_iterations = 1;
+        config.newton_tolerance = 1.0e-30;
+        let error = solve_asymmetric(parameters(), &config, 2_430.0, 1).unwrap_err();
+        assert!(error.to_string().contains("did not converge"), "{error:#}");
+    }
+
+    #[test]
+    fn singular_tridiagonal_system_is_rejected() {
+        assert!(solve_tridiagonal(&[0.0], &[0.0], &[0.0], &[1.0]).is_none());
+    }
+
+    #[test]
+    fn accepted_surface_reports_a_residual_below_tolerance() {
+        let config = ModelConfig::default();
+        let surface = solve_asymmetric(parameters(), &config, 2_430.0, 1).unwrap();
+        assert!(surface.max_newton_iterations_used <= config.newton_max_iterations);
+        assert!(surface.max_final_residual <= config.newton_tolerance);
     }
 }

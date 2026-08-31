@@ -1,6 +1,6 @@
 use crate::instrument::InstrumentSpec;
 use crate::latency::{LatencyKind, LatencyMonitor};
-use crate::lockfree::{AsyncRing, AtomicBbo, HotPathSignal, HOT_SIGNAL_MARKET};
+use crate::lockfree::{AsyncRing, BboWriter, HotPathSignal, HOT_SIGNAL_MARKET};
 use crate::metrics::Metrics;
 use crate::types::{MarketEvent, ProcessClock};
 use anyhow::{bail, Result};
@@ -16,7 +16,7 @@ use tracing::{info, warn};
 pub struct MarketStreamArgs {
     pub ws_url: String,
     pub instrument: InstrumentSpec,
-    pub latest_bbo: Arc<AtomicBbo>,
+    pub latest_bbo: BboWriter,
     pub events: Arc<AsyncRing<MarketEvent>>,
     pub signal: Arc<HotPathSignal>,
     pub clock: Arc<ProcessClock>,

@@ -42,5 +42,7 @@ overflow-checks = true
 
 [profile.release]
 opt-level = 3
-codegen-units = 1
-lto = "fat"
+# Sanitizer coverage and MSVC COMDAT folding are incompatible with fat LTO.
+# Fuzzing validates decoders; it is not a production performance build.
+codegen-units = 16
+lto = false

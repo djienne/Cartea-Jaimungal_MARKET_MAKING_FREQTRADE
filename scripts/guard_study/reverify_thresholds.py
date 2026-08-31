@@ -13,6 +13,7 @@ script cannot be trusted on anything else.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -67,6 +68,14 @@ def main() -> None:
     out = vfired & ~vzone
     for t, v in zip(vts[out][:20], vval[out][:20]):
         print(f"    OUTSIDE-ZONE BREACH {T.iso(t)}  vpin={v:.3f}")
+    max_benign = float(vval[~vzone].max())
+    peak_cascade = float(vval[vzone].max()) if vzone.any() else float("nan")
+    recommended = math.floor(max_benign / 0.05 + 1.0) * 0.05
+    tier_valid = recommended < 1.0 and peak_cascade >= recommended
+    print(
+        f"  evidence threshold: {recommended:.2f} "
+        f"({'retain VPIN tier' if tier_valid else 'disable VPIN tier'})"
+    )
 
     result = {
         "freeze_span_h": float((ts[-1] - ts[0]) / 3_600_000.0),
@@ -82,6 +91,9 @@ def main() -> None:
             "outside_zone": int((vfired & ~vzone).sum()),
             "first_breach_ms": float(vfirst) if vfirst else None,
             "max_outside": float(vval[~vzone].max()),
+            "peak_inside": peak_cascade,
+            "recommended_threshold": recommended,
+            "tier_valid": tier_valid,
         },
     }
     out_path = Path(__file__).with_name("reverify_thresholds.json")

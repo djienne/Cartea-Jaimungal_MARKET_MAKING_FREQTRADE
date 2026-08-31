@@ -10,7 +10,7 @@ use mm_live::execution::{
 use mm_live::flow_guard::{FlowGuard, MidWindow, VpinTracker};
 use mm_live::hjb::{solve_asymmetric, HjbSurface};
 use mm_live::hot_path::{
-    spawn_hot_path, AtomicFlowState, AtomicRiskState, HotPathInputs, ModelBundle,
+    flow_channel, risk_channel, spawn_hot_path, HotPathInputs, ModelBundle, RiskWriter,
 };
 use mm_live::hyperliquid::market::{run_market_stream, MarketStreamArgs};
 use mm_live::hyperliquid::meta::discover_instrument;
@@ -23,8 +23,8 @@ use mm_live::hyperliquid::{
 };
 use mm_live::latency::{LatencyKind, LatencyMonitor, LatencyObserver, LatencySnapshot};
 use mm_live::lockfree::{
-    AsyncRing, AtomicBbo, HotPathSignal, SharedQuotes, HOT_SIGNAL_EXECUTION, HOT_SIGNAL_MODEL,
-    HOT_SIGNAL_SHUTDOWN,
+    bbo_channel, quote_channel, AsyncRing, HotPathSignal, HOT_SIGNAL_ACCOUNT, HOT_SIGNAL_FILL,
+    HOT_SIGNAL_MODEL, HOT_SIGNAL_SHUTDOWN,
 };
 use mm_live::metrics::Metrics;
 use mm_live::parquet_io::{
@@ -34,7 +34,8 @@ use mm_live::parquet_io::{
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
 use mm_live::replay::ParquetReplaySource;
 use mm_live::report::{
-    JsonlEventLogger, LiveSessionReport, LogBackpressure, LogFormat, ModelReport, SessionReport,
+    JsonlEventLogger, LiveSessionReport, LogBackpressure, LogFormat, LogRotation, ModelReport,
+    SessionReport,
 };
 use mm_live::types::{unix_ms, Bbo, DesiredQuotes, MarketEvent, ProcessClock, QuoteReason};
 use std::collections::BTreeMap;
@@ -1347,16 +1348,16 @@ async fn run_live(
     let quote_enabled = Arc::new(AtomicBool::new(false));
     let market_evidence_valid = Arc::new(AtomicBool::new(true));
     let events = Arc::new(AsyncRing::new(config.runtime.market_event_capacity));
-    let latest_bbo = Arc::new(AtomicBbo::default());
+    let (latest_bbo_writer, latest_bbo) = bbo_channel();
     // Order validation prices from the same shared snapshot the hot path
     // quotes from, not from the drained event ring.
     backend.attach_market_bbo(latest_bbo.clone());
     let signal = Arc::new(HotPathSignal::default());
-    let desired = Arc::new(SharedQuotes::default());
+    let (desired_writer, desired) = quote_channel();
     let market_task = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: config.runtime.network.ws_url().to_owned(),
         instrument: instrument.clone(),
-        latest_bbo: latest_bbo.clone(),
+        latest_bbo: latest_bbo_writer,
         events: events.clone(),
         signal: signal.clone(),
         clock: clock.clone(),
@@ -1370,15 +1371,15 @@ async fn run_live(
         max_trade_lag_ms: config.runtime.max_trade_lag_ms,
     }));
     let inventory_units = Arc::new(AtomicI64::new(account.inventory_units));
-    let risk_state = Arc::new(AtomicRiskState::default());
-    let flow_state = Arc::new(AtomicFlowState::default());
+    let (risk_writer, risk_state) = risk_channel();
+    let (flow_writer, flow_state) = flow_channel();
     // Bucket size is resized from observed volume as soon as a calibration
     // window is available; until then VPIN stays in warm-up and only the fast
     // breaker is armed.
     let mut vpin = VpinTracker::new(1, config.flow_guard.vpin_window_buckets as usize);
     vpin.resize_bucket(vpin_bucket);
     let initial_risk = backend.risk_scalars()?;
-    risk_state.store(RiskState {
+    risk_writer.store(RiskState {
         equity_usdc: account.equity_usdc,
         daily_realized_pnl_usdc: initial_risk.daily_realized_pnl_usdc,
         consecutive_losses: initial_risk.consecutive_losses,
@@ -1386,7 +1387,7 @@ async fn run_live(
     let hot_thread = spawn_hot_path(HotPathInputs {
         latest_bbo: latest_bbo.clone(),
         signal: signal.clone(),
-        desired: desired.clone(),
+        desired: desired_writer,
         model: model.clone(),
         instrument: instrument.clone(),
         quoting: effective_config.quoting.clone(),
@@ -1404,9 +1405,20 @@ async fn run_live(
         latency_sample_every: effective_config.latency.hot_sample_every,
         hot_path_cpu: effective_config.runtime.hot_path_cpu,
     })?;
-    let mut event_logger =
-        JsonlEventLogger::create(&config.storage.report_dir, "live", started_at_ms)?;
+    let live_log_max_bytes = config.storage.live_log_max_mb.saturating_mul(1024 * 1024);
+    let mut event_logger = JsonlEventLogger::create_with_rotation(
+        &config.storage.report_dir,
+        &format!("live-{started_at_ms}"),
+        LogBackpressure::RefuseWhenFull,
+        LogFormat::Zstd,
+        LogRotation {
+            max_bytes: live_log_max_bytes,
+            keep: config.storage.live_log_keep,
+        },
+    )?;
     let live_heartbeat_path = config.storage.report_dir.join("live_heartbeat.json");
+    let (heartbeat_tx, mut heartbeat_rx) = tokio::sync::mpsc::channel(1);
+    let mut heartbeat_inflight = false;
     let mut last_live_heartbeat_ms = 0_u64;
     let warmup_deadline =
         tokio::time::Instant::now() + Duration::from_secs(config.live.startup_warmup_seconds);
@@ -1425,6 +1437,10 @@ async fn run_live(
     let mut calibration_inflight = false;
     let (reconcile_tx, mut reconcile_rx) = tokio::sync::mpsc::channel(1);
     let mut reconcile_inflight = false;
+    let (rate_limit_tx, mut rate_limit_rx) = tokio::sync::mpsc::channel(1);
+    let mut rate_limit_inflight = false;
+    let mut rate_limit_refresh_failures = 0_u32;
+    let mut rate_limit_refresh_backoff_until = tokio::time::Instant::now();
     // Backoff for failed authoritative reconciles: without it a venue blip
     // turned the 100ms maintenance tick into a retry storm that ran until the
     // REST weight limiter cut it off.
@@ -1483,14 +1499,14 @@ async fn run_live(
                         backend.invalidate("live session event channel closed");
                         break;
                     };
-                    event_logger.log("live_session_event", None, &format!("{event:?}"))?;
+                    event_logger.log_owned("live_session_event", None, event.clone())?;
                     let execution_events = backend.process_session_event(event)?;
                     apply_live_execution_events(
                         &execution_events,
                         &mut event_logger,
                         &backend,
                         &inventory_units,
-                        &risk_state,
+                        &risk_writer,
                         &metrics,
                         &signal,
                     )?;
@@ -1509,7 +1525,7 @@ async fn run_live(
                                 &mut event_logger,
                                 &backend,
                                 &inventory_units,
-                                &risk_state,
+                                &risk_writer,
                                 &metrics,
                                 &signal,
                             )?;
@@ -1532,6 +1548,32 @@ async fn run_live(
                         }
                     }
                 }
+                result = rate_limit_rx.recv(), if rate_limit_inflight => {
+                    rate_limit_inflight = false;
+                    let Some(result) = result else { continue };
+                    match result {
+                        Ok(value) => {
+                            rate_limit_refresh_failures = 0;
+                            rate_limit_refresh_backoff_until = tokio::time::Instant::now();
+                            backend.apply_user_rate_limit_refresh(&value, unix_ms())?;
+                        }
+                        Err(error) => {
+                            rate_limit_refresh_failures =
+                                rate_limit_refresh_failures.saturating_add(1);
+                            let delay_ms = 2_000_u64
+                                .saturating_mul(1_u64 << rate_limit_refresh_failures.min(4))
+                                .min(30_000);
+                            rate_limit_refresh_backoff_until = tokio::time::Instant::now()
+                                + Duration::from_millis(delay_ms);
+                            backend.note_user_rate_limit_refresh_failure(&error);
+                        }
+                    }
+                }
+                result = heartbeat_rx.recv(), if heartbeat_inflight => {
+                    heartbeat_inflight = false;
+                    let Some(result) = result else { continue };
+                    result?;
+                }
                 event = events.pop() => {
                     // Ranked below quote dispatch, so drain a bounded batch
                     // per visit to keep the ring from growing while the quote
@@ -1542,7 +1584,7 @@ async fn run_live(
                         // VPIN is a trade-flow statistic and the hot path only
                         // sees the BBO, so it is folded in here and published.
                         if let MarketEvent::Trade(print) = &event {
-                            flow_state.store(vpin.observe(print));
+                            flow_writer.store(vpin.observe(print));
                         }
                         let dispatch_ns = clock.now_ns();
                         latency.record(
@@ -1562,7 +1604,7 @@ async fn run_live(
                                 &mut event_logger,
                                 &backend,
                                 &inventory_units,
-                                &risk_state,
+                                &risk_writer,
                                 &metrics,
                                 &signal,
                             )?;
@@ -1600,7 +1642,7 @@ async fn run_live(
                         && latency.trading_allowed();
                     let was_enabled = quote_enabled.swap(can_quote, Ordering::AcqRel);
                     if was_enabled != can_quote {
-                        signal.notify(HOT_SIGNAL_EXECUTION);
+                        signal.notify(HOT_SIGNAL_ACCOUNT);
                     }
                     if !armed
                         && tokio::time::Instant::now() >= warmup_deadline
@@ -1614,7 +1656,7 @@ async fn run_live(
                         }
                         armed = true;
                         quote_enabled.store(true, Ordering::Release);
-                        signal.notify(HOT_SIGNAL_EXECUTION);
+                        signal.notify(HOT_SIGNAL_ACCOUNT);
                         info!(mode = ?config.live.mode, "live backend armed after all startup gates");
                     }
                     let maintenance_now_ms = unix_ms();
@@ -1624,10 +1666,17 @@ async fn run_live(
                         &mut event_logger,
                         &backend,
                         &inventory_units,
-                        &risk_state,
+                        &risk_writer,
                         &metrics,
                         &signal,
                     )?;
+                    if backend.user_rate_limit_refresh_due(maintenance_now_ms)
+                        && !rate_limit_inflight
+                        && tokio::time::Instant::now() >= rate_limit_refresh_backoff_until
+                    {
+                        rate_limit_inflight = true;
+                        backend.spawn_user_rate_limit_refresh(rate_limit_tx.clone());
+                    }
                     if maintenance_now_ms.saturating_sub(last_live_heartbeat_ms) >= 5_000 {
                         last_live_heartbeat_ms = maintenance_now_ms;
                         let mut heartbeat = backend.health_snapshot();
@@ -1635,10 +1684,21 @@ async fn run_live(
                         heartbeat["latency_trading_allowed"] =
                             serde_json::json!(latency.trading_allowed());
                         heartbeat["armed"] = serde_json::json!(armed);
-                        write_atomic_bytes(
-                            &live_heartbeat_path,
-                            &serde_json::to_vec_pretty(&heartbeat)?,
-                        )?;
+                        if !heartbeat_inflight {
+                            heartbeat_inflight = true;
+                            let path = live_heartbeat_path.clone();
+                            let bytes = serde_json::to_vec_pretty(&heartbeat)?;
+                            let sender = heartbeat_tx.clone();
+                            tokio::spawn(async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    write_atomic_bytes(&path, &bytes)
+                                })
+                                .await
+                                .map_err(|error| anyhow::anyhow!("heartbeat writer failed: {error}"))
+                                .and_then(|result| result);
+                                let _ = sender.send(result).await;
+                            });
+                        }
                     }
                     if backend.reconciliation_requested()
                         && !reconcile_inflight
@@ -1730,7 +1790,7 @@ async fn run_live(
         backend.invalidate(&format!("live loop stopped: {error}"));
     }
     quote_enabled.store(false, Ordering::Release);
-    signal.notify(HOT_SIGNAL_EXECUTION);
+    signal.notify(HOT_SIGNAL_ACCOUNT);
     let shutdown_result = backend.shutdown(unix_ms()).await;
     let final_account = backend.account_state();
     inventory_units.store(final_account.inventory_units, Ordering::Release);
@@ -1748,7 +1808,7 @@ async fn run_live(
         .and_then(|joined| joined.map_err(|_| anyhow::anyhow!("live hot-path thread panicked")));
     let observer_result = latency_observer.stop();
     let report = LiveSessionReport {
-        schema_version: 3,
+        schema_version: 4,
         build: mm_live::BuildInfo::current(),
         session_id: format!("{}-{started_at_ms}", instrument.symbol),
         started_at_ms,
@@ -1766,6 +1826,9 @@ async fn run_live(
         scientifically_valid: backend.scientifically_valid()
             && market_evidence_valid.load(Ordering::Acquire),
         event_log_path: event_logger.path().display().to_string(),
+        event_log_format: "jsonl.zst",
+        event_log_max_bytes: live_log_max_bytes,
+        event_log_keep: config.storage.live_log_keep,
         market_event_ring_high_water: events.high_water_mark(),
     };
     let path = report_path.map_or_else(
@@ -1799,7 +1862,7 @@ fn apply_live_execution_events(
     logger: &mut JsonlEventLogger,
     backend: &HyperliquidLiveBackend,
     inventory_units: &Arc<AtomicI64>,
-    risk_state: &Arc<AtomicRiskState>,
+    risk_state: &RiskWriter,
     metrics: &Arc<Metrics>,
     signal: &Arc<HotPathSignal>,
 ) -> Result<()> {
@@ -1826,8 +1889,10 @@ fn apply_live_execution_events(
         daily_realized_pnl_usdc: risk.daily_realized_pnl_usdc,
         consecutive_losses: risk.consecutive_losses,
     });
-    if !events.is_empty() {
-        signal.notify(HOT_SIGNAL_EXECUTION);
+    if fill_count != 0 {
+        signal.notify(HOT_SIGNAL_FILL);
+    } else if !events.is_empty() {
+        signal.notify(HOT_SIGNAL_ACCOUNT);
     }
     Ok(())
 }
@@ -2237,7 +2302,7 @@ async fn run_dry_run_grid(
         .store(resumed_feed.4, Ordering::Relaxed);
     let scientifically_valid = Arc::new(AtomicBool::new(!resumed_event_loss));
     let events = Arc::new(AsyncRing::new(config.runtime.market_event_capacity));
-    let latest_bbo = Arc::new(AtomicBbo::default());
+    let (latest_bbo_writer, latest_bbo) = bbo_channel();
     // Nothing registers against this signal: the grid has no hot-path thread.
     // The market stream still notifies it, which is a cheap atomic OR.
     let signal = Arc::new(HotPathSignal::default());
@@ -2252,7 +2317,7 @@ async fn run_dry_run_grid(
     let market_task = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: config.runtime.network.ws_url().to_owned(),
         instrument: instrument.clone(),
-        latest_bbo: latest_bbo.clone(),
+        latest_bbo: latest_bbo_writer,
         events: events.clone(),
         signal: signal.clone(),
         clock: clock.clone(),
@@ -3309,6 +3374,7 @@ async fn run_public_dry_run(
                 config.storage.data_dir.clone(),
                 instrument.clone(),
                 config.storage.flush_interval_seconds,
+                config.storage.retention_minutes,
             ))
         })
         .transpose()?;
@@ -3324,9 +3390,9 @@ async fn run_public_dry_run(
     let metrics = Arc::new(Metrics::default());
     let scientifically_valid = Arc::new(AtomicBool::new(true));
     let events = Arc::new(AsyncRing::new(config.runtime.market_event_capacity));
-    let latest_bbo = Arc::new(AtomicBbo::default());
+    let (latest_bbo_writer, latest_bbo) = bbo_channel();
     let signal = Arc::new(HotPathSignal::default());
-    let desired = Arc::new(SharedQuotes::default());
+    let (desired_writer, desired) = quote_channel();
     let clock = Arc::new(ProcessClock::default());
     let latency = Arc::new(LatencyMonitor::new(
         &instrument.symbol,
@@ -3338,7 +3404,7 @@ async fn run_public_dry_run(
     let market_task = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: config.runtime.network.ws_url().to_owned(),
         instrument: instrument.clone(),
-        latest_bbo: latest_bbo.clone(),
+        latest_bbo: latest_bbo_writer,
         events: events.clone(),
         signal: signal.clone(),
         clock: clock.clone(),
@@ -3384,14 +3450,14 @@ async fn run_public_dry_run(
     }
     let restored_account = backend.account_state();
     let inventory_units = Arc::new(AtomicI64::new(restored_account.inventory_units));
-    let risk_state = Arc::new(AtomicRiskState::default());
-    let flow_state = Arc::new(AtomicFlowState::default());
+    let (risk_writer, risk_state) = risk_channel();
+    let (flow_writer, flow_state) = flow_channel();
     // Bucket size is resized from observed volume as soon as a calibration
     // window is available; until then VPIN stays in warm-up and only the fast
     // breaker is armed.
     let mut vpin = VpinTracker::new(1, config.flow_guard.vpin_window_buckets as usize);
     vpin.resize_bucket(vpin_bucket);
-    risk_state.store(RiskState {
+    risk_writer.store(RiskState {
         equity_usdc: restored_account.equity_usdc,
         daily_realized_pnl_usdc: backend.daily_realized_pnl_usdc(),
         consecutive_losses: restored_account.consecutive_losses,
@@ -3436,7 +3502,7 @@ async fn run_public_dry_run(
     let hot_thread = spawn_hot_path(HotPathInputs {
         latest_bbo: latest_bbo.clone(),
         signal: signal.clone(),
-        desired: desired.clone(),
+        desired: desired_writer,
         model: model.clone(),
         instrument: instrument.clone(),
         quoting: config.quoting.clone(),
@@ -3474,8 +3540,9 @@ async fn run_public_dry_run(
         .then(|| tokio::time::Instant::now() + Duration::from_secs(duration_seconds));
     let shutdown_signal = wait_for_shutdown_signal();
     tokio::pin!(shutdown_signal);
-    loop {
-        tokio::select! {
+    let loop_result: Result<()> = async {
+        loop {
+            tokio::select! {
         biased;
         result = &mut shutdown_signal => {
             result?;
@@ -3536,7 +3603,7 @@ async fn run_public_dry_run(
                 // sees the BBO -- so it is folded in here and published for the
                 // hot path to read.
                 if let MarketEvent::Trade(print) = &event {
-                    flow_state.store(vpin.observe(print));
+                    flow_writer.store(vpin.observe(print));
                 }
                 let dispatch_ns = clock.now_ns();
                 latency.record(
@@ -3552,7 +3619,7 @@ async fn run_public_dry_run(
                 }
                 if !scientifically_valid.load(Ordering::Acquire) && backend.scientifically_valid() {
                     backend.invalidate("public market stream lost causal events or disconnected");
-                    signal.notify(HOT_SIGNAL_EXECUTION);
+                    signal.notify(HOT_SIGNAL_ACCOUNT);
                 }
                 let execution_events = backend.on_market_event(&event).await?;
                 for execution_event in &execution_events {
@@ -3562,13 +3629,13 @@ async fn run_public_dry_run(
                 let account = backend.account_state();
                 inventory_units.store(account.inventory_units, Ordering::Relaxed);
                 metrics.inventory_units.store(account.inventory_units, Ordering::Relaxed);
-                risk_state.store(RiskState {
+                risk_writer.store(RiskState {
                     equity_usdc: account.equity_usdc,
                     daily_realized_pnl_usdc: backend.daily_realized_pnl_usdc(),
                     consecutive_losses: account.consecutive_losses,
                 });
                 if !execution_events.is_empty() {
-                    signal.notify(HOT_SIGNAL_EXECUTION);
+                    signal.notify(HOT_SIGNAL_FILL);
                 }
                 drained += 1;
                 if drained < MARKET_EVENT_DRAIN_BATCH {
@@ -3658,36 +3725,53 @@ async fn run_public_dry_run(
                 let _ = result_tx.send(result).await;
             });
             }
+            }
         }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = &loop_result {
+        backend.invalidate(&format!("public dry-run loop stopped: {error}"));
     }
     signal.notify(HOT_SIGNAL_SHUTDOWN);
     let _ = shutdown_tx.send(true);
-    backend.shutdown(unix_ms()).await?;
-    if let (Some(snapshot), Some(bundle)) = (snapshot.as_ref(), model.load_full()) {
-        backend.save_account_state(
-            &config.storage.state_path,
-            &config_fingerprint,
-            &snapshot.fingerprint,
-            bundle.inventory_unit,
-        )?;
-    }
-    event_logger.flush()?;
-    if let Some(recorder) = recorder {
+    let shutdown_result = backend.shutdown(unix_ms()).await;
+    let state_save_result =
+        if let (Some(snapshot), Some(bundle)) = (snapshot.as_ref(), model.load_full()) {
+            backend.save_account_state(
+                &config.storage.state_path,
+                &config_fingerprint,
+                &snapshot.fingerprint,
+                bundle.inventory_unit,
+            )
+        } else {
+            Ok(())
+        };
+    let log_flush_result = event_logger.flush();
+    let recorder_result = if let Some(recorder) = recorder {
         // Final flush/compact/prune runs on the writer thread; this joins it.
-        let (compacted, removed) = recorder.finish(
-            unix_ms(),
-            config.storage.compact_after_minutes,
-            config.storage.retention_minutes,
-        )?;
-        info!(compacted, removed, "Parquet maintenance complete");
-    }
+        recorder
+            .finish(
+                unix_ms(),
+                config.storage.compact_after_minutes,
+                config.storage.retention_minutes,
+            )
+            .map(|(compacted, removed)| {
+                info!(compacted, removed, "Parquet maintenance complete");
+            })
+    } else {
+        Ok(())
+    };
     drop(collector_lock);
-    let _ = tokio::time::timeout(Duration::from_secs(5), market_task).await;
-    tokio::task::spawn_blocking(move || hot_thread.join())
+    let market_task_result = tokio::time::timeout(Duration::from_secs(5), market_task)
         .await
-        .context("cannot join hot-path task")?
-        .map_err(|_| anyhow::anyhow!("hot-path thread panicked"))?;
-    latency_observer.stop()?;
+        .context("market task did not stop within five seconds")
+        .and_then(|joined| joined.context("market task panicked"));
+    let hot_join_result = tokio::task::spawn_blocking(move || hot_thread.join())
+        .await
+        .context("cannot join hot-path task")
+        .and_then(|joined| joined.map_err(|_| anyhow::anyhow!("hot-path thread panicked")));
+    let observer_result = latency_observer.stop();
     let latency_snapshot = (*latency.snapshot()).clone();
     // A feed that died with no subsequent market event never reached the
     // in-loop invalidation, so the flag must be consulted directly here or the
@@ -3702,7 +3786,7 @@ async fn run_public_dry_run(
     if snapshot.is_none() {
         invalid_reasons.push("no valid calibration was produced".to_owned());
     }
-    write_report(
+    let write_result = write_report(
         config,
         report_path,
         "dry_run",
@@ -3718,11 +3802,20 @@ async fn run_public_dry_run(
         invalid_reasons,
         event_logger.path(),
         events.high_water_mark(),
-    )?;
+    );
     info!(
         scientifically_valid = backend.scientifically_valid(),
         "dry-run stopped"
     );
+    loop_result?;
+    shutdown_result?;
+    state_save_result?;
+    log_flush_result?;
+    recorder_result?;
+    market_task_result?;
+    hot_join_result?;
+    observer_result?;
+    write_result?;
     Ok(())
 }
 

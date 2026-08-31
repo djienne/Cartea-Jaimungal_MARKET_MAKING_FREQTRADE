@@ -102,6 +102,7 @@ pub enum QuoteReason {
     Startup,
     Market,
     Fill,
+    AccountUpdate,
     Calibration,
     Episode,
     StaleMarket,
@@ -131,7 +132,7 @@ impl QuoteReason {
     #[inline]
     pub const fn replacement_may_wait(self, inventory_changed: bool) -> bool {
         matches!(self, Self::Market | Self::Calibration | Self::Episode)
-            || (matches!(self, Self::Fill) && !inventory_changed)
+            || (matches!(self, Self::Fill | Self::AccountUpdate) && !inventory_changed)
     }
 }
 

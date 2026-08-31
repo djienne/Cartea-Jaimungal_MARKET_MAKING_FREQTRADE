@@ -14,7 +14,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -784,13 +784,21 @@ pub struct ParquetEventRecorder {
     trades: Vec<TradeRow>,
     books: Vec<BookRow>,
     seen_trade_ids: HashSet<u64>,
+    seen_trade_order: VecDeque<(u64, u64)>,
+    trade_time_high_water_ms: u64,
+    trade_dedup_horizon_ms: u64,
     created_price_shards: Vec<PathBuf>,
     created_trade_shards: Vec<PathBuf>,
     created_book_shards: Vec<PathBuf>,
 }
 
 impl ParquetEventRecorder {
-    pub fn new(root: PathBuf, instrument: InstrumentSpec, flush_interval_seconds: u64) -> Self {
+    pub fn new(
+        root: PathBuf,
+        instrument: InstrumentSpec,
+        flush_interval_seconds: u64,
+        retention_minutes: u64,
+    ) -> Self {
         Self {
             symbol: instrument.symbol.clone(),
             root,
@@ -801,6 +809,9 @@ impl ParquetEventRecorder {
             trades: Vec::new(),
             books: Vec::new(),
             seen_trade_ids: HashSet::new(),
+            seen_trade_order: VecDeque::new(),
+            trade_time_high_water_ms: 0,
+            trade_dedup_horizon_ms: retention_minutes.saturating_mul(60_000),
             created_price_shards: Vec::new(),
             created_trade_shards: Vec::new(),
             created_book_shards: Vec::new(),
@@ -827,8 +838,26 @@ impl ParquetEventRecorder {
                 });
             }
             MarketEvent::Trade(trade) => {
+                self.trade_time_high_water_ms =
+                    self.trade_time_high_water_ms.max(trade.exchange_ms);
+                let cutoff = self
+                    .trade_time_high_water_ms
+                    .saturating_sub(self.trade_dedup_horizon_ms);
+                while self
+                    .seen_trade_order
+                    .front()
+                    .is_some_and(|(exchange_ms, _)| *exchange_ms < cutoff)
+                {
+                    if let Some((_, expired_id)) = self.seen_trade_order.pop_front() {
+                        self.seen_trade_ids.remove(&expired_id);
+                    }
+                }
                 if trade.trade_id != 0 && !self.seen_trade_ids.insert(trade.trade_id) {
                     return Ok(());
+                }
+                if trade.trade_id != 0 {
+                    self.seen_trade_order
+                        .push_back((trade.exchange_ms, trade.trade_id));
                 }
                 self.trades.push(TradeRow {
                     timestamp_seconds,
@@ -875,6 +904,11 @@ impl ParquetEventRecorder {
             self.flush(local_ms)?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn seen_trade_count(&self) -> usize {
+        self.seen_trade_ids.len()
     }
 
     pub fn flush(&mut self, now_ms: u64) -> Result<()> {
@@ -1300,7 +1334,8 @@ mod tests {
             is_delisted: false,
             metadata_fingerprint: String::new(),
         };
-        let mut recorder = ParquetEventRecorder::new(directory.path().to_owned(), instrument, 10);
+        let mut recorder =
+            ParquetEventRecorder::new(directory.path().to_owned(), instrument, 10, 180);
         for (timestamp, bid) in [(1_000, 10_000), (2_000, 10_001)] {
             recorder
                 .record(
@@ -1344,7 +1379,7 @@ mod tests {
             is_delisted: false,
             metadata_fingerprint: String::new(),
         };
-        let recorder = ParquetEventRecorder::new(directory.path().to_owned(), instrument, 10);
+        let recorder = ParquetEventRecorder::new(directory.path().to_owned(), instrument, 10, 180);
         let stream = directory.path().join("SYN/prices");
         std::fs::create_dir_all(&stream).unwrap();
         std::fs::write(stream.join("prices_1000.parquet"), b"old").unwrap();
@@ -1354,5 +1389,47 @@ mod tests {
         assert!(!stream.join("prices_1000.parquet").exists());
         assert!(stream.join("prices_999000.parquet").exists());
         assert!(stream.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn recorder_trade_dedup_is_bounded_by_retention_horizon() {
+        let directory = tempfile::tempdir().unwrap();
+        let instrument = InstrumentSpec {
+            symbol: "SYN".to_owned(),
+            dex: String::new(),
+            asset_id: 0,
+            sz_decimals: 0,
+            max_price_decimals: 2,
+            max_significant_figures: 5,
+            max_leverage: 3.0,
+            minimum_notional: 1.0,
+            margin_table_id: 0,
+            only_isolated: false,
+            margin_mode: String::new(),
+            is_delisted: false,
+            metadata_fingerprint: String::new(),
+        };
+        let mut recorder =
+            ParquetEventRecorder::new(directory.path().to_owned(), instrument, 10_000, 1);
+        let event = |trade_id, exchange_ms| {
+            MarketEvent::Trade(crate::types::TradePrint {
+                aggressor: crate::types::AggressorSide::Buy,
+                px: 10_000,
+                qty_units: 1,
+                exchange_ms,
+                recv_ns: exchange_ms * 1_000_000,
+                trade_id,
+            })
+        };
+        recorder.record(&event(1, 1_000), 1_000).unwrap();
+        recorder.record(&event(2, 2_000), 2_000).unwrap();
+        assert_eq!(recorder.seen_trade_count(), 2);
+        recorder.record(&event(3, 70_000), 70_000).unwrap();
+        assert_eq!(recorder.seen_trade_count(), 1);
+        // ID 1's shard is now outside retention, so admitting it again cannot
+        // duplicate any data that the recorder still promises to retain.
+        recorder.record(&event(1, 71_000), 71_000).unwrap();
+        recorder.record(&event(3, 72_000), 72_000).unwrap();
+        assert_eq!(recorder.seen_trade_count(), 2);
     }
 }

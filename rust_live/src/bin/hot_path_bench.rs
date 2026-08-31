@@ -1,12 +1,16 @@
 use mm_live::config::{LatencyConfig, ModelConfig, QuotingConfig, RiskConfig};
 use mm_live::hjb::{solve_asymmetric, CjParameters, HjbSurface};
+use mm_live::hot_path::{flow_channel, risk_channel, HotPathEngine, HotPathInputs, ModelBundle};
 use mm_live::instrument::InstrumentSpec;
 use mm_live::latency::{HotLatencySampler, LatencyKind, LatencyMonitor};
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
 use mm_live::types::{Bbo, ProcessClock, QuoteReason};
+use mm_live::{lockfree, metrics::Metrics};
 use serde::Serialize;
 use std::hint::black_box;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, Serialize)]
@@ -22,10 +26,12 @@ struct Distribution {
 struct BenchmarkReport {
     schema_version: u32,
     build: mm_live::BuildInfo,
+    cpu_model: String,
     pinned_cpu: Option<usize>,
     iterations_per_run: u64,
     repetitions: usize,
-    quote_batch_ns_per_decision: Distribution,
+    policy_kernel_batch_mean_ns_per_decision: Distribution,
+    hot_step_batch_mean_ns_per_decision: Distribution,
     baseline_run_ns_per_decision: Distribution,
     monitored_run_ns_per_decision: Distribution,
     monitoring_overhead_percent: f64,
@@ -125,6 +131,7 @@ fn main() {
     let overhead_ns = monitored_median - baseline_median;
     let overhead_percent = overhead_ns / baseline_median * 100.0;
     let quote_batches = quote_batch_distribution(&policy, &surface, bbo, 20_000, 64);
+    let hot_step_batches = hot_step_batch_distribution(parameters, &model_config, 20_000, 64);
 
     let solve_iterations = 100_u64;
     let mut solve_samples = Vec::with_capacity(solve_iterations as usize);
@@ -143,12 +150,14 @@ fn main() {
     }
     guard ^= solve_guard as i64;
     let report = BenchmarkReport {
-        schema_version: 2,
+        schema_version: 3,
         build: mm_live::BuildInfo::current(),
+        cpu_model: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "unknown".to_owned()),
         pinned_cpu,
         iterations_per_run: iterations,
         repetitions,
-        quote_batch_ns_per_decision: distribution(&quote_batches),
+        policy_kernel_batch_mean_ns_per_decision: distribution(&quote_batches),
+        hot_step_batch_mean_ns_per_decision: distribution(&hot_step_batches),
         baseline_run_ns_per_decision: distribution(&baseline),
         monitored_run_ns_per_decision: distribution(&monitored),
         monitoring_overhead_percent: overhead_percent,
@@ -160,6 +169,102 @@ fn main() {
     if let Ok(path) = std::env::var("MM_BENCH_OUTPUT") {
         std::fs::write(Path::new(&path), encoded).expect("cannot write MM_BENCH_OUTPUT");
     }
+}
+
+fn hot_step_batch_distribution(
+    parameters: CjParameters,
+    model_config: &ModelConfig,
+    batches: u64,
+    batch_size: u64,
+) -> Vec<f64> {
+    let instrument = InstrumentSpec {
+        symbol: "BENCH".to_owned(),
+        dex: String::new(),
+        asset_id: 0,
+        sz_decimals: 0,
+        max_price_decimals: 6,
+        max_significant_figures: 5,
+        max_leverage: 3.0,
+        minimum_notional: 1.0,
+        margin_table_id: 0,
+        only_isolated: false,
+        margin_mode: String::new(),
+        is_delisted: false,
+        metadata_fingerprint: String::new(),
+    };
+    let surface = solve_asymmetric(parameters, model_config, 1_868.0, 1).unwrap();
+    let (bbo_writer, bbo_reader) = lockfree::bbo_channel();
+    bbo_writer.store(Bbo {
+        bid_px: 131_970,
+        bid_sz: 2_000,
+        ask_px: 132_200,
+        ask_sz: 3_000,
+        exchange_ms: 1,
+        recv_ns: 1,
+    });
+    let (quote_writer, _quote_reader) = lockfree::quote_channel();
+    let (risk_writer, risk_reader) = risk_channel();
+    risk_writer.store(RiskState {
+        equity_usdc: 1_000.0,
+        ..RiskState::default()
+    });
+    let (_flow_writer, flow_reader) = flow_channel();
+    let inventory = Arc::new(AtomicI64::new(0));
+    let latency_config = LatencyConfig {
+        gate_enabled: false,
+        hot_sample_every: 64,
+        queue_capacity: 65_536,
+        ..LatencyConfig::default()
+    };
+    let inputs = HotPathInputs {
+        latest_bbo: bbo_reader,
+        signal: Arc::new(lockfree::HotPathSignal::default()),
+        desired: quote_writer,
+        model: Arc::new(arc_swap::ArcSwapOption::from(Some(Arc::new(ModelBundle {
+            surface,
+            inventory_unit: 1_868,
+            generated_at_ms: 1,
+            valid_until_ns: u64::MAX,
+        })))),
+        instrument,
+        quoting: QuotingConfig::default(),
+        risk: RiskConfig::default(),
+        model_config: model_config.clone(),
+        inventory_units: inventory.clone(),
+        risk_state: risk_reader,
+        flow_state: flow_reader,
+        flow_guard: mm_live::config::FlowGuardConfig {
+            enabled: false,
+            ..mm_live::config::FlowGuardConfig::default()
+        },
+        scientifically_valid: Arc::new(AtomicBool::new(true)),
+        market_stale_ms: u64::MAX,
+        clock: Arc::new(ProcessClock::default()),
+        metrics: Arc::new(Metrics::default()),
+        latency: Arc::new(LatencyMonitor::new("BENCH", 1, &latency_config, false)),
+        latency_sample_every: 64,
+        hot_path_cpu: None,
+    };
+    let mut engine = HotPathEngine::new(&inputs).unwrap();
+    let mut samples = Vec::with_capacity(batches as usize);
+    let mut sequence = 0_u64;
+    for _ in 0..batches {
+        let started = Instant::now();
+        for _ in 0..batch_size {
+            inventory.store(
+                (sequence as i64 % 11 - 5) * 1_868,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            engine.step(
+                &inputs,
+                lockfree::HOT_SIGNAL_MARKET,
+                sequence.saturating_add(2),
+            );
+            sequence = sequence.wrapping_add(1);
+        }
+        samples.push(started.elapsed().as_nanos() as f64 / batch_size as f64);
+    }
+    samples
 }
 
 fn quote_batch_distribution(

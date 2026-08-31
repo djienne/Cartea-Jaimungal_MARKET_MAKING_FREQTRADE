@@ -1,0 +1,23 @@
+{
+  "study_schema_version": 1,
+  "benchmark_schema_version": 3,
+  "runs": 7,
+  "pinned_cpu": 4,
+  "cpu_model": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+  "build": {
+    "profile": "release",
+    "opt_level": "3",
+    "target": "x86_64-pc-windows-msvc",
+    "target_features": "cmpxchg16b,fxsr,sse,sse2,sse3",
+    "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+    "revision": "e0291526194c"
+  },
+  "metrics": {
+    "policy_kernel_p50_ns": 57.8125,
+    "policy_kernel_p99_ns": 104.6875,
+    "hot_step_p50_ns": 73.4375,
+    "hot_step_p99_ns": 134.375,
+    "monitoring_overhead_percent": 5.1396542164994115,
+    "hjb_p50_ms": 0.9885
+  }
+}

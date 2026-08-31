@@ -12,6 +12,7 @@ sizes that the Rust replay loader drops.
 from __future__ import annotations
 
 import sys
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -36,7 +37,7 @@ CASCADE_ZONE_MS = (1_787_371_020_000, 1_787_392_620_000)
 # Shipped-guard reference points, for the self-check every script must print:
 # fast breaker (8%/5s) first trip and VPIN >= 0.40 first breach on the cascade.
 BREAKER_FIRST_TRIP_MS = 1_787_375_475_000  # 2026-08-22 05:11:15Z
-VPIN_FIRST_TRIP_MS = 1_787_375_491_000  # 2026-08-22 05:11:31Z
+VPIN_FIRST_TRIP_MS = 1_787_375_490_371  # 2026-08-22 05:11:30Z
 
 # Shipped FlowGuardConfig values (mm-settings defaults == cashcat.toml).
 FAST_MOVE_WINDOW_MS = 5_000
@@ -44,6 +45,7 @@ FAST_MOVE_THRESHOLD_BPS = 800.0
 VPIN_BUCKETS_PER_DAY = 50
 VPIN_WINDOW_BUCKETS = 30
 VPIN_THRESHOLD = 0.40
+RECENT_TRADE_ID_CAPACITY = 65_536
 
 
 def _ts_ms(frame: pd.DataFrame) -> pd.Series:
@@ -128,41 +130,56 @@ def vpin_series(
     bucket_volume: float,
     window_buckets: int = VPIN_WINDOW_BUCKETS,
 ) -> pd.DataFrame:
-    """Replicates VpinTracker: consecutive-duplicate trade_id dedup, bucket
-    accumulation with dominant-side overflow carry, rolling |imbalance| sum.
+    """Replicates VpinTracker: bounded trade-id dedup, exact sequential volume
+    slicing, and a rolling sum of per-bucket absolute imbalances.
     Returns one row per COMPLETED bucket: ts_ms (completion time), imbalance,
     vpin (NaN until window_buckets buckets exist), duration_ms."""
     if trades.empty:
         return pd.DataFrame(columns=["ts_ms", "imbalance", "vpin", "duration_ms"])
     tid = trades["trade_id"].astype(str).to_numpy()
-    keep = np.ones(len(tid), dtype=bool)
-    keep[1:] = tid[1:] != tid[:-1]  # single-entry memory, exactly like the Rust
-    ts = trades["ts_ms"].to_numpy(dtype=float)[keep]
-    qty = trades["size"].to_numpy(dtype=float).clip(min=0.0)[keep]
-    is_buy = (trades["side"].astype(str).str.lower() == "buy").to_numpy()[keep]
+    ts = trades["ts_ms"].to_numpy(dtype=float)
+    qty = trades["size"].to_numpy(dtype=float).clip(min=0.0)
+    is_buy = (trades["side"].astype(str).str.lower() == "buy").to_numpy()
 
     bucket_volume = max(bucket_volume, 1e-12)
     rows: list[tuple[float, float, float]] = []
     buy = sell = 0.0
     started_ms = ts[0] if len(ts) else 0.0
+    recent_ids: set[str] = set()
+    recent_order: deque[str] = deque()
     for i in range(len(ts)):
-        if is_buy[i]:
-            buy += qty[i]
-        else:
-            sell += qty[i]
-        while buy + sell >= bucket_volume:
-            rows.append((ts[i], abs(buy - sell), ts[i] - started_ms))
-            overflow = buy + sell - bucket_volume
-            if buy >= sell:
-                buy, sell = overflow, 0.0
+        trade_id = tid[i]
+        usable_id = trade_id not in {"", "0", "None", "nan", "NaT", "<NA>", "none", "null"}
+        if usable_id:
+            if trade_id in recent_ids:
+                continue
+            recent_ids.add(trade_id)
+            recent_order.append(trade_id)
+            while len(recent_order) > RECENT_TRADE_ID_CAPACITY:
+                recent_ids.remove(recent_order.popleft())
+
+        remaining = qty[i]
+        while remaining > 0.0:
+            take = min(remaining, bucket_volume - buy - sell)
+            if is_buy[i]:
+                buy += take
             else:
-                buy, sell = 0.0, overflow
-            started_ms = ts[i]
+                sell += take
+            remaining -= take
+            if buy + sell >= bucket_volume - 1e-12:
+                imbalance = abs(buy - sell)
+                if imbalance > bucket_volume + 1e-9:
+                    raise AssertionError("VPIN bucket imbalance exceeded bucket volume")
+                rows.append((ts[i], imbalance, ts[i] - started_ms))
+                buy = sell = 0.0
+                started_ms = ts[i]
     out = pd.DataFrame(rows, columns=["ts_ms", "imbalance", "duration_ms"])
     if out.empty:
         return out.assign(vpin=pd.Series(dtype=float))
     rolling = out["imbalance"].rolling(window_buckets).sum()
     out["vpin"] = rolling / (window_buckets * bucket_volume)
+    if (out["vpin"].dropna() > 1.0 + 1e-12).any():
+        raise AssertionError("VPIN escaped [0,1]")
     return out
 
 

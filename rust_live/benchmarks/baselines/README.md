@@ -5,4 +5,6 @@ the designated production-class runner with `MM_BENCH_CPU` set. Baselines are
 valid only for the recorded CPU, Rust toolchain, target features, and build
 profile. Use `rust_live/scripts/check-performance.ps1` for the relative 5% p50,
 10% p99, and 5% monitoring-overhead gates. Unpinned developer results are
-informational and must not replace a pinned baseline.
+informational and must not replace a pinned baseline. The approved local host is
+the Ryzen 9 7900 on logical CPU 4; generate and check its seven-run aggregate
+with `scripts/run-performance-study.ps1` and `scripts/check-performance.ps1`.

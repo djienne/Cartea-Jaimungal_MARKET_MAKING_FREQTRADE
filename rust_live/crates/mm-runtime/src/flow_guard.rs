@@ -24,7 +24,7 @@
 //! | tier | first trip | mid had already moved |
 //! |---|---|---|
 //! | fast mid-move breaker (≥8% in 5 s) | 05:11:15 | −14% |
-//! | VPIN ≥ 0.40 | 05:11:31 | −45% |
+//! | VPIN ≥ 0.40 | 05:11:30 | −45% |
 //!
 //! The breaker is 16 seconds and 31 percentage points earlier, so it bounds the
 //! damage. VPIN is slower but identifies the *regime* — 86% of that window's
@@ -44,6 +44,8 @@
 
 use cj_core::types::{AggressorSide, TradePrint};
 use mm_settings::FlowGuardConfig;
+
+const RECENT_TRADE_ID_CAPACITY: usize = 65_536;
 
 /// Trailing mid samples for the fast breaker.
 ///
@@ -90,6 +92,13 @@ impl MidWindow {
             self.len += 1;
         }
 
+        self.advance(now_ns, mid_units)
+    }
+
+    /// Age the trailing window and measure against its oldest retained sample
+    /// without inserting another observation. Hot-path control/model wakes can
+    /// call this freely without shortening the physical BBO window.
+    pub fn advance(&mut self, now_ns: u64, mid_units: i64) -> f64 {
         let cutoff = now_ns.saturating_sub(self.window_ns);
         while self.len > 1 && self.samples[self.tail].0 < cutoff {
             self.tail = (self.tail + 1) % self.samples.len();
@@ -109,6 +118,11 @@ impl MidWindow {
     pub const fn window_ns(&self) -> u64 {
         self.window_ns
     }
+
+    #[cfg(test)]
+    const fn len(&self) -> usize {
+        self.len
+    }
 }
 
 /// Volume-synchronised probability of informed trading.
@@ -124,7 +138,7 @@ impl MidWindow {
 /// The reference's rolling-CDF percentile is **not** used. On this tape it
 /// reaches 1.00 in four benign windows at a 2-day lookback — the tape is far
 /// shorter than the 90 days that percentile assumes — while the raw statistic
-/// separated the cascade on the frozen tape (peak 0.663 against a 0.371 maximum
+/// separated the cascade on the frozen tape (peak 0.655 against a 0.367 maximum
 /// elsewhere). An absolute threshold on raw VPIN is the honest instrument here.
 #[derive(Debug)]
 pub struct VpinTracker {
@@ -134,7 +148,8 @@ pub struct VpinTracker {
     sell_units: i64,
     imbalances: std::collections::VecDeque<i64>,
     imbalance_sum: i64,
-    last_trade_id: Option<u64>,
+    recent_trade_ids: std::collections::HashSet<u64>,
+    recent_trade_order: std::collections::VecDeque<u64>,
 }
 
 impl VpinTracker {
@@ -146,7 +161,8 @@ impl VpinTracker {
             sell_units: 0,
             imbalances: std::collections::VecDeque::with_capacity(window_buckets.max(1)),
             imbalance_sum: 0,
-            last_trade_id: None,
+            recent_trade_ids: std::collections::HashSet::with_capacity(RECENT_TRADE_ID_CAPACITY),
+            recent_trade_order: std::collections::VecDeque::with_capacity(RECENT_TRADE_ID_CAPACITY),
         }
     }
 
@@ -156,44 +172,101 @@ impl VpinTracker {
         let next = bucket_volume_units.max(1);
         if next != self.bucket_volume_units {
             self.bucket_volume_units = next;
-            // The partial bucket was measured against the old size; carrying it
-            // over would mix scales, so start the next bucket clean.
+            // Both partial and completed buckets were measured against the old
+            // denominator. Retaining either would mix scales and make the
+            // reported VPIN dimensionally inconsistent, so warm up again.
             self.buy_units = 0;
             self.sell_units = 0;
+            self.imbalances.clear();
+            self.imbalance_sum = 0;
         }
     }
 
     /// Feed one trade print. Returns the current VPIN once a full window of
     /// buckets exists, `None` while still warming up.
     pub fn observe(&mut self, trade: &TradePrint) -> Option<f64> {
-        // The feed can repeat a print across reconnects; VPIN is a volume
-        // statistic, so a duplicate would inflate the imbalance.
-        if self.last_trade_id == Some(trade.trade_id) {
+        // The feed can replay several prints across reconnects, not merely the
+        // immediately preceding print. Zero means "no usable id" and must not
+        // collapse unrelated anonymous trades into one.
+        if trade.trade_id != 0 && !self.remember_trade_id(trade.trade_id) {
             return self.value();
         }
-        self.last_trade_id = Some(trade.trade_id);
 
-        let qty = trade.qty_units.max(0);
-        match trade.aggressor {
-            AggressorSide::Buy => self.buy_units = self.buy_units.saturating_add(qty),
-            AggressorSide::Sell => self.sell_units = self.sell_units.saturating_add(qty),
+        let mut remaining = trade.qty_units.max(0);
+        if remaining == 0 {
+            return self.value();
         }
-        while self.buy_units.saturating_add(self.sell_units) >= self.bucket_volume_units {
-            let imbalance = (self.buy_units - self.sell_units).abs();
-            self.push_bucket(imbalance);
-            // Carry the overflow into the next bucket rather than discarding
-            // it: a single large print must not swallow a whole bucket.
-            let overflow =
-                self.buy_units.saturating_add(self.sell_units) - self.bucket_volume_units;
-            let buy_share = if self.buy_units >= self.sell_units {
-                overflow
-            } else {
-                0
-            };
-            self.buy_units = buy_share;
-            self.sell_units = overflow - buy_share;
+
+        // First finish the current partial bucket in strict arrival order.
+        let current = self.buy_units + self.sell_units;
+        if current != 0 {
+            let taken = remaining.min(self.bucket_volume_units - current);
+            self.add_volume(trade.aggressor, taken);
+            remaining -= taken;
+            if self.buy_units + self.sell_units == self.bucket_volume_units {
+                self.finish_bucket();
+            }
         }
+
+        // Every complete bucket from the remainder is wholly on this trade's
+        // side. Collapse pathological huge prints to at most the retained
+        // window instead of looping qty / V times.
+        let full_buckets = remaining / self.bucket_volume_units;
+        if full_buckets != 0 {
+            self.push_one_sided_buckets(full_buckets);
+            remaining %= self.bucket_volume_units;
+        }
+        self.add_volume(trade.aggressor, remaining);
         self.value()
+    }
+
+    fn remember_trade_id(&mut self, trade_id: u64) -> bool {
+        if !self.recent_trade_ids.insert(trade_id) {
+            return false;
+        }
+        self.recent_trade_order.push_back(trade_id);
+        while self.recent_trade_order.len() > RECENT_TRADE_ID_CAPACITY {
+            if let Some(expired) = self.recent_trade_order.pop_front() {
+                self.recent_trade_ids.remove(&expired);
+            }
+        }
+        true
+    }
+
+    fn add_volume(&mut self, side: AggressorSide, qty: i64) {
+        match side {
+            AggressorSide::Buy => self.buy_units += qty,
+            AggressorSide::Sell => self.sell_units += qty,
+        }
+    }
+
+    fn finish_bucket(&mut self) {
+        debug_assert_eq!(self.buy_units + self.sell_units, self.bucket_volume_units);
+        let imbalance = (self.buy_units - self.sell_units).abs();
+        debug_assert!(imbalance <= self.bucket_volume_units);
+        self.push_bucket(imbalance);
+        self.buy_units = 0;
+        self.sell_units = 0;
+    }
+
+    fn push_one_sided_buckets(&mut self, count: i64) {
+        if count >= self.window_buckets as i64 {
+            self.imbalances.clear();
+            self.imbalances
+                .resize(self.window_buckets, self.bucket_volume_units);
+            self.imbalance_sum = self
+                .bucket_volume_units
+                .saturating_mul(self.window_buckets as i64);
+            return;
+        }
+        for _ in 0..count {
+            self.push_bucket(self.bucket_volume_units);
+        }
+    }
+
+    #[cfg(test)]
+    fn partial_volume(&self) -> i64 {
+        self.buy_units + self.sell_units
     }
 
     fn push_bucket(&mut self, imbalance: i64) {
@@ -214,7 +287,9 @@ impl VpinTracker {
         if denominator <= 0.0 {
             return None;
         }
-        Some(self.imbalance_sum as f64 / denominator)
+        let value = self.imbalance_sum as f64 / denominator;
+        debug_assert!((0.0..=1.0).contains(&value));
+        Some(value)
     }
 
     pub fn buckets_seen(&self) -> usize {
@@ -312,6 +387,7 @@ impl FlowGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn trade(id: u64, side: AggressorSide, qty: i64) -> TradePrint {
         TradePrint {
@@ -380,6 +456,19 @@ mod tests {
     }
 
     #[test]
+    fn control_signal_storm_does_not_shorten_the_bbo_window() {
+        let mut window = MidWindow::new(4, 5_000);
+        let second = 1_000_000_000_u64;
+        window.observe(second, 10_000);
+        window.observe(2 * second, 9_000);
+        for _ in 0..10_000 {
+            let moved = window.advance(4 * second, 9_000);
+            assert!((moved - 1_000.0).abs() < 1.0);
+        }
+        assert_eq!(window.len(), 2, "non-market wakes must not insert samples");
+    }
+
+    #[test]
     fn vpin_is_one_when_flow_is_entirely_one_sided() {
         let mut tracker = VpinTracker::new(100, 2);
         // Two full buckets of pure buying: |buy - sell| == bucket size each.
@@ -421,6 +510,72 @@ mod tests {
         );
         tracker.observe(&trade(8, AggressorSide::Buy, 60));
         assert_eq!(tracker.buckets_seen(), 1);
+    }
+
+    #[test]
+    fn oversized_one_sided_trade_cannot_produce_vpin_above_one() {
+        let mut tracker = VpinTracker::new(100, 2);
+        let value = tracker
+            .observe(&trade(1, AggressorSide::Buy, 250))
+            .expect("one print completes two retained buckets");
+        assert_eq!(value, 1.0);
+        assert_eq!(tracker.partial_volume(), 50);
+    }
+
+    #[test]
+    fn mixed_side_overshoot_is_sliced_in_arrival_order() {
+        let mut tracker = VpinTracker::new(100, 2);
+        tracker.observe(&trade(1, AggressorSide::Buy, 80));
+        tracker.observe(&trade(2, AggressorSide::Sell, 70));
+        let value = tracker
+            .observe(&trade(3, AggressorSide::Buy, 50))
+            .expect("two exact buckets should be complete");
+        // Bucket one is 80B/20S (imbalance 60), bucket two 50B/50S.
+        assert_eq!(value, 0.30);
+        assert_eq!(tracker.partial_volume(), 0);
+    }
+
+    #[test]
+    fn resizing_bucket_clears_every_old_scale_bucket() {
+        let mut tracker = VpinTracker::new(100, 2);
+        tracker.observe(&trade(1, AggressorSide::Buy, 200));
+        assert!(tracker.value().is_some());
+        tracker.resize_bucket(200);
+        assert!(tracker.value().is_none());
+        assert_eq!(tracker.buckets_seen(), 0);
+        assert_eq!(tracker.partial_volume(), 0);
+    }
+
+    #[test]
+    fn nonconsecutive_duplicate_trade_ids_are_ignored() {
+        let mut tracker = VpinTracker::new(100, 1);
+        tracker.observe(&trade(7, AggressorSide::Buy, 60));
+        tracker.observe(&trade(8, AggressorSide::Sell, 10));
+        tracker.observe(&trade(7, AggressorSide::Buy, 60));
+        assert!(tracker.value().is_none());
+        assert_eq!(tracker.partial_volume(), 70);
+    }
+
+    proptest! {
+        #[test]
+        fn vpin_is_bounded_for_arbitrary_trade_sequences(
+            bucket in 1_i64..10_000,
+            window in 1_usize..32,
+            rows in prop::collection::vec((any::<bool>(), 0_i64..100_000), 0..256),
+        ) {
+            let mut tracker = VpinTracker::new(bucket, window);
+            for (index, (buy, qty)) in rows.into_iter().enumerate() {
+                let value = tracker.observe(&trade(
+                    index as u64 + 1,
+                    if buy { AggressorSide::Buy } else { AggressorSide::Sell },
+                    qty,
+                ));
+                if let Some(value) = value {
+                    prop_assert!((0.0..=1.0).contains(&value));
+                }
+                prop_assert!(tracker.partial_volume() < bucket);
+            }
+        }
     }
 
     #[test]

@@ -734,21 +734,87 @@ fn persist_snapshot(
     Ok(())
 }
 
-/// Persist only what changed since the previous persisted image.
-///
-/// The old writer rewrote every table (clear + full re-insert) and
-/// re-serialized every order on every wake, which made each persist O(session
-/// history). The metadata blob is small and written unconditionally; orders and
-/// dedup keys are diffed. Each commit is atomic, and a `Durability::Immediate`
-/// commit also makes all earlier `None` commits durable, so the fsync contract
-/// of `flush()` is unchanged.
-fn persist_delta(
-    database: &Database,
+struct PersistDelta {
+    metadata: PersistedLiveState,
+    order_upserts: Vec<(String, PersistedLiveOrder)>,
+    order_removals: Vec<String>,
+    fill_additions: Vec<TimedKey>,
+    fill_removals: Vec<TimedKey>,
+    funding_additions: Vec<TimedKey>,
+    funding_removals: Vec<TimedKey>,
+}
+
+fn metadata_only(state: &PersistedLiveState) -> PersistedLiveState {
+    PersistedLiveState {
+        schema_version: state.schema_version,
+        symbol: state.symbol.clone(),
+        account: state.account.clone(),
+        agent: state.agent.clone(),
+        config_fingerprint: state.config_fingerprint.clone(),
+        metadata_fingerprint: state.metadata_fingerprint.clone(),
+        event_checkpoint_ms: state.event_checkpoint_ms,
+        nonce_reserved_through: state.nonce_reserved_through,
+        next_cloid_sequence: state.next_cloid_sequence,
+        inventory_unit: state.inventory_unit,
+        orders: BTreeMap::new(),
+        processed_fill_keys: BTreeSet::new(),
+        processed_funding_keys: BTreeSet::new(),
+        cumulative_realized_pnl_usdc: state.cumulative_realized_pnl_usdc,
+        cumulative_fees_usdc: state.cumulative_fees_usdc,
+        cumulative_funding_usdc: state.cumulative_funding_usdc,
+        pnl_day: state.pnl_day,
+        daily_realized_pnl_usdc: state.daily_realized_pnl_usdc,
+        consecutive_losses: state.consecutive_losses,
+        campaign: state.campaign,
+    }
+}
+
+fn build_persist_delta(
     previous: &PersistedLiveState,
     current: &PersistedLiveState,
-    durability: Durability,
-) -> Result<()> {
-    let metadata_bytes = metadata_blob(current)?;
+) -> PersistDelta {
+    PersistDelta {
+        metadata: metadata_only(current),
+        order_upserts: current
+            .orders
+            .iter()
+            .filter(|(cloid, order)| previous.orders.get(*cloid) != Some(*order))
+            .map(|(cloid, order)| (cloid.clone(), order.clone()))
+            .collect(),
+        order_removals: previous
+            .orders
+            .keys()
+            .filter(|cloid| !current.orders.contains_key(*cloid))
+            .cloned()
+            .collect(),
+        fill_additions: current
+            .processed_fill_keys
+            .difference(&previous.processed_fill_keys)
+            .cloned()
+            .collect(),
+        fill_removals: previous
+            .processed_fill_keys
+            .difference(&current.processed_fill_keys)
+            .cloned()
+            .collect(),
+        funding_additions: current
+            .processed_funding_keys
+            .difference(&previous.processed_funding_keys)
+            .cloned()
+            .collect(),
+        funding_removals: previous
+            .processed_funding_keys
+            .difference(&current.processed_funding_keys)
+            .cloned()
+            .collect(),
+    }
+}
+
+/// Persist only the small typed delta captured under the state mutex. Redb I/O
+/// and serialization happen after the mutex is released; a growing history can
+/// no longer turn one writer wake into a whole-state deep clone.
+fn persist_delta(database: &Database, delta: &PersistDelta, durability: Durability) -> Result<()> {
+    let metadata_bytes = metadata_blob(&delta.metadata)?;
     let mut write = database.begin_write()?;
     write.set_durability(durability)?;
     {
@@ -757,39 +823,59 @@ fn persist_delta(
     }
     {
         let mut table = write.open_table(ORDER_TABLE)?;
-        for cloid in previous.orders.keys() {
-            if !current.orders.contains_key(cloid) {
-                table.remove(cloid.as_str())?;
-            }
+        for cloid in &delta.order_removals {
+            table.remove(cloid.as_str())?;
         }
-        for (cloid, order) in &current.orders {
-            if previous.orders.get(cloid) != Some(order) {
-                table.insert(cloid.as_str(), serde_json::to_vec(order)?.as_slice())?;
-            }
+        for (cloid, order) in &delta.order_upserts {
+            table.insert(cloid.as_str(), serde_json::to_vec(order)?.as_slice())?;
         }
     }
-    for (previous_keys, current_keys, definition) in [
+    for (removed_keys, added_keys, definition) in [
+        (&delta.fill_removals, &delta.fill_additions, FILL_TABLE),
         (
-            &previous.processed_fill_keys,
-            &current.processed_fill_keys,
-            FILL_TABLE,
-        ),
-        (
-            &previous.processed_funding_keys,
-            &current.processed_funding_keys,
+            &delta.funding_removals,
+            &delta.funding_additions,
             FUNDING_TABLE,
         ),
     ] {
         let mut table = write.open_table(definition)?;
-        for removed in previous_keys.difference(current_keys) {
+        for removed in removed_keys {
             table.remove(removed.encode().as_str())?;
         }
-        for added in current_keys.difference(previous_keys) {
+        for added in added_keys {
             table.insert(added.encode().as_str(), 1)?;
         }
     }
     write.commit()?;
     Ok(())
+}
+
+fn apply_delta(state: &mut PersistedLiveState, delta: &PersistDelta) {
+    let orders = std::mem::take(&mut state.orders);
+    let fill_keys = std::mem::take(&mut state.processed_fill_keys);
+    let funding_keys = std::mem::take(&mut state.processed_funding_keys);
+    *state = delta.metadata.clone();
+    state.orders = orders;
+    state.processed_fill_keys = fill_keys;
+    state.processed_funding_keys = funding_keys;
+    for cloid in &delta.order_removals {
+        state.orders.remove(cloid);
+    }
+    for (cloid, order) in &delta.order_upserts {
+        state.orders.insert(cloid.clone(), order.clone());
+    }
+    for key in &delta.fill_removals {
+        state.processed_fill_keys.remove(key);
+    }
+    state
+        .processed_fill_keys
+        .extend(delta.fill_additions.iter().cloned());
+    for key in &delta.funding_removals {
+        state.processed_funding_keys.remove(key);
+    }
+    state
+        .processed_funding_keys
+        .extend(delta.funding_additions.iter().cloned());
 }
 
 fn run_persistence_writer(
@@ -811,9 +897,9 @@ fn run_persistence_writer(
             store_writer_error(persistence_error, "live-state memory lock poisoned");
             break;
         };
-        let snapshot = state_guard.clone();
+        let delta = build_persist_delta(&last_persisted, &state_guard);
         drop(state_guard);
-        let mut result = persist_delta(database, &last_persisted, &snapshot, durability);
+        let mut result = persist_delta(database, &delta, durability);
         for retry in 0_u32..5 {
             if result.is_ok() {
                 break;
@@ -825,10 +911,10 @@ fn run_persistence_writer(
             std::thread::sleep(std::time::Duration::from_millis(
                 50_u64.saturating_mul(1_u64 << retry).min(1_000),
             ));
-            result = persist_delta(database, &last_persisted, &snapshot, durability);
+            result = persist_delta(database, &delta, durability);
         }
         if result.is_ok() {
-            last_persisted = snapshot;
+            apply_delta(&mut last_persisted, &delta);
             clear_writer_error(persistence_error);
         }
         if let PersistCommand::Flush(reply) = command {

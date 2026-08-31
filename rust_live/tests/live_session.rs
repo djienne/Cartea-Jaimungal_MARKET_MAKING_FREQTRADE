@@ -160,6 +160,16 @@ where
             .await
             .unwrap();
     }
+    for channel in ["clearinghouseState", "openOrders", "activeAssetData"] {
+        socket
+            .send(Message::Text(
+                serde_json::json!({"channel": channel, "data": {}})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
 }
 
 struct Fixture {

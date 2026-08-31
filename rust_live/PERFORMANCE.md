@@ -1,5 +1,15 @@
 # Local performance characterization
 
+The approved 2026-08-31 Windows baseline is the median of seven independent
+release processes pinned to logical CPU 4 on the Ryzen 9 7900. The pure policy
+kernel measured 57.81 ns p50 and 104.69 ns p99 of 64-decision batch means; the
+exact production `HotPathEngine::step` measured 73.44/134.38 ns. These are
+batch-mean distributions, not individual-decision tail latency. The checked-in
+environment fingerprint and baseline live under `benchmarks/baselines`; the
+gate reruns the same seven-process study and refuses incompatible hosts.
+
+## Earlier characterizations
+
 The post-remediation unpinned Windows release run on 2026-08-23 measured a
 55.57 ns baseline quote-loop median and 58.22 ns monitored (4.78% one-in-16
 sampling overhead, within the 5% gate). Independent 64-decision batches

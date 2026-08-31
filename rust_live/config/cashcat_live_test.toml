@@ -53,6 +53,8 @@ retention_minutes = 180
 # collector (the hl-cashcat-collector Docker container). See
 # docs/DATA_COLLECTION.md.
 write_parquet = true
+live_log_max_mb = 64
+live_log_keep = 3
 
 [calibration]
 window_minutes = 120
@@ -145,7 +147,7 @@ fast_move_window_ms = 5000
 fast_move_threshold_bps = 800.0
 # VPIN. Bucket size is derived from observed volume (ADV / buckets_per_day), so
 # the threshold keeps its meaning as activity changes. Over 165.11 h, maximum
-# VPIN outside the cascade was 0.371; the cascade peaked at 0.663.
+# Exact-volume VPIN outside the cascade was 0.367; the cascade peaked at 0.655.
 vpin_buckets_per_day = 50
 vpin_window_buckets = 30
 vpin_threshold = 0.40
@@ -168,6 +170,7 @@ action_expiry_ms = 5000
 max_quote_command_age_ms = 1000
 reconcile_interval_ms = 300000
 startup_warmup_seconds = 120
+account_snapshot_timeout_ms = 10000
 deadman_enabled = true
 deadman_deadline_ms = 28800000
 deadman_refresh_ms = 21600000
