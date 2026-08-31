@@ -166,9 +166,8 @@ enabled = true
 # VPIN needed -45%.
 fast_move_window_ms = 5000
 fast_move_threshold_bps = 800.0
-# VPIN. Bucket size is derived from observed volume (ADV / buckets_per_day), so
-# the threshold keeps its meaning as activity changes. Over 165.11 h, maximum
-# Exact-volume VPIN outside the cascade was 0.367; the cascade peaked at 0.655.
+# VPIN uses an activity-scaled bucket size. Threshold provenance:
+# scripts/guard_study/reverify_thresholds.json.
 vpin_buckets_per_day = 50
 vpin_window_buckets = 30
 vpin_threshold = 0.40

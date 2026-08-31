@@ -24,6 +24,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::warn;
 
+const REQUIRED_INITIAL_SNAPSHOT_CHANNELS: [&str; 3] =
+    ["clearinghouseState", "openOrders", "activeAssetData"];
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
@@ -561,11 +564,6 @@ where
                                                 args.config.account_snapshot_timeout_ms,
                                             ),
                                     );
-                                    if initial_snapshots_complete(&snapshot_channels) {
-                                        ready_sent = true;
-                                        snapshot_deadline = None;
-                                        deliver_event(&args.events, healthy, SessionEvent::Ready { generation, received_ns })?;
-                                    }
                                 }
                             }
                             "post" => {
@@ -608,7 +606,7 @@ where
                             }
                             "" => {}
                             _ => {
-                                if required_initial_snapshot(&channel) {
+                                if REQUIRED_INITIAL_SNAPSHOT_CHANNELS.contains(&channel.as_str()) {
                                     snapshot_channels.insert(channel.clone());
                                 }
                                 deliver_event(&args.events, healthy, SessionEvent::AccountData {
@@ -622,22 +620,22 @@ where
                                         .map(serde_json::Value::take)
                                         .unwrap_or_default(),
                                 })?;
-                                if subscriptions_ready
-                                    && !ready_sent
-                                    && initial_snapshots_complete(&snapshot_channels)
-                                {
-                                    ready_sent = true;
-                                    snapshot_deadline = None;
-                                    deliver_event(
-                                        &args.events,
-                                        healthy,
-                                        SessionEvent::Ready {
-                                            generation,
-                                            received_ns,
-                                        },
-                                    )?;
-                                }
                             }
+                        }
+                        if subscriptions_ready
+                            && !ready_sent
+                            && initial_snapshots_complete(&snapshot_channels)
+                        {
+                            ready_sent = true;
+                            snapshot_deadline = None;
+                            deliver_event(
+                                &args.events,
+                                healthy,
+                                SessionEvent::Ready {
+                                    generation,
+                                    received_ns,
+                                },
+                            )?;
                         }
                     }
                     Message::Ping(payload) => write.send(Message::Pong(payload)).await?,
@@ -869,15 +867,8 @@ where
     }
 }
 
-fn required_initial_snapshot(channel: &str) -> bool {
-    matches!(
-        channel,
-        "clearinghouseState" | "openOrders" | "activeAssetData"
-    )
-}
-
 fn initial_snapshots_complete(channels: &HashSet<String>) -> bool {
-    ["clearinghouseState", "openOrders", "activeAssetData"]
+    REQUIRED_INITIAL_SNAPSHOT_CHANNELS
         .iter()
         .all(|channel| channels.contains(*channel))
 }
@@ -1326,7 +1317,7 @@ mod tests {
         assert!(!initial_snapshots_complete(&channels));
         channels.insert("activeAssetData".to_owned());
         assert!(initial_snapshots_complete(&channels));
-        assert!(!required_initial_snapshot("userFills"));
+        assert!(!REQUIRED_INITIAL_SNAPSHOT_CHANNELS.contains(&"userFills"));
     }
 
     #[test]

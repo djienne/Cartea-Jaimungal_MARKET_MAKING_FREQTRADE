@@ -39,6 +39,24 @@ struct BenchmarkReport {
     guard: i64,
 }
 
+fn benchmark_instrument() -> InstrumentSpec {
+    InstrumentSpec {
+        symbol: "BENCH".to_owned(),
+        dex: String::new(),
+        asset_id: 0,
+        sz_decimals: 0,
+        max_price_decimals: 6,
+        max_significant_figures: 5,
+        max_leverage: 3.0,
+        minimum_notional: 1.0,
+        margin_table_id: 0,
+        only_isolated: false,
+        margin_mode: String::new(),
+        is_delisted: false,
+        metadata_fingerprint: String::new(),
+    }
+}
+
 fn main() {
     mm_live::BuildInfo::current()
         .ensure_optimized()
@@ -69,21 +87,7 @@ fn main() {
         sigma2_per_second: Some(3.8e-9),
     };
     let model_config = ModelConfig::default();
-    let instrument = InstrumentSpec {
-        symbol: "BENCH".to_owned(),
-        dex: String::new(),
-        asset_id: 0,
-        sz_decimals: 0,
-        max_price_decimals: 6,
-        max_significant_figures: 5,
-        max_leverage: 3.0,
-        minimum_notional: 1.0,
-        margin_table_id: 0,
-        only_isolated: false,
-        margin_mode: String::new(),
-        is_delisted: false,
-        metadata_fingerprint: String::new(),
-    };
+    let instrument = benchmark_instrument();
     let surface =
         solve_asymmetric(parameters, &model_config, 1_868.0, 1).expect("benchmark HJB must solve");
     let policy =
@@ -177,21 +181,7 @@ fn hot_step_batch_distribution(
     batches: u64,
     batch_size: u64,
 ) -> Vec<f64> {
-    let instrument = InstrumentSpec {
-        symbol: "BENCH".to_owned(),
-        dex: String::new(),
-        asset_id: 0,
-        sz_decimals: 0,
-        max_price_decimals: 6,
-        max_significant_figures: 5,
-        max_leverage: 3.0,
-        minimum_notional: 1.0,
-        margin_table_id: 0,
-        only_isolated: false,
-        margin_mode: String::new(),
-        is_delisted: false,
-        metadata_fingerprint: String::new(),
-    };
+    let instrument = benchmark_instrument();
     let surface = solve_asymmetric(parameters, model_config, 1_868.0, 1).unwrap();
     let (bbo_writer, bbo_reader) = lockfree::bbo_channel();
     bbo_writer.store(Bbo {

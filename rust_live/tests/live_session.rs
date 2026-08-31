@@ -21,7 +21,7 @@ async fn websocket_action_response_is_correlated_and_persisted() {
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut socket = accept_async(stream).await.unwrap();
-        acknowledge_subscriptions(&mut socket).await;
+        acknowledge_subscriptions(&mut socket, false).await;
         loop {
             let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
                 continue;
@@ -98,7 +98,7 @@ async fn socket_loss_after_write_returns_unknown_and_persists_it() {
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut socket = accept_async(stream).await.unwrap();
-        acknowledge_subscriptions(&mut socket).await;
+        acknowledge_subscriptions(&mut socket, true).await;
         loop {
             let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
                 continue;
@@ -139,10 +139,15 @@ async fn socket_loss_after_write_returns_unknown_and_persists_it() {
     server.await.unwrap();
 }
 
-async fn acknowledge_subscriptions<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>)
-where
+async fn acknowledge_subscriptions<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    snapshots_first: bool,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    if snapshots_first {
+        send_initial_snapshots(socket).await;
+    }
     for _ in 0..8 {
         let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
             panic!("subscription was not text");
@@ -160,6 +165,15 @@ where
             .await
             .unwrap();
     }
+    if !snapshots_first {
+        send_initial_snapshots(socket).await;
+    }
+}
+
+async fn send_initial_snapshots<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     for channel in ["clearinghouseState", "openOrders", "activeAssetData"] {
         socket
             .send(Message::Text(

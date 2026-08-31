@@ -275,9 +275,8 @@ pub struct FlowGuardConfig {
     pub vpin_buckets_per_day: u32,
     /// Rolling bucket count in the VPIN numerator.
     pub vpin_window_buckets: u32,
-    /// VPIN level treated as toxic. Re-verification over 165.11 h measured a
-    /// Corrected exact-volume bucketing measured a 0.367 maximum outside the
-    /// cascade and a 0.655 cascade peak over the frozen 165.11 h tape.
+    /// VPIN level treated as toxic. The default comes from the corrected
+    /// exact-volume study in `scripts/guard_study/reverify_thresholds.json`.
     pub vpin_threshold: f64,
     /// Minimum time quoting stays withdrawn after a trip. Re-entry additionally
     /// requires VPIN to have fallen back under `vpin_threshold`, so this is a

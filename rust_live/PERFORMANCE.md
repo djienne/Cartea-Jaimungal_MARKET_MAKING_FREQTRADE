@@ -88,16 +88,23 @@ Excluded from these measurements:
 - queue position and fill uncertainty;
 - OS scheduling around the dedicated hot thread.
 
-Run it with:
+Run the approved same-machine gate from `rust_live`:
 
 ```powershell
-cargo run --locked --manifest-path rust_live/Cargo.toml `
-  --release --bin hot-path-bench
+cd rust_live
+.\scripts\check-performance.ps1 `
+  -Baseline .\benchmarks\baselines\windows-ryzen9-7900-cpu4-rust1.92-portable.json `
+  -Cpu 4 -Runs 7
 ```
 
-Set `MM_BENCH_CPU` to pin the benchmark and `MM_BENCH_OUTPUT` to persist its
-JSON report. On a designated same-machine runner, compare against an approved
-baseline with `rust_live/scripts/check-performance.ps1`; the gate permits at
-most 5% p50 and 10% p99 quote regression and 5% monitoring overhead. Unpinned
-results remain informational and are never compared to an absolute nanosecond
-threshold.
+The gate compares the median of seven pinned process runs and rejects a CPU,
+core, target, Rust, profile, target-feature, or schema mismatch. Policy-kernel
+and complete-hot-step p50 may regress by at most 5%; their batch-mean p99 may
+regress by at most 10%. Monitoring overhead may rise by at most 5 percentage
+points relative to the approved baseline. These percentiles describe batch
+means, not individual-decision tails.
+
+For a diagnostic single run, invoke `cargo run --locked --release --bin
+hot-path-bench`; set `MM_BENCH_CPU` to pin it and `MM_BENCH_OUTPUT` to retain
+its schema-3 JSON. A single or unpinned run is informational and is not an
+approved performance gate.

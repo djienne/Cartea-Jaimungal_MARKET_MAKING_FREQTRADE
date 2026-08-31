@@ -60,9 +60,8 @@ pub struct LogRotation {
 impl LogRotation {
     /// Off — the log grows without limit.
     ///
-    /// Correct for the bounded callers: `replay` and `live` embed a start
-    /// timestamp in the filename and never reopen the same path, so their logs
-    /// are already one-per-run.
+    /// Correct for bounded per-run callers such as `replay`; live sessions
+    /// select size-based rotation explicitly.
     pub const DISABLED: Self = Self {
         max_bytes: 0,
         keep: 0,
@@ -107,15 +106,15 @@ fn rotate_log_files(path: &Path, keep: usize) -> std::io::Result<()> {
 /// Where an event log's bytes end up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
-    /// Plain `.jsonl`, greppable without tooling. Used for the `live` audit
-    /// trail and for bounded `replay` runs.
+    /// Plain `.jsonl`, greppable without tooling. Used for bounded dry-run and
+    /// replay audit trails.
     Plain,
     /// zstd-compressed `.jsonl.zst`, ~16x smaller (measured on real grid logs).
     ///
-    /// Used for the long-running dry-run accumulators, where the plain format
-    /// costs 158 MB per variant per 20 h. zstd frames concatenate, so a stopped
-    /// and restarted run appends to the same file and readers see one
-    /// continuous stream.
+    /// Used for long-running dry-run accumulators and live sessions. For the
+    /// accumulators, the plain format costs 158 MB per variant per 20 h. zstd
+    /// frames concatenate, so a stopped and restarted run can append to the
+    /// same file and readers see one continuous stream.
     Zstd,
 }
 
