@@ -9,12 +9,11 @@ Definition used here (unconditional):
 These values are intended as a sanity-check / monitoring signal ONLY, and they
 count raw prints rather than market orders.
 
-The λ± the strategy actually uses is a different quantity, computed in
+The λ± used by the model/replay calibration is a different quantity, computed in
 `get_kappa.py`: prints sharing a timestamp and side are first aggregated into one
-market order, and λ± is that count divided by the seconds the data actually
-covers. It is stored in `lambda.json` with `lambda_source="mo_survival_fit"`,
-which the strategy requires. To avoid overwriting it, this script writes to
-`lambda_trades.json` by default.
+market order, and λ± is that count divided by observed seconds. It is stored in
+`lambda.json` with `lambda_source="mo_survival_fit"`. To avoid overwriting that
+model input, this monitoring script writes to `lambda_trades.json` by default.
 """
 
 import os

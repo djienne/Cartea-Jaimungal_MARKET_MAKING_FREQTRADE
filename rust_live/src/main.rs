@@ -38,6 +38,7 @@ use mm_live::report::{
 };
 use mm_live::types::{unix_ms, Bbo, DesiredQuotes, MarketEvent, ProcessClock, QuoteReason};
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
@@ -152,6 +153,20 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         log_keep: usize,
     },
+    /// Select the highest valid flatten-P&L row and atomically generate the
+    /// micro-live configuration. This command performs no network activity.
+    PromoteBest {
+        #[arg(long)]
+        grid: PathBuf,
+        #[arg(long)]
+        leaderboard: PathBuf,
+        #[arg(long, default_value = "rust_live/run/cashcat-active-live.toml")]
+        output: PathBuf,
+        #[arg(long, default_value = "rust_live/run/cashcat-promotion.json")]
+        manifest: PathBuf,
+        #[arg(long, default_value_t = 43_200)]
+        min_elapsed_seconds: u64,
+    },
     /// Exercise credential parsing, account REST reads, and the account WebSocket without actions.
     ConnectorCheck {
         #[arg(long, default_value = "rust_live/hyperliquid.env")]
@@ -255,6 +270,23 @@ fn main() -> Result<()> {
         };
     }
     let config = AppConfig::load(&cli.config)?;
+    if let Command::PromoteBest {
+        grid,
+        leaderboard,
+        output,
+        manifest,
+        min_elapsed_seconds,
+    } = &cli.command
+    {
+        return promote_best_config(
+            &config,
+            grid,
+            leaderboard,
+            output,
+            manifest,
+            *min_elapsed_seconds,
+        );
+    }
     init_tracing(config.runtime.log_json);
     // The runtime is built explicitly so hot-path isolation is real: the
     // default #[tokio::main] spawned one worker per logical CPU with no
@@ -404,6 +436,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             )
             .await
         }
+        Command::PromoteBest { .. } => unreachable!("promotion returned before runtime startup"),
         Command::ConnectorCheck {
             credentials,
             duration_seconds,
@@ -521,6 +554,7 @@ async fn run_connector_check(
         Duration::from_secs(5),
         5_000,
         config.live.max_rest_weight_per_minute,
+        config.live.safety_rest_weight_reserve,
     )?;
     let account_events = Arc::new(AsyncRing::new(config.runtime.execution_event_capacity));
     let account_metrics = Arc::new(AccountStreamMetrics::default());
@@ -698,6 +732,7 @@ async fn run_live_canary(
         Duration::from_secs(5),
         5_000,
         config.live.max_rest_weight_per_minute,
+        config.live.safety_rest_weight_reserve,
     )?;
     let initial_state = client.clearinghouse_state().await?;
     let initial_orders = client.open_orders().await?;
@@ -1113,12 +1148,13 @@ fn minimum_canary_quantity(
     px_units: i64,
     max_notional_usdc: f64,
 ) -> Result<i64> {
-    let target = instrument.minimum_notional * 1.01;
+    let target = instrument.minimum_notional * 1.05;
     let raw =
         target * instrument.price_scale() as f64 * instrument.size_scale() as f64 / px_units as f64;
     let qty_units = raw.ceil() as i64;
     let notional = order_notional(instrument, px_units, qty_units);
-    if qty_units <= 0 || notional > max_notional_usdc {
+    let micro_maximum = instrument.minimum_notional * 1.10;
+    if qty_units <= 0 || notional > max_notional_usdc || notional > micro_maximum {
         bail!("minimum canary order would be {notional:.6} USDC, above cap {max_notional_usdc:.6}");
     }
     Ok(qty_units)
@@ -1370,6 +1406,8 @@ async fn run_live(
     })?;
     let mut event_logger =
         JsonlEventLogger::create(&config.storage.report_dir, "live", started_at_ms)?;
+    let live_heartbeat_path = config.storage.report_dir.join("live_heartbeat.json");
+    let mut last_live_heartbeat_ms = 0_u64;
     let warmup_deadline =
         tokio::time::Instant::now() + Duration::from_secs(config.live.startup_warmup_seconds);
     let mut armed = false;
@@ -1579,7 +1617,8 @@ async fn run_live(
                         signal.notify(HOT_SIGNAL_EXECUTION);
                         info!(mode = ?config.live.mode, "live backend armed after all startup gates");
                     }
-                    let execution_events = backend.maintenance(unix_ms()).await?;
+                    let maintenance_now_ms = unix_ms();
+                    let execution_events = backend.maintenance(maintenance_now_ms).await?;
                     apply_live_execution_events(
                         &execution_events,
                         &mut event_logger,
@@ -1589,6 +1628,18 @@ async fn run_live(
                         &metrics,
                         &signal,
                     )?;
+                    if maintenance_now_ms.saturating_sub(last_live_heartbeat_ms) >= 5_000 {
+                        last_live_heartbeat_ms = maintenance_now_ms;
+                        let mut heartbeat = backend.health_snapshot();
+                        heartbeat["market_evidence_valid"] = serde_json::json!(market_valid);
+                        heartbeat["latency_trading_allowed"] =
+                            serde_json::json!(latency.trading_allowed());
+                        heartbeat["armed"] = serde_json::json!(armed);
+                        write_atomic_bytes(
+                            &live_heartbeat_path,
+                            &serde_json::to_vec_pretty(&heartbeat)?,
+                        )?;
+                    }
                     if backend.reconciliation_requested()
                         && !reconcile_inflight
                         && tokio::time::Instant::now() >= reconcile_backoff_until
@@ -1816,8 +1867,6 @@ async fn step_grid_variant(
     event: &MarketEvent,
     event_time: u64,
     bbo: Option<Bbo>,
-    now_ns: u64,
-    simulated_now_ms: u64,
     vpin_value: Option<f64>,
 ) -> Result<()> {
     let execution_events = variant.backend.on_market_event(event).await?;
@@ -1833,9 +1882,7 @@ async fn step_grid_variant(
         QuoteReason::Fill
     };
     if let Some(bbo) = bbo {
-        variant
-            .step(bbo, now_ns, simulated_now_ms, reason, vpin_value)
-            .await?;
+        variant.step(bbo, reason, vpin_value).await?;
     }
     Ok(())
 }
@@ -1844,21 +1891,18 @@ impl GridVariant {
     /// Price this variant against the current book and hand the result to its
     /// own simulator. This is the same `policy.compute` the hot path calls; the
     /// grid deliberately does not spawn hot-path threads (see `src/grid.rs`).
-    async fn step(
-        &mut self,
-        bbo: Bbo,
-        now_ns: u64,
-        simulated_now_ms: u64,
-        reason: QuoteReason,
-        vpin: Option<f64>,
-    ) -> Result<()> {
+    async fn step(&mut self, bbo: Bbo, reason: QuoteReason, vpin: Option<f64>) -> Result<()> {
         let account = self.backend.account_state();
         let q_exact = if self.inventory_unit == 0 {
             0.0
         } else {
             account.inventory_units as f64 / self.inventory_unit as f64
         };
-        let elapsed = now_ns.saturating_sub(self.episode_start_ns) as f64 / 1_000_000_000.0;
+        let model_now_ns = bbo.exchange_ms.saturating_mul(1_000_000);
+        if self.episode_start_ns == 0 {
+            self.episode_start_ns = model_now_ns;
+        }
+        let elapsed = model_now_ns.saturating_sub(self.episode_start_ns) as f64 / 1_000_000_000.0;
         let horizon_seconds = self.config.model.horizon_seconds;
         let minimum_elapsed = horizon_seconds * self.config.model.episode_min_elapsed_fraction;
         let episode_rolled = elapsed >= horizon_seconds
@@ -1866,7 +1910,7 @@ impl GridVariant {
                 && q_exact.round() == 0.0
                 && elapsed >= minimum_elapsed);
         let elapsed = if episode_rolled {
-            self.episode_start_ns = now_ns;
+            self.episode_start_ns = model_now_ns;
             0.0
         } else {
             elapsed
@@ -1885,10 +1929,12 @@ impl GridVariant {
         self.quote_seq = self.quote_seq.wrapping_add(1);
         // Toxic-flow guard, mirroring the hot path's arm: empty quotes cancel
         // resting orders because a `None` target bypasses the requote hold.
-        let move_bps = self.mid_window.observe(now_ns, bbo.mid_units());
-        if self.guard.evaluate(now_ns / 1_000_000, move_bps, vpin) {
-            let quotes = DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, now_ns);
-            self.backend.reconcile(quotes, simulated_now_ms).await?;
+        let move_bps = self.mid_window.observe(model_now_ns, bbo.mid_units());
+        if self.guard.evaluate(bbo.exchange_ms, move_bps, vpin) {
+            let mut quotes =
+                DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, model_now_ns);
+            quotes.source_exchange_ms = bbo.exchange_ms;
+            self.backend.reconcile(quotes, bbo.exchange_ms).await?;
             self.logger.log("quote_decision", None, &quotes)?;
             return Ok(());
         }
@@ -1901,12 +1947,14 @@ impl GridVariant {
                 self.inventory_unit,
                 tau,
                 self.quote_seq,
-                now_ns,
+                model_now_ns,
                 reason,
                 risk_state,
             )
             .quotes;
-        self.backend.reconcile(quotes, simulated_now_ms).await?;
+        self.backend
+            .reconcile(quotes, quotes.source_exchange_ms)
+            .await?;
         self.logger.log("quote_decision", None, &quotes)?;
         Ok(())
     }
@@ -1922,12 +1970,17 @@ impl GridVariant {
         }
     }
 
-    fn leaderboard_row(&self) -> grid::LeaderboardRow {
+    fn leaderboard_row(&self, bbo: Option<Bbo>) -> grid::LeaderboardRow {
         let account = self.backend.account_state();
+        let scientifically_valid = self.backend.scientifically_valid() && self.failure.is_none();
+        let promotion_pnl_usdc = scientifically_valid
+            .then(|| bbo.map(|value| self.backend.promotion_pnl_usdc(value)))
+            .flatten();
         grid::LeaderboardRow {
             name: self.name.clone(),
             description: self.description.clone(),
             net_pnl_usdc: account.equity_usdc - self.config.dry_run.starting_equity_usdc,
+            promotion_pnl_usdc,
             equity_usdc: account.equity_usdc,
             realized_pnl_usdc: account.realized_pnl_usdc,
             mark_to_market_pnl_usdc: account.mark_to_market_pnl_usdc,
@@ -1937,7 +1990,8 @@ impl GridVariant {
             fills: self.fills,
             working_orders: self.backend.working_order_count(),
             max_drawdown_usdc: self.max_drawdown_usdc,
-            scientifically_valid: self.backend.scientifically_valid(),
+            scientifically_valid,
+            eligible_for_promotion: scientifically_valid && promotion_pnl_usdc.is_some(),
         }
     }
 }
@@ -1991,6 +2045,7 @@ async fn run_dry_run_grid(
     );
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("cannot create grid output directory {}", out_dir.display()))?;
+    let _grid_lock = grid::GridRunLock::acquire(&out_dir)?;
 
     // Calibration is a property of the market, not of a parameter set, so it is
     // fitted once and shared. Only the inventory unit and the HJB surface,
@@ -2031,6 +2086,13 @@ async fn run_dry_run_grid(
         launched_at_ms,
         max_resume_gap_seconds,
     );
+    let run_id = resume_from.as_ref().map_or_else(
+        || format!("run-{launched_at_ms}"),
+        |state| state.run_id.clone(),
+    );
+    let run_dir = out_dir.join("runs").join(&run_id);
+    std::fs::create_dir_all(&run_dir)
+        .with_context(|| format!("cannot create immutable grid run {}", run_dir.display()))?;
 
     let mut variants = Vec::with_capacity(spec.variants.len());
     for (entry, variant_config, _) in variant_configs {
@@ -2063,7 +2125,7 @@ async fn run_dry_run_grid(
         // ~1/16th of plain JSONL -- which at 158 MB per variant per 20 h is the
         // difference between 78 GB/month and 5 GB/month.
         let logger = JsonlEventLogger::create_with_rotation(
-            &out_dir,
+            &run_dir,
             &format!("grid-{}", entry.name),
             LogBackpressure::RefuseWhenFull,
             LogFormat::Zstd,
@@ -2098,7 +2160,7 @@ async fn run_dry_run_grid(
         variants.push(GridVariant {
             name: entry.name.clone(),
             description: entry.overrides.describe(),
-            report_path: out_dir.join(format!("{}.json", entry.name)),
+            report_path: run_dir.join(format!("{}.json", entry.name)),
             peak_equity_usdc: variant_config.dry_run.starting_equity_usdc,
             config: variant_config,
             policy,
@@ -2119,6 +2181,7 @@ async fn run_dry_run_grid(
     let mut resumes = 0_u32;
     let mut resumed_downtime_ms = 0_u64;
     let mut resumed_feed = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    let mut resumed_event_loss = false;
     if let Some(state) = resume_from {
         let gap_ms = launched_at_ms.saturating_sub(state.checkpoint_ms);
         match resume_grid(&mut variants, &state) {
@@ -2127,7 +2190,7 @@ async fn run_dry_run_grid(
                 resumes = state.resumes.saturating_add(1);
                 resumed_downtime_ms = state.resumed_downtime_ms.saturating_add(gap_ms);
                 resumed_feed = (
-                    state.feed_gaps,
+                    state.feed_health.gaps,
                     // The interruption was time without market data, so it
                     // belongs in the downtime budget however it arose. It is
                     // deliberately NOT folded into `feed_longest_gap_ms`: that
@@ -2135,11 +2198,12 @@ async fn run_dry_run_grid(
                     // resting orders, fills never seen -- and a restart has
                     // none of that, since the checkpoint restores a book with
                     // no working orders.
-                    state.feed_downtime_ms.saturating_add(gap_ms),
-                    state.feed_longest_gap_ms,
+                    state.feed_health.downtime_ms.saturating_add(gap_ms),
+                    state.feed_health.longest_gap_ms,
                     state.trade_prints,
                     state.replayed_trades_ignored,
                 );
+                resumed_event_loss = state.feed_health.event_loss;
                 info!(
                     gap_ms,
                     resumes,
@@ -2171,7 +2235,7 @@ async fn run_dry_run_grid(
     metrics
         .historical_trade_prints_ignored
         .store(resumed_feed.4, Ordering::Relaxed);
-    let scientifically_valid = Arc::new(AtomicBool::new(true));
+    let scientifically_valid = Arc::new(AtomicBool::new(!resumed_event_loss));
     let events = Arc::new(AsyncRing::new(config.runtime.market_event_capacity));
     let latest_bbo = Arc::new(AtomicBbo::default());
     // Nothing registers against this signal: the grid has no hot-path thread.
@@ -2214,18 +2278,14 @@ async fn run_dry_run_grid(
     );
     let mut vpin_value: Option<f64> = None;
 
-    let start_ns = clock.now_ns();
-    for variant in &mut variants {
-        variant.episode_start_ns = start_ns;
-    }
-
     let leaderboard_path = out_dir.join("leaderboard.json");
+    let run_leaderboard_path = run_dir.join("leaderboard.json");
     // Append-only, so a restart extends the same series rather than replacing
     // it -- the whole point is a curve that survives the run.
     let mut history = (history_seconds > 0)
         .then(|| {
             grid::EquityHistory::create(
-                &out_dir.join("equity_history.csv"),
+                &run_dir.join("equity_history.csv"),
                 history_seconds.saturating_mul(1_000),
             )
         })
@@ -2314,7 +2374,7 @@ async fn run_dry_run_grid(
                     }
                     let board = write_grid_leaderboard(
                         &variants,
-                        &leaderboard_path,
+                        &run_leaderboard_path,
                         &instrument.symbol,
                         started_at_ms,
                         &metrics,
@@ -2322,7 +2382,9 @@ async fn run_dry_run_grid(
                         !scientifically_valid.load(Ordering::Acquire),
                         resumes,
                         resumed_downtime_ms,
+                        latest_bbo.load(),
                     )?;
+                    board.write_atomic(&leaderboard_path)?;
                     // Checkpoint on the same tick as the leaderboard, so the
                     // two never disagree by more than one interval. A kill at
                     // any instant costs at most `stats_interval_ms` of the run.
@@ -2335,7 +2397,10 @@ async fn run_dry_run_grid(
                         resumes,
                         resumed_downtime_ms,
                         &metrics,
+                        &run_id,
+                        !scientifically_valid.load(Ordering::Acquire),
                     )?;
+                    std::fs::copy(&state_path, run_dir.join("grid_state.json"))?;
                     if let Some(history) = history.as_mut() {
                         let mid = latest_bbo
                             .load()
@@ -2344,6 +2409,15 @@ async fn run_dry_run_grid(
                     }
                 }
                 event = events.pop() => {
+                    if !scientifically_valid.load(Ordering::Acquire) {
+                        for variant in &mut variants {
+                            if variant.backend.scientifically_valid() {
+                                variant.backend.invalidate("causal market-event loss");
+                            }
+                        }
+                        while events.try_pop().is_some() {}
+                        continue;
+                    }
                     let mut pending = Some(event);
                     let mut drained = 0_u32;
                     while let Some(event) = pending.take() {
@@ -2354,12 +2428,6 @@ async fn run_dry_run_grid(
                         if event_time != 0 {
                             last_event_exchange_ms = event_time;
                         }
-                        let simulated_now_ms = if event_time == 0 {
-                            last_event_exchange_ms
-                        } else {
-                            event_time
-                        };
-                        let now_ns = clock.now_ns();
                         let bbo = latest_bbo.load();
                         for variant in &mut variants {
                             // A variant that has already failed is left alone.
@@ -2376,8 +2444,6 @@ async fn run_dry_run_grid(
                                 &event,
                                 event_time,
                                 bbo,
-                                now_ns,
-                                simulated_now_ms,
                                 vpin_value,
                             )
                             .await;
@@ -2420,7 +2486,7 @@ async fn run_dry_run_grid(
     }
     let board = write_grid_leaderboard(
         &variants,
-        &leaderboard_path,
+        &run_leaderboard_path,
         &instrument.symbol,
         started_at_ms,
         &metrics,
@@ -2428,7 +2494,9 @@ async fn run_dry_run_grid(
         !scientifically_valid.load(Ordering::Acquire),
         resumes,
         resumed_downtime_ms,
+        latest_bbo.load(),
     )?;
+    board.write_atomic(&leaderboard_path)?;
     // Final checkpoint, so a deliberate stop-and-restart resumes from the run's
     // true end rather than from up to one interval earlier.
     checkpoint_grid(
@@ -2440,7 +2508,10 @@ async fn run_dry_run_grid(
         resumes,
         resumed_downtime_ms,
         &metrics,
+        &run_id,
+        !scientifically_valid.load(Ordering::Acquire),
     )?;
+    std::fs::copy(&state_path, run_dir.join("grid_state.json"))?;
     // Final sample regardless of the interval, so the curve ends where the run
     // ended instead of up to one interval short of it.
     if let Some(history) = history.as_mut() {
@@ -2494,7 +2565,7 @@ async fn run_dry_run_grid(
                 .cloned()
                 .chain(feed_failures.iter().cloned())
                 .collect(),
-            event_log_path: out_dir.display().to_string(),
+            event_log_path: run_dir.display().to_string(),
             market_event_ring_high_water: events.high_water_mark(),
         };
         report.write_atomic(&variant.report_path)?;
@@ -2589,6 +2660,8 @@ fn resume_grid(variants: &mut [GridVariant], state: &grid::PersistedGridState) -
             persisted.account,
             persisted.diagnostics,
             persisted.inventory_unit,
+            persisted.current_day,
+            persisted.daily_realized_pnl_usdc,
         )?;
         variant.fills = persisted.fills;
         variant.peak_equity_usdc = persisted.peak_equity_usdc;
@@ -2609,10 +2682,15 @@ fn checkpoint_grid(
     resumes: u32,
     resumed_downtime_ms: u64,
     metrics: &Metrics,
+    run_id: &str,
+    event_loss: bool,
 ) -> Result<()> {
     let feed = metrics.snapshot();
+    let checkpoint_ms = unix_ms();
+    let feed_down_for_ms = feed.feed_down_for_ms(checkpoint_ms);
     let mut persisted = Vec::with_capacity(variants.len());
     for variant in variants {
+        let (current_day, daily_realized_pnl_usdc) = variant.backend.daily_risk_snapshot();
         persisted.push(grid::PersistedVariant {
             name: variant.name.clone(),
             config_fingerprint: variant.config.fingerprint()?,
@@ -2623,19 +2701,27 @@ fn checkpoint_grid(
             peak_equity_usdc: variant.peak_equity_usdc,
             max_drawdown_usdc: variant.max_drawdown_usdc,
             failure: variant.failure.clone(),
+            current_day,
+            daily_realized_pnl_usdc,
         });
     }
     grid::PersistedGridState {
         schema_version: grid::PersistedGridState::SCHEMA_VERSION,
         symbol: symbol.to_owned(),
         grid_fingerprint: grid_fingerprint.to_owned(),
+        run_id: run_id.to_owned(),
         started_at_ms,
-        checkpoint_ms: unix_ms(),
+        checkpoint_ms,
         resumes,
         resumed_downtime_ms,
-        feed_gaps: feed.feed_gaps,
-        feed_downtime_ms: feed.feed_downtime_ms,
-        feed_longest_gap_ms: feed.feed_longest_gap_ms,
+        feed_health: mm_live::config::FeedHealth::new(
+            feed.feed_gaps
+                .saturating_add(u64::from(feed_down_for_ms > 0)),
+            feed.feed_downtime_ms.saturating_add(feed_down_for_ms),
+            feed.feed_longest_gap_ms.max(feed_down_for_ms),
+            checkpoint_ms.saturating_sub(started_at_ms),
+            event_loss,
+        ),
         trade_prints: feed.trade_prints,
         replayed_trades_ignored: feed.historical_trade_prints_ignored,
         variants: persisted,
@@ -2683,6 +2769,125 @@ fn grid_health_verdict(
     ))
 }
 
+fn promote_best_config(
+    base: &AppConfig,
+    grid_path: &Path,
+    leaderboard_path: &Path,
+    output_path: &Path,
+    manifest_path: &Path,
+    min_elapsed_seconds: u64,
+) -> Result<()> {
+    let spec = grid::GridSpec::load(grid_path)?;
+    let board: grid::Leaderboard = serde_json::from_slice(
+        &std::fs::read(leaderboard_path)
+            .with_context(|| format!("cannot read leaderboard {}", leaderboard_path.display()))?,
+    )?;
+    if board.elapsed_seconds < min_elapsed_seconds {
+        bail!(
+            "leaderboard has only {}s; {}s of corrected evidence are required",
+            board.elapsed_seconds,
+            min_elapsed_seconds
+        );
+    }
+    if !board.feed_failures.is_empty() || board.feed_health.event_loss {
+        bail!("leaderboard feed evidence is invalid; refusing live promotion");
+    }
+    let winner = board
+        .rows
+        .iter()
+        .filter(|row| row.eligible_for_promotion)
+        .reduce(|best, row| {
+            if row.promotion_pnl_usdc > best.promotion_pnl_usdc {
+                row
+            } else {
+                best
+            }
+        })
+        .context("leaderboard has no valid promotable row")?;
+    if winner.promotion_pnl_usdc.is_none_or(|pnl| pnl <= 0.0) {
+        bail!(
+            "best valid promotion P&L is {:?}; live remains disabled until a variant is profitable",
+            winner.promotion_pnl_usdc
+        );
+    }
+    let variant = spec
+        .variants
+        .iter()
+        .find(|variant| variant.name == winner.name)
+        .with_context(|| format!("winner {:?} is absent from grid spec", winner.name))?;
+    let mut selected = variant.overrides.apply(base)?;
+    selected.live.enabled = true;
+    selected.live.mode = mm_live::config::LiveMode::Production;
+    selected.live.flatten_on_stop = true;
+    selected.risk.max_daily_loss_usdc = selected
+        .risk
+        .max_daily_loss_usdc
+        .min(selected.live.production_max_daily_realized_loss_usdc);
+    selected.validate()?;
+    // Keep the generated file portable between the Windows host and the live
+    // container. AppConfig resolves these relative to the active config in
+    // rust_live/run (or /opt/mm/run in the container).
+    selected.instrument.evidence_path = PathBuf::from("../config/cashcat.validation.json");
+    selected.storage.data_dir = PathBuf::from("../../scripts/HL_data");
+    selected.storage.state_path = PathBuf::from("cashcat-dry-state.json");
+    selected.storage.calibration_path = PathBuf::from("cashcat-calibration.json");
+    selected.storage.latency_path = PathBuf::from("cashcat-live-latency.json");
+    selected.storage.report_dir = PathBuf::from("../reports/live_active");
+    selected.storage.writer_lock_path = PathBuf::from("cashcat-live-collector.lock");
+    selected.live.credentials_path = PathBuf::from("../hyperliquid.env");
+    selected.live.state_path = PathBuf::from("cashcat-live.redb");
+    let selected_fingerprint = selected.fingerprint()?;
+    let previous_fingerprint = std::fs::read(manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| {
+            value
+                .get("selected_config_fingerprint")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        });
+    let changed = previous_fingerprint.as_deref() != Some(selected_fingerprint.as_str());
+    let config_text = toml::to_string_pretty(&selected)?;
+    write_atomic_bytes(output_path, config_text.as_bytes())?;
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "generated_at_ms": unix_ms(),
+        "leaderboard_started_at_ms": board.started_at_ms,
+        "leaderboard_generated_at_ms": board.generated_at_ms,
+        "elapsed_seconds": board.elapsed_seconds,
+        "symbol": board.symbol,
+        "variant": winner.name,
+        "promotion_pnl_usdc": winner.promotion_pnl_usdc,
+        "net_pnl_usdc": winner.net_pnl_usdc,
+        "base_config_fingerprint": base.fingerprint()?,
+        "selected_config_fingerprint": selected_fingerprint,
+        "changed": changed,
+        "micro_live": {
+            "min_order_notional_multiplier": selected.live.min_order_notional_multiplier,
+            "max_order_notional_multiplier": selected.live.max_order_notional_multiplier,
+            "max_directional_notional_multiplier": selected.live.max_directional_notional_multiplier,
+            "max_working_gross_multiplier": selected.live.max_working_gross_multiplier,
+            "max_daily_realized_loss_usdc": selected.live.production_max_daily_realized_loss_usdc,
+            "address_action_reserve": selected.live.address_action_reserve,
+        }
+    });
+    write_atomic_bytes(manifest_path, &serde_json::to_vec_pretty(&manifest)?)?;
+    println!("{}", serde_json::to_string_pretty(&manifest)?);
+    Ok(())
+}
+
+fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|error| anyhow::anyhow!(error.error))?;
+    Ok(())
+}
+
 /// Write `leaderboard.json`, with the feed's verdict on the run so far folded
 /// into every row.
 ///
@@ -2701,6 +2906,7 @@ fn write_grid_leaderboard(
     event_loss: bool,
     resumes: u32,
     resumed_downtime_ms: u64,
+    latest_bbo: Option<Bbo>,
 ) -> Result<grid::Leaderboard> {
     let now = unix_ms();
     let feed = metrics.snapshot();
@@ -2730,13 +2936,14 @@ fn write_grid_leaderboard(
         rows: variants
             .iter()
             .map(|variant| {
-                let mut row = variant.leaderboard_row();
+                let mut row = variant.leaderboard_row(latest_bbo);
                 row.scientifically_valid = row.scientifically_valid && feed_valid;
+                row.eligible_for_promotion = row.eligible_for_promotion && feed_valid;
                 row
             })
             .collect(),
     };
-    board.sort_by_net_pnl();
+    board.sort_by_promotion_pnl();
     board.write_atomic(path)?;
     Ok(board)
 }
@@ -3680,8 +3887,8 @@ mod tests {
         assert_eq!(ask, 115_000);
         let quantity = minimum_canary_quantity(&instrument, ask, 12.0).unwrap();
         let notional = order_notional(&instrument, ask, quantity);
-        assert!(notional >= 10.0);
-        assert!(notional <= 12.0);
+        assert!(notional >= 10.5);
+        assert!(notional <= 11.0);
     }
 
     #[test]
@@ -3757,5 +3964,120 @@ mod grid_health_tests {
         let dir = tempfile::tempdir().unwrap();
         let reason = grid_health_verdict(&dir.path().join("absent.json"), 120, 180).unwrap_err();
         assert!(reason.contains("cannot read"), "{reason}");
+    }
+
+    #[test]
+    fn promotion_selects_plain_best_flatten_pnl_and_enables_micro_live() {
+        let directory = tempfile::tempdir().unwrap();
+        let grid_path = directory.path().join("grid.toml");
+        std::fs::write(
+            &grid_path,
+            "[[variant]]\nname = \"baseline\"\n\n[[variant]]\nname = \"wide\"\nmin_half_spread_bps = 8.0\n",
+        )
+        .unwrap();
+        let mut leaderboard = board(unix_ms(), 0);
+        leaderboard.started_at_ms = leaderboard.generated_at_ms.saturating_sub(43_200_000);
+        leaderboard.elapsed_seconds = 43_200;
+        let row = |name: &str, pnl: f64| grid::LeaderboardRow {
+            name: name.to_owned(),
+            description: String::new(),
+            net_pnl_usdc: pnl,
+            promotion_pnl_usdc: Some(pnl),
+            equity_usdc: 297.88 + pnl,
+            realized_pnl_usdc: pnl,
+            mark_to_market_pnl_usdc: pnl,
+            fees_usdc: 0.0,
+            funding_usdc: 0.0,
+            inventory_units: 0,
+            fills: 1,
+            working_orders: 0,
+            max_drawdown_usdc: 0.0,
+            scientifically_valid: true,
+            eligible_for_promotion: true,
+        };
+        leaderboard.rows = vec![row("baseline", -2.0), row("wide", 1.0)];
+        let leaderboard_path = directory.path().join("leaderboard.json");
+        leaderboard.write_atomic(&leaderboard_path).unwrap();
+        let output = directory.path().join("cashcat-active-live.toml");
+        let manifest = directory.path().join("promotion.json");
+        let base = AppConfig::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat_dryrun_realistic.toml"),
+        )
+        .unwrap();
+        promote_best_config(
+            &base,
+            &grid_path,
+            &leaderboard_path,
+            &output,
+            &manifest,
+            43_200,
+        )
+        .unwrap();
+        let selected: AppConfig =
+            toml::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+        assert!(selected.live.enabled);
+        assert_eq!(selected.quoting.min_half_spread_bps, 8.0);
+        assert_eq!(selected.risk.max_daily_loss_usdc, 1.0);
+        let promotion: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
+        assert_eq!(promotion["variant"], "wide");
+        assert_eq!(promotion["promotion_pnl_usdc"], 1.0);
+        promote_best_config(
+            &base,
+            &grid_path,
+            &leaderboard_path,
+            &output,
+            &directory.path().join("promotion.json"),
+            43_200,
+        )
+        .unwrap();
+        let second: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("promotion.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second["changed"], false);
+    }
+
+    #[test]
+    fn promotion_refuses_when_every_valid_variant_is_non_profitable() {
+        let directory = tempfile::tempdir().unwrap();
+        let grid_path = directory.path().join("grid.toml");
+        std::fs::write(&grid_path, "[[variant]]\nname = \"baseline\"\n").unwrap();
+        let mut leaderboard = board(unix_ms(), 0);
+        leaderboard.started_at_ms = leaderboard.generated_at_ms.saturating_sub(43_200_000);
+        leaderboard.elapsed_seconds = 43_200;
+        leaderboard.rows = vec![grid::LeaderboardRow {
+            name: "baseline".to_owned(),
+            description: String::new(),
+            net_pnl_usdc: 0.0,
+            promotion_pnl_usdc: Some(0.0),
+            equity_usdc: 297.88,
+            realized_pnl_usdc: 0.0,
+            mark_to_market_pnl_usdc: 0.0,
+            fees_usdc: 0.0,
+            funding_usdc: 0.0,
+            inventory_units: 0,
+            fills: 0,
+            working_orders: 0,
+            max_drawdown_usdc: 0.0,
+            scientifically_valid: true,
+            eligible_for_promotion: true,
+        }];
+        let leaderboard_path = directory.path().join("leaderboard.json");
+        leaderboard.write_atomic(&leaderboard_path).unwrap();
+        let base = AppConfig::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat_dryrun_realistic.toml"),
+        )
+        .unwrap();
+        let result = promote_best_config(
+            &base,
+            &grid_path,
+            &leaderboard_path,
+            &directory.path().join("active.toml"),
+            &directory.path().join("promotion.json"),
+            43_200,
+        );
+        assert!(result.is_err());
+        assert!(!directory.path().join("active.toml").exists());
     }
 }

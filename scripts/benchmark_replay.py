@@ -61,9 +61,9 @@ BENCH_PARAMS = {
     "epsilon-": 1.5018482890699448e-05,
 }
 
-# Two ends of the cost range. A short refresh interval quotes at nearly every
-# price event and is the expensive case; the 30 s interval is what this stack
-# actually achieves and is dominated by different work, so both are reported.
+# Three historical replay scenarios. A short refresh interval quotes at nearly
+# every price event and is the expensive case; the 30 s case is retained to
+# reproduce the former slow-refresh comparison, not as a current runtime claim.
 BENCH_SCENARIOS = {
     "fast_requote": dict(
         decision_latency_ms=50,

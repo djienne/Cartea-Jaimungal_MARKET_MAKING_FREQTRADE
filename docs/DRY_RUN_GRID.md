@@ -28,9 +28,9 @@ is already shared with three collector containers and with any live session,
 which needs two. One `dry-run` process per variant would open one connection
 each and could take down data collection or block real trading.
 
-Measured on the running **20-variant** grid: **1 connection**, both collectors
-still `(healthy)`. The count does not grow with the number of variants — that is
-the whole point.
+The current **18-variant** spec uses **1 connection**. Earlier 20-variant runs
+used the same single connection while both market-making collectors remained
+healthy; the count does not grow with the number of variants.
 
 ## What a variant may change
 
@@ -46,6 +46,8 @@ of a burst does this take*.
 | `phi_kappa_t` | `model.phi_kappa_t` | sweep winner used 300 against a grid topping out at 1000 |
 | `min_half_spread_bps` | `quoting.min_half_spread_bps` | the losing window earned +683.89 across 1,771 fills — ~0.39/fill, under its adverse selection |
 | `min_order_lifetime_ms`, `replace_threshold_bps` | `quoting.*` | the only positive latency-ladder rung was the 30 s-refresh one |
+| `flow_guard_enabled`, `vpin_threshold`, `fast_move_threshold_bps` | `flow_guard.*` | paired guarded/unguarded variants isolate the toxic-flow guard on one feed |
+| `phi_kappa_t_max` | `model.phi_kappa_t_max` | a variant requesting φ·κ·T above the base ceiling of 300 must raise this ceiling too |
 
 > **`min_order_lifetime_ms` was inert in the simulator until 2026-08-24.**
 > Only the live backend honored it, so every `slow*` variant was a byte-identical
@@ -84,8 +86,6 @@ propagate, so one blown-up hypothesis aborted all the others — and with the
 cadence lever working, a liquidation-buffer breach is a realistic way to blow
 up. A variant that errors is now invalidated, stops trading, records the reason
 in its report's `invalid_reasons`, and the run continues.
-| `flow_guard_enabled`, `vpin_threshold`, `fast_move_threshold_bps` | `flow_guard.*` | the toxic-flow guard (`TOXIC_FLOW_GUARD.md`); the shipped spec pairs `guarded`/`unguarded` so the A/B runs on one shared live feed |
-| `phi_kappa_t_max` | `model.phi_kappa_t_max` | `hjb.rs` rescales φ so φ·κ·T never exceeds this, so a `phi_kappa_t` above the base ceiling of 300 is silently clamped. Without this lever a variant asking for 1000 quietly runs 300 |
 
 ### What the first 20 h changed
 
@@ -200,6 +200,40 @@ eighteen variants, rewritten in place each tick, plus one `.bak` generation — 
 constant ~54 KB. The `.bak` is what makes a checkpoint torn by something outside
 the process (a full disk, power loss mid-write) cost one stats interval instead
 of the whole run; `load` falls back to it automatically.
+
+### The period archive — what outlives the tape
+
+Both of this project's evidence streams expire on a clock:
+
+- the **replay** can only score a window while its Parquet shards exist, and the
+  CASHCAT collector keeps **30 days** (`CASHCAT_RETENTION_MINUTES: 43200`);
+- the **grid**'s event logs rotate at ~34 days.
+
+So once a period rolls off, no sweep can ever be run against it again — not more
+cheaply, not at all. `scripts/archive_period.py` runs every 21 days in the
+`mm-archiver` container and attempts to write one directory per period under
+[`history/`](history/): a full-search sweep, the grid's leaderboard, the
+period's P&L curve (15-min, zstd), and its render. The container does not commit.
+
+21 days against 30 leaves 9 days to retry an interrupted or failed cycle. If a
+directory contains `sweep_FAILED.log`, inspect it and rerun with `--force` before
+that margin expires; an indefinitely failed cycle does lose raw history.
+
+Two design points worth knowing:
+
+- **Due-ness comes from disk, never a timer.** The loop wakes hourly and asks
+  whether the newest directory in `docs/history/` is older than the cadence. A
+  `sleep 21d` restarts its countdown on every reboot, and on this machine that
+  could plausibly mean never firing — the same failure that cost the 46.4 h run.
+- **It writes but does not commit.** Committing from a container would mean an
+  SSH key inside it. It logs an uncommitted-history reminder on every wake;
+  confirm the exact paths with `git status`, then use
+  `git add docs/history && git commit && git push`.
+
+Symbol selection is by tape length (> 7 days), which separates the 30-day
+collector from the 3-day one without this repo reading another project's compose
+file. A symbol that qualifies on length but has no instrument profile is skipped
+rather than scored with CASHCAT's tick size and inventory base.
 
 ### The event log
 

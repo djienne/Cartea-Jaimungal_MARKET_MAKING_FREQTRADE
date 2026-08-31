@@ -7,12 +7,11 @@ at 1/kappa- + eps- = 10.9 bps, i.e. inside the losing zone, so two calibration
 choices are on trial: epsilon's 200 ms measurement horizon and kappa's
 whole-distribution survival fit. Both are now sweepable PER SIDE.
 
-The point of this file is that the sweep must be able to move those knobs
-without moving anything the live estimator container writes. So every test here
-is one of two kinds:
+The point of this file is that a sweep must move those knobs without replacing
+the ordinary estimator snapshots. Every test here is one of two kinds:
 
-1. "the default did not move" -- the live estimator passes none of the new
-   flags, and the numbers it produces must be identical to before they existed;
+1. "the default did not move" -- omitting the new flags must reproduce the
+   pre-option numbers;
 2. "the new knob does what it says, and only where it is pointed".
 """
 
@@ -120,7 +119,7 @@ def _kappa_fit_as_of_before_support_lower(depths: np.ndarray, support_quantile: 
 
 @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4])
 def test_default_kappa_fit_is_bit_identical_to_the_old_implementation(seed):
-    """The live estimator calls fit_kappa_survival(depths) with no support args.
+    """The default call uses fit_kappa_survival(depths) with no support args.
 
     Every one of those calls must return exactly the float it returned before
     the lower bound existed -- not "close", the same bits, so the direct
@@ -542,7 +541,7 @@ def test_duplicated_shards_do_not_inflate_n_trades_or_lambda(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# emit mode: the live snapshots must not move
+# emit mode: ordinary snapshots must not move
 # ---------------------------------------------------------------------------
 
 
@@ -556,14 +555,14 @@ def _assert_unchanged(before: dict[Path, tuple[bytes, float]]) -> None:
         assert path.stat().st_mtime_ns == mtime, f"{path} mtime changed"
 
 
-def _seed_live_snapshots(tmp_path: Path) -> list[Path]:
-    live = {
+def _seed_snapshot_files(tmp_path: Path) -> list[Path]:
+    snapshots = {
         "kappa.json": {"SYN": {"kappa+": 1.0, "kappa-": 2.0, "status": "ok", "schema_version": 4}},
         "lambda.json": {"SYN": {"lambda+": 0.1, "lambda-": 0.2, "status": "ok", "schema_version": 4}},
         "epsilon.json": {"SYN": {"epsilon+": 0.01, "epsilon-": 0.02, "status": "ok", "schema_version": 4}},
     }
     paths = []
-    for name, payload in live.items():
+    for name, payload in snapshots.items():
         path = tmp_path / name
         path.write_text(json.dumps(payload, indent=4, sort_keys=True), encoding="utf-8")
         paths.append(path)
@@ -573,8 +572,8 @@ def _seed_live_snapshots(tmp_path: Path) -> list[Path]:
 def test_emit_mode_writes_only_the_emit_file_epsilon(tmp_path):
     ds = tmp_path / "data"
     _write_market(ds, buy_impact=0.3, sell_impact=0.3)
-    live = _seed_live_snapshots(tmp_path)
-    before = _freeze(live)
+    snapshots = _seed_snapshot_files(tmp_path)
+    before = _freeze(snapshots)
 
     out = tmp_path / "sweep_eps.json"
     run_epsilon_for_crypto(
@@ -596,8 +595,8 @@ def test_emit_mode_writes_only_the_emit_file_epsilon(tmp_path):
 def test_emit_mode_writes_only_the_emit_file_kappa(tmp_path):
     ds = tmp_path / "data"
     _write_market(ds, n_buy=300, n_sell=300)
-    live = _seed_live_snapshots(tmp_path)
-    before = _freeze(live)
+    snapshots = _seed_snapshot_files(tmp_path)
+    before = _freeze(snapshots)
 
     out = tmp_path / "sweep_kappa.json"
     run_kappa_for_crypto(
@@ -616,9 +615,9 @@ def test_emit_mode_writes_only_the_emit_file_kappa(tmp_path):
 def test_emit_mode_combined_cycle_writes_one_file(tmp_path):
     ds = tmp_path / "data"
     _write_market(ds, n_buy=300, n_sell=300, buy_impact=0.2, sell_impact=0.2)
-    live = _seed_live_snapshots(tmp_path)
+    snapshots = _seed_snapshot_files(tmp_path)
     (tmp_path / "lambda_trades.json").write_text("{}", encoding="utf-8")
-    before = _freeze(live + [tmp_path / "lambda_trades.json"])
+    before = _freeze(snapshots + [tmp_path / "lambda_trades.json"])
 
     out = tmp_path / "sweep_all.json"
     result = estimate_all.run_all(
@@ -663,8 +662,8 @@ def test_emit_mode_from_the_cli_leaves_the_snapshots_untouched(tmp_path, script,
     _write_market(ds, buy_impact=0.3, sell_impact=0.3, n_buy=300, n_sell=300)
     cwd = tmp_path / "run"
     cwd.mkdir()
-    live = _seed_live_snapshots(cwd)
-    before = _freeze(live)
+    snapshots = _seed_snapshot_files(cwd)
+    before = _freeze(snapshots)
 
     out = tmp_path / f"cli_emit_{script}.json"
     proc = subprocess.run(
@@ -685,7 +684,7 @@ def test_emit_mode_from_the_cli_leaves_the_snapshots_untouched(tmp_path, script,
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["crypto"] == "SYN"
     for name in protected:
-        # The emitted file carries the numbers; the live file still carries the
+        # The emitted file carries the numbers; the ordinary snapshot still carries the
         # seeded placeholder values, untouched.
         assert json.loads((cwd / name).read_text(encoding="utf-8"))["SYN"]["status"] == "ok"
 
@@ -747,12 +746,12 @@ def test_window_bounds_reject_an_inverted_range(tmp_path):
 
 
 def test_emit_on_a_train_slice_differs_from_the_full_window(tmp_path):
-    """The sweep's actual use: fit on one slice, keep the live files alone."""
+    """Fit one slice without modifying the ordinary snapshot files."""
     ds = tmp_path / "data"
     base = 1_800_000_000_000
     _write_market(ds, start_ms=base, duration_ms=1_200_000, n_buy=300, n_sell=300, buy_impact=0.2)
-    live = _seed_live_snapshots(tmp_path)
-    before = _freeze(live)
+    snapshots = _seed_snapshot_files(tmp_path)
+    before = _freeze(snapshots)
 
     train = tmp_path / "train.json"
     test = tmp_path / "test.json"

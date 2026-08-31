@@ -22,12 +22,12 @@ A comprehensive Python suite for collecting real-time tick data from Hyperliquid
 - **Mid-relative coordinates**: depths are measured from the prevailing mid (last BBO update strictly before the MO, exchange-timestamp aligned via merge_asof) — the same coordinate the strategy quotes in; negative depths are truncated to 0, not dropped
 - **κ± (Kappa)**: survival-function fit — weighted log-linear regression of P(depth ≥ δ); saved to `kappa.json` with `depth_p95`/`depth_max_fitted` calibration diagnostics
 - **λ± (Lambda)**: raw per-side MO arrival rate — the survival-consistent fill rate the HJB needs (`lambda_source: mo_survival_fit`); the old binned-density intercept was bin-width dependent and ~3× too small (kept as `lambda0_intercept_±` diagnostic). Since 2026-08-19 the denominator is *observed* seconds, not wall clock: time when the collector was down (no print in the union of the price and trade streams) is subtracted, because dividing by wall clock understated λ by exactly the missing fraction. Both halves are published as `lambda_covered_seconds` / `lambda_outage_seconds_excluded` so the denominator is auditable. Measured effect on real windows: +1.2% to +6.0%; inside the 1 h price gap the replay now tolerates it would have been 50%
-- **ε± (Epsilon)**: per-MO mid impact at a 5 s primary horizon (permanent impact), with 200 ms and 1 s trimmed means recorded as diagnostics (`epsilon_200ms_±`, `epsilon_1s_±`); floor at 0 (C-J defines ε ≥ 0); saved to `epsilon.json`
+- **ε± (Epsilon)**: per-MO mean mid jump at the 200 ms primary horizon, after 3σ bad-tick clipping; 1 s and 5 s means are diagnostics (`epsilon_1s_±`, `epsilon_5s_±`), not model inputs; floor at 0 because C-J defines ε ≥ 0; saved to `epsilon.json`
 - **σ² (`sigma2_per_sec`)**: realized mid variance (USDC²/s from 1 s increments, gap-tolerant), feeding the strategy's volatility-aware inventory penalty
 - **Direct model parameters**: primary κ/ε/λ values are the validated estimates from the selected market-data window; no temporal smoothing is applied
 - **λ_trades± (Lambda trades)**: unconditional trade-print rates from raw counts; saved to `lambda_trades.json` (monitoring only)
-- **Status gating**: snapshots ship `status: ok` only when fit points ≥ 6, R² ≥ 0.30 and ε events ≥ 50 per side (mirrored by the strategy's validation floors)
-- **Market toxicity assessment** based on ε×κ product
+- **Status gating**: snapshots ship `status: ok` only when fit points ≥ 6, R² ≥ 0.30 and ε events ≥ 50 per side (the Rust calibrator enforces the same floors)
+- **Relative adverse-selection diagnostic** based on ε×κ; this is not a profitability test because it omits fees, queue position, and latency
 
 ---
 
@@ -55,16 +55,15 @@ python hyperliquid_data_collector.py
 # Survival-fit κ + per-side MO arrival rate λ + σ², saves kappa.json & lambda.json
 python get_kappa.py --crypto CASHCAT --minutes 30
 
-# Event-level ε per MO at the 5s permanent-impact horizon, saves epsilon.json
-python get_epsilon.py --crypto CASHCAT --minutes 30 [--post-horizon-ms 5000]
+# Event-level ε per MO at the 200 ms arrival-jump horizon, saves epsilon.json
+python get_epsilon.py --crypto CASHCAT --minutes 30
 
 # Optional raw trades/sec sanity check (writes lambda_trades.json)
 python get_lambda.py --crypto CASHCAT --minutes 30
 
-# Inspect spreads across inventory (refreshes κ/ε/λ, then shows bid/ask and bps by q;
-# pass --spread-multiplier 3.0 to mirror the production config)
+# Inspect spreads across inventory (refreshes κ/ε/λ, then shows bid/ask and bps by q)
 # --mid defaults to the freshly collected BBO mid via mid_price.json when omitted
-python compute_spreads.py --crypto CASHCAT --qmax 3 --spread-multiplier 3.0
+python compute_spreads.py --crypto CASHCAT --qmax 6 --spread-multiplier 1.0
 ```
 
 ---
@@ -107,7 +106,7 @@ Environment variables, read by `run_collector.py` / `hyperliquid_data_collector.
 | `SYMBOLS`                 | `ETH`     | Comma-separated list of symbols to collect                         |
 | `OUTPUT_DIR`              | `HL_data` | Directory where Parquet files are written                          |
 | `ORDERBOOK_DEPTH`         | `20`      | Orderbook depth to record                                          |
-| `FLUSH_INTERVAL_SEC`      | `10`      | Buffer flush cadence; must stay well under the strategy's 30 s freshness window |
+| `FLUSH_INTERVAL_SEC`      | `10`      | Buffer flush cadence; kept well below the Rust calibrator's 120 s maximum data age |
 | `COMPACT_AFTER_MINUTES`   | `15`      | Merge an hour's shards into one file once they are this old        |
 | `RETENTION_MINUTES`       | `60`      | Prune shards older than this (the compose services override it)    |
 | `INACTIVITY_TIMEOUT_SEC`  | `180`     | Reconnect after this long with no data at all                      |
@@ -155,9 +154,18 @@ docker compose up -d --build hl-collector hl-cashcat-collector
 
 ## Output Files
 
-For each symbol, the collector writes **Parquet shards** into per-type subdirectories. Flush cadence is controlled by `FLUSH_INTERVAL_SEC` (default 10s — it must stay well below the strategy's `max_collector_age_seconds=30` freshness window or quotes get rejected as `stale_collector_data`).
+For each symbol, the collector writes **Parquet shards** into per-type
+subdirectories. Flush cadence is controlled by `FLUSH_INTERVAL_SEC` (default
+10 s). The Rust profiles reject calibration data older than 120 s, so 10 s
+leaves margin for scheduling, file visibility, and a 30 s calibration cadence.
 
-> **Retention warning:** `RETENTION_MINUTES` (code default 60; the compose services set 4320 and 43200) prunes shards older than the window. Sixty minutes is plenty for the live estimators, but it silently deletes the history the replay/calibration tooling (`replay_market_maker.py`, `sweep_replay.py`, `calibrate_replay_from_logs.py`) consumes. When collecting a dataset for replays, **raise** `RETENTION_MINUTES` to cover the full capture — do not set it to 0. Reads select shards by the flush timestamp in the filename (2026-08-17), so read cost tracks the window you ask for rather than everything on disk; before that change a long retention would have stalled the estimator outright.
+> **Retention warning:** `RETENTION_MINUTES` (collector-code default 60; the
+> compose services set 4320 and 43200) prunes old shards. The code default is
+> shorter than the Rust profiles' 120-minute calibration window plus required
+> margin and is intended only for standalone collection tests. Replay and sweep
+> datasets need retention covering the full capture; raise it explicitly, but do
+> not use 0 because pruning interprets that literally. Shard-name selection keeps
+> read cost tied to the requested window rather than total retention.
 
 * `HL_data/<SYMBOL>/prices/prices_<epoch_ms>.parquet` (BBO updates)
 * `HL_data/<SYMBOL>/trades/trades_<epoch_ms>.parquet` (trade executions)
@@ -225,13 +233,17 @@ HL_data/
 | **Kappa Minus**   | κ-     | Bid side depth sensitivity (1/USDC)          | Survival fit: log P(depth ≥ δ) vs δ, mid-relative      |
 | **Sigma²**        | σ²     | Realized mid variance (USDC²/s)              | Variance of 1 s mid increments (gap-tolerant)          |
 
-### Market Assessment
+### Relative adverse-selection diagnostic
 
-The tool automatically assesses market making viability using the **ε×κ product**:
+The estimator reports **ε×κ** using the configured operating bands:
 
-* **ε×κ < 1.0**: ✅ Favorable
-* **1.0 ≤ ε×κ < 1.5**: 🟡 Moderate
-* **ε×κ ≥ 1.5**: ❌ Toxic
+* **ε×κ < 1.0**: below the caution band
+* **1.0 ≤ ε×κ < 1.5**: caution band
+* **ε×κ ≥ 1.5**: rejected by the shipped calibration gate
+
+These labels describe adverse selection relative to the model's natural depth
+`1/κ`; they do not establish profit or loss. Run `verify_market_viability.py`
+and replay representative windows before drawing an economic conclusion.
 
 ---
 

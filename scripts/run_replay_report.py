@@ -1011,7 +1011,7 @@ def parse_args() -> argparse.Namespace:
         "--latency-ms",
         type=int,
         default=None,
-        help="TOTAL order latency, split evenly across decision and ack. 50 colocated, 500 this stack.",
+        help="TOTAL simulated order latency, split evenly across decision and ack; scenario values are not current-host measurements.",
     )
     parser.add_argument("--q-max", type=int, default=3)
     parser.add_argument("--q-min", type=int, default=0, help="0 is long-only; pass -q_max for two-sided.")

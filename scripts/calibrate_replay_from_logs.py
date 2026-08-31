@@ -6,10 +6,9 @@ into a small artifact that says whether the sample is good enough to tune replay
 fill probabilities, and if so what the observed fill rates look like by side and
 depth bucket.
 
-**No producer writes this schema today.** It parses the freqtrade strategy's
-`mm_debug.jsonl` -- flat records with `event: "quote_decision"` and
-`decision: "accept"` -- and that trader is retired (tag
-`freqtrade-trader-final`). The Rust stack logs `quote_decision` too, but nests
+**No current producer writes this schema.** It parses the retired trader's flat
+`mm_debug.jsonl` records with `event: "quote_decision"` and
+`decision: "accept"`. The Rust stack logs `quote_decision` too, but nests
 the order under `payload` and carries a `reason` rather than a `decision`, so
 it is NOT a drop-in input; feeding it here yields zero matched quotes, not an
 error. Adapting the reader to the Rust schema is the work required to make this
@@ -342,7 +341,7 @@ def main() -> int:
     args = parse_args()
     if not args.input:
         parser_error = (
-            "--input is required: the freqtrade mm_debug.jsonl this used to "
+            "--input is required: the legacy mm_debug.jsonl this used to "
             "default to is no longer written by anything. See the module "
             "docstring."
         )

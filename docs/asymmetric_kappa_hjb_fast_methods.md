@@ -2,8 +2,17 @@
 
 **Model:** Cartea–Jaimungal–Penalva finite-inventory market-making HJB<br>
 **Case of interest:** \(\kappa_+\neq\kappa_-\)<br>
-**Primary objective:** reduce latency and total work for \(10^4\)–\(10^5\) parameter solves and for a live loop with \(2q_{\max}+1=13\) inventory states<br>
+**Primary objective:** reduce total work for \(10^4\)–\(10^5\) parameter solves and for periodic 13-state runtime recalibration<br>
 **Date:** 2026-08-21
+
+> **Scope/status.** This is an analytical methods memo, not a description of the
+> implemented solver. The current Python and Rust paths use a damped-Newton,
+> implicit backward-Euler solve with an exact tridiagonal Jacobian; the HJB is
+> recomputed on the calibration cadence, not on each quote decision. The
+> splitting, stationary-shooting, sensitivity, and surrogate methods below are
+> candidates that have not been integrated or benchmarked in this repository.
+> Treat their decision hierarchy as research guidance requiring the acceptance
+> tests in §15.3, not as runtime status.
 
 ---
 
@@ -63,7 +72,7 @@ For parameter sweeps, the recommended hierarchy is:
 | Near symmetry and repeated base parameters | First/second-order \(\kappa\)-sensitivity around the symmetric matrix exponential | Semi-analytic perturbation |
 | Moderate asymmetry around a useful reference \(\kappa_0\) | Exponential defect correction / ETD around a constant tridiagonal generator | Semi-analytic, nonperturbative iteration |
 | Extreme latency constraint | Side-specific quadratic-Hamiltonian Riccati surrogate | Approximate; residual-certify |
-| Repeated low-dimensional parameter domain | Offline Chebyshev/sparse-grid surrogate of quote gaps | Approximate; validate against ground truth |
+| Repeated low-dimensional parameter domain | Offline Chebyshev/sparse-grid surrogate of quote gaps | Approximate; validate against a converged independent reference |
 
 The largest practical gains at 13 states are unlikely to come from replacing a dense \(13\times13\) solve by a tridiagonal solve alone. They come from removing nonlinear iterations, compiling/batching the very small kernels, reusing symmetric sensitivities or stationary roots, avoiding storage of the full path, and dispatching most calls to a certified approximation.
 
@@ -2320,7 +2329,7 @@ For the stated workload, the first methods to benchmark are:
 
 1. a compiled fixed-step exact-side Strang solver;
 2. verified stationary shooting, with log-edge homotopy fallback and a spectral-gap acceptance test;
-3. a tight adaptive gap-IVP as ground truth and fallback;
+3. a tight adaptive gap-IVP as a converged reference and fallback;
 4. cached symmetric sensitivities or exponential defect correction for repeated sweeps.
 
 That combination is more likely to deliver a material wall-clock reduction than further optimization of a small dense Newton solve.

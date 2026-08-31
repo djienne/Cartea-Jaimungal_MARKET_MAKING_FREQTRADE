@@ -20,9 +20,11 @@ Two checks, both exact:
 
        % CHECK: delta_total = 2.4786e-04
 
-   and this script recomputes it by calling the same ``mm_core`` functions the
-   live strategy calls, then compares to the printed precision. No number in the
-   document is typed by hand.
+   and this script recomputes it by calling the Python replay/reference pricing
+   path, then compares to the printed precision. Rust parity is checked
+   separately by ``rust_live/tests/python_parity.rs``. Tagged worked-example
+   numbers are therefore executable checks; dated evidence tables elsewhere in
+   the document are historical inputs, not recomputed by this script.
 
 ``--print`` dumps the worked example instead of checking it, which is how the
 numbers got into the document in the first place.
@@ -99,7 +101,7 @@ SIGNED_BASE = 2.4 * INVENTORY_UNIT_BASE
 
 
 def build_config() -> mm_core.QuoteConfig:
-    """The shipped live configuration, at the pinned inventory unit."""
+    """The worked example's pinned Python reference configuration."""
     return mm_core.QuoteConfig(
         maker_fee_rate=0.00015,
         inventory_unit_base=INVENTORY_UNIT_BASE,

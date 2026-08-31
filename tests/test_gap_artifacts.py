@@ -174,9 +174,7 @@ def test_markout_staleness_can_be_disabled_for_reproducing_old_artifacts():
 
 
 def test_gate_threshold_tolerates_an_hour():
-    # This used to cross-check run_safety_gates.DEFAULT_REPLAY_MAX_PRICE_GAP_SECONDS
-    # against the replay's own default. That gate pipeline retired with the
-    # freqtrade trader, so the replay's default is now the only one there is.
+    # Pin the replay-report gate's explicit one-hour tolerance.
     from run_replay_report import DEFAULT_MAX_PRICE_GAP_SECONDS
 
     assert DEFAULT_MAX_PRICE_GAP_SECONDS == pytest.approx(3600.0)

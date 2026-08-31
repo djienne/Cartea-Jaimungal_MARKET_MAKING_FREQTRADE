@@ -143,7 +143,11 @@ starting_equity_usdc = 297.88
 decision_latency_ms = 150
 acknowledgement_latency_ms = 150
 cancel_latency_ms = 150
-queue_decay_per_second = 0.05
+tail_latency_multiplier = 2.35
+tail_latency_every = 20
+queue_decay_per_second = 0.0
+promotion_flatten_fee_rate = 0.00035
+promotion_flatten_slippage_bps = 25.0
 # Measured from the venue (metaAndAssetCtxs, 2026-08-23). CASHCAT is not
 # a zero-funding instrument; 0.0 silently omitted a real cost.
 funding_rate_per_hour = 0.0000125
@@ -152,8 +156,8 @@ markout_horizons_ms = [100, 1000, 5000, 30000]
 [flow_guard]
 # Toxic-flow guard. The 161.95 h tape had one losing six-hour window (-241.17
 # on 1,771 fills) and it was a liquidation cascade: mid -1% -> -31% in ten
-# seconds, -70% in sixty. Nothing predicts that; these bound how much of one
-# gets ridden down. See docs/TOXIC_FLOW_GUARD.md.
+# seconds, -70% in sixty. The guard does not predict it; these thresholds bound
+# additional exposure after the move is observable. See docs/TOXIC_FLOW_GUARD.md.
 enabled = true
 # Fast breaker. 800 bps (8%) in 5s was the tightest threshold with ZERO false
 # positives across the whole tape; 5% produced four. It fired at -14% where
@@ -161,8 +165,8 @@ enabled = true
 fast_move_window_ms = 5000
 fast_move_threshold_bps = 800.0
 # VPIN. Bucket size is derived from observed volume (ADV / buckets_per_day), so
-# the threshold keeps its meaning as activity changes. The 6.8-day maximum
-# outside the cascade was 0.362; the cascade peaked at 0.663.
+# the threshold keeps its meaning as activity changes. Over 165.11 h, maximum
+# VPIN outside the cascade was 0.371; the cascade peaked at 0.663.
 vpin_buckets_per_day = 50
 vpin_window_buckets = 30
 vpin_threshold = 0.40
@@ -177,18 +181,29 @@ credentials_path = "../hyperliquid.env"
 state_path = "../run/cashcat-live.redb"
 action_timeout_ms = 2000
 action_expiry_ms = 5000
+max_quote_command_age_ms = 1000
 reconcile_interval_ms = 30000
 startup_warmup_seconds = 120
 deadman_enabled = true
-deadman_deadline_ms = 30000
-deadman_refresh_ms = 10000
+deadman_deadline_ms = 28800000
+deadman_refresh_ms = 21600000
 max_maker_fee_rate = 0.0002
-flatten_on_stop = false
+flatten_on_stop = true
 emergency_flatten_max_slippage_bps = 250.0
-max_rest_weight_per_minute = 1000
-max_ws_messages_per_minute = 1600
-max_inflight_posts = 64
+max_rest_weight_per_minute = 400
+max_ws_messages_per_minute = 240
+max_inflight_posts = 8
 cancel_reserve_fraction = 0.25
+address_action_reserve = 100
+address_safety_action_reserve = 10
+quota_horizon_seconds = 43200
+user_rate_limit_refresh_ms = 60000
+safety_rest_weight_reserve = 100
+min_order_notional_multiplier = 1.05
+max_order_notional_multiplier = 1.10
+max_directional_notional_multiplier = 1.10
+max_working_gross_multiplier = 2.20
+production_max_daily_realized_loss_usdc = 1.0
 acceptance_max_order_notional_usdc = 12.0
 acceptance_max_directional_notional_usdc = 12.0
 acceptance_max_working_gross_usdc = 24.0

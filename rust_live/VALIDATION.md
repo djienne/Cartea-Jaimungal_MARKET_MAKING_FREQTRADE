@@ -1,10 +1,8 @@
 # Validation status
 
-> **Historical record.** Entries below are dated evidence and are left as
-> written. Where they mention concurrently running Freqtrade dry-run processes,
-> those were real at the time; that trader was retired on 2026-08-25
-> (`freqtrade-trader-final`) and the contention and consumer counts described
-> here no longer describe the host.
+> **Historical record.** Entries below are dated evidence, not a current host or
+> venue-status report. Current operational guidance lives in `README.md` and
+> `../docs/DRY_RUN_GRID.md`.
 
 Validated locally on 2026-08-22. The stateful continuous `live` backend is
 implemented but the tracked CASHCAT profile ships with `live.enabled=false`.
@@ -46,7 +44,7 @@ actions on a dedicated CASHCAT subaccount and ended flat with zero open orders.
   A 15-second credential-free public-feed dry-run in the portable image exited
   successfully with `scientifically_valid=true`; no order channel was opened.
 
-## Current data and replay status
+## Data and replay snapshot (2026-08-22)
 
 Checked on 2026-08-22 around 17:30 UTC:
 
@@ -75,20 +73,13 @@ Checked on 2026-08-22 around 17:30 UTC:
 - The newer Rust two-hour replay (`replay-1787353244623.json`) is scientifically
   valid but also negative: 112 fills, -17.43 USDC mark-to-market, and markout
   moving from +2.22 USDC at 100 ms to -10.79/-17.96/-18.98 at 1/5/30 seconds.
-- The concurrently running Freqtrade processes are dry-run forward tests, not
-  historical backtests. Since their current restart, the long database records
-  seven closed trades for -241.09 USDC; the short database records 30 closed
-  trades for -66.27 USDC plus an open simulated short carrying -230.85 USDC of
-  realized partial-exit loss. These dry-run fills include an extreme CASHCAT
-  price dislocation and are operational warnings, not substitutes for the queue
-  replay.
 
 ## Deterministic gates
 
 - `cargo fmt --check`: passed.
 - strict Clippy over all targets with warnings denied: passed.
 - Rust tests: 115 passed across optimized unit and integration targets.
-- Python/Freqtrade reference tests: 722 passed.
+- Python reference tests: 722 passed.
 - locked optimized builds of the production and feature-gated acceptance
   binaries: passed.
 - Docker image build with the bounded context: passed; containerized metadata
@@ -237,12 +228,6 @@ Ordinary parameter/HJB comparisons use `1e-8`, high-sensitivity HJB points use
   submit acknowledgements around 959-976 ms. These exceed the configured 150 ms
   production p95 threshold, so an enforced production gate would refuse to
   quote. Probe, dry-run, and canary enforcement was intentionally bypassed.
-- The already-running Python estimator and both Freqtrade dry-run consumers were
-  restarted so their in-memory schema guards also use v4. The estimator now
-  copies and publishes every cycle successfully; both consumers accepted the
-  refreshed direct parameters and rebuilt their episodic HJB surfaces. Primary
-  kappa, lambda, and epsilon values equal their retained `*_raw` diagnostic
-  aliases exactly.
 - Starting Rust as a Parquet writer while the reference collector was active was
   refused during the observation preflight, before any competing shard was
   written.

@@ -162,12 +162,12 @@ class RiskSetting:
 
 @dataclass(frozen=True)
 class Scenario:
-    """A coherent machine: order latency and requote cadence move together.
+    """A labelled joint latency/refresh scenario.
 
-    Sweeping latency alone at a fixed refresh interval measures almost nothing,
-    because resting exposure is max(0, refresh - latency) + cancel -- cutting
-    latency at a fixed refresh actually LENGTHENS the time a quote sits. Each row
-    here is a plausible piece of infrastructure instead.
+    Resting exposure is roughly max(0, refresh - latency) + cancel, so changing
+    latency at a fixed refresh can lengthen the time a quote sits. Joint rows are
+    useful operating scenarios but cannot identify the causal effect of either
+    component.
     """
 
     name: str
@@ -183,11 +183,10 @@ SCENARIOS = (
     Scenario("reality", 500, 30000),
 )
 
-# The scenario every stage of the search is scored at. Searching at "reality"
-# would tune the model to a 30 s requote interval, which is an infrastructure
-# defect rather than a property of the market; searching at "colocated" would tune
-# to a rung the tape cannot even resolve. "good" is the fastest rung that sits
-# above the tape's own cadence.
+# Historical scenario labels are retained for artifact compatibility; they are
+# not measurements of the current Rust host. Search uses "good" because it is the
+# fastest rung above the tape's own cadence, not because it is known to be
+# deployable or profitable.
 SEARCH_SCENARIO = "good"
 
 
@@ -495,11 +494,9 @@ def calibrate(
 ) -> dict[str, Any]:
     """Estimate kappa/epsilon/lambda on one window at one calibration setting.
 
-    Runs estimate_all.py in --emit-params-json mode, which computes exactly what
-    the live estimator computes but writes ONLY to the path given. Kept that way
-    after the freqtrade legs retired: nothing reads the live snapshots today, but
-    a sweep that writes outside its own output path is one live consumer away
-    from changing the thing it is measuring.
+    Runs estimate_all.py in --emit-params-json mode and writes only to the path
+    given. This prevents a sweep from replacing ordinary estimator snapshots or
+    changing the inputs of another analysis.
 
     ``reuse`` lets a re-run skip the subprocess when the scratch directory
     already holds a fit made from the same arguments over shards that have not

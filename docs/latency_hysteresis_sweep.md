@@ -2,12 +2,19 @@
 
 Companion to `latency_hysteresis_sweep.json`. Generated 2026-08-23.
 
+> **Supersession note.** The rows remain valid for this frozen window, but the
+> 95-hour latency conclusion originally cited below did not survive the later
+> 161.95-hour tape: its ranking reversed and latency remained coupled to refresh
+> cadence. Use this artifact for address-action sensitivity, not for a causal
+> latency ranking.
+
 Twelve deterministic replays over **one frozen CASHCAT window** — 357 shards
 copied out of the live collector tape, 174.8 min span, of which replay consumed
 a 119-minute calibration window — crossing simulated latency
 (`dry_run.decision_latency_ms` = `acknowledgement_latency_ms` =
-`cancel_latency_ms`) with `quoting.replace_threshold_bps`. Everything else is
-`config/cashcat.toml`. Exchange-time base. All 12 runs reported
+`cancel_latency_ms`) with `quoting.replace_threshold_bps`. Everything else came
+from `config/cashcat.toml` as it existed at companion-JSON build revision
+`8fb76781f9a0`, not necessarily the current file. Exchange-time base. All 12 runs reported
 `scientifically_valid = true`.
 
 Freezing the tape matters: the collector writes continuously, so runs taken
@@ -67,11 +74,11 @@ The only latency-shaped hint is the 100 ms markout drifting down as latency
 rises (3.68 → 3.23 → 3.37 → 2.74), which is directionally right but well inside
 the noise.
 
-**Use the 95-hour ladder for latency instead.** The staged sweep recorded in the
-root README resolved this on a far larger tape — colocated (50 ms/100 ms)
-**+23.07**, good (100/250) −10.24, mid (200/500) −16.49, this stack (500/1000)
-−49.19 — with a 0.7 train/held-out split across 16 six-hour windows. A two-hour
-window at ~50 fills cannot reproduce that and should not be quoted against it.
+**The later tapes do not isolate latency either.** The 95-hour staged sweep
+favored its fastest scenario, but the 161.95-hour extension made that same rung
+the worst and made the 30-second-refresh rung positive. Because each scenario
+changes latency and refresh together and one burst dominates the long result,
+neither sweep identifies a causal benefit from latency alone.
 
 ## Recommendation
 
@@ -80,6 +87,6 @@ window at ~50 fills cannot reproduce that and should not be quoted against it.
 - Treat `4.0` as the **budget-constrained** setting: when the objective is
   runtime per unit of address allowance rather than P&L per fill, it is 2.2x
   more efficient, at the cost of the worst 30s markout in the earlier sweep.
-- Re-run the latency dimension against a multi-day tape before drawing any
-  latency conclusion from replay. CASHCAT now has 30-day retention
-  (`DATA_COLLECTION.md`), so that tape exists.
+- Draw no latency conclusion until latency is varied independently on several
+  representative frozen windows with adequate fills. The collector's 30-day
+  retention makes that experiment possible (`DATA_COLLECTION.md`).

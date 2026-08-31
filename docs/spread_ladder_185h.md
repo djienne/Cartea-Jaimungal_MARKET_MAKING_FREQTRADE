@@ -1,4 +1,4 @@
-# Spread ladder over 185 h — the first profitable configuration
+# Spread ladder over 185 h — the first positive replay rungs
 
 > **RE-BASED 2026-08-24.** Every number below was first measured with a
 > simulator in which `min_order_lifetime_ms` was inert
@@ -8,6 +8,12 @@
 > in direction but is weaker and noisier than first reported**: 40–60 bps is
 > still the only profitable region, but at roughly half the magnitude, and the
 > middle of the ladder is no longer cleanly ordered.
+
+> **Subsequent live evidence.** Two independent day-length grid runs with a
+> binding `q_max` kept 24/40/48/60 bps positive, but reversed the ordering of
+> 40/48/60 and ended with material directional inventory. The replay table below
+> is evidence for a promising width region, not a deployable winner; see
+> `DRY_RUN_GRID.md`.
 
 | half-spread | pre-fix | **post-fix** | delta | fills | 5 s markout | end inv |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -28,8 +34,8 @@ What changed in the reading:
   only the extremes carry signal. The pre-fix monotonicity was partly an
   artefact of the broken gate.
 - **The markout mechanism survives intact** — 5 s markout still improves
-  monotonically with width, −82.17 → −20.76. That was and remains the reason
-  wide quotes work on this instrument.
+  monotonically with width, −82.17 → −20.76. Widening reduces measured adverse
+  selection on this tape; it does not by itself establish positive expected P&L.
 - spread60's ending short grew to 2,440 units, deepening the leverage caveat
   below rather than relieving it.
 
@@ -68,9 +74,9 @@ The P&L is **realized, not paper**: spread40 is +40.17 realized of +40.78 net;
 spread60 is +91.70 of +91.84. Ending inventory is a residual, not the source.
 
 The mechanism is visible in the markout column — 5 s markout improves
-monotonically from −74.59 to −23.54. Wider quotes are picked off less. That is
-the entire story: CASHCAT's adverse selection is severe enough that the only
-way to survive it is to stop competing for the touch.
+monotonically from −74.59 to −23.54. Wider quotes are picked off less. On this
+tape, moving away from the touch reduces pick-off enough for the widest rungs to
+become positive.
 
 ## Per-window: the number that matters
 
@@ -82,15 +88,17 @@ Sixteen 12-hour windows, P&L per window:
 | 40 | 10/16 | +32.8 | −10.7 | +40.2 | **+7.4** |
 | 60 | 10/16 | +30.3 | −21.7 | +95.1 | **+70.1** |
 
-**At 8 bps every single window loses.** Not variance — structure.
+**At 8 bps every one of these 16 windows loses.** The consistent sign is stronger
+than an aggregate total, but it remains evidence from one tape rather than a
+regime-independent law.
 
 **spread40's total is 82% one window** (+32.8 of +40.2). Strip the final window
 and it is +7.4 over 15 windows: marginal, not established.
 
 **spread60 survives the strip** (+70.1 over 15 windows) with gains spread across
-windows 3, 9, 11, 12, 13, 15 and 16. It is the only rung whose profit is not an
-artefact of one move — but its window-to-window range is −21.7 to +30.3, far
-wider than anything narrower.
+windows 3, 9, 11, 12, 13, 15 and 16. It is not dominated by the final window in
+this sample, but its window-to-window range is −21.7 to +30.3, far wider than
+anything narrower.
 
 ## Honest limits
 
@@ -107,17 +115,15 @@ wider than anything narrower.
   making a market.
 - **One tape, one instrument, one regime.** The 185 h contains a −70% cascade
   and a +50% grind. A different regime may rank the ladder differently.
-- Latency is held at 150 ms throughout. The replay's separate latency ladder
-  showed cadence is worth up to 407 USDC on its own, and the two levers have
-  not been crossed here.
+- Each simulated decision/ack/cancel delay is held at 150 ms. The post-fix matrix
+  above shows that cadence and width interact non-monotonically; there is no
+  general evidence that slower refresh is beneficial.
 
 ## What this changes
 
-The live 20-variant grid already carries `wide40` and the `wide*slow*` matrix,
-so the out-of-sample check is running. The replay says the interesting region
-is **40–60 bps**, well beyond where the grid's ladder used to stop (8), and
-that the shipped 1.5 bps floor is the worst rung tested by a wide margin.
-
-Next question, not answered here: whether cadence composes with width, and
-whether an inventory cap that actually binds preserves spread60's edge or
-removes it.
+The current 18-variant grid carries 40/48/60 bps rungs and a limited
+spread-by-cadence matrix. Its completed runs support **a broad 24–60 bps region**
+over the 1.5–8 bps controls, but do not rank the wide rungs and do not eliminate
+directional inventory risk. The remaining question is whether that region stays
+positive across substantially more independent regimes with inventory and
+feed-validity constraints active.

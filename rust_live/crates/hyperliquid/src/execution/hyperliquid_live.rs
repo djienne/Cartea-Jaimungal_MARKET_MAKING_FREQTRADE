@@ -7,8 +7,7 @@ use crate::hyperliquid::account_types::{
 use crate::hyperliquid::auth::HyperliquidCredentials;
 use crate::hyperliquid::exchange::{ActionOutcome, HyperliquidExchangeClient, OpenOrder, UserFill};
 use crate::hyperliquid::live_state::{
-    DurableNonceManager, LiveOrderStatus, LiveStateStore, PersistedLiveOrder, RiskScalars,
-    SessionIntent, TimedKey,
+    LiveOrderStatus, LiveStateStore, PersistedLiveOrder, RiskScalars, SessionIntent, TimedKey,
 };
 use crate::hyperliquid::session::{
     spawn_session, AccountChannel, HyperliquidSessionHandle, SessionEvent, SessionSpawnArgs,
@@ -60,7 +59,12 @@ pub struct LiveExecutionDiagnostics {
     pub maximum_directional_notional_usdc: f64,
     pub address_requests_used: u64,
     pub address_requests_cap: u64,
+    pub cancel_requests_used: u64,
     pub cumulative_volume_usdc: f64,
+    pub quota_refreshes: u64,
+    pub placement_throttles: u64,
+    pub consecutive_rejections: u32,
+    pub next_placement_allowed_ms: u64,
 }
 
 pub struct LiveBootstrap {
@@ -88,6 +92,33 @@ fn is_rate_limit_reason(reason: &str) -> bool {
     ]
     .iter()
     .any(|needle| reason.contains(needle))
+}
+
+fn parse_user_rate_limit(value: &serde_json::Value) -> Result<(f64, u64, u64)> {
+    let parse_u64 = |name: &str| {
+        value
+            .get(name)
+            .and_then(|field| {
+                field
+                    .as_u64()
+                    .or_else(|| field.as_str().and_then(|text| text.parse().ok()))
+            })
+            .with_context(|| format!("userRateLimit.{name} is missing or invalid"))
+    };
+    let cumulative_volume_usdc = value
+        .get("cumVlm")
+        .and_then(|field| {
+            field
+                .as_f64()
+                .or_else(|| field.as_str().and_then(|text| text.parse().ok()))
+        })
+        .context("userRateLimit.cumVlm is missing or invalid")?;
+    let used = parse_u64("nRequestsUsed")?;
+    let cap = parse_u64("nRequestsCap")?;
+    if !cumulative_volume_usdc.is_finite() || cumulative_volume_usdc < 0.0 || cap == 0 {
+        bail!("userRateLimit returned impossible cumulative volume or zero cap");
+    }
+    Ok((cumulative_volume_usdc, used, cap))
 }
 
 /// Replay horizon for fill/funding dedup keys, in exchange time. Far beyond any
@@ -118,6 +149,12 @@ enum FillAdmission {
         cumulative_fees_usdc: f64,
         cumulative_realized_pnl_usdc: f64,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RejectionRecovery {
+    Idle,
+    AwaitingReconcile,
 }
 
 pub struct AuthoritativeSnapshot {
@@ -168,6 +205,10 @@ pub struct HyperliquidLiveBackend {
     /// refusal so the bot stays out of a saturated window instead of bouncing
     /// straight back into the limiter once health is restored.
     rate_limited_until_ms: u64,
+    last_user_rate_limit_refresh_ms: u64,
+    next_placement_allowed_ms: u64,
+    consecutive_rejections: u32,
+    rejection_recovery: RejectionRecovery,
 }
 
 impl HyperliquidLiveBackend {
@@ -185,9 +226,10 @@ impl HyperliquidLiveBackend {
         if instrument.is_delisted {
             bail!("instrument is delisted");
         }
-        if !instrument.only_isolated || instrument.margin_mode != "strictIsolated" {
-            bail!("validated CASHCAT live profile requires strict isolated margin");
-        }
+        // The current `meta` response no longer publishes `onlyIsolated` or
+        // `marginMode` for CASHCAT. Do not invent defaults as a live gate: the
+        // account-specific activeAssetData below is authoritative and must
+        // still confirm isolated leverage before any action transport is used.
         let credentials = Arc::new(HyperliquidCredentials::load(&config.live.credentials_path)?);
         if !credentials.is_vault() {
             bail!("live CASHCAT requires a dedicated subaccount/vault");
@@ -205,6 +247,7 @@ impl HyperliquidLiveBackend {
             } else {
                 config.live.max_rest_weight_per_minute
             },
+            config.live.safety_rest_weight_reserve,
         )?);
         let (role, clearinghouse, open_orders, active_asset, fees, user_rate_limit) = tokio::try_join!(
             client.user_role(),
@@ -217,6 +260,7 @@ impl HyperliquidLiveBackend {
         if role.get("role").and_then(serde_json::Value::as_str) != Some("subAccount") {
             bail!("live account must report userRole=subAccount");
         }
+        ensure_no_foreign_positions(&clearinghouse, &instrument)?;
         let account = LiveAccountSnapshot::from_rest(
             &clearinghouse,
             &active_asset,
@@ -234,16 +278,8 @@ impl HyperliquidLiveBackend {
                 config.live.max_maker_fee_rate
             );
         }
-        let cumulative_volume_usdc = user_rate_limit
-            .get("cumVlm")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|value| value.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        if config.live.deadman_enabled && cumulative_volume_usdc < 1_000_000.0 {
-            bail!(
-                "dead-man is required but this account has only {cumulative_volume_usdc:.2} USDC cumulative volume; Hyperliquid requires 1000000"
-            );
-        }
+        let (cumulative_volume_usdc, requests_used, requests_cap) =
+            parse_user_rate_limit(&user_rate_limit)?;
         let state = Arc::new(LiveStateStore::open(
             &config.live.state_path,
             &instrument.symbol,
@@ -291,14 +327,8 @@ impl HyperliquidLiveBackend {
                 scientifically_valid: true,
                 actual_maker_fee_rate: maker_fee_rate,
                 actual_taker_fee_rate: taker_fee_rate,
-                address_requests_used: user_rate_limit
-                    .get("nRequestsUsed")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0),
-                address_requests_cap: user_rate_limit
-                    .get("nRequestsCap")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0),
+                address_requests_used: requests_used,
+                address_requests_cap: requests_cap,
                 cumulative_volume_usdc,
                 ..LiveExecutionDiagnostics::default()
             },
@@ -324,6 +354,10 @@ impl HyperliquidLiveBackend {
             inventory_at_last_quote_action: initial_inventory_units,
             deferred_desired: None,
             rate_limited_until_ms: 0,
+            last_user_rate_limit_refresh_ms: unix_ms(),
+            next_placement_allowed_ms: 0,
+            consecutive_rejections: 0,
+            rejection_recovery: RejectionRecovery::Idle,
         };
         backend.initialize_campaign()?;
         Ok(LiveBootstrap {
@@ -363,12 +397,98 @@ impl HyperliquidLiveBackend {
         now_ms < self.rate_limited_until_ms
     }
 
+    fn safe_placement_allowance(&self) -> u64 {
+        self.diagnostics
+            .address_requests_cap
+            .saturating_sub(self.diagnostics.address_requests_used)
+            .saturating_sub(self.live.address_action_reserve)
+            .saturating_sub(self.live.address_safety_action_reserve)
+    }
+
+    fn placement_quota_available(&mut self, now_ms: u64, action_count: u64) -> bool {
+        let allowance = self.safe_placement_allowance();
+        if action_count == 0 || allowance < action_count || now_ms < self.next_placement_allowed_ms
+        {
+            self.diagnostics.placement_throttles =
+                self.diagnostics.placement_throttles.saturating_add(1);
+            return false;
+        }
+        true
+    }
+
+    fn safety_placement_available(&self, action_count: u64) -> bool {
+        action_count > 0
+            && self
+                .diagnostics
+                .address_requests_cap
+                .saturating_sub(self.diagnostics.address_requests_used)
+                .saturating_sub(self.live.address_action_reserve)
+                >= action_count
+    }
+
+    fn count_placement_actions(&mut self, now_ms: u64, action_count: u64) {
+        let allowance = self.safe_placement_allowance().max(1);
+        let pacing_ms = self
+            .live
+            .quota_horizon_seconds
+            .saturating_mul(1_000)
+            .checked_div(allowance.max(1))
+            .unwrap_or(u64::MAX)
+            .max(self.quoting.min_order_lifetime_ms);
+        self.next_placement_allowed_ms =
+            now_ms.saturating_add(pacing_ms.saturating_mul(action_count));
+        self.diagnostics.next_placement_allowed_ms = self.next_placement_allowed_ms;
+        self.count_address_actions(action_count);
+    }
+
+    fn count_address_actions(&mut self, count: u64) {
+        self.diagnostics.address_requests_used =
+            self.diagnostics.address_requests_used.saturating_add(count);
+    }
+
+    fn count_cancel_actions(&mut self, count: u64) {
+        self.diagnostics.cancel_requests_used =
+            self.diagnostics.cancel_requests_used.saturating_add(count);
+    }
+
+    async fn refresh_user_rate_limit(&mut self, now_ms: u64) -> Result<()> {
+        let value = self.client.user_rate_limit().await?;
+        let (volume, used, cap) = parse_user_rate_limit(&value)?;
+        self.diagnostics.cumulative_volume_usdc = volume;
+        // Never move the local estimate backwards between authoritative
+        // refreshes: actions submitted concurrently with this info request may
+        // not be reflected in its snapshot yet.
+        self.diagnostics.address_requests_used = self.diagnostics.address_requests_used.max(used);
+        self.diagnostics.address_requests_cap = cap;
+        self.diagnostics.quota_refreshes = self.diagnostics.quota_refreshes.saturating_add(1);
+        self.last_user_rate_limit_refresh_ms = now_ms;
+        Ok(())
+    }
+
     pub const fn diagnostics(&self) -> &LiveExecutionDiagnostics {
         &self.diagnostics
     }
 
     pub const fn operationally_healthy(&self) -> bool {
         self.diagnostics.operationally_healthy
+    }
+
+    pub fn health_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "generated_at_ms": unix_ms(),
+            "operationally_healthy": self.diagnostics.operationally_healthy,
+            "session_healthy": self.session.healthy(),
+            "persistence_healthy": self.state.persistence_healthy(),
+            "inventory_units": self.account.inventory_units,
+            "open_orders": self.account.open_orders.len(),
+            "address_requests_used": self.diagnostics.address_requests_used,
+            "address_requests_cap": self.diagnostics.address_requests_cap,
+            "cancel_requests_used": self.diagnostics.cancel_requests_used,
+            "safe_placement_allowance": self.safe_placement_allowance(),
+            "next_placement_allowed_ms": self.next_placement_allowed_ms,
+            "consecutive_rejections": self.consecutive_rejections,
+            "invalid_reason": self.diagnostics.invalid_reason,
+        })
     }
 
     /// Pause trading without ending the session.
@@ -530,7 +650,9 @@ impl HyperliquidLiveBackend {
         }
         let bbo = self.fresh_bbo().await?;
         self.validate_new_orders(&requests, bbo)?;
+        let action_count = requests.len() as u64;
         let outcome = self.session.place_orders(quote_seq, requests).await?;
+        self.count_address_actions(action_count);
         self.record_order_outcome(&outcome);
         Ok(outcome)
     }
@@ -545,18 +667,20 @@ impl HyperliquidLiveBackend {
                 .collect::<Vec<String>>()
         })?;
         if !cloids.is_empty() {
+            let action_count = cloids.len() as u64;
             let outcome = self.cancel_cloids_resilient(cloids).await?;
             self.diagnostics.cancels_submitted += 1;
+            self.count_cancel_actions(action_count);
             require_action_known(&outcome)?;
         }
-        self.reconcile_authoritative().await?;
+        self.reconcile_safety_position().await?;
         if !self.account.open_orders.is_empty() {
             bail!("bot-order cancellation did not produce an empty venue order set");
         }
         Ok(())
     }
 
-    pub fn enqueue_cancel_all_bot_orders(&self) -> Result<()> {
+    pub fn enqueue_cancel_all_bot_orders(&mut self) -> Result<()> {
         let cloids = self.state.with_state(|state| {
             state
                 .orders
@@ -568,23 +692,30 @@ impl HyperliquidLiveBackend {
         if cloids.is_empty() {
             return Ok(());
         }
-        self.session.enqueue_cancel_cloids(cloids)
+        let action_count = cloids.len() as u64;
+        self.session.enqueue_cancel_cloids(cloids)?;
+        self.count_cancel_actions(action_count);
+        Ok(())
     }
 
     pub async fn cancel_bot_oid(&mut self, oid: u64) -> Result<ActionOutcome> {
         let outcome = self.session.cancel_oids(vec![oid]).await?;
         self.diagnostics.cancels_submitted += 1;
+        self.count_cancel_actions(1);
         Ok(outcome)
     }
 
     pub async fn cancel_bot_cloids(&mut self, cloids: Vec<String>) -> Result<ActionOutcome> {
+        let action_count = cloids.len() as u64;
         let outcome = self.session.cancel_cloids(cloids).await?;
         self.diagnostics.cancels_submitted += 1;
+        self.count_cancel_actions(action_count);
         Ok(outcome)
     }
 
     pub async fn schedule_deadman_at(&mut self, time: Option<u64>) -> Result<ActionOutcome> {
         let outcome = self.session.schedule_cancel(time).await?;
+        self.count_address_actions(1);
         require_action_ok(&outcome)?;
         self.deadman_armed = time.is_some();
         self.last_deadman_refresh_ms = unix_ms();
@@ -663,13 +794,20 @@ impl HyperliquidLiveBackend {
                 AccountChannel::UserFills => self.apply_fills(data, received_ns)?,
                 AccountChannel::UserFundings => self.apply_fundings(data)?,
                 AccountChannel::ClearinghouseState => {
-                    let clearinghouse = parse_clearinghouse_message(data)?;
-                    self.account
-                        .apply_clearinghouse(&clearinghouse, &self.instrument)?;
-                    self.pending_events.push(ExecutionEvent::AccountReconciled {
-                        inventory_units: self.account.inventory_units,
-                        equity_usdc: self.account.account_value_usdc,
-                    });
+                    if self.last_inventory_update_exchange_ms == 0 {
+                        let clearinghouse = parse_clearinghouse_message(data)?;
+                        self.account
+                            .apply_clearinghouse(&clearinghouse, &self.instrument)?;
+                        self.pending_events.push(ExecutionEvent::AccountReconciled {
+                            inventory_units: self.account.inventory_units,
+                            equity_usdc: self.account.account_value_usdc,
+                        });
+                    } else {
+                        // The stream shape has no exchange timestamp. Once a
+                        // fill established an exchange-time watermark, applying
+                        // an unwatermarked snapshot could roll inventory back.
+                        self.reconcile_requested = true;
+                    }
                 }
                 AccountChannel::OpenOrders => {
                     let orders = parse_open_orders_message(data)?;
@@ -687,7 +825,32 @@ impl HyperliquidLiveBackend {
                 AccountChannel::ActiveAssetData => self
                     .account
                     .apply_active_asset_data(&data, &self.instrument)?,
-                _ => {}
+                AccountChannel::Notification => {
+                    let text = data
+                        .get("notification")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| data.as_str())
+                        .unwrap_or_default();
+                    let lower = text.to_ascii_lowercase();
+                    if ["error", "reject", "invalid", "expired", "rate limit"]
+                        .iter()
+                        .any(|needle| lower.contains(needle))
+                    {
+                        self.diagnostics.operationally_healthy = false;
+                        self.reconcile_requested = true;
+                        self.diagnostics.invalid_reason =
+                            Some(format!("venue notification: {text}"));
+                    }
+                }
+                AccountChannel::Other(channel) => {
+                    if channel.to_ascii_lowercase().contains("error") {
+                        self.diagnostics.operationally_healthy = false;
+                        self.reconcile_requested = true;
+                        self.diagnostics.invalid_reason =
+                            Some(format!("venue error channel {channel}: {data}"));
+                    }
+                }
+                AccountChannel::LedgerUpdates => {}
             },
             SessionEvent::ActionCompleted {
                 purpose, outcome, ..
@@ -697,13 +860,39 @@ impl HyperliquidLiveBackend {
                     self.diagnostics.operationally_healthy = false;
                     self.reconcile_requested = true;
                 } else if let Some(body) = outcome.body() {
-                    if body.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
+                    let rejected = body
+                        .pointer("/response/data/statuses")
+                        .and_then(serde_json::Value::as_array)
+                        .map_or(0_u64, |statuses| {
+                            statuses
+                                .iter()
+                                .filter(|status| status.get("error").is_some())
+                                .count() as u64
+                        });
+                    if rejected > 0 {
+                        self.diagnostics.orders_rejected =
+                            self.diagnostics.orders_rejected.saturating_add(rejected);
+                        self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
+                        self.diagnostics.consecutive_rejections = self.consecutive_rejections;
+                        let shift = self.consecutive_rejections.saturating_sub(1).min(5);
+                        let backoff_ms = 1_000_u64.saturating_mul(1_u64 << shift).min(30_000);
+                        self.rate_limited_until_ms = self
+                            .rate_limited_until_ms
+                            .max(unix_ms().saturating_add(backoff_ms));
+                        self.diagnostics.operationally_healthy = false;
+                        self.reconcile_requested = true;
+                        self.diagnostics.invalid_reason = Some(format!(
+                            "{rejected} order(s) rejected; backing off {backoff_ms}ms"
+                        ));
+                    } else if body.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
                         self.diagnostics.operationally_healthy = false;
                         self.diagnostics.invalid_reason =
                             Some(format!("{purpose:?} action failed: {body}"));
                         if purpose == crate::hyperliquid::session::ActionPurpose::Deadman {
                             self.deadman_armed = false;
                         }
+                    } else if purpose == crate::hyperliquid::session::ActionPurpose::Order {
+                        self.rejection_recovery = RejectionRecovery::AwaitingReconcile;
                     }
                 }
             }
@@ -717,6 +906,19 @@ impl HyperliquidLiveBackend {
     }
 
     pub async fn maintenance(&mut self, now_ms: u64) -> Result<Vec<ExecutionEvent>> {
+        if !self.state.persistence_healthy() {
+            self.diagnostics.operationally_healthy = false;
+            self.diagnostics.invalid_reason =
+                Some("live-state persistence is degraded; new exposure paused".to_owned());
+            self.reconcile_requested = true;
+        }
+        if now_ms.saturating_sub(self.last_user_rate_limit_refresh_ms)
+            >= self.live.user_rate_limit_refresh_ms
+        {
+            if let Err(error) = self.refresh_user_rate_limit(now_ms).await {
+                self.degrade("userRateLimit refresh failed", &error);
+            }
+        }
         if self.deferred_desired.is_some()
             && now_ms.saturating_sub(self.last_quote_action_ms)
                 >= self.quoting.min_order_lifetime_ms
@@ -742,6 +944,7 @@ impl HyperliquidLiveBackend {
                 Ok(()) => {
                     self.last_deadman_refresh_ms = now_ms;
                     self.diagnostics.deadman_refreshes += 1;
+                    self.count_address_actions(1);
                 }
                 Err(error) => self.degrade("dead-man refresh enqueue refused", &error),
             }
@@ -782,6 +985,7 @@ impl HyperliquidLiveBackend {
             bail!("cannot change leverage with position or open orders");
         }
         let outcome = self.session.update_leverage(expected, false).await?;
+        self.count_address_actions(1);
         require_action_ok(&outcome)?;
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -796,6 +1000,7 @@ impl HyperliquidLiveBackend {
     pub async fn arm_or_refresh_deadman(&mut self, now_ms: u64) -> Result<()> {
         let deadline = now_ms.saturating_add(self.live.deadman_deadline_ms);
         let outcome = self.session.schedule_cancel(Some(deadline)).await?;
+        self.count_address_actions(1);
         require_action_ok(&outcome)?;
         self.deadman_armed = true;
         self.last_deadman_refresh_ms = now_ms;
@@ -810,11 +1015,11 @@ impl HyperliquidLiveBackend {
         let outcome = if self.session.healthy() {
             self.session.schedule_cancel(None).await?
         } else {
-            let mut nonce = DurableNonceManager::new(self.state.clone())?;
             self.client
-                .schedule_cancel_with_nonce(None, nonce.next_nonce()?)
+                .schedule_cancel_with_nonce(None, self.state.emergency_nonce()?)
                 .await?
         };
+        self.count_address_actions(1);
         require_action_ok(&outcome)?;
         self.deadman_armed = false;
         Ok(())
@@ -833,6 +1038,7 @@ impl HyperliquidLiveBackend {
         let request = self.ioc_request(side, qty_units, false, max_slippage_bps, bbo)?;
         self.validate_new_orders(std::slice::from_ref(&request), bbo)?;
         let outcome = self.session.place_orders(0, vec![request]).await?;
+        self.count_address_actions(1);
         self.record_order_outcome(&outcome);
         Ok(outcome)
     }
@@ -847,7 +1053,7 @@ impl HyperliquidLiveBackend {
         .enumerate()
         {
             if attempt != 0 || self.account.inventory_units == 0 {
-                self.reconcile_authoritative().await?;
+                self.reconcile_safety_position().await?;
             }
             let inventory = self.account.inventory_units;
             if inventory == 0 {
@@ -855,7 +1061,7 @@ impl HyperliquidLiveBackend {
             }
             let (side, quantity) = closing_side_and_quantity(inventory)
                 .context("nonzero inventory has no closing intent")?;
-            let bbo = self.fresh_bbo().await?;
+            let bbo = self.fresh_bbo_with_priority(true).await?;
             let request = self.ioc_request(side, quantity, true, slippage, bbo)?;
             let started_ns = self.clock.now_ns();
             if let Some(fill_ns) = self.last_fill_received_ns {
@@ -866,11 +1072,12 @@ impl HyperliquidLiveBackend {
                 );
             }
             let outcome = self.session.place_orders(0, vec![request]).await?;
+            self.count_address_actions(1);
             self.record_order_outcome(&outcome);
             require_action_known(&outcome)?;
             for _ in 0..10 {
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                self.reconcile_authoritative().await?;
+                self.reconcile_safety_position().await?;
                 if self.account.inventory_units == 0 {
                     let done_ns = self.clock.now_ns();
                     self.latency.record(
@@ -895,6 +1102,26 @@ impl HyperliquidLiveBackend {
         )
     }
 
+    async fn reconcile_safety_position(&mut self) -> Result<()> {
+        let (clearinghouse, open_orders) = tokio::try_join!(
+            self.client.clearinghouse_state_safety(),
+            self.client.open_orders_safety(),
+        )?;
+        ensure_no_foreign_positions(&clearinghouse, &self.instrument)?;
+        let inventory = clearinghouse
+            .asset_positions
+            .iter()
+            .find(|position| position.position.coin == self.instrument.symbol)
+            .map_or(Ok(0), |position| {
+                parse_fixed(&position.position.szi, self.instrument.sz_decimals)
+            })?;
+        self.account.inventory_units = inventory;
+        self.account.open_orders = open_orders;
+        self.last_reconcile_ms = unix_ms();
+        self.diagnostics.reconciliations = self.diagnostics.reconciliations.saturating_add(1);
+        Ok(())
+    }
+
     pub async fn reconcile_authoritative(&mut self) -> Result<()> {
         let snapshot =
             fetch_authoritative_snapshot(self.client.clone(), self.state.clone()).await?;
@@ -910,6 +1137,7 @@ impl HyperliquidLiveBackend {
             fills,
             order_statuses,
         } = snapshot;
+        ensure_no_foreign_positions(&clearinghouse, &self.instrument)?;
         for order in &open_orders {
             let Some(cloid) = order.cloid.as_deref() else {
                 bail!("foreign open order without CLOID on dedicated live account");
@@ -1025,6 +1253,11 @@ impl HyperliquidLiveBackend {
         })?;
         if self.session.healthy() && !unresolved {
             self.diagnostics.operationally_healthy = true;
+            if self.rejection_recovery == RejectionRecovery::AwaitingReconcile {
+                self.rejection_recovery = RejectionRecovery::Idle;
+                self.consecutive_rejections = 0;
+                self.diagnostics.consecutive_rejections = 0;
+            }
         }
         Ok(())
     }
@@ -1390,6 +1623,10 @@ impl HyperliquidLiveBackend {
     }
 
     async fn fresh_bbo(&mut self) -> Result<Bbo> {
+        self.fresh_bbo_with_priority(false).await
+    }
+
+    async fn fresh_bbo_with_priority(&mut self, safety_critical: bool) -> Result<Bbo> {
         if let Some(bbo) = self.latest_bbo {
             if bbo.recv_ns != 0
                 && self.clock.now_ns().saturating_sub(bbo.recv_ns)
@@ -1398,7 +1635,11 @@ impl HyperliquidLiveBackend {
                 return Ok(bbo);
             }
         }
-        let book = self.client.l2_book().await?;
+        let book = if safety_critical {
+            self.client.l2_book_safety().await?
+        } else {
+            self.client.l2_book().await?
+        };
         let levels = book
             .get("levels")
             .and_then(serde_json::Value::as_array)
@@ -1481,6 +1722,22 @@ impl HyperliquidLiveBackend {
         })
     }
 
+    fn minimum_live_order_quantity(&self, px_units: i64) -> Result<i64> {
+        let price = self.instrument.price_from_units(px_units);
+        let one_unit_notional = price * self.instrument.size_from_units(1);
+        if !one_unit_notional.is_finite() || one_unit_notional <= 0.0 {
+            bail!("cannot derive minimum live order quantity from invalid price");
+        }
+        let target = self.instrument.minimum_notional * self.live.min_order_notional_multiplier;
+        let quantity = (target / one_unit_notional).ceil() as i64;
+        let notional = one_unit_notional * quantity as f64;
+        let maximum = self.instrument.minimum_notional * self.live.max_order_notional_multiplier;
+        if quantity <= 0 || notional > maximum {
+            bail!("first valid lot is {notional:.6} USDC, above micro-live cap {maximum:.6} USDC");
+        }
+        Ok(quantity)
+    }
+
     fn validate_new_orders(&mut self, requests: &[LiveOrderRequest], bbo: Bbo) -> Result<()> {
         if self.diagnostics.address_requests_cap != 0
             && self
@@ -1528,6 +1785,18 @@ impl HyperliquidLiveBackend {
             {
                 bail!("acceptance order exceeds 12-USDC hard cap");
             }
+            if self.live.mode == LiveMode::Production && !request.reduce_only {
+                let minimum =
+                    self.instrument.minimum_notional * self.live.min_order_notional_multiplier;
+                let maximum =
+                    self.instrument.minimum_notional * self.live.max_order_notional_multiplier;
+                if notional < minimum || notional > maximum {
+                    bail!(
+                        "production order {notional:.6} USDC is outside micro-live range \
+                         [{minimum:.6}, {maximum:.6}]"
+                    );
+                }
+            }
             let side_index = usize::from(request.side == Side::Sell);
             if !request.reduce_only
                 && (request.qty_units > self.account.max_trade_units[side_index]
@@ -1568,13 +1837,19 @@ impl HyperliquidLiveBackend {
                 bail!("acceptance campaign cleanup reserve reached");
             }
         } else {
-            let cap = live_directional_notional_cap(
-                &self.quoting,
-                &self.risk,
-                self.account.account_value_usdc,
-            );
-            if directional > cap {
-                bail!("prospective live directional exposure exceeds account-aware cap");
+            let directional_cap =
+                self.instrument.minimum_notional * self.live.max_directional_notional_multiplier;
+            let working_gross_cap =
+                self.instrument.minimum_notional * self.live.max_working_gross_multiplier;
+            if directional > directional_cap {
+                bail!("prospective live directional exposure exceeds micro-live cap");
+            }
+            if existing_gross + new_gross > working_gross_cap {
+                bail!("prospective live working gross exceeds micro-live cap");
+            }
+            let daily = self.state.risk_scalars(unix_ms() / 86_400_000)?;
+            if daily.daily_realized_pnl_usdc <= -self.live.production_max_daily_realized_loss_usdc {
+                bail!("production daily realized-loss stop is active");
             }
         }
         self.diagnostics.maximum_working_gross_usdc = self
@@ -1604,9 +1879,8 @@ impl HyperliquidLiveBackend {
         if self.session.healthy() {
             return self.session.cancel_cloids(cloids).await;
         }
-        let mut nonce = DurableNonceManager::new(self.state.clone())?;
         self.client
-            .cancel_by_cloid_with_nonce(&cloids, nonce.next_nonce()?)
+            .cancel_by_cloid_with_nonce(&cloids, self.state.emergency_nonce()?)
             .await
     }
 
@@ -1638,6 +1912,7 @@ fn allocated_usable_equity(
     allocated_capital_usdc.max(0.0).min(account_usable)
 }
 
+#[cfg(test)]
 fn live_directional_notional_cap(
     quoting: &QuotingConfig,
     risk: &RiskConfig,
@@ -1678,6 +1953,14 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             let target = match side {
                 Side::Buy => desired.bid,
                 Side::Sell => desired.ask,
+            };
+            let target = if let Some(mut target) = target {
+                if self.live.mode == LiveMode::Production && !target.reduce_only {
+                    target.qty_units = self.minimum_live_order_quantity(target.px)?;
+                }
+                Some(target)
+            } else {
+                None
             };
             let side_orders = existing.remove(&side).unwrap_or_default();
             // Hold a resting order whose price sits inside the requote hold
@@ -1750,10 +2033,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 require_action_known(&outcome)?;
             }
             self.diagnostics.cancels_submitted += 1;
-            self.diagnostics.address_requests_used = self
-                .diagnostics
-                .address_requests_used
-                .saturating_add(canceled_actions);
+            self.count_cancel_actions(canceled_actions);
             action_submitted = true;
         }
         if !place.is_empty() && self.rate_limited(now_ms) {
@@ -1765,7 +2045,32 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             return Ok(());
         }
         if !place.is_empty() {
-            let placed_actions = place.len() as u64;
+            let ordinary_count = place.iter().filter(|order| !order.reduce_only).count() as u64;
+            if ordinary_count > 0 && !self.placement_quota_available(now_ms, ordinary_count) {
+                // Keep the newest full target for a later quota window, but do
+                // not let that throttle suppress risk-reducing orders now.
+                self.deferred_desired = Some(desired);
+                place.retain(|order| order.reduce_only);
+            }
+            let reducing_count = place.iter().filter(|order| order.reduce_only).count() as u64;
+            if reducing_count > 0 && !self.safety_placement_available(reducing_count) {
+                self.degrade(
+                    "reduce-only placement reserve exhausted",
+                    &anyhow::anyhow!("only the 100-action emergency reserve remains"),
+                );
+                return Ok(());
+            }
+            if place.is_empty() {
+                if action_submitted {
+                    self.last_quote_action_ms = now_ms;
+                    self.inventory_at_last_quote_action = self.account.inventory_units;
+                }
+                return Ok(());
+            }
+        }
+        if !place.is_empty() {
+            let ordinary_actions = place.iter().filter(|order| !order.reduce_only).count() as u64;
+            let reducing_actions = place.iter().filter(|order| order.reduce_only).count() as u64;
             // Prefer the hot path's shared slot: it is the exact snapshot the
             // quote decision priced from, while `latest_bbo` is fed by the
             // drained event ring and can lag under backlog.
@@ -1800,10 +2105,12 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 return Ok(());
             }
             self.diagnostics.orders_submitted += 1;
-            self.diagnostics.address_requests_used = self
-                .diagnostics
-                .address_requests_used
-                .saturating_add(placed_actions);
+            if ordinary_actions > 0 {
+                self.count_placement_actions(now_ms, ordinary_actions);
+            }
+            if reducing_actions > 0 {
+                self.count_address_actions(reducing_actions);
+            }
             action_submitted = true;
         }
         if action_submitted {
@@ -1833,19 +2140,16 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             let canceled_actions = cloids.len() as u64;
             let outcome = self.cancel_cloids_resilient(cloids).await?;
             self.diagnostics.cancels_submitted += 1;
-            self.diagnostics.address_requests_used = self
-                .diagnostics
-                .address_requests_used
-                .saturating_add(canceled_actions);
+            self.count_cancel_actions(canceled_actions);
             require_action_known(&outcome)?;
         }
-        self.reconcile_authoritative().await?;
+        self.reconcile_safety_position().await?;
         if !self.account.open_orders.is_empty() {
             bail!("graceful live shutdown could not confirm empty open orders");
         }
         if self.live.flatten_on_stop && self.account.inventory_units != 0 {
             self.market_close().await?;
-            self.reconcile_authoritative().await?;
+            self.reconcile_safety_position().await?;
             if self.account.inventory_units != 0 {
                 bail!(
                     "flatten_on_stop left residual inventory {}",
@@ -1867,6 +2171,31 @@ impl ExecutionBackend for HyperliquidLiveBackend {
     fn scientifically_valid(&self) -> bool {
         self.diagnostics.scientifically_valid
     }
+}
+
+fn ensure_no_foreign_positions(
+    state: &crate::hyperliquid::exchange::ClearinghouseState,
+    instrument: &InstrumentSpec,
+) -> Result<()> {
+    for position in &state.asset_positions {
+        if position.position.coin == instrument.symbol {
+            continue;
+        }
+        let size: f64 = position.position.szi.parse().with_context(|| {
+            format!(
+                "foreign {} position size is invalid",
+                position.position.coin
+            )
+        })?;
+        if !size.is_finite() || size != 0.0 {
+            bail!(
+                "foreign position {}={} appeared on dedicated live subaccount",
+                position.position.coin,
+                position.position.szi
+            );
+        }
+    }
+    Ok(())
 }
 
 impl AccountStateProvider for HyperliquidLiveBackend {
@@ -1934,13 +2263,10 @@ async fn fetch_authoritative_snapshot(
             .map(|order| order.cloid.clone())
             .collect()
     })?;
-    if unresolved.len() > 16 {
-        bail!(
-            "{} durable orders remain unresolved after historicalOrders; refusing REST fan-out",
-            unresolved.len()
-        );
-    }
-    for cloid in unresolved {
+    // Resolve a bounded page per reconciliation. More than sixteen used to
+    // fail every reconciliation forever; paging makes monotonic progress while
+    // respecting the shared REST budget.
+    for cloid in unresolved.into_iter().take(16) {
         order_statuses.insert(
             cloid.clone(),
             client
@@ -2026,6 +2352,22 @@ pub fn live_state_path(config: &AppConfig) -> &Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_rate_limit_requires_a_nonzero_well_formed_cap() {
+        assert_eq!(
+            parse_user_rate_limit(&serde_json::json!({
+                "cumVlm": "12.5", "nRequestsUsed": 7, "nRequestsCap": 10007
+            }))
+            .unwrap(),
+            (12.5, 7, 10_007)
+        );
+        assert!(parse_user_rate_limit(&serde_json::json!({
+            "cumVlm": "12.5", "nRequestsUsed": 7, "nRequestsCap": 0
+        }))
+        .is_err());
+        assert!(parse_user_rate_limit(&serde_json::json!({})).is_err());
+    }
     use crate::config::{LatencyConfig, LiveConfig, Network};
     use crate::types::QuoteReason;
     use proptest::prelude::*;
@@ -2115,12 +2457,20 @@ mod tests {
                 Duration::from_secs(1),
                 5_000,
                 1_000,
+                100,
             )
             .unwrap(),
         );
+        let mut test_live = LiveConfig::default();
+        test_live.mode = LiveMode::AcceptanceTest;
+        test_live.acceptance_max_order_notional_usdc = 1_000.0;
+        test_live.acceptance_max_directional_notional_usdc = 1_000.0;
+        test_live.acceptance_max_working_gross_usdc = 2_000.0;
+        test_live.acceptance_max_turnover_usdc = 10_000.0;
+        test_live.acceptance_max_realized_loss_usdc = 100.0;
         let backend = HyperliquidLiveBackend {
             instrument,
-            live: LiveConfig::default(),
+            live: test_live,
             quoting: QuotingConfig::default(),
             risk: RiskConfig::default(),
             client,
@@ -2140,6 +2490,7 @@ mod tests {
             diagnostics: LiveExecutionDiagnostics {
                 operationally_healthy: true,
                 scientifically_valid: true,
+                address_requests_cap: 10_000,
                 ..LiveExecutionDiagnostics::default()
             },
             latest_bbo: None,
@@ -2161,6 +2512,10 @@ mod tests {
             inventory_at_last_quote_action: 0,
             deferred_desired: None,
             rate_limited_until_ms: 0,
+            last_user_rate_limit_refresh_ms: 0,
+            next_placement_allowed_ms: 0,
+            consecutive_rejections: 0,
+            rejection_recovery: RejectionRecovery::Idle,
         };
         (directory, backend, cloid)
     }
@@ -2193,6 +2548,29 @@ mod tests {
             recv_ns: 1,
         });
         (directory, backend)
+    }
+
+    #[test]
+    fn placement_allowance_keeps_emergency_and_safety_reserves() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend.diagnostics.address_requests_used = 0;
+        backend.diagnostics.address_requests_cap = 120;
+        assert_eq!(backend.safe_placement_allowance(), 10);
+        assert!(backend.placement_quota_available(1_000, 2));
+        backend.count_placement_actions(1_000, 2);
+        assert_eq!(backend.safe_placement_allowance(), 8);
+        assert!(!backend.placement_quota_available(1_001, 2));
+        assert_eq!(backend.diagnostics.address_requests_used, 2);
+    }
+
+    #[test]
+    fn reduce_only_can_use_safety_headroom_without_touching_emergency_reserve() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend.diagnostics.address_requests_used = 0;
+        backend.diagnostics.address_requests_cap = 105;
+        assert_eq!(backend.safe_placement_allowance(), 0);
+        assert!(backend.safety_placement_available(1));
+        assert!(!backend.safety_placement_available(6));
     }
 
     fn bid_target(px: i64, qty_units: i64) -> DesiredQuotes {
@@ -2803,7 +3181,8 @@ mod tests {
         assert_eq!(backend.last_quote_action_ms, 3_000);
         assert_eq!(backend.diagnostics.orders_submitted, 1);
         assert_eq!(backend.diagnostics.cancels_submitted, 1);
-        assert_eq!(backend.diagnostics.address_requests_used, 4);
+        assert_eq!(backend.diagnostics.address_requests_used, 2);
+        assert_eq!(backend.diagnostics.cancel_requests_used, 2);
     }
 
     #[test]

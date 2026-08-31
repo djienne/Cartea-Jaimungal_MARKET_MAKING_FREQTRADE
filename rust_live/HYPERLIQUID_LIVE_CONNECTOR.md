@@ -57,7 +57,7 @@ behavior in ways that supersede older statements in this document:
 - **Latency gate un-latched.** Dropped-sample/observer-error blocks are
   per-window (deltas), not per-session (lifetime counters).
 
-## Current implementation status (2026-08-22)
+## Implementation status (updated 2026-08-23)
 
 The persistent `live` command now owns a stateful execution backend and remains
 fail-closed while `[live].enabled=false`. Implemented and exercised pieces are:
@@ -84,9 +84,9 @@ fail-closed while `[live].enabled=false`. Implemented and exercised pieces are:
 Real evidence covers two-sided ALO, both cancel identifiers, post-only refusal,
 response loss, hard restarts with order and position, a genuine maker fill, and
 long/short reduce-only market close. The account ended flat and empty. The
-current subaccount cannot use `scheduleCancel` because the venue requires one
-million USDC cumulative volume; production with dead-man required therefore
-refuses on this account.
+tested subaccount could not use `scheduleCancel` on 2026-08-22 because the venue
+required one million USDC cumulative volume; production with dead-man required
+therefore refused on that account.
 
 **Runtime invariant:** the live and dry-run traders are pure Rust. They must not
 import, launch, or depend on Python, the Hyperliquid Python SDK, Passivbot, or
@@ -231,11 +231,11 @@ A public mainnet `meta` query on 2026-08-21T21:44:02Z returned:
 | `marginTableId` | `3` |
 | `onlyIsolated` | `true` |
 
-These are observations, not constants. The connector must discover and validate
-them at every startup. In particular, CASHCAT currently requires isolated
-margin: an `updateLeverage` action must use `isCross=false`. The present
-`InstrumentSpec` must be extended before live trading to include at least
-`only_isolated`/`margin_mode` and `margin_table_id`.
+These are dated observations, not constants. The connector discovers and
+validates them at every startup. The implemented `InstrumentSpec` carries
+`only_isolated`, `margin_mode`, `margin_table_id`, delisting state, and a metadata
+fingerprint; an isolated-only instrument makes `updateLeverage` use
+`isCross=false`.
 
 Perp asset IDs are the positions in the requested `meta.universe`. Spot and
 builder-deployed perp IDs use different formulas; do not generalize the CASHCAT
@@ -731,7 +731,7 @@ evaluating risk or scientific execution evidence.
 
 ## 13. Rate limits and batching
 
-Current documented limits per IP include:
+Limits last checked against the official documentation on 2026-08-21 included:
 
 - 1,200 aggregate REST weight per minute;
 - 10 simultaneous WebSocket connections;
@@ -848,8 +848,8 @@ rust_live/
 ## 15. Audit of existing projects under `C:\Users\david\Desktop\freqtrade`
 
 The audit searched Rust, Python, JavaScript, and TypeScript sources while
-excluding build/dependency directories. Read-only collectors, strategies that
-delegate to CCXT/Freqtrade, SDK documentation copies, and duplicate project
+excluding build/dependency directories. Read-only collectors, delegated CCXT
+paths, SDK documentation copies, and duplicate project
 copies were separated from actual connector implementations.
 
 ### 15.1 Rust implementations
@@ -880,7 +880,7 @@ and still refuses production trading on this development machine's latency.
 | Current `scripts\hyperliquid_alo_executor.py` and `hyperliquid_risk_executor.py` | Good ALO/IOC intent, outward rounding, CLOID, response classification, cancel-after-probe, and explicit real-order guard references. They are guarded command tools using the official SDK, not persistent account WebSocket connectors. Also avoid their optional command-line private-key input in production. |
 | `passivbot_real_run\src\exchanges\hyperliquid.py` and related Passivbot copies | Operational lifecycle evidence through CCXT Pro: `watch_orders`, REST open-order/position recovery, ALO parameters, vault handling, error retries, and minimum-notional adaptation. Useful for behavior, but CCXT hides signing/wire details and its state model should not be transplanted into the Rust engine. |
 | `DELTA_NEUTRAL\CROSS_EXCHANGE_DELTA_NEUTRAL_HL_PAC\hyperliquid_connector.py` | Small official-Python-SDK example for market IOC, leverage, position, balance, and funding. Not a maker or private-WS connector. |
-| Freqtrade copy/volume/vault diagnostics and data collectors | Mostly public/read-only, CCXT/Freqtrade delegated, or strategy-specific. They do not add a lower-level authenticated connector. |
+| Older Python/CCXT diagnostics and data collectors | Mostly public/read-only, delegated, or application-specific. They do not add a lower-level authenticated connector. |
 
 ### 15.4 Recommended reuse order
 
@@ -983,7 +983,7 @@ cumulative-volume requirement.
 - [x] Add REST/WS rate budgets and emergency cancel reserve.
 - [x] Keep tracked live disabled and fail before credentials until enabled.
 - [x] Perform the authorized bounded mainnet campaign and finish flat/empty.
-- [ ] Trigger the dead-man on an eligible account; current account is venue-ineligible below $1M cumulative volume.
+- [ ] Trigger the dead-man on an eligible account; the 2026-08-22 test account was venue-ineligible below $1M cumulative volume.
 
 ## 18. Primary references
 

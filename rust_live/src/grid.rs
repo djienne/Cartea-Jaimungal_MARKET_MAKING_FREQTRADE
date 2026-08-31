@@ -13,12 +13,40 @@
 //! stays like-for-like.
 
 use anyhow::{bail, Context, Result};
+use fs2::FileExt;
 use mm_live::config::{AppConfig, FeedHealth};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub struct GridRunLock {
+    file: std::fs::File,
+    _path: PathBuf,
+}
+
+impl GridRunLock {
+    pub fn acquire(root: &Path) -> Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let path = root.join(".grid.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        file.try_lock_exclusive()
+            .with_context(|| format!("another dry-run grid owns {}", path.display()))?;
+        Ok(Self { file, _path: path })
+    }
+}
+
+impl Drop for GridRunLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
 
 /// Sparse overrides applied on top of the base config.
 ///
@@ -45,6 +73,8 @@ pub struct VariantOverrides {
     /// `quoting.min_order_lifetime_ms` — requote cadence. The only positive rung
     /// of the latency ladder was the 30 s-refresh one.
     pub min_order_lifetime_ms: Option<u64>,
+    /// `quoting.reduce_only_threshold_q`; must not exceed the variant q-range.
+    pub reduce_only_threshold_q: Option<f64>,
     /// `quoting.replace_threshold_bps` — requote hold window, the other half of
     /// cadence.
     pub replace_threshold_bps: Option<f64>,
@@ -82,6 +112,9 @@ impl VariantOverrides {
         if let Some(value) = self.min_order_lifetime_ms {
             config.quoting.min_order_lifetime_ms = value;
         }
+        if let Some(value) = self.reduce_only_threshold_q {
+            config.quoting.reduce_only_threshold_q = value;
+        }
         if let Some(value) = self.replace_threshold_bps {
             config.quoting.replace_threshold_bps = value;
         }
@@ -115,6 +148,9 @@ impl VariantOverrides {
         }
         if let Some(value) = self.min_order_lifetime_ms {
             parts.push(format!("lifetime={value}ms"));
+        }
+        if let Some(value) = self.reduce_only_threshold_q {
+            parts.push(format!("reduceAt={value}q"));
         }
         if let Some(value) = self.replace_threshold_bps {
             parts.push(format!("hold={value}bps"));
@@ -193,15 +229,14 @@ impl GridSpec {
 
 /// One row of the leaderboard.
 ///
-/// Ordered by `net_pnl_usdc`. The tail columns are recorded but do not affect
-/// the ordering — they are here because the staged sweep showed a single
-/// six-hour window can be the entire result, so a variant leading on total
-/// while carrying that shape should at least be visible.
+/// Ordered by executable-side, fee-adjusted flatten P&L. This prevents a large
+/// directional inventory from winning merely because the market moved with it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeaderboardRow {
     pub name: String,
     pub description: String,
     pub net_pnl_usdc: f64,
+    pub promotion_pnl_usdc: Option<f64>,
     pub equity_usdc: f64,
     pub realized_pnl_usdc: f64,
     pub mark_to_market_pnl_usdc: f64,
@@ -212,6 +247,7 @@ pub struct LeaderboardRow {
     pub working_orders: usize,
     pub max_drawdown_usdc: f64,
     pub scientifically_valid: bool,
+    pub eligible_for_promotion: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +311,8 @@ pub struct PersistedVariant {
     pub peak_equity_usdc: f64,
     pub max_drawdown_usdc: f64,
     pub failure: Option<String>,
+    pub current_day: Option<u64>,
+    pub daily_realized_pnl_usdc: f64,
 }
 
 /// The whole grid's accounting at one instant, written every stats tick.
@@ -296,22 +334,21 @@ pub struct PersistedGridState {
     /// Identity of the whole grid: every variant name and config fingerprint.
     /// A changed spec -- a variant added, removed or retuned -- starts fresh.
     pub grid_fingerprint: String,
+    pub run_id: String,
     /// The *original* start, carried across every resume. This is what makes
     /// elapsed time and the downtime fraction continuous.
     pub started_at_ms: u64,
     pub checkpoint_ms: u64,
     pub resumes: u32,
     pub resumed_downtime_ms: u64,
-    pub feed_gaps: u64,
-    pub feed_downtime_ms: u64,
-    pub feed_longest_gap_ms: u64,
+    pub feed_health: FeedHealth,
     pub trade_prints: u64,
     pub replayed_trades_ignored: u64,
     pub variants: Vec<PersistedVariant>,
 }
 
 impl PersistedGridState {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
     /// Read a checkpoint, falling back to the previous generation.
     ///
@@ -484,12 +521,17 @@ impl EquityHistory {
 }
 
 impl Leaderboard {
-    pub fn sort_by_net_pnl(&mut self) {
-        self.rows.sort_by(|a, b| {
-            b.net_pnl_usdc
-                .partial_cmp(&a.net_pnl_usdc)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+    pub fn sort_by_promotion_pnl(&mut self) {
+        self.rows.sort_by(
+            |a, b| match (a.eligible_for_promotion, b.eligible_for_promotion) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => b
+                    .promotion_pnl_usdc
+                    .partial_cmp(&a.promotion_pnl_usdc)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            },
+        );
     }
 
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
@@ -511,30 +553,31 @@ impl Leaderboard {
     pub fn render(&self) -> String {
         use std::fmt::Write as _;
         let mut out = format!(
-            "\n{} grid — {} variants, {}s elapsed (ranked by net P&L)\n",
+            "\n{} grid — {} variants, {}s elapsed (ranked by flatten P&L)\n",
             self.symbol,
             self.rows.len(),
             self.elapsed_seconds
         );
         out.push_str(
-            "variant           net P&L   realized        mtm   fills     inv     maxDD  overrides\n",
+            "variant          flat P&L    net P&L   realized   fills     inv     maxDD  overrides\n",
         );
         for row in &self.rows {
             let _ = writeln!(
                 out,
-                "{:<12} {:>10.4} {:>10.4} {:>10.4} {:>7} {:>7} {:>9.4}  {}{}",
+                "{:<12} {:>10} {:>10.4} {:>10.4} {:>7} {:>7} {:>9.4}  {}{}",
                 row.name,
+                row.promotion_pnl_usdc
+                    .map_or_else(|| "n/a".to_owned(), |value| format!("{value:.4}")),
                 row.net_pnl_usdc,
                 row.realized_pnl_usdc,
-                row.mark_to_market_pnl_usdc,
                 row.fills,
                 row.inventory_units,
                 row.max_drawdown_usdc,
                 row.description,
-                if row.scientifically_valid {
+                if row.eligible_for_promotion {
                     ""
                 } else {
-                    "  [INVALID]"
+                    "  [INELIGIBLE]"
                 },
             );
         }
@@ -575,6 +618,7 @@ mod tests {
         let config = base();
         let overrides = VariantOverrides {
             q_max: Some(2),
+            reduce_only_threshold_q: Some(2.0),
             min_half_spread_bps: Some(4.0),
             ..VariantOverrides::default()
         };
@@ -630,11 +674,12 @@ mod tests {
     }
 
     #[test]
-    fn leaderboard_ranks_by_net_pnl_best_first() {
+    fn leaderboard_ranks_by_flatten_pnl_and_puts_invalid_rows_last() {
         let row = |name: &str, pnl: f64| LeaderboardRow {
             name: name.to_owned(),
             description: String::new(),
             net_pnl_usdc: pnl,
+            promotion_pnl_usdc: Some(pnl),
             equity_usdc: 0.0,
             realized_pnl_usdc: 0.0,
             mark_to_market_pnl_usdc: 0.0,
@@ -645,6 +690,7 @@ mod tests {
             working_orders: 0,
             max_drawdown_usdc: 0.0,
             scientifically_valid: true,
+            eligible_for_promotion: true,
         };
         let mut board = Leaderboard {
             generated_at_ms: 0,
@@ -658,9 +704,10 @@ mod tests {
             resumed_downtime_ms: 0,
             rows: vec![row("a", -1.0), row("b", 2.0), row("c", 0.5)],
         };
-        board.sort_by_net_pnl();
+        board.rows[1].eligible_for_promotion = false;
+        board.sort_by_promotion_pnl();
         let order: Vec<&str> = board.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(order, vec!["b", "c", "a"]);
+        assert_eq!(order, vec!["c", "a", "b"]);
     }
 
     fn board_at(now_ms: u64, pnl: f64) -> Leaderboard {
@@ -678,6 +725,7 @@ mod tests {
                 name: "wide8".to_owned(),
                 description: "minHalf=8bps".to_owned(),
                 net_pnl_usdc: pnl,
+                promotion_pnl_usdc: Some(pnl - 0.5),
                 equity_usdc: 297.88 + pnl,
                 realized_pnl_usdc: pnl,
                 mark_to_market_pnl_usdc: pnl,
@@ -688,6 +736,7 @@ mod tests {
                 working_orders: 2,
                 max_drawdown_usdc: 3.25,
                 scientifically_valid: true,
+                eligible_for_promotion: true,
             }],
         }
     }
@@ -774,13 +823,12 @@ mod tests {
             schema_version: PersistedGridState::SCHEMA_VERSION,
             symbol: "CASHCAT".to_owned(),
             grid_fingerprint: "wide8=abc;wide16=def".to_owned(),
+            run_id: "run-1000".to_owned(),
             started_at_ms: 1_000,
             checkpoint_ms: 3_600_000,
             resumes: 0,
             resumed_downtime_ms: 0,
-            feed_gaps: 2,
-            feed_downtime_ms: 500,
-            feed_longest_gap_ms: 400,
+            feed_health: FeedHealth::new(2, 500, 400, 3_599_000, false),
             trade_prints: 9_000,
             replayed_trades_ignored: 30,
             variants: Vec::new(),
@@ -820,8 +868,32 @@ mod tests {
         checkpoint().write_atomic(&path).unwrap();
         let loaded = PersistedGridState::load(&path).expect("must reload");
         assert_eq!(loaded.started_at_ms, 1_000);
-        assert_eq!(loaded.feed_downtime_ms, 500);
+        assert_eq!(loaded.feed_health.downtime_ms, 500);
         assert_eq!(loaded.trade_prints, 9_000);
+    }
+
+    #[test]
+    fn event_loss_is_sticky_across_a_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid_state.json");
+        let mut state = checkpoint();
+        state.feed_health.event_loss = true;
+        state.write_atomic(&path).unwrap();
+        assert!(
+            PersistedGridState::load(&path)
+                .expect("checkpoint")
+                .feed_health
+                .event_loss
+        );
+    }
+
+    #[test]
+    fn output_directory_lock_refuses_a_second_grid() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = GridRunLock::acquire(dir.path()).unwrap();
+        assert!(GridRunLock::acquire(dir.path()).is_err());
+        drop(first);
+        assert!(GridRunLock::acquire(dir.path()).is_ok());
     }
 
     /// A half-written or stale-schema checkpoint must cost a fresh run, never a

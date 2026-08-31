@@ -188,6 +188,7 @@ pub struct LiveConfig {
     pub state_path: PathBuf,
     pub action_timeout_ms: u64,
     pub action_expiry_ms: u64,
+    pub max_quote_command_age_ms: u64,
     pub reconcile_interval_ms: u64,
     pub startup_warmup_seconds: u64,
     pub deadman_enabled: bool,
@@ -200,6 +201,16 @@ pub struct LiveConfig {
     pub max_ws_messages_per_minute: u64,
     pub max_inflight_posts: usize,
     pub cancel_reserve_fraction: f64,
+    pub address_action_reserve: u64,
+    pub address_safety_action_reserve: u64,
+    pub quota_horizon_seconds: u64,
+    pub user_rate_limit_refresh_ms: u64,
+    pub safety_rest_weight_reserve: u64,
+    pub min_order_notional_multiplier: f64,
+    pub max_order_notional_multiplier: f64,
+    pub max_directional_notional_multiplier: f64,
+    pub max_working_gross_multiplier: f64,
+    pub production_max_daily_realized_loss_usdc: f64,
     pub acceptance_max_order_notional_usdc: f64,
     pub acceptance_max_directional_notional_usdc: f64,
     pub acceptance_max_working_gross_usdc: f64,
@@ -216,6 +227,7 @@ impl Default for LiveConfig {
             state_path: PathBuf::from("run/cashcat-live.redb"),
             action_timeout_ms: 2_000,
             action_expiry_ms: 5_000,
+            max_quote_command_age_ms: 1_000,
             reconcile_interval_ms: 30_000,
             startup_warmup_seconds: 120,
             deadman_enabled: true,
@@ -228,6 +240,16 @@ impl Default for LiveConfig {
             max_ws_messages_per_minute: 1_600,
             max_inflight_posts: 64,
             cancel_reserve_fraction: 0.25,
+            address_action_reserve: 100,
+            address_safety_action_reserve: 10,
+            quota_horizon_seconds: 43_200,
+            user_rate_limit_refresh_ms: 60_000,
+            safety_rest_weight_reserve: 100,
+            min_order_notional_multiplier: 1.05,
+            max_order_notional_multiplier: 1.10,
+            max_directional_notional_multiplier: 1.10,
+            max_working_gross_multiplier: 2.20,
+            production_max_daily_realized_loss_usdc: 1.0,
             acceptance_max_order_notional_usdc: 12.0,
             acceptance_max_directional_notional_usdc: 12.0,
             acceptance_max_working_gross_usdc: 24.0,
@@ -391,6 +413,9 @@ impl AppConfig {
         if self.live.action_timeout_ms == 0 || self.live.action_expiry_ms == 0 {
             bail!("live action timeout and expiry must be positive");
         }
+        if self.live.max_quote_command_age_ms == 0 {
+            bail!("live.max_quote_command_age_ms must be positive");
+        }
         if self.live.reconcile_interval_ms < 500 {
             bail!("live.reconcile_interval_ms must be at least 500");
         }
@@ -415,6 +440,33 @@ impl AppConfig {
             || !(0.0..1.0).contains(&self.live.cancel_reserve_fraction)
         {
             bail!("invalid live rate-limit configuration");
+        }
+        if self.live.safety_rest_weight_reserve >= self.live.max_rest_weight_per_minute
+            || self.live.address_action_reserve < 100
+            || self.live.address_safety_action_reserve == 0
+            || self.live.quota_horizon_seconds == 0
+            || self.live.user_rate_limit_refresh_ms < 1_000
+        {
+            bail!("invalid live safety/quota reserve configuration");
+        }
+        if !self.live.min_order_notional_multiplier.is_finite()
+            || !self.live.max_order_notional_multiplier.is_finite()
+            || self.live.min_order_notional_multiplier < 1.0
+            || self.live.max_order_notional_multiplier < self.live.min_order_notional_multiplier
+            || self.live.max_order_notional_multiplier > 1.10
+            || !self.live.max_directional_notional_multiplier.is_finite()
+            || self.live.max_directional_notional_multiplier
+                < self.live.max_order_notional_multiplier
+            || !self.live.max_working_gross_multiplier.is_finite()
+            || self.live.max_working_gross_multiplier
+                < 2.0 * self.live.max_order_notional_multiplier
+            || !self
+                .live
+                .production_max_daily_realized_loss_usdc
+                .is_finite()
+            || self.live.production_max_daily_realized_loss_usdc <= 0.0
+        {
+            bail!("invalid live micro-notional risk envelope");
         }
         for (name, value, hard_maximum) in [
             (
@@ -472,25 +524,45 @@ impl AppConfig {
         if self.quoting.min_order_lifetime_ms == 0 {
             bail!("quoting.min_order_lifetime_ms must be positive");
         }
-        // The WebSocket budget must cover the worst-case replace rate plus
-        // protocol overhead. Shipping a config where sustained requoting alone
-        // exhausts the budget starves pings and dead-man refreshes.
-        let replace_messages_per_minute = 120_000 / self.quoting.min_order_lifetime_ms;
+        if !self.quoting.reduce_only_threshold_q.is_finite()
+            || self.quoting.reduce_only_threshold_q < 0.0
+            || self.quoting.reduce_only_threshold_q > self.model.q_max as f64
+        {
+            bail!("quoting.reduce_only_threshold_q must be finite and inside [0, model.q_max]");
+        }
+        if self.dry_run.queue_decay_per_second != 0.0 {
+            bail!(
+                "dry_run.queue_decay_per_second must be zero until calibrated from venue evidence"
+            );
+        }
+        if !self.dry_run.tail_latency_multiplier.is_finite()
+            || self.dry_run.tail_latency_multiplier < 1.0
+            || self.dry_run.tail_latency_every == 0
+        {
+            bail!("dry-run tail latency multiplier/period is invalid");
+        }
+        if !self.dry_run.promotion_flatten_fee_rate.is_finite()
+            || self.dry_run.promotion_flatten_fee_rate < 0.0
+            || !self.dry_run.promotion_flatten_slippage_bps.is_finite()
+            || self.dry_run.promotion_flatten_slippage_bps < 0.0
+        {
+            bail!("dry-run promotion flatten costs must be finite and non-negative");
+        }
+        // Replacement demand is coalesced and quota-paced by the live executor;
+        // only unavoidable protocol/safety traffic must fit unconditionally.
         let ping_messages_per_minute = 60_000 / self.runtime.ws_ping_interval_ms.max(1);
         let deadman_messages_per_minute = if self.live.deadman_enabled {
             60_000 / self.live.deadman_refresh_ms.max(1)
         } else {
             0
         };
-        if replace_messages_per_minute + ping_messages_per_minute + deadman_messages_per_minute
+        if ping_messages_per_minute + deadman_messages_per_minute + 10
             > self.live.max_ws_messages_per_minute
         {
             bail!(
-                "WebSocket budget insufficient: {replace_messages_per_minute} worst-case \
-                 replace messages + {ping_messages_per_minute} pings + \
-                 {deadman_messages_per_minute} dead-man refreshes per minute exceed \
-                 live.max_ws_messages_per_minute ({}); raise the budget or \
-                 quoting.min_order_lifetime_ms",
+                "WebSocket budget insufficient for {ping_messages_per_minute} pings, \
+                 {deadman_messages_per_minute} dead-man refreshes and safety headroom; \
+                 live.max_ws_messages_per_minute={}",
                 self.live.max_ws_messages_per_minute
             );
         }

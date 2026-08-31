@@ -12,10 +12,10 @@ use crate::transport::{
     account_subscriptions, application_ping, subscription_request, ACCOUNT_SUBSCRIPTION_COUNT,
 };
 use crate::types::{unix_ms, ProcessClock};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,6 +88,7 @@ impl AccountChannel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionPurpose {
     Order,
+    ReduceOnly,
     Cancel,
     Leverage,
     Deadman,
@@ -97,12 +98,12 @@ impl ActionPurpose {
     const fn latency_kind(self) -> LatencyKind {
         match self {
             Self::Cancel | Self::Deadman => LatencyKind::CancelToAck,
-            Self::Order | Self::Leverage => LatencyKind::SubmitToAck,
+            Self::Order | Self::ReduceOnly | Self::Leverage => LatencyKind::SubmitToAck,
         }
     }
 
     const fn safety_critical(self) -> bool {
-        matches!(self, Self::Cancel | Self::Deadman)
+        matches!(self, Self::ReduceOnly | Self::Cancel | Self::Deadman)
     }
 }
 
@@ -121,8 +122,13 @@ enum SessionAction {
 }
 
 impl SessionAction {
-    const fn purpose(&self) -> ActionPurpose {
+    fn purpose(&self) -> ActionPurpose {
         match self {
+            Self::Orders { requests, .. }
+                if !requests.is_empty() && requests.iter().all(|order| order.reduce_only) =>
+            {
+                ActionPurpose::ReduceOnly
+            }
             Self::Orders { .. } => ActionPurpose::Order,
             Self::CancelCloids(_) | Self::CancelOids(_) => ActionPurpose::Cancel,
             Self::UpdateLeverage { .. } => ActionPurpose::Leverage,
@@ -461,7 +467,7 @@ where
             received_ns: args.clock.now_ns(),
         },
     )?;
-    let mut subscription_acks = 0_usize;
+    let mut subscription_acks = HashSet::<String>::new();
     let mut request_id = 1_u64;
     let mut inflight = InflightBook::new(args.state.clone());
     let mut ping = tokio::time::interval(args.ping_interval);
@@ -500,6 +506,13 @@ where
                             .unwrap_or_default()
                             .to_owned();
                         let received_ns = args.clock.now_ns();
+                        for pointer in ["/data/user", "/data/address"] {
+                            if let Some(address) = root.pointer(pointer).and_then(serde_json::Value::as_str) {
+                                if !address.eq_ignore_ascii_case(args.credentials.account()) {
+                                    bail!("account frame address does not match configured subaccount");
+                                }
+                            }
+                        }
                         match channel.as_str() {
                             "pong" => {
                                 if let Some(sent_ns) = pending_ping_ns.take() {
@@ -511,8 +524,16 @@ where
                                 }
                             }
                             "subscriptionResponse" => {
-                                subscription_acks += 1;
-                                if subscription_acks == ACCOUNT_SUBSCRIPTION_COUNT {
+                                let subscription = root
+                                    .pointer("/data/subscription/type")
+                                    .and_then(serde_json::Value::as_str)
+                                    .or_else(|| {
+                                        root.pointer("/data/type")
+                                            .and_then(serde_json::Value::as_str)
+                                    })
+                                    .context("subscriptionResponse has no subscription type")?;
+                                subscription_acks.insert(subscription.to_owned());
+                                if subscription_acks.len() == ACCOUNT_SUBSCRIPTION_COUNT {
                                     healthy.store(true, Ordering::Release);
                                     deliver_event(&args.events, healthy, SessionEvent::Ready { generation, received_ns })?;
                                 }
@@ -587,6 +608,27 @@ where
                     dequeued_ns,
                 );
                 let purpose = command.action.purpose();
+                let command_age_ms = command_age_ms(dequeued_ns, command.enqueued_ns);
+                if quote_command_is_stale(
+                    purpose,
+                    command_age_ms,
+                    args.config.max_quote_command_age_ms,
+                ) {
+                    let reason = format!(
+                        "stale quote command discarded after {command_age_ms}ms (limit {}ms)",
+                        args.config.max_quote_command_age_ms
+                    );
+                    if let Some(response) = command.response {
+                        let _ = response.send(Err(anyhow::anyhow!(reason)));
+                    } else {
+                        deliver_event(&args.events, healthy, SessionEvent::ActionRefused {
+                            purpose,
+                            reason,
+                            received_ns: args.clock.now_ns(),
+                        })?;
+                    }
+                    continue;
+                }
                 if inflight.entries.len() >= args.config.max_inflight_posts {
                     let reason = "maximum live in-flight posts reached".to_owned();
                     if let Some(response) = command.response {
@@ -703,6 +745,7 @@ where
                     Err(error) => {
                         healthy.store(false, Ordering::Release);
                         warn!(%error, "skipping application ping: WebSocket message budget exhausted");
+                        return Err(error);
                     }
                 }
             }
@@ -754,6 +797,14 @@ where
     }
 }
 
+const fn command_age_ms(dequeued_ns: u64, enqueued_ns: u64) -> u64 {
+    dequeued_ns.saturating_sub(enqueued_ns) / 1_000_000
+}
+
+const fn quote_command_is_stale(purpose: ActionPurpose, age_ms: u64, maximum_age_ms: u64) -> bool {
+    matches!(purpose, ActionPurpose::Order) && age_ms > maximum_age_ms
+}
+
 const fn session_event_kind(event: &SessionEvent) -> &'static str {
     match event {
         SessionEvent::Connected { .. } => "connected",
@@ -786,7 +837,7 @@ fn deliver_event(
                 kind = session_event_kind(&event),
                 "session event channel full; event dropped, session degraded"
             );
-            Ok(())
+            bail!("session event channel full; forcing authoritative reconnect")
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
             bail!("session event consumer stopped")
@@ -1118,6 +1169,23 @@ impl WebSocketRateLimiter {
 mod tests {
     use super::*;
     use crate::hyperliquid::live_state::SessionIntent;
+
+    #[test]
+    fn stale_quotes_are_refused_but_safety_commands_are_never_aged_out() {
+        assert!(quote_command_is_stale(ActionPurpose::Order, 1_001, 1_000));
+        assert!(!quote_command_is_stale(ActionPurpose::Order, 1_000, 1_000));
+        assert!(!quote_command_is_stale(
+            ActionPurpose::ReduceOnly,
+            60_000,
+            1_000
+        ));
+        assert!(!quote_command_is_stale(
+            ActionPurpose::Cancel,
+            60_000,
+            1_000
+        ));
+        assert_eq!(command_age_ms(2_500_000, 1_000_000), 1);
+    }
 
     #[test]
     fn rate_limiter_preserves_safety_reserve() {

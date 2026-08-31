@@ -59,15 +59,11 @@ from param_utils import (
 # 200 ms is short enough to be the arrival jump and long enough to clear the
 # mechanical BBO reaction. The former 5 s default is kept as a diagnostic.
 #
-# The horizon is resolved PER SIDE. That argument for 200 ms assumes continuous
-# requoting; this stack leaves a quote resting for ~30 s, and on CASHCAT the
-# realized 5 s markout on a bid fill is an order of magnitude larger than the
-# 200 ms jump (1.0 bps vs 15.2 bps at the quoted depth). Whether the bid side
-# should price a longer horizon than the ask side is a measurement question, not
-# a taste question, so both sides are independently sweepable and BOTH still
-# default to 200 ms — nothing about the live estimator changes unless a flag or
-# env var is set. Per the standing rule that parameters are always a +/- pair,
-# the per-side flags are the primary interface and the scalar is the shorthand.
+# The horizon is resolved PER SIDE so controlled sweeps can test asymmetric
+# arrival-jump response. Both sides still default to 200 ms; the per-side flags
+# are the primary interface and the scalar flag is only a shorthand that sets
+# both. Longer 1 s and 5 s markouts remain diagnostics of subsequent selection,
+# not replacements for the arrival jump in eq. 10.22.
 DEFAULT_POST_HORIZON_MS = 200
 DIAGNOSTIC_HORIZONS_MS = (1000, 5000)
 POST_HORIZON_ENV_VAR = "EPSILON_POST_HORIZON_MS"
@@ -119,9 +115,8 @@ def resolve_post_horizon_ms_pair(
 
     Precedence per side, most specific first: the per-side CLI flag, the scalar
     CLI flag (the shorthand that sets both), the per-side env var, the scalar env
-    var, then DEFAULT_POST_HORIZON_MS. A side that is never mentioned anywhere
-    stays at 200 ms, so the live estimator — which passes none of these — is
-    bit-identical to before the split.
+    var, then DEFAULT_POST_HORIZON_MS. A side that is never mentioned stays at
+    200 ms, preserving the default calibration semantics.
     """
     env_scalar = os.getenv(POST_HORIZON_ENV_VAR)
     resolved = []
@@ -342,8 +337,8 @@ def build_epsilon_entry(eps_plus: float, eps_minus: float, metadata: dict | None
                         raw_values: dict | None = None) -> dict:
     """The epsilon.json entry for one symbol.
 
-    Split out of save_epsilon_to_json so emit mode can produce the identical
-    entry without writing anywhere near the live snapshot.
+    Split out of save_epsilon_to_json so emit mode can produce an identical
+    entry without modifying the ordinary snapshot.
     """
     metadata = dict(metadata or {})
     status = str(metadata.pop("status", "ok"))
@@ -407,9 +402,8 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
 
     ``emit_params_json`` / ``emit_sink`` switch on emit mode: the computed entry
     goes to the given path (and/or into the given dict) and NOTHING is written to
-    epsilon.json. That is the whole point — a calibration sweep must be able to
-    recompute parameters at arbitrary settings while a live estimator container
-    and a live consumer is using the real snapshot.
+    epsilon.json. This lets a calibration sweep recompute arbitrary settings
+    without changing the inputs of another analysis.
     """
     horizon_plus_ms, horizon_minus_ms = resolve_post_horizon_ms_pair(
         cli_scalar=post_horizon_ms,
@@ -639,8 +633,8 @@ if __name__ == "__main__":
                         help='ISO-8601 (or epoch) end of the window (clamped to the data that exists)')
     parser.add_argument('--emit-params-json', type=str, default=None,
                         help='Write the computed epsilon set to this path and write NOTHING else: '
-                             'epsilon.json is left untouched. Use for calibration sweeps while the '
-                             'live estimator is running. With --crypto ALL the symbol is inserted '
+                             'epsilon.json is left untouched. Use for isolated calibration sweeps. '
+                             'With --crypto ALL the symbol is inserted '
                              'into the filename.')
     parser.add_argument('--data-dir', type=str, default=None,
                         help='Root of the collector output (default: scripts/HL_data). A sweep can '
@@ -663,8 +657,8 @@ if __name__ == "__main__":
 
     if (args.window_start or args.window_end) and not args.emit_params_json:
         # Not forbidden -- someone may legitimately want to backfill a snapshot --
-        # but it is worth one loud line, because writing a historical slice into
-        # epsilon.json hands the live strategy parameters from another hour.
+        # but it is worth one loud line because it replaces the ordinary snapshot
+        # with parameters from a historical slice.
         print("WARNING: --window-start/--window-end without --emit-params-json will OVERWRITE "
               "epsilon.json with parameters fitted on a historical slice.")
 

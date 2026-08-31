@@ -2,7 +2,8 @@
 
 Continuous collection is fundamental: backtests, parameter sweeps, the
 estimators and the replay acceptance gate all read this tape. This page records
-who produces it, why nothing in this repo can disturb it, and how to check it.
+who produces it, why live/grid sessions cannot write it, how `dry-run` fails
+closed around an existing writer, and how to check it.
 
 ## It runs in Docker, and it is not the bot
 
@@ -16,9 +17,11 @@ who produces it, why nothing in this repo can disturb it, and how to check it.
 | restart policy | `unless-stopped` |
 | caps | `cpus: 0.1`, `mem_limit: 1g`, json-file logs rotated at 10 MB × 3 |
 
-The two collectors **must never share a symbol** — both write into the same
-directory, and a symbol listed twice silently doubles `n_trades` and the
-lambda estimates. CASHCAT lives only in `hl-cashcat-collector`.
+The two collectors **must never share a symbol** because both write into the
+same directory. Trade-id de-duplication in the Python and Rust loaders now
+prevents repeated public trades from silently doubling λ, but overlap still
+wastes disk and leaves non-trade streams dependent on timestamp collapsing.
+CASHCAT lives only in `hl-cashcat-collector`.
 
 ## The data is on the host, not inside the container
 
@@ -53,12 +56,12 @@ not restart the proven collectors.
 
 - Its own compose project (`hyperliquid_data`) and its own network
   (`hyperliquid_data_default`).
-- **No `depends_on`**, no Redis, no link to any trading stack. The compose
-  project that once sat beside it (`cartea-jaimungal_market_making_freqtrade`,
-  two freqtrade legs plus a param estimator and Redis) is retired; the trader
-  is now `rust_live/`, which runs as a plain process and owns no compose
-  services here. Nothing anyone does to the trader can touch the collector.
-- Nothing in `rust_live` writes here — see the next section.
+- **No `depends_on`** and no link to the trading runtime. The root compose file
+  runs only the read-only dry-run grid; live/account commands are started
+  explicitly. Neither is part of the collector compose project.
+- `live` and `dry-run-grid` never write Parquet. `dry-run` can be configured as a
+  recorder, but the writer lock and shard preflight prevent it from joining an
+  active collector — see the next section.
 
 ## A live bot cannot disturb collection, by code
 
@@ -84,18 +87,6 @@ mm-live --config rust_live/config/cashcat.toml dry-run --no-write-parquet
 **Common misreading:** `write_parquet = true` also appears in the live configs.
 It is inert there. Do not infer that a live session records market data, and do
 not expect collection to stop when a live session stops.
-
-## Self-healing
-
-Stalls are handled inside the collector rather than by an external watchdog:
-
-- `INACTIVITY_TIMEOUT_SEC=180` — no data for 3 minutes counts as a stall;
-- `MAX_RECONNECT_ATTEMPTS=3` with `RECONNECT_BACKOFF_SEC=5`;
-- on exhaustion the process calls `os._exit(1)`
-  (`hyperliquid_data_collector.py`), and `restart: unless-stopped` starts it
-  again.
-
-That loop is not theoretical — the container reports `RestartCount=1`.
 
 ## Checking it
 
@@ -142,9 +133,9 @@ path has already failed to.
 
 Docker never acts on a failing healthcheck outside Swarm — it only marks the
 container. The `autoheal` service (`willfarrell/autoheal`) does the restarting.
-It is scoped **by label** (`autoheal=true`), not `AUTOHEAL_CONTAINER_LABEL=all`,
-so it can only ever touch the two collectors and never the trading stack or any
-other project sharing this daemon.
+It is scoped **by label** (`autoheal=true`), not
+`AUTOHEAL_CONTAINER_LABEL=all`. The two collectors and the root dry-run-grid
+container deliberately opt in; unlabelled services sharing the daemon do not.
 
 ### Verified, not assumed
 

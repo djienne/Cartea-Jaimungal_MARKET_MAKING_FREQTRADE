@@ -5,12 +5,10 @@ A market maker implementing the Cartea–Jaimungal–Penalva model (Chapter 10 o
 estimation, as a **standalone Rust runtime** plus a Python replay and
 calibration toolchain. **Works ONLY for Hyperliquid.**
 
-> **The Freqtrade implementation is retired.** This project began as a Freqtrade
-> strategy; that trader — two cooperating legs, a parameter-estimator sidecar and
-> a Redis snapshot bus — was removed on 2026-08-25 and is recoverable in full at
-> the tag **`freqtrade-trader-final`**. What replaced it is `rust_live/`. The
-> Python here is now replay, sweeps, estimators and the data collector: the
-> measurement half of the project, not the trading half.
+> **The former Freqtrade trader is retired.** It was removed on 2026-08-25 and
+> remains available at tag `freqtrade-trader-final`. The current trader is
+> `rust_live/`; Python is retained for collection, estimation, replay, and
+> independent numerical comparison.
 
 <p align="center">
   <a href="docs/spread_calculation.pdf">
@@ -36,7 +34,7 @@ method, not a competitive trading strategy. It is not expected to be profitable
 as deployed, and measurement says it is not.**
 
 **The cadence constraint is gone; the economics did not follow.** The retired
-Freqtrade loop requoted at a measured p50 of 5.5 s — three to five orders of
+Python loop requoted at a measured p50 of 5.5 s — three to five orders of
 magnitude slower than the venue moves — and that was the headline objection to
 this stack for most of its life. `rust_live/` removed it: the hot decision path
 measures **p99 = 0.02 ms**, against 150 ms of *simulated* latency in replay, so
@@ -46,21 +44,31 @@ losing to. Adverse selection was, and still is: measured, it roughly **doubles**
 between a 200 ms and a 5 s markout (ε went 1.98→3.98 bps on the ask, 3.53→6.14
 bps on the bid).
 
-**What the live grid says now.** An 18-variant dry-run grid runs continuously
-against one shared feed (`docs/DRY_RUN_GRID.md`). Its one stable result across
-every checkpoint of a nine-hour run: **every rung at or below 8 bps half-spread
-loses, and every rung at or above 16 bps is positive.** Fill count runs cleanly
-inverse to P&L — the winner takes a few hundred fills, the worst take two to
-three thousand. The finer ordering among the wide rungs is *not* established and
-reversed three times inside a single run; that file carries the whole series so
-the next reader does not extract a ranking from one timestamp.
+**What the live grid has established.** An 18-variant dry-run grid runs against
+one shared feed (`docs/DRY_RUN_GRID.md`). Two independent day-length runs agreed
+that the 1.5/4/8 bps half-spread rungs lost while the 24/40/48/60 bps rungs were
+positive; the 16 bps rung was approximately flat in the longer run. Fill count
+ran inversely to P&L in both runs. The ordering among 40/48/60 bps reversed
+between runs, so no winning wide rung is established. A later 46.4-hour artifact
+is explicitly void after a 19.65-hour feed blackout and is not evidence.
 
-**The loss is one window, not a steady bleed.** The current evidence is a
-staged parameter sweep on a pinned **161.95 h** CASHCAT tape (918,417 price
-rows, 417,923 trades, 0.7 train/held-out split) — `docs/cashcat_sweep.md`. It
-replaces a 95.23 h run whose headline conclusions did **not** survive the extra
-70% of tape; that earlier artifact is kept as
-`docs/cashcat_sweep_20260820_95h.*` for comparison.
+**The loss is one window, not a steady bleed.** The evidence below is a staged
+parameter sweep on a pinned **161.95 h** CASHCAT tape (918,417 price rows,
+417,923 trades, 0.7 train/held-out split) — `docs/cashcat_sweep.md`. It replaces
+a 95.23 h run whose headline conclusions did **not** survive the extra 70% of
+tape; that earlier artifact is kept as `docs/cashcat_sweep_20260820_95h.*` for
+comparison.
+
+> **Read `docs/cashcat_sweep.md` with two caveats, both in its own header.** Its
+> Stage A/B *selection* scored ~3.2 h of a ~113 h train slice
+> (`--search-max-price-events 25000`) on a cost estimate that was stale by ~40× —
+> so the winning configuration was picked using 2.8% of its training data. The
+> held-out Stage C numbers are full-tape and unaffected. The truncation default
+> is now 0 (full slice; the real cost is ~30 min at four workers), and every
+> artifact records the value. Since 2026-08-30 the **period archive**
+> (`docs/history/`) attempts a full-search sweep every 21 days and writes the
+> result for manual commit before the 30-day tape deletes the window — see
+> [`docs/DRY_RUN_GRID.md`](docs/DRY_RUN_GRID.md#the-period-archive--what-outlives-the-tape).
 
 - **One six-hour window is the entire result.** The winner scores −205.89 USDC
   across 27 windows, but the window at `08-22 03:57` alone is **−241.17** on
@@ -86,7 +94,7 @@ toxic-flow guard built against it — a fast mid-move breaker plus VPIN — whic
 a frozen replay of the cascade cut the loss 74% (−87.95 → −23.13, re-baselined
 in `docs/FLOW_GUARD_CANDIDATES.md`) and bounded ending inventory, while being
 bit-identical on a calm control window. It does not predict the crash; it
-bounds how much of one gets ridden down, and both legs still lose money. Four
+bounds how much of one gets ridden down, and both A/B variants still lose money. Four
 candidate improvements to the guard were then studied on 165 h of frozen tape
 (`docs/FLOW_GUARD_CANDIDATES.md`): all four rejected or deferred — including
 the counter-intuitive result that a spread gate firing 46 minutes *earlier*
@@ -96,33 +104,34 @@ instead of de-risking it.
 The practical reading: a short tape can invert this conclusion, so every sweep
 must run on the maximum tape available (`docs/DATA_COLLECTION.md` covers how the
 tape is produced and how far back it goes).
+
 - **Performance is unstable across time.** Only 5/16 held-out windows are
   positive. The same selected configuration ranges from +7.63 to −13.55 USDC
   over six-hour windows despite 1,135 held-out maker fills in aggregate.
-- Stage A, which holds the risk knobs at the strategy default
+- Stage A, which held the risk knobs at the historical Python replay default
   `hjb_phi_kappa_t = 10`, loses on **all 81 calibrations**, on every tape measured.
 
 `docs/replay_acceptance_report.*` is an older 24-minute fail-closed gate smoke
 with `ok=false`; it is retained as evidence but must not be mistaken for the
-95-hour staged sweep above.
+multi-day staged sweeps.
 
-**Real money has since been risked, twice.** `docs/live_canary_20260823.md`
-records two mainnet CASHCAT sessions at minimum size: what they cost, the three
-production defects they surfaced, and why the venue's **address-action budget**
-— a lifetime account allowance of `10,000 + 1 per USDC traded` that never
-resets — is the constraint that actually binds this strategy, ahead of the
-WebSocket message rate the configuration validates against.
+**On 2026-08-23, two minimum-size mainnet sessions were run.**
+`docs/live_canary_20260823.md` records what they cost, the three defects they
+surfaced, and the venue-reported **address-action budget**—a cumulative lifetime
+allowance observed as `10,000 + 1 per USDC traded`. It bound before the
+configured WebSocket message-rate limit in that campaign.
 
 `docs/latency_hysteresis_sweep.md` crosses simulated latency (50/100/200/500 ms)
 with the requote hold window on one frozen two-hour window. It resolves the
-**address-action cost** cleanly — `bps = 4` buys ~2.2x the runtime per unit of
-venue allowance that the shipped `bps = 2` does — but it is explicit that a
-two-hour window at ~50 fills **cannot** resolve latency economics, and that the
-95-hour ladder above remains the evidence for those.
+**address-action cost** cleanly — `bps = 4` used about 2.2x fewer actions per fill
+than `bps = 2` — but cannot resolve latency economics at roughly 50 fills. The
+later 162-hour sweep reversed the earlier 95-hour latency ordering while also
+coupling latency to refresh cadence, so no isolated causal latency ranking is
+established.
 
-Market data is produced by a Docker container, not by this repo; see
-`docs/DATA_COLLECTION.md` for who owns the tape, why no live session can
-disturb it, and how to check that it is still running.
+Market data is produced by Docker containers operated from a separate compose
+project; their source lives under `scripts/`. See `docs/DATA_COLLECTION.md` for
+who owns the tape, why live/grid sessions cannot write it, and how to check it.
 
 Shorter tapes read positive out of sample — +1.18 on 24.8 h, +1.56 on 31.23 h
 (`docs/cashcat_sweep_phitail.md`), +1.37 on 44.97 h — while both the 60.32 h and
@@ -131,12 +140,12 @@ so nothing here supports a claim of calibration stability. The later Rust
 direct-window replay independently lost 17.43 USDC over 112 fills and showed
 positive 100 ms markout turning sharply negative by 1–30 seconds.
 
-**If you intend to trade this seriously you need a co-located VPS** — an AWS
-instance in the region nearest the exchange (Tokyo is the usual choice for
-Hyperliquid), on a low-latency link, with the quoting loop rewritten to requote
-in milliseconds rather than on a candle cadence. **And even that may not be
-enough.** Competitive market making on a 20 bps spread is a latency race against
-firms with dedicated infrastructure; nothing here has been shown to win it.
+**Serious live use requires a host whose measured network latency passes the
+configured production gate.** This development machine does not. The Rust quote
+loop is already event-driven and its compute cost is negligible beside the
+network, but the replay evidence does not show that lower latency alone creates
+an edge: the longer tape made faster-refresh scenarios worse during the dominant
+flow burst. Nothing here has been shown to trade profitably in production.
 
 Use this to understand and verify the model. Treat any profit as unproven.
 
@@ -264,10 +273,12 @@ Half-Spread = 1/κ        + ε          + skew(Q)
 ```
 
 Where:
-- `κ±`: Order book depth sensitivity (higher = thinner book)  
+- `κ±`: fill-depth decay rate (higher means fill probability falls faster with
+  distance; interpreting it as literal book thickness is only a heuristic)
 - `ε±`: Permanent price impact from informed trading
 - `h(t,q)`: Value function encoding inventory risk preference
-- `fees`: Exchange maker fees (0.015% for Hyperliquid)
+- `fees`: maker fee loaded from the live account; replay defaults to the
+  0.015% rate measured for the CASHCAT account on 2026-08-23
 
 ### Objective Function and Solution Method
 
@@ -289,25 +300,25 @@ Where:
 **Reading the control back out.** The solution is `δ*(t,q)`, a *surface*, and
 both coordinates are read as such:
 
-- **Time.** The solver keeps every backward step, and each quote uses the slice
-  at the episode's actual time-to-go (`hjb_time_mode = "episodic"`). A perpetual
-  instrument has no terminal time, so episodes run for `T` and restart — at the
-  horizon, or once inventory is genuinely flat. Setting `"stationary"` reverts to
-  reading only the `t=0` slice, which is what this project did until now and
-  which leaves `α` inert.
+- **Time.** The Rust solver keeps every backward step, and each quote uses the
+  episode's actual time-to-go. A perpetual instrument has no terminal time, so
+  episodes run for `T` and restart at the horizon or once inventory is genuinely
+  flat. Python names this `hjb_time_mode = "episodic"`; its `"stationary"` option
+  is retained only for comparisons and reads `t=0`, making `α` nearly inert.
   - **Departure:** the book liquidates the residual at `T` at market and pays
     `α q²`. Every quote here is post-only by construction, so the terminal
     condition acts through the depths alone — it cannot force a taker unwind.
-  - At our calibration the terminal effect runs *opposite* to the textbook
-    picture: the shipped `φκT = 200` against `ακ = 0.05`, so the running penalty
+  - At our calibration the terminal effect runs opposite to the naive
+    "flatten harder near T" picture: the shipped `φκT = 200` against `ακ = 0.05`, so the running penalty
     — which is what remains to be paid over the time left, hence largest at `t=0`
     and gone at `T` — dominates, and the agent unwinds hardest at the *start* of
-    an episode. See `docs/UNITS.md`.
+    an episode. This matches the book's running-penalty-dominated example; see
+    `docs/UNITS.md`.
 - **Inventory.** Eq. 10.2 makes `q` a unit-jump count, so `h` exists only at
   integer `q` — but partial fills land in between. Depths are blended linearly
-  between the bracketing integers (exact at every integer), and the leftover
-  `q_residual` is logged on every quote and fill so unmodelled risk is visible
-  rather than rounded away.
+  between the bracketing integers (exact at every integer). Quote diagnostics
+  record `q_exact` and `q_rounded`; Python replay also reports the residual
+  summary so fractional risk is visible rather than rounded away.
 
 ### Parameter Estimation and Calibration
 
@@ -322,9 +333,11 @@ both coordinates are read as such:
 - Critical parameter: controls base spread width
 
 **Epsilon (ε±) - Adverse Selection Cost:**
-- Estimated from permanent price impact distribution
-- Often follows Pareto distribution: `ε ~ Pareto(α, scale)`
-- **Key insight**: if `κ × ε ≥ 1.5`, market becomes unprofitable due to toxicity
+- Estimated as the mean arrival jump at a 200 ms horizon, after bad-tick clipping
+- Floored at zero because the model assumes `ε ≥ 0`; 1 s and 5 s values are
+  diagnostics rather than model inputs
+- `κ × ε` is a dimensionless calibration diagnostic. The configured 1.5 ceiling
+  is a fail-closed operating rule, not a profitability theorem.
 
 ### Market Regimes and Profitability
 
@@ -341,7 +354,7 @@ for months on ETH:
 | Round trip at the touch earns | 0.53 bps |
 | Two maker fees cost | **3.00 bps** |
 | Net per round trip | **−2.47 bps** |
-| `κ × ε` verdict | 0.02 — "low toxicity, potentially profitable" |
+| `κ × ε` diagnostic | 0.02 — low relative arrival impact, but no fee information |
 
 Every quote was floor-clamped at `min_half_spread_bps` and sat ~11× past the
 depth 95% of market orders ever reach, and the replay recorded **no maker fills
@@ -365,28 +378,35 @@ pnl(δ)    = volume(δ) · edge(δ)
 ```
 
 maximised over every observed depth, on both sides, summing the losing side too.
-A screen of all 60 Hyperliquid perps above $0.5M daily volume found **28 pinned
+The dated 2026-08-17 screen recorded in `docs/market_viability_report.json` found
+**28 of 60 screened Hyperliquid perps above $0.5M daily volume pinned
 at exactly one tick like ETH** — a maker cannot even improve the quote there —
 and only 9 that clear the 3 bps round-trip fee *and* are wider than one tick.
 
 **Necessary condition, in plain terms:** the quoted spread must exceed
-`2 × maker_fee + adverse selection`. On Hyperliquid's 1.5 bps base maker tier
-that means a spread wider than ~3 bps before any edge exists at all.
+`2 × maker_fee + adverse selection`. At the 1.5 bps per-side fee measured for
+this account, that means a spread wider than ~3 bps before adverse selection is
+even considered.
 
-**Then, and only then, the toxicity thresholds apply:**
-- `κ × ε < 1`: Low toxicity, potentially profitable with good latency
-- `1 ≤ κ × ε ≤ 2`: Competitive but manageable with superior models
-- `κ × ε ≥ 2`: Highly toxic market, avoid unless exceptional edge
+**For calibration monitoring, the operating bands are:**
+- `κ × ε < 1`: below the caution band
+- `1 ≤ κ × ε < 1.5`: caution band; inspect fit stability and empirical markouts
+- `κ × ε ≥ 1.5`: rejected by the shipped fail-closed calibration rule
+
+These bands are not economic verdicts; the empirical viability curve and replay
+carry that burden.
 
 **Other conditions:**
 - **High λ**: Many market orders → frequent spread capture
-- **Low κ**: Deep order book → ability to charge wider spreads
+- **Low κ**: heavier tail of market-order walk depths → fills remain possible
+  farther from the mid
 - **Low ε**: Limited informed trading → minimal adverse selection
 
 ## Setup
 
-**Prerequisites:** Rust (stable), Python 3.10+, Docker (for the collectors only),
-and Hyperliquid API credentials if and only if you intend to trade live.
+**Prerequisites:** the Rust 1.92 toolchain pinned by
+`rust_live/rust-toolchain.toml`, Python 3.10+, Docker for the dry-run grid and
+collectors, and Hyperliquid API credentials only for live/account commands.
 
 ```bash
 pip install -r scripts/requirements.txt
@@ -447,17 +467,18 @@ zstd-compressed (~16×); `scripts/compress_reports.py` migrates older plain ones
 ### Tests
 
 ```bash
-python -m pytest -q                        # 350 tests: replay, estimators, quoting core
-cd rust_live && cargo test --workspace     # 174 tests
+python -m pytest -q
+cd rust_live && cargo test --workspace
 ```
 
 ## Risk management
 
 Enforced in the Rust runtime, not in a strategy config:
 
-- **Inventory cap.** `q_max` bounds signed inventory in both directions, and it
-  binds — the replay's widest rung ended 130% of equity short precisely because
-  nothing capped it there.
+- **Inventory cap.** `q_max` bounds signed inventory in both directions in the
+  current runtime. The historical 185-hour spread replay did not enforce the
+  prospective cap and ended with a directional position worth 130% of equity;
+  that result is therefore not evidence of a deployable market-making book.
 - **Liquidation buffer.** A run that breaches it aborts rather than quoting on.
 - **Toxic-flow guard.** A fast adverse mid-move breaker plus VPIN withdraws
   quoting. `docs/TOXIC_FLOW_GUARD.md` for what it does;
@@ -467,10 +488,10 @@ Enforced in the Rust runtime, not in a strategy config:
 - **Feed validity.** Gaps, downtime fraction and trade lag are measured; a run
   exceeding the thresholds is marked scientifically invalid rather than silently
   trusted.
-- **Address-action budget.** Hyperliquid allows `10,000 + 1 per USDC traded`
-  actions per address, *for the lifetime of the account*, and it never resets.
-  This binds well before any message-rate limit — see
-  `docs/live_canary_20260823.md`.
+- **Address-action budget.** The 2026-08-23 mainnet canary observed the venue's
+  cumulative address allowance as `10,000 + 1 per USDC traded`; it bound well
+  before the configured message-rate limit. Recheck the venue documentation
+  before live use; see `docs/live_canary_20260823.md` for the dated evidence.
 
 ## Disclaimer
 

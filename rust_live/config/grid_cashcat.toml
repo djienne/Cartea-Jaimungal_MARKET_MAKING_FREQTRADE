@@ -10,12 +10,10 @@
 # allows ten per IP and that budget is shared with the collector containers and
 # any live session (docs/DATA_COLLECTION.md).
 #
-# WHY THESE LEVERS. Two sources of evidence, and they disagree in one place.
-#
-# The 161.95 h staged sweep (docs/cashcat_sweep.md) localised the entire loss to
-# one six-hour burst: 26 of 27 windows sum to +35.28, and `08-22 03:57` alone is
-# -241.17 on 1,771 fills. Its latency ladder is the single most important table
-# in the project -- exactly one rung is profitable:
+# WHY THESE LEVERS. The 161.95 h staged replay (docs/cashcat_sweep.md)
+# localised the entire loss to one six-hour burst: 26 of 27 windows sum to
+# +35.28, and `08-22 03:57` alone is -241.17 on 1,771 fills. Its coupled
+# latency/refresh scenarios were:
 #
 #     colocated   50 ms /   100 ms refresh   -418.11
 #     good       100 ms /   250 ms refresh   -279.11
@@ -23,10 +21,12 @@
 #     this_stack 500 ms /  1000 ms refresh   -398.20
 #     reality    500 ms / 30000 ms refresh     +9.36   <-- the only one
 #
-# Refresh cadence swings P&L by 407 USDC at constant latency, more than any
-# other lever measured anywhere. Hence slow30s and wide8slow30s.
+# That historical replay motivated testing cadence, but later live grid runs
+# made the slow variants the worst rows and the post-fix 185 h replay showed
+# cadence interacts non-monotonically with width. The surviving cadence rows
+# are controls, not assumed improvements.
 #
-# The first 20 h live grid then added two findings of its own:
+# An earlier 20 h live grid added two findings of its own:
 #
 #   * min_half_spread_bps is strictly monotone and had not turned: baseline
 #     (1.5 bps) -34.06, wide4 -26.99, wide8 -20.00, with max_half_spread_bps
@@ -48,6 +48,7 @@ name = "baseline"
 [[variant]]
 name = "q3"
 q_max = 3
+reduce_only_threshold_q = 2.0
 
 [[variant]]
 name = "wide4"
@@ -82,9 +83,6 @@ min_half_spread_bps = 16.0
 name = "wide24"
 min_half_spread_bps = 24.0
 
-# The replay's only profitable configuration, never yet run live. 30 s is 6x
-# slower than slow5s and 300x slower than the 100 ms base.
-
 # --- combined corner ---
 # RETIRED HYPOTHESIS. `wide8slow30s` looked like the likeliest profitable
 # configuration while min_order_lifetime_ms was inert in the simulator. Once
@@ -109,9 +107,9 @@ flow_guard_enabled = true
 name = "unguarded"
 flow_guard_enabled = false
 
-# --- cadence ladder, filled in ---
-# 5s and 30s left a 6x gap, and nothing tests whether the benefit continues
-# past the replay's 30s rung or turns over.
+# --- cadence ladder ---
+# Retained as a negative/control axis after completed runs showed slow cadence
+# underperforming the baseline; see docs/DRY_RUN_GRID.md.
 [[variant]]
 name = "slow15s"
 min_order_lifetime_ms = 15000
@@ -125,8 +123,9 @@ name = "wide40"
 min_half_spread_bps = 40.0
 
 # --- spread x cadence matrix ---
-# wide8slow30s is the single best guess; these say whether the two levers keep
-# composing as each is pushed, or whether one saturates the other.
+# The 8 bps / 30 s corner was retired after a liquidation-buffer breach. These
+# remaining middle-width pairs measure the non-monotone interaction rather than
+# assuming cadence and width compose.
 [[variant]]
 name = "wide16slow30s"
 min_half_spread_bps = 16.0
@@ -138,11 +137,10 @@ min_half_spread_bps = 24.0
 min_order_lifetime_ms = 30000
 
 
-# --- q_max UPWARD: the direction live evidence actually points ---
-# Everything so far tested q_max downward from the base 6 and it got steadily
-# worse: q6 -34.06, q3 -78.36, q2 -141.25. The live gradient points UP and has
-# never been followed. A larger cap means a finer per-bucket notional, so the
-# quotes get smaller and more granular -- the opposite of q2's problem.
+# --- q_max upward ---
+# Added after downward tests worsened (q6 -34.06, q3 -78.36, q2 -141.25).
+# A larger cap means a finer per-bucket notional, so quotes are smaller and more
+# granular. Treat q9/q12 as tests of that mechanism, not as presumed winners.
 [[variant]]
 name = "q9"
 q_max = 9
@@ -152,19 +150,19 @@ name = "q12"
 q_max = 12
 
 
-# --- the rung the replay actually liked, which the live grid never carried ---
-# The 185 h replay's best rung post-fix was 60 bps (+33.11), and 40 bps
-# (+21.02) was second; the live ladder stopped at 40, so the winner was never
-# out-of-sample tested. Measured on the 3.01 h grid tape, per *quoted side*
+# --- outer spread rungs ---
+# The 185 h replay's best post-fix rungs were 60 bps (+33.11) and 40 bps
+# (+21.02). Two later day-length live-grid runs kept 40/48/60 positive but
+# reversed their ordering; no winning outer rung is established. Measured on
+# the 3.01 h grid tape, per *quoted side*
 # (not the bid/ask average -- CJ skews hard under inventory, and the floor
 # binds on the inside side): 40 bps binds on 45.9% of sides, 48 on 74.9%, 60 on
 # 94.9%. So wide60 is close to a constant-60 quoter and wide48 fills the gap
 # where the floor goes from occasional to dominant.
 #
-# These also answer the open question from spread_ladder_185h.md: the replay's
-# spread60 ended short 2,440 units (130% of equity) because nothing capped
-# inventory. Here q_max = 6 binds, so this says whether the edge survives a
-# cap that actually holds.
+# The replay's spread60 ended short 2,440 units (130% of equity) because its
+# prospective inventory cap did not bind. Here q_max = 6 does bind, but completed
+# runs still ended with material directional inventory; see docs/DRY_RUN_GRID.md.
 [[variant]]
 name = "wide48"
 min_half_spread_bps = 48.0

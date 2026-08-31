@@ -7,24 +7,24 @@ move through them, and quotes at touch need observed traded volume before fill.
 
 Four things a reader of any artifact this harness produces has to know:
 
-- **The solve is the live solve.** ``solve_replay_hjb`` routes through
+- **The solve is the Python parity solve.** ``solve_replay_hjb`` routes through
   ``mm_core.solve_hjb``, which derives phi and alpha from the DIMENSIONLESS
-  targets ``hjb_phi_kappa_t`` / ``hjb_alpha_kappa`` and live kappa. Sweeping the
+  targets ``hjb_phi_kappa_t`` / ``hjb_alpha_kappa`` and the fitted kappa. Sweeping the
   raw phi/alpha means nothing across symbols (eq. 10.28: they are not
-  kappa-invariant), and a replay that solved them differently from the strategy
-  would be scoring a model nobody runs.
+  kappa-invariant). Rust implements the corresponding solve independently and
+  parity tests compare selected surfaces and quotes.
 - **Latency is a headline axis, not a sensitivity.** A quote decided at a book
   event only rests ``decision_latency_ms + order_ack_latency_ms`` later and stays
-  cancellable for ``cancel_latency_ms`` after it goes stale. The shipped default
-  is 250 + 250 = 500 ms total, which is the SLOW end of what this stack can
-  reach; it is the default only so every artifact recorded before 2026-08-17
-  still reproduces. State the latency of a run, never assume it.
+  cancellable for ``cancel_latency_ms`` after it goes stale. The 250 + 250 ms
+  default is retained to reproduce early artifacts; it is not the current Rust
+  dry-run profile. State the latency of a run, never infer it from defaults.
 - **Staleness is set by the slower of two channels**: order latency and
   ``quote_refresh_interval_ms``. At the 1 s refresh default, dropping latency
   500 -> 50 ms only moves total staleness from ~1.5 s to ~1.05 s, so a
   latency-only sweep reads nearly flat and invites the wrong conclusion. Sweep
-  them together as coherent machines (a stack that acks in 50 ms also re-quotes
-  faster) and vary latency alone only to isolate the effect on the record.
+  them together only as explicitly labelled joint scenarios, and vary latency
+  alone when the goal is to isolate latency. A joint scenario is not causal
+  evidence for either component.
 - **The clock is the exchange's**, not the collector's receive clock; see
   :func:`apply_event_clock`. And a tape can only resolve latency down to its own
   inter-update cadence -- ``price_event_cadence_ms`` in the metrics reports it,
@@ -84,17 +84,16 @@ class ReplayConfig:
     # Latency, in three parts, all sweepable from the CLI. decision+ack is when
     # the quote starts resting; cancel is how long it keeps resting after it
     # should have been pulled. The 250+250 = 500 ms default is deliberately the
-    # SLOW end -- it is what every artifact in docs/ was measured at, so it stays
-    # the default for reproducibility rather than because it is good. 50 ms total
-    # is the target a colocated stack would hit.
+    # historical end -- early artifacts used it, so it stays the default for
+    # reproducibility rather than as a current performance claim.
     decision_latency_ms: int = 250
     order_ack_latency_ms: int = 250
     cancel_latency_ms: int = 250
     # The OTHER staleness channel, and usually the dominant one: at 1000 ms the
     # quote is re-priced once a second no matter how fast the exchange acks. A
     # latency sweep at a fixed refresh interval measures mostly the interval.
-    # Live median requote cadence on this stack is ~30 s, so 1 s is already 30x
-    # optimistic.
+    # The current Rust runtime is event-driven; this interval is a replay-model
+    # parameter retained for historical scenario reproduction.
     quote_refresh_interval_ms: int = 1000
     maker_fee: float = MAKER_FEE
     taker_fee: float = TAKER_FEE
@@ -2127,10 +2126,10 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "TOTAL order latency, split evenly across decision and ack (odd values give the "
-            "extra millisecond to decision). 50 is a colocated stack, 500 is this one. "
-            "Sweep it together with --quote-refresh-interval-ms: at a fixed 1 s refresh the "
-            "refresh interval, not the latency, sets most of the staleness."
+            "TOTAL simulated order latency, split evenly across decision and ack (odd values "
+            "give the extra millisecond to decision). Scenario labels such as 50 and 500 ms "
+            "are hypotheses, not measurements of the current host. At a fixed 1 s refresh, "
+            "the refresh interval sets most of the staleness."
         ),
     )
     parser.add_argument(

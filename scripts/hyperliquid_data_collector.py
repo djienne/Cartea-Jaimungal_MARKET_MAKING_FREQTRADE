@@ -156,10 +156,9 @@ class HyperliquidDataCollector:
         except ValueError:
             self.ws_health_grace_sec = 20.0
         self._last_connect_time = time.time()
-        # Flush cadence. The market-making strategy rejects collector data older
-        # than max_collector_age_seconds (30s by default), so the flush interval
-        # must stay comfortably below that window or quotes get rejected as
-        # stale_collector_data. Default to 10s; override with FLUSH_INTERVAL_SEC.
+        # Flush cadence. Keep shards comfortably fresher than the Rust
+        # calibration profiles' 120 s maximum data age. Default to 10 s;
+        # override with FLUSH_INTERVAL_SEC.
         try:
             self.flush_interval_sec = float(os.getenv("FLUSH_INTERVAL_SEC", "10"))
         except ValueError:

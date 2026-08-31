@@ -175,7 +175,16 @@ pub struct DryRunConfig {
     pub decision_latency_ms: u64,
     pub acknowledgement_latency_ms: u64,
     pub cancel_latency_ms: u64,
+    /// Deterministic empirical tail applied every `tail_latency_every` exchange
+    /// seconds. CASHCAT measurements put p95 near 2.35x the median.
+    pub tail_latency_multiplier: f64,
+    pub tail_latency_every: u64,
     pub queue_decay_per_second: f64,
+    /// Taker fee used when comparing variants after conservatively flattening
+    /// their residual inventory at the executable side of the book.
+    pub promotion_flatten_fee_rate: f64,
+    /// Additional adverse price movement charged to the virtual flatten.
+    pub promotion_flatten_slippage_bps: f64,
     pub funding_rate_per_hour: f64,
     pub markout_horizons_ms: Vec<u64>,
 }
@@ -187,7 +196,13 @@ impl Default for DryRunConfig {
             decision_latency_ms: 250,
             acknowledgement_latency_ms: 250,
             cancel_latency_ms: 250,
-            queue_decay_per_second: 0.05,
+            tail_latency_multiplier: 2.35,
+            tail_latency_every: 20,
+            // Hyperliquid exposes only aggregate depth, not order identities.
+            // Time alone is therefore not evidence that queue ahead vanished.
+            queue_decay_per_second: 0.0,
+            promotion_flatten_fee_rate: 0.00035,
+            promotion_flatten_slippage_bps: 25.0,
             funding_rate_per_hour: 0.0,
             markout_horizons_ms: vec![100, 1_000, 5_000, 30_000],
         }
@@ -251,16 +266,17 @@ pub struct FlowGuardConfig {
     /// Trailing window for the fast breaker.
     pub fast_move_window_ms: u64,
     /// Adverse mid move within that window that trips the breaker, in bps.
-    /// 800 (8%) was the tightest threshold with zero false positives over
-    /// 6.8 days of CASHCAT; 5% produced four.
+    /// 800 (8%) was selected as the tightest threshold with zero false positives
+    /// on 6.8 days and re-verified with zero outside-cascade breaches over
+    /// 165.11 h; 5% produced four on the selection tape.
     pub fast_move_threshold_bps: f64,
     /// Volume buckets per day, which sets bucket size from observed volume.
     /// 50 is the VPIN literature default and the reference implementation's.
     pub vpin_buckets_per_day: u32,
     /// Rolling bucket count in the VPIN numerator.
     pub vpin_window_buckets: u32,
-    /// VPIN level treated as toxic. The 6.8-day maximum outside the cascade was
-    /// 0.362, and the cascade peaked at 0.663.
+    /// VPIN level treated as toxic. Re-verification over 165.11 h measured a
+    /// 0.371 maximum outside the cascade and a 0.663 cascade peak.
     pub vpin_threshold: f64,
     /// Minimum time quoting stays withdrawn after a trip. Re-entry additionally
     /// requires VPIN to have fallen back under `vpin_threshold`, so this is a

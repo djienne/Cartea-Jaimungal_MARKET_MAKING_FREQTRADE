@@ -62,8 +62,8 @@ Two degradation paths were exercised for real and both behaved:
 
 ## Why it stopped: the address-action budget
 
-Not a bot fault and not a per-run limit. The venue allowance is cumulative for
-the life of the account and never resets:
+Not a bot fault and not a per-run limit. During this 2026-08-23 campaign the
+venue reported a cumulative lifetime allowance:
 
 ```
 cap        = 10,000 + 1 per USDC of cumulative volume = 13,060
@@ -87,6 +87,6 @@ fill per 5.5 requotes; this run managed one per 350. See the action-cost
 section added to `requote_hysteresis_sweep.md` — the shipped
 `replace_threshold_bps = 2.0` costs 220 actions per fill, and `4.0` costs 120.
 
-Further live validation on this account is blocked: 115 requests remain and the
-only way to earn more is volume, which itself costs requests. A fresh
-subaccount or testnet is required.
+At the end of this campaign, further live validation on the account was blocked:
+115 requests remained and earning more required volume that itself consumed
+requests. A fresh subaccount or testnet was required for additional tests.

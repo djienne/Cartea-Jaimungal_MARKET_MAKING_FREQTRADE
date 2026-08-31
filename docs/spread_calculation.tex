@@ -28,7 +28,7 @@
 \usepackage{enumitem}
 \usepackage{multicol}
 \setcounter{tocdepth}{2}
-\usepackage[colorlinks=true,linkcolor=NavyLink,urlcolor=NavyLink,citecolor=NavyLink]{hyperref}
+\usepackage[hypertexnames=false,colorlinks=true,linkcolor=NavyLink,urlcolor=NavyLink,citecolor=NavyLink]{hyperref}
 
 \tcbuselibrary{skins,breakable}
 \pgfplotsset{compat=1.18}
@@ -78,7 +78,7 @@
 \newtcolorbox{departure}[2][]{colback=BoxDeparture!5,colframe=BoxDeparture,
   fonttitle=\bfseries,title={#2},breakable,#1}
 
-% "The book says X; here is the Python that does X" -- the spine of this
+% "The book says X; here is the executable Python reference" -- the spine of this
 % document. Upper half is the book, lower half is the implementation.
 \newtcolorbox{booktocode}[2][]{colback=NavyLink!3,colframe=NavyLink,
   fonttitle=\bfseries,title={The book: #2},breakable,#1}
@@ -143,8 +143,8 @@ Cartea--Jaimungal market maker\par}
 \emph{Algorithmic and High-Frequency Trading}, \S10.4.1\par}
 
 \vspace{0.7cm}
-{\large as implemented in\\[0.2cm]
-\texttt{Cartea-Jaimungal\_MARKET\_MAKING\_FREQTRADE}\par}
+{\large as implemented by the standalone Rust runtime\\[0.2cm]
+and its Python replay/reference path\par}
 
 \vfill
 {\small Every code listing in this document is checked against the repository
@@ -249,15 +249,13 @@ long or short, can be traded with leverage, and --- unlike a normal future ---
 the model in \S\ref{sec:model} has a deadline $T$ and our instrument does not.
 \S\ref{sec:reading} has to decide what to do about that.
 
-One fact about the deployment is needed early, because it leaks into the code
-later. The strategy runs inside \textbf{Freqtrade}, an open-source trading
-framework whose vocabulary is ``entry'' (opening a position) and ``exit''
-(closing one) rather than ``bid'' and ``ask''. Freqtrade rests at most one order
-per pair, so the two-sided quote this document describes is not posted by one
-process: two instances run on separate sub-accounts --- a long \textbf{leg} and a
-short leg --- sharing one net inventory over Redis. Every ``we post a bid and an
-ask'' below is really ``the two legs between them post a bid and an ask''.
-\S\ref{sec:departures} says what that approximation costs.
+One fact about the implementation is needed early. The current trader is the
+standalone Rust runtime in \code{rust\_live/}: one process holds a signed
+inventory and computes both sides from one market snapshot. The Python listings
+below are the executable replay/reference path because they are compact enough
+to explain line by line. They are not the live executable; Rust implements the
+same model independently, and \code{rust\_live/tests/python\_parity.rs} checks
+selected calibration, HJB, and rounded-quote outputs against the Python path.
 
 \subsection{The answer, in one line}
 
@@ -326,7 +324,7 @@ Every implementation section below follows the same shape:
 \fbox{\parbox{0.86\textwidth}{\centering
 \textbf{This is what the book says} (equation, with its number)\\[3pt]
 $\downarrow$\\[3pt]
-\textbf{This is the Python that does it} (the actual file, quoted verbatim)\\[3pt]
+\textbf{This is the executable Python reference} (quoted verbatim)\\[3pt]
 $\downarrow$\\[3pt]
 \textbf{This is where the two differ}, if they do
 }}
@@ -342,7 +340,7 @@ correspondence is:
 \centering\small
 \begin{tabular}{@{}llll@{}}
 \toprule
-\textbf{The book} & \textbf{What it says} & \textbf{Our Python} & \textbf{\S} \\
+\textbf{The book} & \textbf{What it says} & \textbf{Python reference} & \textbf{\S} \\
 \midrule
 eq.~(10.22) & mid jumps on each MO & \code{get\_epsilon.py} fits $\epsb^{\pm}$ & \ref{sec:estimation} \\
 $\lambda e^{-\kappa\delta}$ & fills decay in depth & \code{estimator\_common.fit\_kappa\_survival} & \ref{sec:estimation} \\
@@ -428,7 +426,7 @@ depth $\delta$ gets filled is
 
 \begin{intuition}
 $1/\kappa$ is the natural unit of depth. Quote $1/\kappa$ further out and your
-fill rate falls by a factor of $e \approx 2.72$. On live CASHCAT data
+fill rate falls by a factor of $e \approx 2.72$. In the pinned 2026-08-17 CASHCAT snapshot
 $\kappa^{+} \approx 10{,}123$~USDC$^{-1}$, so $1/\kappa^{+} \approx
 9.9\times10^{-5}$~USDC. That is $9.3$~\textbf{bps} of a $0.1057$ mid --- a
 \emph{basis point} is one hundredth of one per cent, i.e.\ $10^{-4}$ of the
@@ -460,7 +458,7 @@ out and you get filled about a third as often.
 \node[gray, anchor=west, font=\scriptsize] at (axis cs:1.05e-4,0.052) {$\delta=1/\kappa^{+}$};
 \end{axis}
 \end{tikzpicture}
-\caption{Fill rate against depth at the live CASHCAT calibration. At
+\caption{Fill rate against depth at the pinned 2026-08-17 CASHCAT calibration. At
 $\delta = 1/\kappa$ the rate has fallen to $\lambda/e$.}
 \end{figure}
 
@@ -604,7 +602,7 @@ Two honest caveats on borrowing this result. First, the book proves it for the
 $\sigma$ is the whole of the price movement, whereas in \S10.4.1 part of the
 variance is the $\varepsilon^{\pm}$ jumps. Second, and for the same reason, the
 $\sigma^{2}$ we measure is the \emph{total} mid variance including those jumps,
-so the volatility channel mildly double-counts adverse selection. At the live
+so the volatility channel mildly double-counts adverse selection. At the pinned
 calibration that channel is about 6\% of $\phi$, so the effect is small --- but
 it is there, and \eqref{eq:phigamma} is a motivation for the term rather than a
 derivation of it.
@@ -799,8 +797,9 @@ so they are fitted continuously from the raw feed.
 
 \subsection{The raw data}
 
-A collector (\code{scripts/hyperliquid\_data\_collector.py}) subscribes to two
-Hyperliquid websocket streams and writes them to Parquet shards:
+A collector (\code{scripts/hyperliquid\_data\_collector.py}) subscribes to
+several Hyperliquid public streams. The two streams used by this calibration are
+written to Parquet shards as follows:
 
 \begin{itemize}[nosep]
   \item \textbf{L2 book / BBO}: an \emph{L2} feed reports the order book
@@ -832,9 +831,9 @@ that decides whether the estimates mean anything:
     second'', and it is what makes the depth below a \emph{walk} distance.
 \end{itemize}
 
-For each market order, the mid \emph{strictly before} it is attached
-(\code{merge\_asof} with \code{allow\_exact\_matches=False}), and the walk depth is
-measured from that mid:
+For each market order, the mid \emph{strictly before} it is attached. The
+implementation uses \code{merge\_asof} with exact matches disabled, and the walk
+depth is measured from that mid:
 \[
   \text{depth}^{+} = \text{(highest buy print)} - \text{pre-mid},
   \qquad
@@ -843,7 +842,7 @@ measured from that mid:
 
 \begin{intuition}
 Depth is measured \textbf{from the mid}, not from the touch. That is deliberate:
-it is the same coordinate the strategy quotes in, so a fitted $\kappa$ can be
+it is the same coordinate the runtime and replay quote in, so a fitted $\kappa$ can be
 fed straight back into $\delta$ without a change of variable.
 \end{intuition}
 
@@ -886,7 +885,7 @@ A weighted log-linear regression of the empirical survival function
 $\log S(\delta) = c - \kappa\delta$, weighted by $\sqrt{\text{tail count}}$:
 \end{booktocode}
 
-\snip{scripts/estimator_common.py}{735}{764}
+\snip{scripts/estimator_common.py}{730}{759}
 \begin{lstlisting}
     sorted_depths = np.sort(depths)
 
@@ -973,7 +972,7 @@ $\epsb^{\pm}$ is the average amount the mid moves right after a market order ---
 \emph{markout}, i.e.\ the price change measured a fixed interval after an event.
 It is measured over a $200$~ms window:
 
-\snip{scripts/get_epsilon.py}{194}{202}
+\snip{scripts/get_epsilon.py}{189}{197}
 \begin{lstlisting}
     post = pd.merge_asof(
         frame,
@@ -1003,7 +1002,7 @@ are computed anyway, but only as diagnostics.
 
 Variance of one-second mid increments, per second:
 
-\snip{scripts/estimator_common.py}{858}{864}
+\snip{scripts/estimator_common.py}{853}{859}
 \begin{lstlisting}
     sampled = np.where(fresh, mid[np.clip(idx, 0, None)], np.nan)
 
@@ -1031,30 +1030,27 @@ every quote in response to a \emph{data} problem.
 Window          & trailing data used per fit    & 120 minutes \\
 Cadence         & re-fit interval               & 30 s \\
 Model input     & direct validated rolling-window estimate & no temporal smoothing \\
-Transport       & one atomic Redis blob per symbol & \code{mm:params:<SYM>} \\
-Max age         & strategy refuses older params & 120 s$^{\dagger}$ \\
+Runtime path    & Rust calibration to in-process model bundle & \code{cj-data} $\to$ \code{cj-core} \\
+Python path     & explicit JSON artifact for analysis/replay & schema v4 \\
+Max age         & calibration and source data must remain fresh & 120 s \\
 \bottomrule
 \end{tabular}
-\caption{The estimator cadence as deployed. $\dagger$~the strategy's own default
-is 90~s; \code{user\_data/config.json} raises it to 120~s, so a reader checking
-\code{Market\_Making.py} alone will find the smaller number.}
+\caption{The current runtime cadence and data boundary. Python JSON snapshots are
+analysis artifacts; the Rust trader calibrates directly from Parquet.}
 \end{table}
 
 A cycle that fails its own quality checks is rejected, so one bad window cannot
-replace the last valid model. The strategy then re-checks
-everything independently on every single quote: schema version, status,
-freshness, $\kappa>0$, $\lambda\ge0$, $\epsb\ge0$, fit quality
+replace a still-fresh valid model. Calibration validates schema/status,
+source-data freshness, $\kappa>0$, $\lambda\ge0$, $\epsb\ge0$, fit quality
 ($R^2 \ge 0.30$, $\ge 6$ fit points, $\ge 50$ impact events), and a
 \textbf{toxicity} gate $\max(\kappa^{+}\epsb^{+}, \kappa^{-}\epsb^{-}) \le 1.5$.
+If no fresh valid model remains, quoting fails closed.
 
 \begin{intuition}
-The toxicity number $\kappa\epsb$ is dimensionless, and it is the most
-informative single number you can know about an instrument: adverse-selection
-cost measured in units of the natural rent $1/\kappa$.
-
-Its meaning is exact rather than loose, and it is not the one you might guess.
-At flat inventory the optimal depth is $1/\kappa + \epsb$, so the rate we
-actually get filled at is
+The toxicity number $\kappa\epsb$ is dimensionless: adverse-selection cost
+measured in units of the model's natural depth $1/\kappa$. Inside the idealised
+HJB, at flat inventory and before fees or clamps, the optimal depth is
+$1/\kappa + \epsb$, so the fitted fill rate there is
 \[
   \lambda\,e^{-\kappa(1/\kappa + \epsb)}
   \;=\; \underbrace{\lambda e^{-1}}_{\text{cost of quoting at the optimum}}
@@ -1062,58 +1058,29 @@ actually get filled at is
   \;=\; \tilde{\lambda},
 \]
 which is exactly the $\tilde{\lambda}^{\pm}$ that appears in \eqref{eq:1028}.
-Now notice what does \emph{not} appear: by \eqref{eq:supvalue} the expected
-profit per fill is $1/\kappa$ \textbf{however toxic the flow is}, because the
-depth simply steps back far enough to cover it. So \textbf{adverse selection does
-not make each trade worse --- it makes trades rarer.} At the live CASHCAT value
-$\kappa\epsb \approx 0.25$ it costs about $22\%$ of our fills; at the gate value
-of $1.5$ it would cost $78\%$.
 
-This is why the strategy gates on $\kappa\epsb$ and not on $\epsb$ alone, and
-why the threshold is where it is. The project's own introduction notebook
-(\code{docs/market\_making\_introduction.ipynb}) sets out the operating rule the
-shipped \code{max\_toxicity} comes from:
+This identity is useful for diagnosing the fitted model; it is not a
+profitability theorem. The configured ceiling $\kappa\epsb\le1.5$ is a
+fail-closed operating heuristic, not a break-even boundary derived in the book.
+It contains no maker fee, queue position, latency, inventory tail, model error,
+or parameter uncertainty. Values below the ceiling can lose money, and values
+above it are not proved unprofitable merely by crossing the line.
 
-\begin{center}\small
-\begin{tabular}{@{}ll@{}}
-\toprule
-$\kappa\epsb$ & verdict \\
-\midrule
-$< 1$        & tolerable --- profitable if latency is decent \\
-$1$ to $2$   & competitive and toxic; needs good latency \emph{and} a good model \\
-$\ge 1.5$    & \textbf{the shipped gate}: stop quoting \\
-$\ge 2$      & negative PnL close to certain \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\noindent The argument behind the bands is worth having, because it explains why
-$\kappa\epsb$ and not $\epsb$ is the right thing to threshold. $1/\kappa$ is the
-half-spread you would quote with no inventory penalty and no adverse selection.
-If $\epsb$ is much \emph{larger} than that, then covering adverse selection
-pushes your quote far past where anyone would fill it --- so either you never
-trade, or the fills you do get are the ones that reached you because you were
-\textbf{slow}, which is adverse selection again by another route. Above
-$\kappa\epsb \approx 2$ that trap is inescapable; between $1$ and $2$ it is a
-pure infrastructure race that most participants lose; below $1$ the flow is
-mostly uninformed and the model's arithmetic works as written.
-
-The gate sits at $1.5$ rather than at break-even because the middle band is a
-genuine regime: the fill rate is badly damaged, but the trade is still worth
-making if the rest of the stack is fast enough. Ours is not, which is
-\S\ref{sec:departures} item~8.
-
-Live CASHCAT sits near $0.25$, comfortably in the benign band --- worth
-remembering when reading \S\ref{sec:phisweep}, because it means toxicity is
-\textbf{not} the reason that sweep loses money.
+Economic viability is checked separately by
+\code{scripts/verify\_market\_viability.py}, which uses measured reachable
+volume, conditional markout, and fees, followed by event replay. The distinction
+is observable: during the liquidation cascade in
+\code{docs/TOXIC\_FLOW\_GUARD.md}, $\kappa\epsb$ remained about $0.25$ while the
+flow was acutely dangerous. It is a rolling calibration property, not a fast
+flow alarm.
 \end{intuition}
 
 % ===========================================================================
 \subsection{What the three parameters say about the instrument}
 
-Before any of them reach a solver, $\kappa$, $\lambda$ and $\epsb$ already answer
-a question worth asking first: \emph{is this instrument worth quoting at all?}
-The framework earns its keep where
+Before any of them reach a solver, $\kappa$, $\lambda$ and $\epsb$ describe the
+modelled flow regime. They do \emph{not} answer whether the instrument is worth
+quoting after fees, queueing, and latency. As qualitative model preferences,
 
 \begin{center}\small
 \begin{tabular}{@{}lll@{}}
@@ -1127,10 +1094,10 @@ $\epsb$     & low  & little informed flow, so fills are not systematically bad n
 \end{tabular}
 \end{center}
 
-\noindent In one line: \textbf{a lot of behavioural noise and little structural
-efficiency}. A busy, shallow, uninformed market. The opposite --- a thin tape of
-well-informed flow in a deep book --- is where the model is most correct and least
-useful, because it will tell you, accurately, to quote almost nothing.
+\noindent In one line, the fitted model prefers frequent arrivals, a heavy tail of
+market-order walk depths, and small arrival jumps. Whether that combination pays
+is an empirical question for the viability curve and replay, not for these three
+point estimates alone.
 
 Note that $\kappa$ appears twice with opposite signs of preference: low $\kappa$
 is good for the rent $1/\kappa$, but $\kappa$ also multiplies $\epsb$ in the
@@ -1153,7 +1120,7 @@ dimensionless $\phi\kappa T$ and $\alpha\kappa$ and derive the rest, then add th
 volatility term that \S10.3 calls for:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{468}{477}
+\snip{scripts/mm_core.py}{457}{466}
 \begin{lstlisting}
     if kappa_avg > 0:
         # Derive from the dimensionless targets so the same config expresses the
@@ -1167,7 +1134,7 @@ volatility term that \S10.3 calls for:
                 phi_source += "+capped"
 \end{lstlisting}
 
-So the live $\phi$ and $\alpha$ are
+So the runtime/reference $\phi$ and $\alpha$ are
 \[
   \phi \;=\; \frac{(\phi\kappa T)_{\text{target}}}{\bar{\kappa}T}
              \;+\; \underbrace{\gamma\,\sigma^{2}\,u}_{\text{volatility channel}},
@@ -1177,13 +1144,14 @@ So the live $\phi$ and $\alpha$ are
 with $\bar\kappa$ the mean of $\kappa^\pm$, $u$ the inventory unit size in base
 asset, and $\gamma = 0.05$. The volatility channel is the code's realisation of
 \eqref{eq:phigamma}: risk aversion times variance. If $\sigma^2$ is missing the
-term is simply dropped -- a quiet volatility feed must never stop the quoter.
+term is simply dropped -- a missing variance estimate must not fabricate one.
 
 \subsection{Choosing the number: what a sweep of \texorpdfstring{$\phi\kappa T$}{phi kappa T} actually shows}
 \label{sec:phisweep}
 
-$\phi\kappa T = 10$ is the shipped value. It is worth seeing the evidence,
-because the evidence is not what the configuration comment claims.
+$\phi\kappa T = 10$ was the Python replay default used by this dated sweep. The
+current Rust profile uses 200 (ceiling 300), so the table below is historical
+evidence about shape, not a statement of the current configuration.
 
 Replaying the whole pipeline over one pinned 18.67-hour CASHCAT tape
 (115{,}364 book updates, 46{,}072 trades), varying only $\phi\kappa T$ and
@@ -1199,7 +1167,7 @@ $\phi\kappa T$ & PnL (USDC) & maker fills & USDC per fill & \\
   0.20 & $-133.22$ & 1959 & $-0.068$ & \\
   1.00 & $-135.94$ & 1867 & $-0.073$ & worst \\
   3.00 & $-119.40$ & 1686 & $-0.071$ & \\
- 10.00 & $-95.95$  & 1405 & $-0.068$ & \textbf{shipped} \\
+ 10.00 & $-95.95$  & 1405 & $-0.068$ & \textbf{historical default} \\
  20.00 & $-63.58$  & 1121 & $-0.057$ & \\
  50.00 & $-65.09$  &  784 & $-0.083$ & ceiling \\
 100.00 & $-57.75$  &  614 & $-0.094$ & \\
@@ -1230,7 +1198,7 @@ $\approx 60{,}800$ throughout. The best setting tested is the largest one tested
 \addlegendentry{measured PnL}
 \addplot[BoxDeparture, dashed, thick] coordinates {(10,-150) (10,-10)};
 \node[BoxDeparture, anchor=south west, font=\scriptsize, rotate=90]
-  at (axis cs:10.7,-148) {shipped value};
+  at (axis cs:10.7,-148) {historical default};
 \addplot[BoxTrap, dotted, thick] coordinates {(50,-150) (50,-10)};
 \node[BoxTrap, anchor=south west, font=\scriptsize, rotate=90]
   at (axis cs:54,-148) {config ceiling};
@@ -1261,9 +1229,9 @@ The limit of that logic is not quoting at all.
 Two consequences. First, do not read $\phi\kappa T = 10$ as a measured optimum;
 it is a middling point on a monotone curve, and the evidence originally cited for
 it did not replicate. Second, this sweep is not really measuring the inventory
-penalty at all --- it is measuring the fact that on this instrument, at this
-latency, the marginal maker fill has negative expected value. No setting of
-$\phi$ fixes that, which is exactly what \S\ref{sec:departures} item~8 is about.
+penalty at all --- it is evidence that on this instrument and tape, at this
+simulated latency, the marginal maker fill has negative expected value. No
+tested setting of $\phi$ fixes that result.
 \end{trap}
 
 \subsection{Building \texorpdfstring{$\mathbf{A}$}{A}}
@@ -1338,9 +1306,10 @@ analytically:
   \frac{\partial G_i}{\partial h_{i+1}} = s^{-},
 \]
 where $s^{\pm}$ is each side's derivative of its $\sup$ value with respect to
-that difference. So each Newton step is a banded solve rather than a dense one. \textbf{This is
-the solver the live bot uses}; the closed form is kept as the reference that the
-test suite checks it against.
+that difference. So each Newton step is a banded solve rather than a dense one.
+The current Rust runtime and Python reference both use this asymmetric
+backward-Euler method; the symmetric closed form is an independent limiting-case
+check in the Python test suite.
 
 \begin{intuition}
 Why is the derivative free? At the optimum, $\text{value} =
@@ -1432,7 +1401,7 @@ different constant on every row.
 \addplot[gray, thin, domain=-6.5:6.5] {0};
 \end{axis}
 \end{tikzpicture}
-\caption{The solved control at the live CASHCAT calibration, $\tau = 130.8$~s.
+\caption{The solved control at the pinned 2026-08-17 CASHCAT calibration, $\tau = 130.8$~s.
 Long inventory ($q>0$) tightens the ask and widens the bid, pushing the position
 back toward zero. The ask is absent at $q=-6$ and the bid at $q=+6$: the
 inventory boundary switches the adding side off entirely. Depths below zero
@@ -1474,7 +1443,7 @@ $S = 0.0976$ gives $u \approx 2527$~CASHCAT, so a full $\pm6$ band is about
 $u$ is the denominator of $q = \text{position}/u$, so changing it re-labels the
 whole inventory axis --- and it also appears in the volatility term
 $\gamma\sigma^{2}u$ of $\phi$. Resizing it while holding a position would
-therefore move the quotes for two unrelated reasons at once. The strategy only
+therefore move the quotes for two unrelated reasons at once. The runtime only
 ever resizes it \textbf{while flat}.
 \end{trap}
 
@@ -1486,11 +1455,11 @@ perpetual futures contract has no deadline, which leaves a real modelling
 choice:
 
 \begin{itemize}[nosep]
-  \item \code{hjb\_time\_mode = "stationary"} --- always read the $t=0$ slice.
-    The agent then never approaches $T$, $\alpha$ never binds, and the time axis
-    of \eqref{eq:1026} is decorative.
-  \item \code{hjb\_time\_mode = "episodic"} (the default) --- run a repeating
-    episode clock of length $T$, and read the slice at the real remaining time.
+  \item The Python comparison mode \code{hjb\_time\_mode = "stationary"}
+    always reads the $t=0$ slice. The agent then never approaches $T$, $\alpha$
+    barely affects the control, and the time axis of \eqref{eq:1026} is discarded.
+  \item The current Rust runtime, and Python's default \code{"episodic"} mode,
+    run a repeating episode clock of length $T$ and read the real remaining time.
     The episode restarts at $T$, or early once the position returns to flat ---
     but only after at least 25\% of the horizon has elapsed, so inventory that
     crosses zero repeatedly cannot restart the clock on every round trip.
@@ -1536,7 +1505,7 @@ our own in between. The bracketing helper has two guards that look redundant and
 are not:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{628}{639}
+\snip{scripts/mm_core.py}{617}{628}
 \begin{lstlisting}
     n = len(axis)
     if n == 1 or value <= axis[0]:
@@ -1571,7 +1540,7 @@ reproduces the book exactly and only genuinely fractional inventory blends.
 
 And the blend itself refuses to average away a disabled side:
 
-\snip{scripts/mm_core.py}{656}{662}
+\snip{scripts/mm_core.py}{645}{651}
 \begin{lstlisting}
     if not np.isfinite(low) or not np.isfinite(high):
         return float("inf")
@@ -1592,13 +1561,14 @@ boundary the model is defined on.
 \subsection{What the time axis actually does here}
 \label{sec:phialpha}
 
-A natural guess is that the strategy should grow \emph{more} aggressive about
+A natural guess is that the maker should grow \emph{more} aggressive about
 flattening as $t \to T$, because that is when the terminal penalty $\alpha q^2$
 is about to be charged. It does the reverse, and the reason is worth
 understanding rather than filing as a bug.
 
-The running penalty enters as $\phi\kappa T = 10$ and the terminal one as
-$\alpha\kappa = 0.05$: a ratio of $200$ to $1$. The running penalty is what
+The pinned worked example uses $\phi\kappa T = 10$ and the terminal one
+$\alpha\kappa = 0.05$: a ratio of $200$ to $1$. The current Rust profile's 200
+makes the dominance stronger. The running penalty is what
 remains to be \emph{paid} over the time left, so it is largest at the start of an
 episode and vanishes at the end. It dominates the surface completely, and the
 skew therefore collapses as $\tau \to 0$.
@@ -1640,15 +1610,15 @@ a closed form:
 \[
   \dplus{}^{,*}(T,q) = \frac{1}{\kappa^{+}} + \epsb^{+} + \alpha(1-2q).
 \]
-At $q=2$ with the live numbers that is
+At $q=2$ with the worked-example numbers that is
 $9.8783627\times10^{-5} + 2.5034909\times10^{-5}
 - 3\times5.1000538\times10^{-6} = 1.0851837\times10^{-4}$, against the solver's $1.0851837\times10^{-4}$ --
 agreement to seven significant figures.
 
 \begin{departure}{Departure from the book}
-\code{hjb\_alpha\_kappa} was set to $0.05$ at a time when the strategy only ever
-read the $t=0$ slice, so $\alpha$ had almost no effect on any quote and the value
-carries no evidence. It is now live and remains unswept. Treat it as untuned.
+The Python field \code{hjb\_alpha\_kappa} (Rust: \code{alpha\_kappa}) was set to
+$0.05$ when only the $t=0$ slice was read, so the value carries no tuning
+evidence. It affects episodic quotes and remains unswept; treat it as untuned.
 \end{departure}
 
 % ===========================================================================
@@ -1668,7 +1638,7 @@ rejects orders.
 Everything below is ours, and every line of it can override the model:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{326}{340}
+\snip{scripts/mm_core.py}{315}{329}
 \begin{lstlisting}
 
     fee_cushion = float(config.maker_fee_rate) * mid
@@ -1690,16 +1660,20 @@ Everything below is ours, and every line of it can override the model:
 \begin{center}\small
 \begin{tabular}{@{}llr@{}}
 \toprule
-\textbf{Step} & \textbf{Expression} & \textbf{Default} \\
+\textbf{Step} & \textbf{Expression} & \textbf{Pinned example} \\
 \midrule
 model term    & $\delta_{\text{model}} \times$ \code{spread\_multiplier} & $1.0$ \\
-fee cushion   & \code{maker\_fee\_rate} $\times$ mid & $1.5$ bps \\
+fee cushion   & \code{maker\_fee\_rate} $\times$ mid & $1.5$ bps$^{\dagger}$ \\
 extra cushion & \code{extra\_cushion\_bps}$/10^4 \times$ mid & $0$ \\
 floor         & \code{min\_half\_spread\_bps}$/10^4 \times$ mid & $1.5$ bps \\
 cap           & \code{max\_half\_spread\_bps}$/10^4 \times$ mid & $80$ bps \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\noindent\small $\dagger$~The live backend loads the account's actual maker fee.
+The worked example and replay default pin the 1.5~bps rate measured for the
+CASHCAT account on 2026-08-23.\normalsize
 
 Four design choices are encoded here:
 
@@ -1717,18 +1691,19 @@ Four design choices are encoded here:
     infinite the function returns \code{None} rather than clamping, because
     clamping $\infty$ into $[\text{floor},\text{cap}]$ would silently turn ``do
     not quote'' into ``quote at the floor''.
-  \item \textbf{The floor is exactly one maker fee, and that is not a
-    coincidence.} \code{min\_half\_spread\_bps} and \code{maker\_fee\_rate} are
+  \item \textbf{The pinned example's floor equals one maker fee.}
+    \code{min\_half\_spread\_bps} and the replay's \code{maker\_fee\_rate} are
     both $1.5$~bps, so
 % CHECK: floor_equals_fee_cushion = True
-    the floor and the fee cushion are the same number to the last bit. The floor
-    is therefore not a risk limit --- it is the rule ``never quote inside your own
-    fee''.
+    the floor and fee cushion are equal in this calculation. This is not a live
+    invariant: an account-specific fee change updates the cushion but not the
+    configured floor.
 \end{itemize}
 
 \begin{trap}{How often the model is actually overruled}
-Work out where that floor binds and the answer is larger than it looks. Because
-floor $=$ fee cushion, $\delta_{\text{total}} = \max(\delta_{\text{model}} +
+Work out where that floor binds in the pinned example and the answer is larger
+than it looks. Because floor $=$ fee cushion there,
+$\delta_{\text{total}} = \max(\delta_{\text{model}} +
 \text{fee},\ \text{fee})$, so \textbf{the clamp binds precisely when the model
 asks for a negative depth} --- nothing more, nothing less.
 
@@ -1759,7 +1734,7 @@ is post-only, so it cannot be obeyed. The floor is what stops it, and the
 
 \subsection{Rounding, safely}
 
-\snip{scripts/mm_core.py}{88}{105}
+\snip{scripts/mm_core.py}{78}{95}
 \begin{lstlisting}
 def round_price_for_side(
     *,
@@ -1788,7 +1763,7 @@ order into an exchange rejection.
 
 \subsection{The last check before posting}
 
-\snip{scripts/mm_core.py}{369}{380}
+\snip{scripts/mm_core.py}{358}{369}
 \begin{lstlisting}
     price_f = finite_float_or_none(price)
     bid_f = finite_float_or_none(best_bid)
@@ -1809,29 +1784,24 @@ would cross, so equality is rejected too. A crossed or otherwise invalid book
 fails closed.
 
 \begin{trap}{Easy to get backwards}
-Which side of the book a Freqtrade ``entry'' corresponds to \emph{depends on the
-leg's role}:
-\[
-  \text{long leg: entry} = \text{bid},\ \text{exit} = \text{ask};
-  \qquad
-  \text{short leg: entry} = \text{ask},\ \text{exit} = \text{bid}.
-\]
-The depth and the price sign must flip together. Taking the depth from one side
-and the sign from the other quotes on the wrong side of the book, which the
-maker-safety check then rejects -- the observed symptom being a short leg whose
-every entry is denied.
+The superscripts name the incoming market order, while the quote names the
+resting side: a buy MO lifts our ask, so the ask uses $\delta^{+}$ and price
+$S+\delta^{+}$; a sell MO hits our bid, so the bid uses $\delta^{-}$ and price
+$S-\delta^{-}$. The depth and price sign must flip together. Mixing them puts a
+quote on the wrong side of the book, which the maker-safety check rejects.
 \end{trap}
 
 % ===========================================================================
 \section{A fully worked example}
 \label{sec:worked}
 
-Everything below is produced by running the real pricing code, and every number
-is re-checked by \code{scripts/verify\_spread\_doc.py}.
+Everything below is produced by the executable Python replay/reference pricing
+path, and every tagged number is re-checked by
+\code{scripts/verify\_spread\_doc.py}. Rust parity is tested separately.
 
 \subsection{Inputs}
 
-One coherent estimator cycle from the live CASHCAT dry run, stamped
+One recorded CASHCAT estimator cycle, stamped
 2026-08-17T16:20:41Z over a 120-minute window.
 
 \begin{center}\small
@@ -2071,7 +2041,7 @@ Two diagnostics fire on the $q=2.4$ quote and both are worth attention:
 
 \begin{itemize}
   \item \textbf{The ask was clamped at the floor.} The model asked for a negative
-    depth and got $1.5$ bps instead. The strategy is therefore \emph{not}
+    depth and got $1.5$ bps instead. The final quote is therefore \emph{not}
     following the model at this inventory --- it is following the constraint. If
     this fires often, the model is telling you the inventory band is too wide for
     the liquidity available.
@@ -2091,11 +2061,6 @@ A faithful implementation is the goal, so the gaps are listed rather than
 glossed.
 
 \begin{enumerate}
-  \item \textbf{Two instances, one signed inventory.} The book models a single
-    agent holding a signed $q$. Freqtrade rests at most one order per pair, so
-    two instances on separate sub-accounts present the two sides and a routing
-    rule decides which leg owns which side. Net inventory is shared over Redis
-    and is what prices both legs, but the decomposition is an approximation.
   \item \textbf{No forced liquidation at $T$}, as described in
     \S\ref{sec:reading}.
   \item \textbf{Fractional inventory is interpolated} over a domain the book does
@@ -2103,33 +2068,30 @@ glossed.
   \item \textbf{The fee cushion and the bps clamps} are outside the model
     entirely. The clamps in particular \emph{override} the model whenever it asks
     for a depth below the floor, which the worked example shows is not rare.
-  \item \textbf{Leverage and margin} do not appear in the model at all.
-  \item \textbf{Perpetual funding} is not in the model either. The replay harness
-    can charge it; the control never sees it.
+  \item \textbf{Leverage, margin, and perpetual funding} do not appear in the
+    control. Runtime risk checks enforce the first two and accounting charges the
+    third, but none changes the HJB depths.
   \item \textbf{Parameters are re-estimated every 30 seconds} and the problem
     re-solved. The agent therefore follows a \emph{sequence} of solutions to
     slightly different problems, not one solution to a fixed problem.
-  \item \textbf{The quote is held stale between cycles.} The model assumes
-    continuous requoting; the measured median requote interval here is about
-    30 seconds. This is the largest practical gap between the theory and the
-    deployment, and it is why the project README warns that the stack needs
-    co-located infrastructure to be taken seriously.
+  \item \textbf{Quoting is event-driven and discrete, not continuous.} Venue
+    acknowledgement/cancel latency, minimum order lifetime, and requote
+    hysteresis determine how long a target remains exposed. The Rust quote
+    computation is much faster than those effects, but it cannot remove them.
+  \item \textbf{Queueing, fill participation, risk gates, and the toxic-flow
+    guard} are empirical/runtime mechanisms outside the book's control problem.
 \end{enumerate}
 
 \begin{intuition}
-Item 8 deserves emphasis because it interacts with \S\ref{sec:estimation}.
 Adverse selection roughly \emph{doubles} between a 200~ms and a 5~s markout on
 this instrument. The model prices $\epsb$ at the 200~ms horizon because that is
-what \eqref{eq:1022} means -- but a quote exposed for 30 seconds is selected
-against on a far longer horizon than the one it was priced for.
-
-This is also the reason market making is a latency business at all. The race for
-speed is not a fashion: it is driven by adverse selection specifically, because
-the only two defences are to widen (which \S\ref{sec:estimation} shows has a hard
-ceiling --- widen far enough and nobody fills you) or to react faster than the
-informed flow. A stack that cannot do the second is left doing the first, and the
-sweep in \S\ref{sec:phisweep} is what that looks like when measured: quoting less
-and less until it barely trades.
+what \eqref{eq:1022} means, while a resting quote remains exposed to subsequent
+flow until it is filled or cancelled. That makes latency and hold policy
+scientifically relevant, but not automatically profitable: the 161.95-hour
+replay reversed the earlier latency ordering, and the 185-hour width--cadence
+matrix was non-monotone. The defensible conclusions come from measured markouts,
+independent frozen windows, and explicit scenario assumptions, not from a generic
+``faster is always better'' rule.
 \end{intuition}
 
 Not a departure, despite appearances: the \textbf{volatility term in $\phi$}.
@@ -2146,20 +2108,20 @@ risk aversion.
 \section{File map}
 
 \begin{center}\small
-\begin{tabular}{@{}ll@{}}
+\begin{tabular}{@{}p{6.2cm}p{8.0cm}@{}}
 \toprule
 \textbf{File} & \textbf{Role} \\
 \midrule
-\code{scripts/hyperliquid\_data\_collector.py} & L2 book and trade capture to Parquet \\
-\code{scripts/estimator\_common.py} & window loading, $\kappa$, $\sigma^2$ \\
-\code{scripts/get\_kappa.py} & $\kappa^{\pm}$, $\lambda^{\pm}$, $\sigma^2$ driver \\
-\code{scripts/get\_epsilon.py} & $\epsb^{\pm}$ driver \\
-\code{scripts/hjb.py} & the two solvers, (10.26)--(10.29) \\
-\code{scripts/mm\_core.py} & $\phi$/$\alpha$ scaling, depth lookup, quote assembly \\
-\code{scripts/param\_store.py} & Redis transport for the parameter snapshot \\
-\code{user\_data/strategies/Market\_Making.py} & the Freqtrade strategy \\
-\code{scripts/replay\_market\_maker.py} & offline replay of the whole pipeline \\
-\code{scripts/verify\_spread\_doc.py} & checks this document against the code \\
+\nolinkurl{scripts/hyperliquid_data_collector.py} & L2 book and trade capture to Parquet \\
+\nolinkurl{scripts/estimator_common.py} & window loading, $\kappa$, $\sigma^2$ \\
+\nolinkurl{scripts/get_kappa.py} & $\kappa^{\pm}$, $\lambda^{\pm}$, $\sigma^2$ driver \\
+\nolinkurl{scripts/get_epsilon.py} & $\epsb^{\pm}$ driver \\
+\nolinkurl{scripts/hjb.py}, \nolinkurl{scripts/mm_core.py} & Python solver, risk scaling, depth lookup, and quote assembly \\
+\nolinkurl{scripts/replay_market_maker.py} & Python event replay of the whole pipeline \\
+\nolinkurl{rust_live/crates/cj-data/} & Rust Parquet calibration and replay \\
+\nolinkurl{rust_live/crates/cj-core/} & Rust HJB, instrument math, and quote policy \\
+\nolinkurl{rust_live/src/main.rs} & runtime orchestration, dry-run grid, and live command \\
+\nolinkurl{scripts/verify_spread_doc.py} & checks this document against the code \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -2193,14 +2155,11 @@ Guéant, O., Lehalle, C.-A. and Fernandez-Tapia, J. (2013), ``Dealing with the
 inventory risk''. Takes the same problem to closed form under a symmetry
 assumption, and is the standard reference for the inventory-bound treatment.
 
-\code{docs/market\_making\_introduction.ipynb} in this repository is a
-step-by-step course on the same model (in French) with an interactive dashboard
-that simulates a market and lets you move $\kappa$, $\lambda$, $\epsb$, $\phi$
-and $\alpha$ and watch the depths respond. It is the fastest way to build
-intuition for the surface of Figure~\ref{fig:skew} before reading any code, and
-the toxicity bands in \S\ref{sec:estimation} come from it. Its companion video
-(FrenchQuant, \emph{ufNdvd8QCUI} on YouTube) walks through the same material
-and is where the reasoning behind those bands is set out.
+\code{docs/market\_making\_introduction.ipynb} is a French-language background
+notebook with an interactive model dashboard. It predates the current Rust
+runtime and is not the authority for configuration or profitability thresholds,
+but remains useful for seeing how $\kappa$, $\lambda$, $\epsb$, $\phi$ and
+$\alpha$ move the idealised depths.
 
 On measuring toxicity more generally, VPIN (Easley, L\'opez de Prado and O'Hara,
 2012, ``Flow toxicity and liquidity in a high-frequency world'') is the standard

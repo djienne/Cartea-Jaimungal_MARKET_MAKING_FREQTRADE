@@ -20,8 +20,7 @@ Methodology (schema v4):
   [0.0, 0.99] — i.e. the whole distribution up to the 99th percentile, exactly
   the fit that shipped before the lower bound existed.
 - The window is normally the trailing ``minutes``; explicit window_start /
-  window_end bounds select a historical slice instead (used by calibration
-  sweeps that must fit on a train slice, never by the live estimator).
+  window_end bounds select a historical slice for calibration sweeps.
 """
 
 from __future__ import annotations
@@ -38,8 +37,7 @@ import pandas as pd
 from param_utils import atomic_write_json
 
 
-# Validation floors for a calibration to be usable. The retired freqtrade
-# strategy mirrored these as class attributes; they are now enforced here only.
+# Validation floors shared by the Python analysis and Rust calibration profiles.
 MIN_KAPPA_FIT_POINTS = 6
 MIN_KAPPA_R2 = 0.30
 MIN_EPSILON_EVENTS = 50
@@ -424,7 +422,7 @@ def load_market_window(
 ) -> MarketWindow:
     """Load mid series + trades for one window on one shared clock.
 
-    Default (both bounds None, what the live estimator uses): the window ends at
+    Default (both bounds None): the window ends at
     the earlier of the two streams' latest timestamps (so both streams cover it)
     and spans ``minutes`` back from there.
 
@@ -551,12 +549,9 @@ def load_market_window(
 # --------------------------------------------------------------------------
 # Emit mode (calibration sweeps)
 # --------------------------------------------------------------------------
-# A sweep needs parameter sets computed at many different calibration settings.
-# It must NOT reach any snapshot a live consumer reads. The freqtrade legs
-# that read them are retired, so nothing does today -- but emit mode still
-# writes ONE file at a caller-chosen path and performs no other write at all,
-# because a sweep that writes outside its own output is one live consumer away
-# from changing the thing it measures. It also never takes param_update.lock.
+# A sweep needs parameter sets computed at many calibration settings. Emit mode
+# writes one caller-chosen file and performs no other write, so it cannot alter
+# the ordinary estimator snapshots or contaminate a separate analysis.
 #
 # The emitted blocks are byte-for-byte the entries that WOULD have been written
 # to the live files, so anything that can read a snapshot can read a sweep
@@ -792,8 +787,8 @@ def fit_kappa_survival(
 # would over-correct lambda by more than the bug it fixes, so "was the collector
 # alive" is asked of the UNION of the streams, not of the mids.
 #
-# prices+trades is used rather than all three because both are already loaded on
-# the live path, and the estimator container re-runs every 30 s. Adding the
+# prices+trades is used rather than all three because both are already loaded for
+# every estimator pass. Adding the
 # orderbook stream would tighten the estimate from 42.4 to 36.5 min over that
 # same 61.2 h -- 0.16% of the span -- which does not pay for the extra I/O.
 DEFAULT_OUTAGE_THRESHOLD_SECONDS = 60.0

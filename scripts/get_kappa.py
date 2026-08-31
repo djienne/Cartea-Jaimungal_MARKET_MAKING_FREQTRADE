@@ -6,8 +6,8 @@ Methodology:
   timestamp); one MO sweeping several levels is ONE arrival whose depth is its
   deepest print.
 - Depths are measured from the prevailing MID (last BBO update strictly before
-  the MO, exchange-timestamp aligned) — the same coordinate the strategy
-  quotes in. Negative depths (stale-feed noise) are truncated to 0, not
+  the MO, exchange-timestamp aligned) — the same coordinate the model quotes
+  in. Negative depths (stale-feed noise) are truncated to 0, not
   dropped.
 - kappa± comes from a weighted log-linear fit of the empirical survival
   function P(depth >= delta): a resting order at depth delta fills when an MO
@@ -26,7 +26,7 @@ Methodology:
 - Primary kappa±/lambda± values are the direct validated estimates from the
   selected market-data window; no temporal smoothing is applied.
 - Realized mid variance sigma2_per_sec (USDC^2/s) is published for the
-  strategy's volatility-aware inventory penalty.
+  volatility-aware inventory penalty.
 """
 
 import argparse
@@ -191,13 +191,13 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30,
     hand it over instead of paying for a second full parquet scan of the same data.
 
     The four support_* arguments set the per-side depth range the survival fit
-    runs over (quantiles of that side's own depths). None means "use the shipped
-    default", so the live estimator keeps the [0.0, 0.99] fit unchanged.
+    runs over (quantiles of that side's own depths). None means "use the default",
+    preserving the [0.0, 0.99] fit.
 
     ``emit_params_json`` / ``emit_sink`` switch on emit mode: the computed
     entries go to the given path (and/or into the given dict) and NOTHING is
-    written to kappa.json or lambda.json, so a sweep can run alongside the live
-    estimator container without disturbing any snapshot a live consumer reads.
+    written to kappa.json or lambda.json, isolating sweep output from ordinary
+    snapshots.
     """
     support_upper_plus = (
         DEFAULT_SUPPORT_QUANTILE_UPPER if support_quantile_plus is None else float(support_quantile_plus)
@@ -468,8 +468,8 @@ if __name__ == "__main__":
                         help='ISO-8601 (or epoch) end of the window (clamped to the data that exists)')
     parser.add_argument('--emit-params-json', type=str, default=None,
                         help='Write the computed kappa/lambda set to this path and write NOTHING '
-                             'else: kappa.json and lambda.json are left untouched. Use for '
-                             'calibration sweeps while the live estimator is running. With '
+                              'else: kappa.json and lambda.json are left untouched. Use for '
+                              'isolated calibration sweeps. With '
                              '--crypto ALL the symbol is inserted into the filename.')
     parser.add_argument('--data-dir', type=str, default=None,
                         help='Root of the collector output (default: scripts/HL_data). A sweep can '
@@ -502,8 +502,8 @@ if __name__ == "__main__":
 
     if (args.window_start or args.window_end) and not args.emit_params_json:
         # Not forbidden -- someone may legitimately want to backfill a snapshot --
-        # but it is worth one loud line, because writing a historical slice into
-        # kappa.json hands the live strategy parameters from another hour.
+        # but it is worth one loud line because it replaces the ordinary snapshot
+        # with parameters from a historical slice.
         print("WARNING: --window-start/--window-end without --emit-params-json will OVERWRITE "
               "kappa.json/lambda.json with parameters fitted on a historical slice.")
 

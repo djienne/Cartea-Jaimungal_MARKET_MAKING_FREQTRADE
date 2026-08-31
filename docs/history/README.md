@@ -6,10 +6,12 @@ shards exist, so once a period rolls off the tape **no sweep can ever be run
 against it again** — not more cheaply, not at all. The dry-run grid expires too:
 its event logs rotate at ~34 days.
 
-So every 21 days `scripts/archive_period.py` writes one directory here holding a
-fresh full sweep and the grid's P&L curve for the period. 21 against 30 leaves 9
-days of slack, so a skipped or failed cycle still loses nothing — the next
-window reaches back over the gap.
+Every 21 days `scripts/archive_period.py` attempts to write one directory here
+with a fresh full sweep and the grid's P&L curve for the period. A successful
+cycle has 9 days of slack against 30-day retention, so an interrupted attempt can
+be retried within that margin. A failure is not harmless indefinitely; inspect
+`sweep_FAILED.log` and rerun with `--force` before the oldest unarchived shards
+expire.
 
 These files are committed. That is the point: they are the only durable record
 of a window whose raw data is gone.
@@ -50,11 +52,12 @@ The columns are the grid's own `equity_history.csv` schema, thinned to one row
 per variant per 15 minutes. Full resolution is 60 s, about 95 MB/month — too
 much to commit every three weeks, and not needed for a month-scale
 retrospective. The full-resolution file lives in
-`rust_live/reports/grid_live/equity_history.csv` until log rotation drops it.
+`rust_live/reports/grid_live/equity_history.csv`; unlike event logs it is
+intentionally not rotated and grows at roughly 95 MB/month.
 
 ## Scope
 
-CASHCAT only today. The archiver selects any symbol whose tape spans more than 7
+The only supported instrument profile is CASHCAT. The archiver selects any symbol whose tape spans more than 7
 days, which cleanly separates the 30-day collector from the 3-day one (ETH, ACE,
 CHIP, PENGU, NIL at `RETENTION_MINUTES: 4320`) without this repo reading another
 project's compose file. A symbol that qualifies on tape length but has no
@@ -64,8 +67,8 @@ inventory base — confident numbers for the wrong asset are worse than none.
 ## The one manual step
 
 The `mm-archiver` container writes here but **does not commit**: that would mean
-mounting an SSH key into a container. It logs `N period(s) uncommitted` on every
-wake instead, and `git status` shows the same thing.
+mounting an SSH key into a container. It logs an uncommitted-history reminder on
+every wake; use `git status` to see the exact paths.
 
 ```
 git add docs/history && git commit && git push

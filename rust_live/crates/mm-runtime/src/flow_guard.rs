@@ -13,12 +13,12 @@
 //! 05:16:00  mid ~0.11           recovered
 //! ```
 //!
-//! Nothing predicts that. The goal is narrower and achievable: stop riding it
-//! down, and stay out of the aftermath.
+//! This guard does not predict that event. Its narrower goal is to stop adding
+//! exposure once the move is observable and stay out of the aftermath.
 //!
 //! # Why two tiers
 //!
-//! Measured over the whole tape, both with **zero** false positives outside the
+//! Re-verified over 165.11 h, both thresholds had **zero** breaches outside the
 //! cascade:
 //!
 //! | tier | first trip | mid had already moved |
@@ -54,6 +54,7 @@ use mm_settings::FlowGuardConfig;
 pub struct MidWindow {
     samples: Box<[(u64, i64)]>,
     head: usize,
+    tail: usize,
     len: usize,
     window_ns: u64,
 }
@@ -68,6 +69,7 @@ impl MidWindow {
         Self {
             samples: vec![(0_u64, 0_i64); capacity].into_boxed_slice(),
             head: 0,
+            tail: 0,
             len: 0,
             window_ns: window_ms.saturating_mul(1_000_000),
         }
@@ -76,26 +78,27 @@ impl MidWindow {
     /// Record a mid and return the absolute move against the oldest sample
     /// inside the window, in basis points.
     pub fn observe(&mut self, now_ns: u64, mid_units: i64) -> f64 {
+        let written = self.head;
         self.samples[self.head] = (now_ns, mid_units);
         self.head = (self.head + 1) % self.samples.len();
-        self.len = (self.len + 1).min(self.samples.len());
+        if self.len == self.samples.len() {
+            self.tail = (self.tail + 1) % self.samples.len();
+        } else {
+            if self.len == 0 {
+                self.tail = written;
+            }
+            self.len += 1;
+        }
 
         let cutoff = now_ns.saturating_sub(self.window_ns);
-        // Walk back to the oldest sample that is still inside the window. The
-        // ring is in time order, so the first one at or after the cutoff is it.
-        let capacity = self.samples.len();
-        let mut reference: Option<i64> = None;
-        for step in 1..=self.len {
-            let index = (self.head + capacity - step) % capacity;
-            let (ts, mid) = self.samples[index];
-            if ts < cutoff {
-                break;
-            }
-            reference = Some(mid);
+        while self.len > 1 && self.samples[self.tail].0 < cutoff {
+            self.tail = (self.tail + 1) % self.samples.len();
+            self.len -= 1;
         }
-        let Some(reference) = reference else {
+        if self.len == 0 {
             return 0.0;
-        };
+        }
+        let reference = self.samples[self.tail].1;
         if reference <= 0 || mid_units <= 0 {
             return 0.0;
         }
@@ -121,7 +124,7 @@ impl MidWindow {
 /// The reference's rolling-CDF percentile is **not** used. On this tape it
 /// reaches 1.00 in four benign windows at a 2-day lookback — the tape is far
 /// shorter than the 90 days that percentile assumes — while the raw statistic
-/// separated the cascade cleanly (peak 0.663 against a 0.362 maximum
+/// separated the cascade on the frozen tape (peak 0.663 against a 0.371 maximum
 /// elsewhere). An absolute threshold on raw VPIN is the honest instrument here.
 #[derive(Debug)]
 pub struct VpinTracker {

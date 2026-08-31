@@ -5,9 +5,9 @@ Three properties, each of which was violated at some point and cost a result:
 1. A pinned tape scores the same bytes twice. The collector writes a shard every
    ~10 s, so an unpinned sweep compares settings AND data. That is not a
    hypothetical: one phi setting came back at both -3.98 and -19.39 USDC.
-2. The replay solves the HJB the live path solves -- phi and alpha derived from
-   the dimensionless targets and live kappa, not the raw values, which are not
-   kappa-invariant (eq. 10.28).
+2. The replay and direct ``mm_core`` paths derive phi and alpha from dimensionless
+   targets and the fitted kappa, not from raw values that are not kappa-invariant
+   (eq. 10.28). Rust/Python parity is tested separately in the Rust workspace.
 3. Fills are attributed to a side, and the sides add up to the total.
 """
 
@@ -186,17 +186,14 @@ def test_replay_keys_off_the_exchange_clock_not_the_collector_receive_clock(tmp_
 
 
 # ---------------------------------------------------------------------------
-# 2. HJB parity with the live path
+# 2. HJB parity with an independently assembled mm_core configuration
 # ---------------------------------------------------------------------------
 
 
-def _live_quote_config(**overrides) -> QuoteConfig:
+def _independent_quote_config(**overrides) -> QuoteConfig:
     """A QuoteConfig assembled independently of hjb_quote_config, so a field
-    dropped there fails here.
-
-    It used to mirror the freqtrade strategy's ``_quote_config``; that strategy
-    is retired (tag ``freqtrade-trader-final``) and this is now simply a second
-    construction path kept deliberately separate from the one under test."""
+    dropped there fails here. This construction path is deliberately separate
+    from the replay adapter under test."""
     base = dict(
         inventory_unit_base=2092.0,
         q_max=6,
@@ -224,21 +221,25 @@ def test_dimensionless_path_reproduces_mm_core_solve_hjb(tmp_path, sigma2_per_se
     )
 
     replayed = solve_replay_hjb(config, PARAMS)
-    live = mm_core.solve_hjb(PARAMS, _live_quote_config(), sigma2_per_sec=sigma2_per_sec)
+    independent = mm_core.solve_hjb(
+        PARAMS, _independent_quote_config(), sigma2_per_sec=sigma2_per_sec
+    )
 
-    assert replayed["phi_effective"] == live["phi_effective"]
-    assert replayed["alpha_effective"] == live["alpha_effective"]
-    assert replayed["phi_source"] == live["phi_source"]
-    assert list(replayed["q_grid"]) == list(live["q_grid"])
+    assert replayed["phi_effective"] == independent["phi_effective"]
+    assert replayed["alpha_effective"] == independent["alpha_effective"]
+    assert replayed["phi_source"] == independent["phi_source"]
+    assert list(replayed["q_grid"]) == list(independent["q_grid"])
     for key in ("delta_plus", "delta_minus"):
-        np.testing.assert_allclose(replayed[key], live[key], rtol=0, atol=0)
-    np.testing.assert_allclose(replayed["delta_plus_surface"], live["delta_plus_surface"], rtol=0, atol=0)
+        np.testing.assert_allclose(replayed[key], independent[key], rtol=0, atol=0)
+    np.testing.assert_allclose(
+        replayed["delta_plus_surface"], independent["delta_plus_surface"], rtol=0, atol=0
+    )
 
 
 def test_dimensionless_targets_are_not_the_raw_values(tmp_path):
     """The point of routing through mm_core: at CASHCAT kappa the derived phi is
     two orders of magnitude off the raw default, so a replay still using the raw
-    value would be scoring a model the strategy never runs."""
+    value would be scoring a different model."""
     config = _config(tmp_path, inventory_unit_base=2092.0, q_max=6, q_min=-6)
     kappa_avg = 0.5 * (PARAMS["kappa+"] + PARAMS["kappa-"])
 
@@ -252,10 +253,10 @@ def test_dimensionless_targets_are_not_the_raw_values(tmp_path):
     assert derived["phi_effective"] != raw["phi_effective"]
 
 
-def test_phi_kappa_t_ceiling_binds_in_replay_as_it_does_live(tmp_path):
+def test_phi_kappa_t_ceiling_binds_in_replay_and_direct_core(tmp_path):
     """The volatility channel is in absolute price units, so at CASHCAT scale it
     would blow straight past the dimensionless target if the ceiling were not
-    applied. Replay has to clamp exactly where live clamps."""
+    applied. The replay adapter must clamp exactly where the direct core does."""
     config = _config(
         tmp_path,
         inventory_unit_base=2092.0,

@@ -16,8 +16,8 @@ is not a slow toxic drift — it is a liquidation cascade:
 05:16:00  mid ~0.11            recovered
 ```
 
-Nothing predicts that. The goal is narrower: stop riding it down, and stay out
-of the aftermath.
+This guard does not predict the cascade. Its narrower goal is to stop adding
+exposure once the move is observable and to stay out of the aftermath.
 
 ## Why the existing toxicity gate did not help
 
@@ -42,9 +42,10 @@ and 31 percentage points earlier, so it bounds the damage. VPIN is slower but
 identifies the *regime* — 86% of the losing window's volume arrived after it
 fired — so it is what prevents re-entering the aftermath.
 
-At 8% the breaker was the tightest threshold with no false positives; 5%
-produced four. The whole-tape maximum VPIN outside the cascade was 0.362, and the
-cascade peaked at 0.663.
+At 8% the breaker was the tightest threshold with no false positives on the
+selection tape; 5% produced four. Re-verification over 165.11 h still found zero
+outside-cascade breaches, with maximum outside VPIN 0.371 (up from 0.362) and
+cascade peak 0.663.
 
 ### Why not VPIN's own CDF
 
@@ -70,8 +71,10 @@ the aggressor side, so the buy/sell split is exact rather than reconstructed.
 - While VPIN is still warming up it reads `None`, which is treated as neither
   safe nor toxic: only the fast breaker is armed, and a tripped guard stays
   closed rather than re-opening on a statistic it does not have.
-- It is a *quoting* gate, not a kill switch: inventory is left to the existing
-  reduce-only machinery.
+- It is a *quoting* gate, not a flattening action: it cancels resting orders but
+  does not immediately close inventory. That limitation is why an earlier alarm
+  can still perform worse when it freezes a directional position; see
+  `FLOW_GUARD_CANDIDATES.md`.
 
 Withdrawals are attributed to `QuoteReason::ToxicFlow`, so every report and JSONL
 line says why, and trip counts are visible in the dry-run logs.
@@ -94,7 +97,7 @@ exactly, and the guard-on delta is re-entry-timing sensitivity: VPIN bucket
 volume derives from the loaded calibration window, so small window-derivation
 differences move the re-entry minute. Direction and mechanism unchanged.)*
 
-In the crash window the loss falls by 61%, and the mechanism is visible in the
+In the crash window the loss falls by 74%, and the mechanism is visible in the
 detail rather than only the total:
 
 | | off | on |

@@ -40,13 +40,13 @@ Six replays with the current binary on the frozen tapes:
 | calm | −80.90 | −80.90 (bit-identical) |
 | full 165 h | −166.65 | −166.65 |
 
-Guard-off crash reproduces `TOXIC_FLOW_GUARD.md` to the cent, proving the
-harness faithful. Guard-on reads −23.13 where the doc recorded −33.88: the
+Guard-off crash reproduces `TOXIC_FLOW_GUARD.md` to the cent, providing one
+independent consistency check on the harness. Guard-on reads −23.13 where the doc recorded −33.88: the
 trip anatomy is identical (first trip 05:11:15, quotes withheld to ~06:40),
 and the delta is **re-entry-timing sensitivity** — VPIN bucket volume derives
 from the loaded window and the original A/B's exact window derivation is not
-bit-recoverable. Direction and mechanism are unchanged; these re-baselined
-numbers are the authoritative ones. The full-tape pair is identical because a
+bit-recoverable. Direction and mechanism are unchanged; these are the
+re-baselined values used by the later documentation. The full-tape pair is identical because a
 daily-loss limit latches early on this tape (documented in
 `TOXIC_FLOW_GUARD.md`), which is why crash/calm windows are the decisive ones.
 

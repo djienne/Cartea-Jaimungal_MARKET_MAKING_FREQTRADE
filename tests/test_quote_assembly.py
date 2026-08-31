@@ -6,14 +6,9 @@ band in bps of mid, fees included, for any plausible parameter combination.
 The clamps are the hard guarantee; this sweep proves the wiring end-to-end,
 HJB solve -> assemble_half_spread.
 
-This file used to drive the freqtrade strategy's ``_assemble_half_spread``
-and assert parity between it and the replay's copy. The strategy is retired
-(tag ``freqtrade-trader-final``) and there is no longer a second copy to be
-parallel to: ``replay_market_maker.assemble_half_spread`` delegates to
-``mm_core``, which is the single implementation. So the sweep now runs
-against mm_core directly, and the surviving parity check is the thinner but
-still real one -- that the replay's wrapper and its defaults actually reach
-the same arithmetic.
+``replay_market_maker.assemble_half_spread`` delegates to ``mm_core``, so the
+sweep runs against ``mm_core`` directly and separately checks that the replay
+wrapper and its defaults reach the same arithmetic.
 """
 
 from __future__ import annotations
@@ -119,7 +114,7 @@ def test_asymmetric_kappa_combo_also_stays_in_range():
 
 def test_central_live_combo_ask_lands_in_band_before_clamping():
     """The pre-clamp value (not just the clamped one) should sit inside the
-    band for realistic live parameters — the clamps are a guarantee, not the
+    band for representative CASHCAT parameters — the clamps are a guarantee, not the
     intended operating mode on the ask side."""
     config = _config()
     hjb = compute_h_asymmetric(

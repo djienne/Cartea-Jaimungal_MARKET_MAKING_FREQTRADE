@@ -1,3 +1,3 @@
 # Project Memory
 
-- [Dry-run operation](dry-run-operation.md) — how to run the MM dry run + the runtime gotchas (collector freshness, estimator lock, self.exchange, maker fee) that previously blocked all quoting
+- [Dry-run operation](dry-run-operation.md) — current Rust dry-run-grid operation, restart/resume semantics, feed validity, storage bounds, and collector separation

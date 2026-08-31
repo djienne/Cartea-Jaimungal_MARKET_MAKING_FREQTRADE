@@ -1,5 +1,10 @@
 # A/B: stationary vs episodic control
 
+> **Historical experiment (2026-08-17).** The Redis snapshot and configuration
+> language below describe the system at the time. The current Rust runtime reads
+> an episodic surface directly from its in-process calibration; the Python
+> `stationary` switch remains only for controlled replay comparisons.
+
 **What this measures:** whether reading the book's `δ*(t,q)` at the episode's real
 time-to-go, instead of always reading the `t=0` slice, changes anything.
 
@@ -15,18 +20,17 @@ bytes. This matters: the collector keeps writing shards, and letting `run_replay
 load per-variant scored different data each time. That invalidated an earlier φ
 sweep, where one setting came back at both −3.98 and −19.39.
 
-Parameters are the live snapshot from `mm:params:CASHCAT` at 2026-08-17T15:25Z
+Parameters are the then-live snapshot from `mm:params:CASHCAT` at 2026-08-17T15:25Z
 (κ⁺ 10538, κ⁻ 9161, λ⁺ 0.117, λ⁻ 0.103, ε⁺ 2.38e-5, ε⁻ 3.42e-5), with the shipped
 sizing (`q_max=6`, `inventory_unit_base=2430`, leverage 2, tick 1e-5).
 
 φ is re-derived at every `T` from the dimensionless `φκT = 10`, exactly as
-`mm_core.solve_hjb` does live — φ is **not** κ-invariant (eq. 10.28), and holding
+`mm_core.solve_hjb` does in replay — φ is **not** κ-invariant (eq. 10.28), and holding
 it fixed across a horizon sweep would sweep two things at once. `ακ = 0.05`.
 
-(`φκT = 10` was the shipped value when this A/B was run. On 2026-08-18 the live
-config moved to 200, with the ceiling `hjb_phi_kappa_t_max` raised to 300 and
-actually wired through for the first time. The numbers below are the A/B as run
-and have not been re-measured at 200.)
+(`φκT = 10` was the deployed value when this A/B was run. The current Rust
+profile uses 200 with a ceiling of 300. The numbers below are the A/B as run and
+have not been re-measured at 200.)
 
 Reproduce with `scripts/replay_market_maker.py --hjb-time-mode {stationary,episodic}`.
 
@@ -61,8 +65,8 @@ book's Fig. 10.8 runs `phi*kappa*T = 60` against `alpha*kappa = 0.01`, so it is
 in the same running-penalty-dominated regime and shows the same shape. Corrected
 2026-08-17 against the book PDF.)
 
-The corollary matters more than the number: **`hjb_alpha_kappa` is now a live
-knob and it is untuned.** It was set to 0.05 while α was structurally inert, so
+The corollary matters more than the number: **`alpha_kappa` affects current
+quotes and remains untuned.** It was set to 0.05 while α was structurally inert, so
 that value carries no evidence. Raising it is what would make the time axis do
 visible work, and that is the sweep worth running next.
 
@@ -75,5 +79,6 @@ them. `T = 150 s` remains the best of these in both modes.
 **3. Mean `|q_residual|` sits at 0.22–0.26 in every run.** The average position is
 about a quarter of an inventory unit off the integer grid — real risk that the
 model was not pricing and that nothing in the codebase could previously see,
-because `q` alone looks perfectly healthy. Below the 0.35 gate threshold, but far
-enough from zero to confirm the partial-fill gap was worth closing.
+because `q` alone looks perfectly healthy. This is a diagnostic, not a current
+acceptance threshold, but it is far enough from zero to confirm the partial-fill
+gap was worth closing.

@@ -10,6 +10,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const DRY_RUN_STATE_MAX_AGE_MS: u64 = 15 * 60 * 1_000;
+const DRY_RUN_STATE_MAX_FUTURE_SKEW_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DryRunDiagnostics {
@@ -21,6 +25,7 @@ pub struct DryRunDiagnostics {
     pub partial_fills: u64,
     pub queue_ahead_consumed_units: f64,
     pub queue_decay_units: f64,
+    pub unknown_queue_activations: u64,
     pub max_working_orders: usize,
     pub liquidation_breach_events: u64,
     pub markout_usdc: BTreeMap<u64, f64>,
@@ -39,6 +44,7 @@ impl Default for DryRunDiagnostics {
             partial_fills: 0,
             queue_ahead_consumed_units: 0.0,
             queue_decay_units: 0.0,
+            unknown_queue_activations: 0,
             max_working_orders: 0,
             liquidation_breach_events: 0,
             markout_usdc: BTreeMap::new(),
@@ -59,6 +65,7 @@ struct VirtualOrder {
     initial_queue_units: f64,
     last_queue_update_ms: u64,
     activated: bool,
+    queue_known: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +85,9 @@ struct PersistedDryRunState {
     model_fingerprint: String,
     inventory_unit: i64,
     account: DryRunAccountState,
+    saved_at_ms: u64,
+    current_day: Option<u64>,
+    daily_realized_pnl_usdc: f64,
 }
 
 #[derive(Debug)]
@@ -116,8 +126,17 @@ impl DryRunBackend {
         risk: RiskConfig,
     ) -> Result<Self> {
         instrument.validate()?;
-        if config.queue_decay_per_second < 0.0 || !config.queue_decay_per_second.is_finite() {
-            bail!("queue_decay_per_second must be finite and non-negative");
+        if config.queue_decay_per_second != 0.0 {
+            bail!(
+                "queue_decay_per_second must be zero until a queue-decay model is calibrated from venue evidence"
+            );
+        }
+        if !config.promotion_flatten_fee_rate.is_finite()
+            || config.promotion_flatten_fee_rate < 0.0
+            || !config.promotion_flatten_slippage_bps.is_finite()
+            || config.promotion_flatten_slippage_bps < 0.0
+        {
+            bail!("promotion flatten fee and slippage must be finite and non-negative");
         }
         let starting_equity_usdc = config.starting_equity_usdc;
         Ok(Self {
@@ -175,6 +194,8 @@ impl DryRunBackend {
         account: DryRunAccountState,
         diagnostics: DryRunDiagnostics,
         inventory_unit: i64,
+        current_day: Option<u64>,
+        daily_realized_pnl_usdc: f64,
     ) -> Result<()> {
         if !account.cash_usdc.is_finite()
             || !account.equity_usdc.is_finite()
@@ -187,6 +208,8 @@ impl DryRunBackend {
         }
         self.account = account;
         self.diagnostics = diagnostics;
+        self.current_day = current_day;
+        self.daily_realized_pnl_usdc = daily_realized_pnl_usdc;
         self.restored_inventory_unit = Some(inventory_unit);
         self.orders.clear();
         self.pending_markouts.clear();
@@ -198,6 +221,34 @@ impl DryRunBackend {
 
     pub const fn daily_realized_pnl_usdc(&self) -> f64 {
         self.daily_realized_pnl_usdc
+    }
+
+    pub const fn daily_risk_snapshot(&self) -> (Option<u64>, f64) {
+        (self.current_day, self.daily_realized_pnl_usdc)
+    }
+
+    /// P&L after immediately closing residual inventory at the executable side
+    /// of the current book, including taker fee and configured adverse slippage.
+    pub fn promotion_pnl_usdc(&self, bbo: Bbo) -> f64 {
+        let inventory = self.account.inventory_units;
+        if inventory == 0 {
+            return self.account.cash_usdc - self.starting_equity_usdc;
+        }
+        let quantity = self.instrument.size_from_units(inventory.abs());
+        let slippage = self.config.promotion_flatten_slippage_bps / 10_000.0;
+        let execution_price = if inventory > 0 {
+            self.instrument.price_from_units(bbo.bid_px) * (1.0 - slippage)
+        } else {
+            self.instrument.price_from_units(bbo.ask_px) * (1.0 + slippage)
+        };
+        let notional = quantity * execution_price;
+        let fee = notional * self.config.promotion_flatten_fee_rate;
+        let flattened_cash = if inventory > 0 {
+            self.account.cash_usdc + notional - fee
+        } else {
+            self.account.cash_usdc - notional - fee
+        };
+        flattened_cash - self.starting_equity_usdc
     }
 
     pub fn working_order_count(&self) -> usize {
@@ -219,12 +270,15 @@ impl DryRunBackend {
         serde_json::to_writer_pretty(
             temporary.as_file(),
             &PersistedDryRunState {
-                schema_version: 2,
+                schema_version: 3,
                 symbol: self.instrument.symbol.clone(),
                 config_fingerprint: config_fingerprint.to_owned(),
                 model_fingerprint: model_fingerprint.to_owned(),
                 inventory_unit,
                 account: self.account,
+                saved_at_ms: unix_ms(),
+                current_day: self.current_day,
+                daily_realized_pnl_usdc: self.daily_realized_pnl_usdc,
             },
         )?;
         temporary.as_file().sync_all()?;
@@ -247,10 +301,13 @@ impl DryRunBackend {
             // safe basis for a new scientific session.
             return Ok(false);
         };
-        if persisted.schema_version != 2
+        let now_ms = unix_ms();
+        if persisted.schema_version != 3
             || persisted.symbol != self.instrument.symbol
             || persisted.config_fingerprint != expected_config_fingerprint
             || persisted.inventory_unit <= 0
+            || now_ms.saturating_sub(persisted.saved_at_ms) > DRY_RUN_STATE_MAX_AGE_MS
+            || persisted.saved_at_ms > now_ms.saturating_add(DRY_RUN_STATE_MAX_FUTURE_SKEW_MS)
         {
             return Ok(false);
         }
@@ -262,6 +319,8 @@ impl DryRunBackend {
             bail!("dry-run state contains non-finite values");
         }
         self.account = state;
+        self.current_day = persisted.current_day;
+        self.daily_realized_pnl_usdc = persisted.daily_realized_pnl_usdc;
         self.restored_inventory_unit = Some(persisted.inventory_unit);
         self.orders.clear();
         self.pending_markouts.clear();
@@ -296,6 +355,11 @@ impl DryRunBackend {
     fn reconcile_now(&mut self, desired: DesiredQuotes, now_ms: u64) -> bool {
         self.expire_cancels(now_ms);
         let mut acted = false;
+        let cancel_latency_ms = self.simulated_latency_ms(self.config.cancel_latency_ms, now_ms);
+        let decision_latency_ms =
+            self.simulated_latency_ms(self.config.decision_latency_ms, now_ms);
+        let acknowledgement_latency_ms =
+            self.simulated_latency_ms(self.config.acknowledgement_latency_ms, now_ms);
         for side in [Side::Buy, Side::Sell] {
             let next = match side {
                 Side::Buy => desired.bid,
@@ -315,7 +379,7 @@ impl DryRunBackend {
                         .collect()
                 })
                 .unwrap_or_default();
-            let cancel_effective = now_ms.saturating_add(self.config.cancel_latency_ms);
+            let cancel_effective = now_ms.saturating_add(cancel_latency_ms);
             for order in self
                 .orders
                 .iter_mut()
@@ -334,14 +398,15 @@ impl DryRunBackend {
                         id,
                         intent,
                         active_ms: now_ms
-                            .saturating_add(self.config.decision_latency_ms)
-                            .saturating_add(self.config.acknowledgement_latency_ms),
+                            .saturating_add(decision_latency_ms)
+                            .saturating_add(acknowledgement_latency_ms),
                         cancel_effective_ms: None,
                         remaining_units: intent.qty_units,
                         queue_ahead_units: 0.0,
                         initial_queue_units: 0.0,
                         last_queue_update_ms: now_ms,
                         activated: false,
+                        queue_known: false,
                     });
                     self.diagnostics.virtual_orders_created += 1;
                     acted = true;
@@ -351,6 +416,16 @@ impl DryRunBackend {
         self.diagnostics.max_working_orders =
             self.diagnostics.max_working_orders.max(self.orders.len());
         acted
+    }
+
+    fn simulated_latency_ms(&self, median_ms: u64, exchange_ms: u64) -> u64 {
+        let tail = (exchange_ms / 1_000) % self.config.tail_latency_every
+            == self.config.tail_latency_every - 1;
+        if tail {
+            (median_ms as f64 * self.config.tail_latency_multiplier).round() as u64
+        } else {
+            median_ms
+        }
     }
 
     /// Apply a target, stamping the cooldown when it actually did something.
@@ -392,10 +467,15 @@ impl DryRunBackend {
                 self.accrue_funding(*bbo);
                 self.resolve_markouts(*bbo);
                 self.latest_bbo = Some(*bbo);
+                self.refresh_unknown_queues(now_ms);
                 self.mark_account(bbo.mid_units());
             }
-            MarketEvent::Book(book) => self.latest_book = Some(book.clone()),
+            MarketEvent::Book(book) => {
+                self.latest_book = Some(book.clone());
+                self.refresh_unknown_queues(now_ms);
+            }
             MarketEvent::Trade(trade) => {
+                self.refresh_unknown_queues(now_ms);
                 for fill in self.match_trade(*trade) {
                     self.apply_fill(fill);
                     output.push(ExecutionEvent::Fill(fill));
@@ -412,10 +492,34 @@ impl DryRunBackend {
             .filter(|order| !order.activated && order.active_ms <= now_ms)
         {
             let visible = visible_queue(self.latest_bbo, self.latest_book.as_ref(), order.intent);
-            order.queue_ahead_units = visible;
-            order.initial_queue_units = visible;
+            if let Some(visible) = visible {
+                order.queue_ahead_units = visible;
+                order.initial_queue_units = visible;
+                order.queue_known = true;
+            } else {
+                self.diagnostics.unknown_queue_activations =
+                    self.diagnostics.unknown_queue_activations.saturating_add(1);
+            }
             order.last_queue_update_ms = order.active_ms;
             order.activated = true;
+        }
+    }
+
+    fn refresh_unknown_queues(&mut self, now_ms: u64) {
+        for order in self
+            .orders
+            .iter_mut()
+            .filter(|order| order.activated && !order.queue_known)
+        {
+            let Some(visible) =
+                visible_queue(self.latest_bbo, self.latest_book.as_ref(), order.intent)
+            else {
+                continue;
+            };
+            order.queue_ahead_units = visible;
+            order.initial_queue_units = visible;
+            order.last_queue_update_ms = now_ms;
+            order.queue_known = true;
         }
     }
 
@@ -441,6 +545,7 @@ impl DryRunBackend {
             .enumerate()
             .filter(|(_, order)| {
                 order.activated
+                    && order.queue_known
                     && order.intent.side == maker_side
                     && order
                         .cancel_effective_ms
@@ -465,19 +570,13 @@ impl DryRunBackend {
         });
         let mut remaining_trade = trade.qty_units.max(0) as f64;
         let mut fills = Vec::new();
+        let mut projected_inventory = self.account.inventory_units;
         for index in indices {
             if remaining_trade <= 0.0 {
                 break;
             }
             let order = &mut self.orders[index];
-            let elapsed_seconds =
-                trade.exchange_ms.saturating_sub(order.last_queue_update_ms) as f64 / 1_000.0;
-            let decay =
-                (order.initial_queue_units * self.config.queue_decay_per_second * elapsed_seconds)
-                    .min(order.queue_ahead_units);
-            order.queue_ahead_units -= decay;
             order.last_queue_update_ms = trade.exchange_ms;
-            self.diagnostics.queue_decay_units += decay;
             let queue_consumed = order.queue_ahead_units.min(remaining_trade);
             order.queue_ahead_units -= queue_consumed;
             remaining_trade -= queue_consumed;
@@ -487,10 +586,10 @@ impl DryRunBackend {
             }
             let reduce_room = if order.intent.reduce_only {
                 match order.intent.side {
-                    Side::Buy if self.account.inventory_units < 0 => {
-                        self.account.inventory_units.unsigned_abs() as i64
+                    Side::Buy if projected_inventory < 0 => {
+                        projected_inventory.unsigned_abs() as i64
                     }
-                    Side::Sell if self.account.inventory_units > 0 => self.account.inventory_units,
+                    Side::Sell if projected_inventory > 0 => projected_inventory,
                     _ => 0,
                 }
             } else {
@@ -505,6 +604,13 @@ impl DryRunBackend {
             }
             order.remaining_units -= fill_units;
             remaining_trade -= fill_units as f64;
+            projected_inventory = projected_inventory.saturating_add(
+                order
+                    .intent
+                    .side
+                    .inventory_sign()
+                    .saturating_mul(fill_units),
+            );
             self.diagnostics.fills += 1;
             if order.remaining_units > 0 {
                 self.diagnostics.partial_fills += 1;
@@ -734,21 +840,33 @@ fn event_exchange_ms(event: &MarketEvent) -> u64 {
     }
 }
 
-fn visible_queue(bbo: Option<Bbo>, book: Option<&BookSnapshot>, intent: OrderIntent) -> f64 {
+fn visible_queue(
+    bbo: Option<Bbo>,
+    book: Option<&BookSnapshot>,
+    intent: OrderIntent,
+) -> Option<f64> {
     if let Some(book) = book {
         let levels = match intent.side {
             Side::Buy => &book.bids,
             Side::Sell => &book.asks,
         };
         if let Some(level) = levels.iter().find(|level| level.px == intent.px) {
-            return level.qty_units.max(0) as f64;
+            return Some(level.qty_units.max(0) as f64);
         }
     }
-    bbo.map_or(0.0, |bbo| match intent.side {
-        Side::Buy if intent.px == bbo.bid_px => bbo.bid_sz.max(0) as f64,
-        Side::Sell if intent.px == bbo.ask_px => bbo.ask_sz.max(0) as f64,
-        _ => 0.0,
+    bbo.and_then(|bbo| match intent.side {
+        Side::Buy if intent.px == bbo.bid_px => Some(bbo.bid_sz.max(0) as f64),
+        Side::Sell if intent.px == bbo.ask_px => Some(bbo.ask_sz.max(0) as f64),
+        _ => None,
     })
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 #[cfg(test)]
@@ -842,6 +960,127 @@ mod tests {
         assert_eq!(backend.account.inventory_units, 10);
     }
 
+    #[test]
+    fn deterministic_latency_schedule_includes_the_measured_tail() {
+        let backend = DryRunBackend::new(
+            instrument(),
+            DryRunConfig::default(),
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(backend.simulated_latency_ms(100, 18_000), 100);
+        assert_eq!(backend.simulated_latency_ms(100, 19_000), 235);
+        assert_eq!(backend.simulated_latency_ms(100, 20_000), 100);
+    }
+
+    #[tokio::test]
+    async fn an_off_book_quote_cannot_fill_until_its_queue_becomes_visible() {
+        let mut backend = DryRunBackend::new(
+            instrument(),
+            DryRunConfig::default(),
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 5,
+            ask_px: 10_002,
+            ask_sz: 5,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        let mut quote = bid_quotes();
+        quote.bid.as_mut().unwrap().px = 9_990;
+        backend.reconcile(quote, 1_000).await.unwrap();
+        let trade = TradePrint {
+            aggressor: AggressorSide::Sell,
+            px: 9_990,
+            qty_units: 20,
+            exchange_ms: 2_000,
+            recv_ns: 0,
+            trade_id: 1,
+        };
+        assert!(backend
+            .on_market_event(&MarketEvent::Trade(trade))
+            .await
+            .unwrap()
+            .is_empty());
+        backend
+            .on_market_event(&MarketEvent::Book(BookSnapshot {
+                bids: vec![crate::types::BookLevel {
+                    px: 9_990,
+                    qty_units: 3,
+                }],
+                asks: vec![],
+                exchange_ms: 2_001,
+                recv_ns: 0,
+            }))
+            .await
+            .unwrap();
+        let fills = backend
+            .on_market_event(&MarketEvent::Trade(TradePrint {
+                exchange_ms: 2_002,
+                qty_units: 4,
+                trade_id: 2,
+                ..trade
+            }))
+            .await
+            .unwrap();
+        assert_eq!(fills.len(), 1);
+        let ExecutionEvent::Fill(fill) = fills[0] else {
+            panic!("expected fill");
+        };
+        assert_eq!(fill.qty_units, 1);
+        assert_eq!(backend.diagnostics.unknown_queue_activations, 1);
+    }
+
+    #[tokio::test]
+    async fn overlapping_reduce_only_orders_share_one_inventory_balance() {
+        let mut backend = DryRunBackend::new(
+            instrument(),
+            DryRunConfig::default(),
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        backend.account.inventory_units = 5;
+        for id in 1..=2 {
+            backend.orders.push(VirtualOrder {
+                id,
+                intent: OrderIntent {
+                    side: Side::Sell,
+                    px: 10_002,
+                    qty_units: 5,
+                    post_only: true,
+                    reduce_only: true,
+                },
+                active_ms: 1_000,
+                cancel_effective_ms: None,
+                remaining_units: 5,
+                queue_ahead_units: 0.0,
+                initial_queue_units: 0.0,
+                last_queue_update_ms: 1_000,
+                activated: true,
+                queue_known: true,
+            });
+        }
+        let fills = backend
+            .on_market_event(&MarketEvent::Trade(TradePrint {
+                aggressor: AggressorSide::Buy,
+                px: 10_002,
+                qty_units: 20,
+                exchange_ms: 1_001,
+                recv_ns: 0,
+                trade_id: 1,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(backend.account.inventory_units, 0);
+    }
+
     #[tokio::test]
     async fn invalidation_withdraws_orders_and_blocks_quotes() {
         let mut backend = DryRunBackend::new(
@@ -885,6 +1124,34 @@ mod tests {
         assert_eq!(restored.working_order_count(), 0);
     }
 
+    #[test]
+    fn stale_persisted_state_is_not_restored() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let source = DryRunBackend::new(
+            instrument(),
+            DryRunConfig::default(),
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        source
+            .save_account_state(&path, "config-a", "model-a", 10)
+            .unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["saved_at_ms"] = serde_json::json!(1);
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let mut restored = DryRunBackend::new(
+            instrument(),
+            DryRunConfig::default(),
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        assert!(!restored.restore_account_state(&path, "config-a").unwrap());
+    }
+
     #[tokio::test]
     async fn partial_fill_cash_fee_and_mark_to_market_are_hand_checkable() {
         let mut backend = DryRunBackend::new(
@@ -901,6 +1168,15 @@ mod tests {
         .unwrap();
         let mut quote = bid_quotes();
         quote.bid.as_mut().unwrap().px = 9_999;
+        backend.latest_book = Some(BookSnapshot {
+            bids: vec![crate::types::BookLevel {
+                px: 9_999,
+                qty_units: 0,
+            }],
+            asks: vec![],
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
         backend.reconcile(quote, 1_000).await.unwrap();
         let event = MarketEvent::Trade(TradePrint {
             aggressor: AggressorSide::Sell,

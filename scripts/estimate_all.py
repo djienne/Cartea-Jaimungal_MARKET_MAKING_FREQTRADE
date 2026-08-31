@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """Run the kappa, epsilon and lambda estimators over ONE shared market window.
 
-periodic_test_runner.py used to spawn get_kappa.py, get_epsilon.py and
-get_lambda.py as three separate processes. Each re-read the same parquet shards
-from scratch, so a cycle paid for the same directory scan three times -- at 60
-minute retention and a 10 s flush that is ~1800 parquet opens per 30 s cycle
-under a 0.25 CPU limit. Cycles ran long, overlapped, and on 2026-08-16 the
-strategy went 87 minutes with no fresh parameters while the collector was
-perfectly healthy.
+Loading the window once avoids three independent Parquet scans per cycle. At a
+10 s flush cadence, repeated scans previously dominated estimator runtime and
+could overlap even while collection itself was healthy.
 
 This loads the window once and hands it to each estimator. The three CLIs still
 work standalone for manual use; they take an optional preloaded window.
@@ -15,12 +11,10 @@ work standalone for manual use; they take an optional preloaded window.
 Ordering matters: kappa runs first because get_epsilon reads kappa.json for its
 toxicity diagnostic.
 
---emit-params-json turns the whole cycle into a read-only calibration run: one
-window load, kappa/epsilon computed at whatever settings were asked for, and a
-single JSON written to the given path. Nothing under scripts/ or
-scripts/ is touched and param_update.lock is never involved, so a sweep can run
-against the same data the live estimator container is using without the live
-legs ever seeing a parameter they did not ask for.
+--emit-params-json turns the cycle into an isolated calibration run: one window
+load, kappa/epsilon computed at the requested settings, and one JSON written to
+the specified path. Normal snapshot files under ``scripts/`` are not modified,
+so sweeps cannot contaminate later manual analyses.
 """
 
 from __future__ import annotations

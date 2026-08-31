@@ -169,9 +169,9 @@ def test_q_min_defaults_to_the_symmetric_grid():
 @pytest.mark.parametrize("solver", [compute_h_symmetric, compute_h_asymmetric])
 def test_long_only_grid_disables_the_ask_when_flat(solver):
     """With q_min=0 the bottom of the grid is q=0, so the disabled side there is
-    the ask: you cannot sell inventory you do not hold. This is the boundary the
-    live long-only strategy actually has, and it differs from the q=0 row of a
-    symmetric solve."""
+    the ask: you cannot sell inventory you do not hold. This compatibility domain
+    differs from the q=0 row of a symmetric solve; the current Rust runtime uses
+    signed inventory instead."""
     res = solver(**BASE, q_max=3, q_min=0)
 
     assert list(res["q_grid"]) == [0, 1, 2, 3]
@@ -336,7 +336,7 @@ def test_terminal_depths_match_the_closed_form_from_the_terminal_condition():
 
 
 def test_solvers_agree_across_the_whole_surface_when_kappa_is_symmetric():
-    """The exact matrix solution is the ground truth for the Newton solver.
+    """The exact symmetric matrix solution is an independent reference for Newton.
 
     Checked at a FIXED time-to-go, not as a max over slices: backward Euler is
     first order, so the error at tau falls like O(dt) but with a constant that

@@ -5,14 +5,8 @@ metadata:
   type: project
 ---
 
-**Rewritten 2026-08-25.** This file described the freqtrade stack — two legs on
-separate sub-accounts, a param-estimator publishing to Redis, and a docker
-compose project. That trader is retired (tag `freqtrade-trader-final`); its
-containers are stopped and removed. What follows is the stack that actually
-runs. The freqtrade-era gotchas that died with it — the `param_update.lock`
-abandoned-lock recovery, the ccxt 4.5.22 pin and its fee invariant, the
-gate-battery profiles, `docker compose up -d mm-long mm-short` — are gone with
-the code; look them up at the tag if a question about the old bot ever comes up.
+**Current stack only.** Historical trader code and operating notes are available
+at tag `freqtrade-trader-final`; they are intentionally omitted here.
 
 ## What runs
 
@@ -21,13 +15,31 @@ The trader is `rust_live/`. **The grid is a compose service** as of 2026-08-30
 modes are still run by hand.
 
 ```
-docker compose up -d                 # the grid, and the only thing this file starts
+docker compose up -d                 # dry-run grid + period archiver; never live trading
 docker compose logs -f               # watch it
 docker compose stop                  # SIGINT, 60 s grace, teardown runs
 
 mm-live --config config/cashcat_dryrun_realistic.toml dry-run
 mm-live --config config/cashcat.toml live          # real money, explicit, gated
 ```
+
+The second service in that file is **`mm-archiver`**. The CASHCAT collector keeps
+30 days and deletes the rest, so a replay window is destroyed on a clock: once a
+period rolls off, no sweep can ever score it again. Every 21 days the archiver
+attempts a full-search sweep and writes it with the grid's P&L curve under
+`docs/history/<date>_<SYMBOL>/`. The 9-day margin is retry time, not a guarantee:
+after `sweep_FAILED.log`, rerun with `--force` before the oldest shards expire.
+
+It **writes but does not commit** — that would need an SSH key in a container —
+and logs an uncommitted-history reminder on every wake. Confirm the exact paths
+with `git status`, then run `git add docs/history && git commit && git push`.
+
+Two things it gets right on purpose, both learned here the hard way: due-ness
+comes from the newest directory on disk rather than a sleep timer (a timer
+restarts its countdown on every reboot and could never fire), and symbols are
+selected by tape length > 7 days rather than a hardcoded list, which separates
+the 30-day collector from the 3-day one without reading another project's
+compose file.
 
 Why it is containerized: on 2026-08-27 a Windows-update reboot at 13:47 killed
 the bare-process grid and it stayed down, unnoticed, for 66 h. `restart:
@@ -155,13 +167,6 @@ enough: through the 19.65 h blackout the process was healthy and rewriting the
 leaderboard every five seconds. `grid-health` fails on a stale
 `generated_at_ms` *or* a long `feed_down_for_ms`.
 
-**A `tail -f` on `run.log` locks the run directory.** Windows will not rename
-or move a directory while any file inside it has an open handle, so a monitor
-tailing `reports/grid_live/run.log` makes `mv reports/grid_live reports/archive_x`
-fail with *Permission denied* — with no hint that your own monitor is the cause.
-Stop the tail first. If the rename still fails, `rm -f` the directory's contents
-(that works even while the handle is held) and then `rmdir` it.
-
 **Replayed trades are expected, not a fault.** The venue replays history on
 every subscribe — measured 27 prints on connect against 13 live ones, then a
 further ~30 on each reconnect. `replayed_trades_ignored` rising while
@@ -195,8 +200,7 @@ gap too long, or an edited spec), which is exactly when you do want to split.
 
 ## Calibration
 
-All-Rust now: `mm-live calibrate` solves κ/λ/ε and the HJB surface over Parquet
-history. The Python estimators (`estimate_all.py`, `get_{kappa,lambda,epsilon}.py`)
-are kept for replay and analysis, not for feeding a live bot — nothing consumes
-their snapshots any more. See [[cartea-jaimungal-phi-kappa-trap]] before
-touching φ, and [[hjb-alpha-untuned-after-episodic]] for α.
+`mm-live calibrate` solves κ/λ/ε and the HJB surface over Parquet history. The
+Python estimators (`estimate_all.py`, `get_{kappa,lambda,epsilon}.py`) are kept
+for replay and independent analysis; the Rust trader does not consume their JSON
+snapshots. See `../docs/UNITS.md` before changing φ or α.

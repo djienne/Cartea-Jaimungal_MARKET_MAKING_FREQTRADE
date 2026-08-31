@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-"""Quoting core shared by the live engine and the replay harness.
+"""Python quoting core for replay and Rust parity checks.
 
-Every piece of quote arithmetic in this project once existed two or three
-times over: ``_assemble_half_spread`` in the freqtrade strategy and
-``assemble_half_spread`` in the replay, ``_maker_safe`` / ``post_only_check`` /
-``maker_safe``, ``_inventory_level`` / ``inventory_q``, two tick-rounding
-implementations plus a third in the ALO executor, and three separate
-``finite_float_or_none``. Parity was maintained by hand and asserted in one
-test. That is the wrong place for the guarantee: a backtest whose quoting
-differs from the live path tells you nothing, and the drift is silent until it
-costs money.
+Quote assembly, inventory mapping, maker-safety checks, and tick rounding once
+had multiple Python copies. Consolidating them here prevents a replay from
+silently using different arithmetic from its own documented reference path.
 
-This module is the single implementation. The strategy that was its other
-caller is retired (tag ``freqtrade-trader-final``); the replay harness imports
-it, and rust_live/ carries the same arithmetic in Rust for the live path.
+This module is the single Python implementation. The replay harness imports it;
+``rust_live/crates/cj-core`` independently implements the production path and
+``rust_live/tests/python_parity.rs`` checks selected outputs against this one.
 
 Conventions worth knowing before reading further:
 
@@ -22,11 +16,9 @@ Conventions worth knowing before reading further:
   -q_max), and that must never be clamped into a real quote.
 - Depths are measured from the MID, in price units, on the same coordinate the
   estimators calibrate in.
-- ``q`` is signed and spans the full [-q_max, +q_max]. ``route_sides`` splits
-  it across a long and a short leg for a venue adapter that can rest only one
-  order per pair, and ``allow_short=False`` reproduces a single long-only leg.
-  The retired freqtrade trader was the caller that needed this; the replay
-  quotes both sides from one instance.
+- ``q`` is signed and spans the full [-q_max, +q_max]. ``allow_short=False`` and
+  the two-leg routing helpers remain only for historical replay compatibility;
+  the current Python replay and Rust runtime quote both sides from one instance.
 - ``phi`` and ``alpha`` are NOT kappa-invariant -- eq. 10.28 uses -phi*kappa*q^2
   -- so ``solve_hjb`` derives them from live kappa via the dimensionless targets
   ``hjb_phi_kappa_t`` / ``hjb_alpha_kappa``. Tuning the raw values per symbol is
@@ -56,10 +48,8 @@ from hjb import compute_h_asymmetric, compute_h_symmetric
 
 # --- tick and lot rounding -------------------------------------------------
 #
-# These lived in hyperliquid_alo_executor until the freqtrade trader was
-# retired. They are the only part of that module the replay ever used, and
-# they are pure: no venue, no credentials, no order state. Kept in Decimal
-# deliberately -- see the note above about a bid rounded one ULP up.
+# These helpers are pure: no venue, credentials, or order state. Decimal is
+# deliberate -- see the note above about a bid rounded one ULP up.
 
 
 def side_is_buy(side: str) -> bool:
@@ -160,9 +150,8 @@ def parse_utc_timestamp(value: Any) -> datetime | None:
 class QuoteConfig:
     """Everything that shapes a quote, in one place.
 
-    The strategy builds one of these from its own attributes, and the replay
-    constructs one directly, so a backtest and the live path are configured by
-    the same object rather than by two lists of constants kept in step by hand.
+    The replay constructs this directly. Rust uses the corresponding validated
+    TOML schema; parity tests cover the shared numerical fields.
     """
 
     maker_fee_rate: float = 0.00015
@@ -191,7 +180,7 @@ class QuoteConfig:
     # quote onto the floor or the cap.
     #
     # So express the risk preference in the DIMENSIONLESS products the model
-    # actually responds to and derive phi/alpha from live kappa. These carry
+    # actually responds to and derive phi/alpha from the current kappa. These carry
     # across symbols; the raw values below are only the fallback when the
     # targets are disabled (set to 0).
     # 10.0 is NOT a measured optimum -- do not treat it as one.
@@ -230,7 +219,7 @@ class QuoteConfig:
 
     # The book's control is delta*(t,q) on [0,T] with terminal condition
     # h(T,q) = -alpha*q^2 (eq. 10.26). "stationary" reads only the t=0 slice,
-    # which is the approximation this project ran until now: the agent never
+    # which is retained as a comparison approximation: the agent never
     # approaches T, so alpha is inert and the model's flattening pressure never
     # appears. "episodic" solves the whole surface once and reads the slice at
     # the caller's actual time-to-go.
@@ -405,7 +394,7 @@ def inventory_to_q(signed_base: float, config: QuoteConfig) -> int:
     """Map a signed base position onto the HJB's integer inventory grid.
 
     With ``allow_short`` the result spans [-q_max, +q_max]; otherwise it is
-    clamped to [0, q_max] to reproduce the long-only strategy.
+    clamped to [0, q_max] to reproduce the historical long-only mode.
 
     Integer q stays the currency of routing, boundary tests and the two-leg
     heartbeat. Use :func:`inventory_to_q_exact` for pricing.
@@ -454,8 +443,8 @@ def solve_hjb(
     """Solve the HJB for the current parameter snapshot.
 
     ``params`` is the flat merged kappa/epsilon/lambda dict for one symbol.
-    Raises whatever the solver raises -- callers keep their last known-good
-    surface rather than quoting off a failed solve.
+    Solver failures propagate to the caller; replay must not continue with a
+    silently substituted surface.
     """
     phi, phi_source = effective_phi(config, sigma2_per_sec)
     # The volatility channel is an additive risk term, independent of how the
@@ -786,21 +775,15 @@ def compute_quotes(
     tau_remaining: float | None = None,
     q_exact: float | None = None,
 ) -> QuotePair:
-    """Both sides at once, which is the whole point of the rework.
+    """Price both sides from one mid, inventory, and HJB surface.
 
-    The retired freqtrade strategy could only ever have one resting order per
-    pair, so it alternated: bid while flat, ask while long. That is not market
-    making -- it
-    halves the spread capture and turns the inventory dimension of the model into
-    a two-state toggle. Here both sides are priced from the same mid, the same
-    inventory and the same HJB surface, and either may be disabled independently
-    at the inventory boundary.
+    Either side may be disabled independently at the inventory boundary.
 
     Prices are rounded maker-safe when a tick size is given: bids down, asks up,
     never toward the touch.
 
-    ``q`` stays integer because it is what the boundary tests and the two-leg
-    routing agree on; ``q_exact`` is the unrounded position and is what the
+    ``q`` stays integer for boundary/reporting compatibility; ``q_exact`` is the
+    unrounded position and is what the
     depths are priced from when given. ``tau_remaining`` is the episode's
     time-to-go; see :func:`select_delta`.
     """
@@ -840,12 +823,11 @@ def compute_quotes(
 
 
 def route_sides(q_long: int, q_short: int, q_max: int) -> dict[str, str | None]:
-    """Decide which leg of the two-instance pair rests which side this cycle.
+    """Compatibility routing for a two-instance, one-order-per-instance adapter.
 
-    Written for an adapter that rests one order per trade, so each instance
-    can hold only ONE side -- the freqtrade legs, now retired. Kept because the
-    constraint recurs on any venue adapter with the same limitation, and the
-    deadlock it avoids is not obvious. The naive split -- long always bids,
+    This is not used by the current runtime or replay. It is retained to
+    reproduce historical cases and because the deadlock it avoids is not
+    obvious. The naive split -- long always bids,
     short always asks -- deadlocks:
     the long leg ratchets to +q_max and the short leg to -q_max and both stop.
 
@@ -1058,10 +1040,8 @@ def validate_param_snapshot(
 class JsonlEventLogger:
     """Append-only JSONL audit stream with size-based rotation.
 
-    The gate evaluators (verify_live_canary.py, verify_fee_evidence.py,
-    verify_dry_run_quality.py) read this file, so the envelope -- a "ts" and an
-    "event" key with the payload flattened alongside -- is a contract, not a
-    preference.
+    Retained for historical-log compatibility tests. The envelope is a ``ts``
+    and ``event`` key with the payload flattened alongside.
     """
 
     def __init__(
@@ -1081,14 +1061,9 @@ class JsonlEventLogger:
     def _rotate_if_needed(self) -> None:
         """Roll .1 -> .2 -> ... -> .backup_count, dropping the oldest.
 
-        This kept exactly ONE backup, which silently bounded how much history
-        could ever exist. At the measured 3.7 MB/hour a 2 MB cap retained about
-        66 minutes across both files, so a week-long dry run would have kept
-        0.7% of its own fill evidence -- and accumulating that evidence is the
-        entire reason the run exists. Every consumer of this stream
-        (calibrate_replay_from_logs, verify_dry_run_quality, verify_live_canary,
-        verify_fee_evidence) reads whatever survives, so the cap was quietly
-        setting the sample size of the gates too.
+        Older runs kept one backup, which silently limited the available sample.
+        ``backup_count`` makes that retention explicit for compatibility users;
+        the current Rust event logger is a separate implementation.
         """
         if self.max_bytes <= 0:
             return

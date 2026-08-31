@@ -11,10 +11,11 @@ irreplaceable things ride that clock:
 2. **The dry-run grid.** Its event logs rotate at ~34 days
    (`--log-max-mb 64 --log-keep 3`), so grid history expires too.
 
-So every `--cadence-days` this writes a period directory holding a *fresh* sweep
-plus the grid's P&L curve, small enough to commit. A 21-day cadence against
-30-day retention leaves 9 days of slack: a skipped or failed cycle still loses
-nothing, because the next one's window still reaches back over the gap.
+Every `--cadence-days` this attempts to write a period directory holding a fresh
+sweep plus the grid's P&L curve, small enough to commit. A 21-day cadence against
+30-day retention leaves 9 days to retry an interrupted or failed attempt; the
+failure is harmless only if a successful `--force` rerun lands before that
+margin expires.
 
 TWO WINDOW CONVENTIONS, deliberately different, both recorded in the period
 README:
@@ -164,8 +165,9 @@ def slice_and_downsample(history, target, since_ms, minutes):
 
     Full resolution is 60 s per variant, about 95 MB/month -- far too much to
     commit every three weeks. Thinning to 15 min and compressing keeps a
-    month-scale retrospective legible at roughly 1/200th the size; the
-    full-resolution file stays on local disk until log rotation drops it.
+    month-scale retrospective legible at roughly 1/200th the size. The
+    full-resolution equity file stays on local disk and is intentionally not
+    rotated; only the per-variant event logs have a rotation ceiling.
     """
     import pandas as pd
 
@@ -451,7 +453,7 @@ def archive(symbol, args, now):
 
 
 def uncommitted(out_dir):
-    """How many period directories git does not yet have, or -1 if unknown.
+    """How many top-level history entries Git reports uncommitted, or -1.
 
     The container writes but never commits -- that would mean mounting an SSH
     key into it, a poor trade for the convenience. So it says so instead, on
@@ -496,7 +498,7 @@ def cycle(args):
             archive(symbol, args, now)
     pending = uncommitted(args.out)
     if pending > 0:
-        log("%d period(s) uncommitted - `git add docs/history && git commit && git push`" % pending)
+        log("%d history path(s) uncommitted - inspect `git status` before committing" % pending)
     elif pending == 0:
         log("all periods committed")
 

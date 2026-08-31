@@ -1414,6 +1414,7 @@ dependencies = [
  "cj-data",
  "clap",
  "core_affinity",
+ "fs2",
  "futures-util",
  "hyperliquid-connector",
  "mm-config",

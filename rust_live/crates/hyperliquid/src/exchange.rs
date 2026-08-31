@@ -37,6 +37,7 @@ impl HyperliquidExchangeClient {
         action_timeout: Duration,
         action_expiry_ms: u64,
         max_rest_weight_per_minute: u64,
+        safety_rest_weight_reserve: u64,
     ) -> Result<Self> {
         instrument.validate()?;
         if action_timeout.is_zero() {
@@ -44,6 +45,9 @@ impl HyperliquidExchangeClient {
         }
         if max_rest_weight_per_minute == 0 || max_rest_weight_per_minute > 1_200 {
             bail!("REST weight limit must be in 1..=1200 per minute");
+        }
+        if safety_rest_weight_reserve >= max_rest_weight_per_minute {
+            bail!("REST safety reserve must be below the total limit");
         }
         let http = reqwest::Client::builder()
             .timeout(action_timeout)
@@ -61,7 +65,10 @@ impl HyperliquidExchangeClient {
             action_expiry_ms,
             clock,
             latency,
-            rate_limit: Mutex::new(RestRateLimiter::new(max_rest_weight_per_minute)),
+            rate_limit: Mutex::new(RestRateLimiter::new(
+                max_rest_weight_per_minute,
+                safety_rest_weight_reserve,
+            )),
         })
     }
 
@@ -78,11 +85,19 @@ impl HyperliquidExchangeClient {
     }
 
     pub async fn info(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+        self.info_with_priority(request, false).await
+    }
+
+    async fn info_with_priority(
+        &self,
+        request: serde_json::Value,
+        safety_critical: bool,
+    ) -> Result<serde_json::Value> {
         let request_type = request
             .get("type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        self.consume_rest_weight(info_weight(request_type))?;
+        self.consume_rest_weight(info_weight(request_type), safety_critical)?;
         let started_ns = self.clock.now_ns();
         let response = self
             .http
@@ -124,6 +139,34 @@ impl HyperliquidExchangeClient {
                 "user": self.account(),
                 "dex": self.instrument.dex,
             }))
+            .await?;
+        serde_json::from_value(value).context("cannot decode openOrders")
+    }
+
+    pub async fn clearinghouse_state_safety(&self) -> Result<ClearinghouseState> {
+        let value = self
+            .info_with_priority(
+                json!({
+                    "type": "clearinghouseState",
+                    "user": self.account(),
+                    "dex": self.instrument.dex,
+                }),
+                true,
+            )
+            .await?;
+        serde_json::from_value(value).context("cannot decode clearinghouseState")
+    }
+
+    pub async fn open_orders_safety(&self) -> Result<Vec<OpenOrder>> {
+        let value = self
+            .info_with_priority(
+                json!({
+                    "type": "openOrders",
+                    "user": self.account(),
+                    "dex": self.instrument.dex,
+                }),
+                true,
+            )
             .await?;
         serde_json::from_value(value).context("cannot decode openOrders")
     }
@@ -183,6 +226,14 @@ impl HyperliquidExchangeClient {
             .await
     }
 
+    pub async fn l2_book_safety(&self) -> Result<serde_json::Value> {
+        self.info_with_priority(
+            json!({"type": "l2Book", "coin": self.instrument.symbol}),
+            true,
+        )
+        .await
+    }
+
     pub async fn order_status(&self, oid_or_cloid: serde_json::Value) -> Result<serde_json::Value> {
         self.info(json!({
             "type": "orderStatus",
@@ -194,13 +245,13 @@ impl HyperliquidExchangeClient {
 
     pub async fn place_orders(&self, requests: &[LiveOrderRequest]) -> Result<ActionOutcome> {
         let action = order_action(&self.instrument, requests)?;
-        self.post_signed(&action, LatencyKind::SubmitToAck, true)
+        self.post_signed(&action, LatencyKind::SubmitToAck, true, false)
             .await
     }
 
     pub async fn cancel_by_cloid(&self, cloids: &[String]) -> Result<ActionOutcome> {
         let action = cancel_by_cloid_action(self.instrument.asset_id, cloids)?;
-        self.post_signed(&action, LatencyKind::CancelToAck, false)
+        self.post_signed(&action, LatencyKind::CancelToAck, false, true)
             .await
     }
 
@@ -210,13 +261,13 @@ impl HyperliquidExchangeClient {
         nonce: u64,
     ) -> Result<ActionOutcome> {
         let action = cancel_by_cloid_action(self.instrument.asset_id, cloids)?;
-        self.post_signed_at(&action, LatencyKind::CancelToAck, None, nonce)
+        self.post_signed_at(&action, LatencyKind::CancelToAck, None, nonce, true)
             .await
     }
 
     pub async fn cancel_by_oid(&self, oids: &[u64]) -> Result<ActionOutcome> {
         let action = cancel_by_oid_action(self.instrument.asset_id, oids)?;
-        self.post_signed(&action, LatencyKind::CancelToAck, false)
+        self.post_signed(&action, LatencyKind::CancelToAck, false, true)
             .await
     }
 
@@ -226,7 +277,7 @@ impl HyperliquidExchangeClient {
         nonce: u64,
     ) -> Result<ActionOutcome> {
         let action = schedule_cancel_action(time);
-        self.post_signed_at(&action, LatencyKind::CancelToAck, None, nonce)
+        self.post_signed_at(&action, LatencyKind::CancelToAck, None, nonce, true)
             .await
     }
 
@@ -235,11 +286,12 @@ impl HyperliquidExchangeClient {
         action: &A,
         latency_kind: LatencyKind,
         with_expiry: bool,
+        safety_critical: bool,
     ) -> Result<ActionOutcome> {
         let nonce = self.nonce.next();
         let expires_after = (with_expiry && self.action_expiry_ms != 0)
             .then(|| nonce.saturating_add(self.action_expiry_ms));
-        self.post_signed_at(action, latency_kind, expires_after, nonce)
+        self.post_signed_at(action, latency_kind, expires_after, nonce, safety_critical)
             .await
     }
 
@@ -249,8 +301,9 @@ impl HyperliquidExchangeClient {
         latency_kind: LatencyKind,
         expires_after: Option<u64>,
         nonce: u64,
+        safety_critical: bool,
     ) -> Result<ActionOutcome> {
-        self.consume_rest_weight(1)?;
+        self.consume_rest_weight(1, safety_critical)?;
         let envelope = sign_envelope(
             action,
             &self.credentials,
@@ -295,30 +348,32 @@ impl HyperliquidExchangeClient {
         })
     }
 
-    fn consume_rest_weight(&self, weight: u64) -> Result<()> {
+    fn consume_rest_weight(&self, weight: u64, safety_critical: bool) -> Result<()> {
         self.rate_limit
             .lock()
             .map_err(|_| anyhow::anyhow!("REST rate limiter lock poisoned"))?
-            .consume(weight)
+            .consume(weight, safety_critical)
     }
 }
 
 struct RestRateLimiter {
+    regular_maximum: u64,
     maximum: u64,
     used: u64,
     entries: VecDeque<(Instant, u64)>,
 }
 
 impl RestRateLimiter {
-    fn new(maximum: u64) -> Self {
+    fn new(maximum: u64, safety_reserve: u64) -> Self {
         Self {
+            regular_maximum: maximum.saturating_sub(safety_reserve),
             maximum,
             used: 0,
             entries: VecDeque::new(),
         }
     }
 
-    fn consume(&mut self, weight: u64) -> Result<()> {
+    fn consume(&mut self, weight: u64, safety_critical: bool) -> Result<()> {
         let cutoff = Instant::now()
             .checked_sub(Duration::from_secs(60))
             .context("monotonic clock cannot represent REST rate window")?;
@@ -327,12 +382,17 @@ impl RestRateLimiter {
                 self.used = self.used.saturating_sub(expired);
             }
         }
-        if self.used.saturating_add(weight) > self.maximum {
+        let maximum = if safety_critical {
+            self.maximum
+        } else {
+            self.regular_maximum
+        };
+        if self.used.saturating_add(weight) > maximum {
             bail!(
                 "configured Hyperliquid REST weight budget exhausted: used={}, requested={}, maximum={}",
                 self.used,
                 weight,
-                self.maximum
+                maximum
             );
         }
         self.entries.push_back((Instant::now(), weight));
@@ -521,9 +581,9 @@ mod tests {
         assert_eq!(info_weight("clearinghouseState"), 2);
         assert_eq!(info_weight("userRole"), 60);
         assert_eq!(info_weight("userFees"), 20);
-        let mut limiter = RestRateLimiter::new(3);
-        limiter.consume(2).unwrap();
-        assert!(limiter.consume(2).is_err());
-        limiter.consume(1).unwrap();
+        let mut limiter = RestRateLimiter::new(3, 1);
+        limiter.consume(2, false).unwrap();
+        assert!(limiter.consume(1, false).is_err());
+        limiter.consume(1, true).unwrap();
     }
 }

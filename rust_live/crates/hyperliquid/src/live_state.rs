@@ -232,6 +232,7 @@ impl PersistedLiveState {
 
 pub struct LiveStateStore {
     _process_lock: File,
+    _signer_lock: File,
     path: PathBuf,
     state: Arc<Mutex<PersistedLiveState>>,
     persistence_tx: SyncSender<PersistCommand>,
@@ -285,6 +286,29 @@ impl LiveStateStore {
             format!(
                 "another live process owns the state lock {}",
                 lock_path.display()
+            )
+        })?;
+        let signer_lock_path = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("signer-{}.lock", agent.to_ascii_lowercase()));
+        let signer_lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&signer_lock_path)
+            .with_context(|| {
+                format!(
+                    "cannot open signer nonce lock {}",
+                    signer_lock_path.display()
+                )
+            })?;
+        signer_lock.try_lock_exclusive().with_context(|| {
+            format!(
+                "another live process is using signer {} via {}",
+                agent,
+                signer_lock_path.display()
             )
         })?;
         let database = Database::create(path)
@@ -352,6 +376,7 @@ impl LiveStateStore {
             })?;
         Ok(Self {
             _process_lock: process_lock,
+            _signer_lock: signer_lock,
             path: path.to_owned(),
             state,
             persistence_tx,
@@ -371,7 +396,6 @@ impl LiveStateStore {
     /// must use [`Self::with_state`] or a scalar accessor instead — this clone
     /// is what made per-event cost grow with session length.
     pub fn load_required(&self) -> Result<PersistedLiveState> {
-        self.check_persistence_error()?;
         self.state
             .lock()
             .map_err(|_| anyhow::anyhow!("live-state memory lock poisoned"))
@@ -382,7 +406,6 @@ impl LiveStateStore {
     /// nothing by default. The closure must be short and must never block or
     /// await: it holds the same mutex the persistence writer snapshots under.
     pub fn with_state<T>(&self, read: impl FnOnce(&PersistedLiveState) -> T) -> Result<T> {
-        self.check_persistence_error()?;
         let state = self
             .state
             .lock()
@@ -409,7 +432,6 @@ impl LiveStateStore {
         &self,
         update: impl FnOnce(&mut PersistedLiveState) -> Result<T>,
     ) -> Result<T> {
-        self.check_persistence_error()?;
         let mut state = self
             .state
             .lock()
@@ -424,7 +446,6 @@ impl LiveStateStore {
     /// advanced. Takes the lock once and clones nothing; the writer is woken
     /// only when the day actually rolled.
     pub fn risk_scalars(&self, day: u64) -> Result<RiskScalars> {
-        self.check_persistence_error()?;
         let mut state = self
             .state
             .lock()
@@ -479,6 +500,27 @@ impl LiveStateStore {
             bail!("live-state persistence failed: {error}");
         }
         Ok(())
+    }
+
+    pub fn persistence_healthy(&self) -> bool {
+        self.persistence_error
+            .lock()
+            .map(|error| error.is_none())
+            .unwrap_or(false)
+    }
+
+    /// Last-resort nonce for cancel/flatten when the persistence device is
+    /// degraded. It advances beyond the entire durable reservation, so it
+    /// cannot collide with the session actor's in-memory lease. This is used
+    /// only for risk reduction; normal quoting still requires durable state.
+    pub fn emergency_nonce(&self) -> Result<u64> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("live-state memory lock poisoned"))?;
+        let nonce = unix_ms().max(state.nonce_reserved_through.saturating_add(1));
+        state.nonce_reserved_through = nonce;
+        Ok(nonce)
     }
 
     pub fn next_cloid_sequence(&self) -> Result<u64> {
@@ -771,9 +813,23 @@ fn run_persistence_writer(
         };
         let snapshot = state_guard.clone();
         drop(state_guard);
-        let result = persist_delta(database, &last_persisted, &snapshot, durability);
+        let mut result = persist_delta(database, &last_persisted, &snapshot, durability);
+        for retry in 0_u32..5 {
+            if result.is_ok() {
+                break;
+            }
+            store_writer_error(
+                persistence_error,
+                &result.as_ref().expect_err("checked as error").to_string(),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(
+                50_u64.saturating_mul(1_u64 << retry).min(1_000),
+            ));
+            result = persist_delta(database, &last_persisted, &snapshot, durability);
+        }
         if result.is_ok() {
             last_persisted = snapshot;
+            clear_writer_error(persistence_error);
         }
         if let PersistCommand::Flush(reply) = command {
             let acknowledgement = match &result {
@@ -784,7 +840,12 @@ fn run_persistence_writer(
         }
         if let Err(error) = result {
             store_writer_error(persistence_error, &error.to_string());
-            break;
+            if shutting_down {
+                break;
+            }
+            // Stay alive. A later coalesced wake retries the newest complete
+            // in-memory image after a transient disk/full/locking fault clears.
+            continue;
         }
         if shutting_down {
             break;
@@ -795,6 +856,12 @@ fn run_persistence_writer(
 fn store_writer_error(destination: &Mutex<Option<String>>, error: &str) {
     if let Ok(mut destination) = destination.lock() {
         *destination = Some(error.to_owned());
+    }
+}
+
+fn clear_writer_error(destination: &Mutex<Option<String>>) {
+    if let Ok(mut destination) = destination.lock() {
+        *destination = None;
     }
 }
 
@@ -889,6 +956,51 @@ mod tests {
             last_update_ms,
             last_error: None,
         }
+    }
+
+    #[test]
+    fn degraded_persistence_never_blocks_safety_reads_or_emergency_nonce() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = open(&directory);
+        *store.persistence_error.lock().unwrap() = Some("injected disk fault".to_owned());
+        assert!(store.load_required().is_ok());
+        assert!(store.with_state(|state| state.orders.len()).is_ok());
+        let before = store
+            .with_state(|state| state.nonce_reserved_through)
+            .unwrap();
+        let emergency = store.emergency_nonce().unwrap();
+        assert!(emergency > before);
+    }
+
+    #[test]
+    fn signer_lock_spans_different_state_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = open(&directory);
+        let second = LiveStateStore::open(
+            &directory.path().join("other.redb"),
+            "CASHCAT",
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "config",
+            "meta",
+            SessionIntent::Quote {
+                venue_is_flat: true,
+            },
+        );
+        assert!(second.is_err());
+        drop(first);
+        assert!(LiveStateStore::open(
+            &directory.path().join("other.redb"),
+            "CASHCAT",
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "config",
+            "meta",
+            SessionIntent::Quote {
+                venue_is_flat: true,
+            },
+        )
+        .is_ok());
     }
 
     /// The replay horizon only moves forward, and keys strictly below it are

@@ -1,9 +1,7 @@
-"""Behavioural pins for scripts/mm_core.py.
+"""Behavioural pins for the Python replay/reference quoting core.
 
-mm_core is about to become the single implementation of every piece of quote
-arithmetic in the project (today the strategy and the replay each carry their
-own copy). These tests pin what it does *before* anything imports it, so the
-migration has a fixed reference to be checked against rather than a moving one.
+Rust implements the production path independently; its parity tests compare the
+scientific outputs that should agree with this module.
 
 The properties that matter most, and why:
   - a disabled side is None, never a floor-clamped quote (the HJB's way of
@@ -520,8 +518,7 @@ def test_routing_quotes_both_sides_when_flat():
 
 
 def test_routing_stays_two_sided_at_interior_inventory():
-    """Every interior state must present a bid AND an ask -- that is the whole
-    point of running two instances."""
+    """The compatibility router must present one bid and one ask in the interior."""
     for q_long in range(0, 4):
         for q_short in range(-3, 1):
             q_net = q_long + q_short
@@ -845,11 +842,7 @@ def test_compute_quotes_reports_the_residual_it_priced_from():
 
 # --- tick and lot rounding -------------------------------------------------
 #
-# Ported from tests/test_hyperliquid_alo_executor.py, which retired with the
-# freqtrade trader and exists only at tag `freqtrade-trader-final`. These
-# functions moved into mm_core because the replay is the
-# only remaining caller; the assertions came with them so the move is covered
-# rather than merely compiling.
+# These assertions pin the Python reference's maker-safe tick/lot rounding.
 
 
 def test_round_price_for_side_never_rounds_toward_the_touch():

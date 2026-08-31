@@ -1,13 +1,10 @@
 # Rust Cartea–Jaimungal Engine
 
-This directory contains the Rust runtime, which is **the trader**. The
-Freqtrade strategy that used to hold that role was retired on 2026-08-25 and
-exists only at tag `freqtrade-trader-final`. What remains in the original
-folders -- the Python estimators, replay harness, tests and evidence -- is the
-numerical reference oracle, and `tests/python_parity.rs` pins this runtime
-against it. Both use the same schema-v4 direct-window calibration semantics:
-there is no EMA or other cross-window smoothing between the observed parameters
-and the HJB.
+This directory contains the current trader. The Python estimators and replay
+harness provide an independent numerical comparison path;
+`tests/python_parity.rs` pins selected Rust calibration, HJB, and quote outputs
+against it. Both use schema-v4 direct-window calibration semantics: there is no
+EMA or other cross-window smoothing between observed parameters and the HJB.
 
 The Rust model is intentionally singular: asymmetric Cartea–Jaimungal arrival
 and adverse-selection parameters feed the nonlinear backward-Euler HJB. The
@@ -41,8 +38,9 @@ The Cargo workspace enforces dependency direction:
 - Real-account acceptance/canary code is compiled only into the separately
   feature-gated `mm-live-acceptance` artifact and is absent from the production
   image.
-- Any causal event loss or reconnect invalidates the dry-run evidence and
-  withdraws quotes.
+- Causal event loss always invalidates a dry run. Reconnects withdraw quotes
+  while the feed is unavailable and are measured by total downtime and longest
+  gap; the report is invalid only when the configured limits are exceeded.
 - An active legacy collector is detected before Rust becomes a Parquet writer.
   Use `--no-write-parquet` when intentionally running beside the reference
   collector.
@@ -77,7 +75,7 @@ aged terminal orders are dropped, so per-event cost stays flat over a session.
 Superseded market quote revisions coalesce until the configured minimum order
 lifetime, while fill/risk cancellations bypass that delay; a resting order
 within the requote hold window (`replace_threshold_ticks` /
-`replace_threshold_bps`, evidence in `docs/requote_hysteresis_sweep.md`) is
+  `replace_threshold_bps`, evidence in `../docs/requote_hysteresis_sweep.md`) is
 kept to preserve queue position. The connector tracks its local contribution
 to the venue address-action budget, preserves a separate WebSocket allowance
 for cancels and emergency reduction, and config validation rejects budgets the
@@ -121,7 +119,7 @@ starting or stopping a live session cannot disturb collection; only `dry-run`
 can, and it is refused by the writer lock and shard preflight. See
 [`../docs/DATA_COLLECTION.md`](../docs/DATA_COLLECTION.md).
 
-The current protocol research, exact signing specification, repository-wide
+The dated protocol research, exact signing specification, repository-wide
 connector audit, CASHCAT constraints, and staged release gates are consolidated
 in [`HYPERLIQUID_LIVE_CONNECTOR.md`](HYPERLIQUID_LIVE_CONNECTOR.md).
 
@@ -188,10 +186,11 @@ three consecutive misses). The tokio runtime is bounded and, when
 blocking threads are pinned away from the hot core; pair with OS-level
 isolation for a genuinely quiet core.
 
-`window_samples` must be inspected before interpreting tail percentiles. The
-dry-run backend's configured 250 ms decision/ack/cancel delays are simulation
-assumptions; the latency file measures actual software timing. The live backend
-publishes real venue acknowledgement and close timings into the same observer.
+`window_samples` must be inspected before interpreting tail percentiles. Dry-run
+decision/ack/cancel delays are simulation assumptions (150 ms each in
+`cashcat_dryrun_realistic.toml`, 250 ms each in `cashcat.toml`); the latency file
+measures actual software timing. The live backend publishes real venue
+acknowledgement and close timings into the same observer.
 
 ## Commands
 
@@ -275,6 +274,7 @@ must be exactly equal.
 - inventory `q`: physical base position divided by the flat-state inventory
   unit.
 
-The CASHCAT profile dynamically verifies venue metadata and currently expects
-integer base sizes, up to six price decimals, five significant figures, and at
-most 3x venue leverage.
+The CASHCAT profile dynamically verifies venue metadata. The tracked validation
+fixture expects integer base sizes, up to six price decimals, five significant
+figures, and at most 3x venue leverage; startup refuses if live metadata no
+longer matches the validated constraints.
