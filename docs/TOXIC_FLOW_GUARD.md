@@ -94,6 +94,43 @@ the aggressor side, so the buy/sell split is exact rather than reconstructed.
 Withdrawals are attributed to `QuoteReason::ToxicFlow`, so every report and JSONL
 line says why, and trip counts are visible in the dry-run logs.
 
+## Re-run of 2026-09-02: schema v5, current simulator, `reduce_only_while_tripped`
+
+The A/B below was re-run on the same frozen tapes after two changes that both
+move the numbers: the estimator now hands the HJB `lambda_raw x survival
+intercept` (parameter schema v5), and the replay loader carries all twenty
+recorded book levels instead of the top one. The second matters more than it
+sounds. The simulator fills a virtual order only once it can see the queue at
+that price, and the shipped profile forbids queue decay
+(`dry_run.queue_decay_per_second = 0`), so with one level a maker quote resting
+inside the book could never fill at all; the original A/B filled only because it
+ran with a decay of 0.05, which the validator has since refused. Fill counts
+therefore drop sharply and are not comparable with the table further down.
+
+| 16 h window, current simulator | guard off | guard on | guard on + reduce-only |
+|---|---:|---:|---:|
+| **crash** 08-21 20:00 → 08-22 12:00 | −6.67 (10 fills, ends flat) | **+0.10** (6 fills, ends flat) | +0.10 (bit-identical) |
+| **calm** 08-19 08:00 → 08-20 00:00 | −58.67 (244 fills, +1,095) | −58.67 (bit-identical) | −58.67 (bit-identical) |
+
+Direction and mechanism hold: the guard still removes the cascade loss on the
+crash tape (`risk_limit` withdrawals 7,902 → 311) and never fires on the calm
+control.
+
+`reduce_only_while_tripped` is **inert on this evidence**. It is bit-identical
+to guard-on on both tapes because the guard tripped while the book was flat: at
+the current fill rate there was no inventory to reduce when the breaker fired.
+The lever therefore stays off. The experiment that would decide it — a trip
+while holding a position — needs either a tape where a fill precedes the
+cascade closely enough, or a fill model that can see queues deeper than the
+twenty recorded levels (most of this strategy's quotes rest beyond them, which
+is why `unknown_queue_activations` is ~38,000 per leg). Neither exists today.
+
+Provenance: `scripts/guard_study/configs/{crash,calm}_guard{off,on}_v5.toml`
+and `*_guardon_ro.toml` (identical to the 2026-08-23 configs except
+`queue_decay_per_second = 0.0` and, for `_ro`, `reduce_only_while_tripped =
+true`); run artifacts under `scripts/guard_study_tapes/runs/<name>/`
+(git-ignored). Binary `mm-live` at the commit that introduced this section.
+
 ## The A/B
 
 Replayed over frozen shard sets (the collector keeps writing, so an unfrozen

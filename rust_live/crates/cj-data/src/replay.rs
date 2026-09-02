@@ -6,6 +6,31 @@ use anyhow::Result;
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
+/// Convert one side's recorded levels to venue units, falling back to the
+/// top-of-book fields for shards that carried only level 0.
+fn book_levels(
+    instrument: &InstrumentSpec,
+    levels: &[(f64, f64)],
+    top_px: f64,
+    top_size: f64,
+) -> Result<Vec<BookLevel>> {
+    if levels.is_empty() {
+        return Ok(vec![BookLevel {
+            px: instrument.price_to_units(top_px)?,
+            qty_units: instrument.size_to_units(top_size)?,
+        }]);
+    }
+    levels
+        .iter()
+        .map(|(px, size)| {
+            Ok(BookLevel {
+                px: instrument.price_to_units(*px)?,
+                qty_units: instrument.size_to_units(*size)?,
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 pub struct ParquetReplaySource {
     events: std::vec::IntoIter<MarketEvent>,
@@ -48,18 +73,15 @@ impl ParquetReplaySource {
             ));
         }
         for book in &data.books {
+            // Every recorded level, not just the top: the simulator fills a
+            // virtual order only once it can see the queue at that price,
+            // and maker quotes rest inside the book, not at the touch.
             events.push((
                 book.ts_ms,
                 1_u8,
                 MarketEvent::Book(BookSnapshot {
-                    bids: vec![BookLevel {
-                        px: instrument.price_to_units(book.bid)?,
-                        qty_units: instrument.size_to_units(book.bid_size)?,
-                    }],
-                    asks: vec![BookLevel {
-                        px: instrument.price_to_units(book.ask)?,
-                        qty_units: instrument.size_to_units(book.ask_size)?,
-                    }],
+                    bids: book_levels(instrument, &book.bid_levels, book.bid, book.bid_size)?,
+                    asks: book_levels(instrument, &book.ask_levels, book.ask, book.ask_size)?,
                     exchange_ms: book.ts_ms.max(0.0) as u64,
                     recv_ns: (book.ts_ms.max(0.0) * 1_000_000.0) as u64,
                 }),

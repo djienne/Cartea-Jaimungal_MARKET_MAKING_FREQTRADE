@@ -46,13 +46,22 @@ pub struct TradeRecord {
     pub trade_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BookTopRecord {
     pub ts_ms: f64,
     pub bid: f64,
     pub bid_size: f64,
     pub ask: f64,
     pub ask_size: f64,
+    /// Every recorded level, best first, as `(price, size)`; level 0 repeats
+    /// the top fields. The replay simulator can only fill a virtual order
+    /// whose queue it can see, and a maker quote normally rests well inside
+    /// the book rather than at the touch, so with only the top level (and
+    /// zero queue decay) replay fills were structurally impossible.
+    #[serde(default)]
+    pub bid_levels: Vec<(f64, f64)>,
+    #[serde(default)]
+    pub ask_levels: Vec<(f64, f64)>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,7 +106,7 @@ struct RawTrade {
     trade_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct RawBookTop {
     local_ms: f64,
     exchange_ms: Option<i64>,
@@ -105,6 +114,8 @@ struct RawBookTop {
     bid_size: f64,
     ask: f64,
     ask_size: f64,
+    bid_levels: Vec<(f64, f64)>,
+    ask_levels: Vec<(f64, f64)>,
 }
 
 pub fn load_market_window(
@@ -187,6 +198,8 @@ pub fn load_market_window(
             bid_size: row.bid_size,
             ask: row.ask,
             ask_size: row.ask_size,
+            bid_levels: row.bid_levels,
+            ask_levels: row.ask_levels,
         })
         .filter(|row| row.ts_ms >= window_start_ms && row.ts_ms <= window_end_ms)
         .collect();
@@ -382,23 +395,62 @@ fn parse_trade_batches(batches: &[RecordBatch]) -> Result<Vec<RawTrade>> {
     Ok(rows)
 }
 
+/// Deepest level the collector writes (`bid_price_0..19`).
+const MAX_BOOK_LEVELS: usize = 20;
+
+fn usable_level(px: f64, size: f64) -> bool {
+    px.is_finite() && px > 0.0 && size.is_finite() && size >= 0.0
+}
+
 fn parse_book_batches(batches: &[RecordBatch]) -> Result<Vec<RawBookTop>> {
     let mut rows = Vec::new();
     for batch in batches {
         let timestamp = numeric_f64(batch, "timestamp")?;
-        let bid = numeric_f64(batch, "bid_price_0")?;
-        let bid_size = numeric_f64(batch, "bid_size_0")?;
-        let ask = numeric_f64(batch, "ask_price_0")?;
-        let ask_size = numeric_f64(batch, "ask_size_0")?;
         let exchange = optional_i64(batch, "exchange_timestamp")?;
+        // Level 0 is mandatory; deeper levels are read while the shard has
+        // them, so an older or narrower shard still loads as top-of-book.
+        let mut levels: Vec<[Vec<f64>; 4]> = Vec::with_capacity(MAX_BOOK_LEVELS);
+        for level in 0..MAX_BOOK_LEVELS {
+            let names = [
+                format!("bid_price_{level}"),
+                format!("bid_size_{level}"),
+                format!("ask_price_{level}"),
+                format!("ask_size_{level}"),
+            ];
+            if level > 0
+                && names
+                    .iter()
+                    .any(|name| batch.schema().index_of(name).is_err())
+            {
+                break;
+            }
+            levels.push([
+                numeric_f64(batch, &names[0])?,
+                numeric_f64(batch, &names[1])?,
+                numeric_f64(batch, &names[2])?,
+                numeric_f64(batch, &names[3])?,
+            ]);
+        }
         for index in 0..batch.num_rows() {
+            let mut bid_levels = Vec::with_capacity(levels.len());
+            let mut ask_levels = Vec::with_capacity(levels.len());
+            for [bid_px, bid_sz, ask_px, ask_sz] in &levels {
+                if usable_level(bid_px[index], bid_sz[index]) {
+                    bid_levels.push((bid_px[index], bid_sz[index]));
+                }
+                if usable_level(ask_px[index], ask_sz[index]) {
+                    ask_levels.push((ask_px[index], ask_sz[index]));
+                }
+            }
             rows.push(RawBookTop {
                 local_ms: timestamp[index] * 1_000.0,
                 exchange_ms: exchange[index],
-                bid: bid[index],
-                bid_size: bid_size[index],
-                ask: ask[index],
-                ask_size: ask_size[index],
+                bid: levels[0][0][index],
+                bid_size: levels[0][1][index],
+                ask: levels[0][2][index],
+                ask_size: levels[0][3][index],
+                bid_levels,
+                ask_levels,
             });
         }
     }

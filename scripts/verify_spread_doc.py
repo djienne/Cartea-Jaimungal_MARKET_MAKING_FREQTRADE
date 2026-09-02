@@ -72,22 +72,29 @@ TEX = REPO / "docs" / "spread_calculation.tex"
 # ---------------------------------------------------------------------------
 # The pinned snapshot the worked example runs on.
 #
-# One coherent estimator cycle from the live CASHCAT dry run: kappa.json and
-# epsilon.json both stamped 2026-08-17T16:20:41Z, over the 120-minute window
-# 14:20:18Z - 16:20:18Z. Pinned rather than read from the live files so the
-# document's numbers do not change every 30 seconds.
+# One coherent estimator window from the live CASHCAT dry run, 2026-08-17
+# 14:20:18Z - 16:20:18Z (120 minutes), re-estimated on 2026-09-02 under
+# parameter schema v5 (`python scripts/get_kappa.py` / `get_epsilon.py`
+# with --window-start/--window-end). v5 hands the HJB lambda_raw times the
+# survival-fit intercept; the kappa/epsilon values differ from the original
+# 2026-08-17T16:20:41Z live cycle by under 1% because the collector later
+# compacted the window (170 s of outage is now excluded from the denominator).
+# Pinned rather than read from the live files so the document's numbers do
+# not change every 30 seconds.
 # ---------------------------------------------------------------------------
 SNAPSHOT = {
-    "kappa+": 10123.135078777144,
-    "kappa-": 9484.501217326813,
-    "lambda+": 0.11312967808603971,
-    "lambda-": 0.12276729961791137,
-    "epsilon+": 2.503490878427179e-05,
-    "epsilon-": 2.7262903453589742e-05,
+    "kappa+": 10055.673508266684,
+    "kappa-": 9398.654070051622,
+    # lambda_raw 0.12022191331670479 x survival intercept 1.03272...
+    "lambda+": 0.12415621832565442,
+    # lambda_raw 0.13182855810651778 x survival intercept 1.12928...
+    "lambda-": 0.14887163479331725,
+    "epsilon+": 2.5224725943970184e-05,
+    "epsilon-": 2.7800333704115578e-05,
 }
-SIGMA2_PER_SEC = 3.336997029008445e-09
-DEPTH_P95_PLUS = 0.00032449999999999135
-DEPTH_P95_MINUS = 0.0003417999999999946
+SIGMA2_PER_SEC = 3.352917846799544e-09
+DEPTH_P95_PLUS = 0.0003251999999999934
+DEPTH_P95_MINUS = 0.0003440499999999971
 
 MID = 0.105685
 PRICE_TICK = 1e-5
