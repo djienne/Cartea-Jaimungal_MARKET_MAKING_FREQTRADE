@@ -340,9 +340,31 @@ async fn run_session(
     };
     let mut backoff_ms = 250_u64;
     let mut generation = 0_u64;
+    // One limiter for the whole session: the venue's per-minute budget does
+    // not reset when we reconnect, so neither may our view of it. A
+    // per-connection limiter could not see that a flapping socket was
+    // spending eight subscriptions per attempt against the same window.
+    let mut rate = WebSocketRateLimiter::new(
+        args.config.max_ws_messages_per_minute,
+        args.config.cancel_reserve_fraction,
+    );
     loop {
         if *args.shutdown.borrow() {
             return;
+        }
+        // Do not open a socket we cannot afford to subscribe on: a connect
+        // that fails on budget would churn Disconnected events for nothing.
+        if rate.regular_headroom() < ACCOUNT_SUBSCRIPTION_COUNT as u64 {
+            warn!("WebSocket message budget cannot fit a resubscribe; holding the reconnect");
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                changed = args.shutdown.changed() => {
+                    if changed.is_err() || *args.shutdown.borrow() {
+                        return;
+                    }
+                }
+            }
+            continue;
         }
         let attempt = tokio::time::timeout(args.connect_timeout, connect_async(&args.ws_url)).await;
         match attempt {
@@ -354,6 +376,7 @@ async fn run_session(
                     &mut commands,
                     &mut priority_commands,
                     &mut nonce,
+                    &mut rate,
                     &healthy,
                     &drop_next_response,
                     socket,
@@ -452,6 +475,7 @@ async fn run_connected<S>(
     commands: &mut mpsc::Receiver<SessionCommand>,
     priority_commands: &mut mpsc::Receiver<SessionCommand>,
     nonce: &mut DurableNonceManager,
+    rate: &mut WebSocketRateLimiter,
     healthy: &AtomicBool,
     drop_next_response: &AtomicBool,
     socket: tokio_tungstenite::WebSocketStream<S>,
@@ -461,10 +485,13 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (mut write, mut read) = socket.split();
-    let mut rate = WebSocketRateLimiter::new(
-        args.config.max_ws_messages_per_minute,
-        args.config.cancel_reserve_fraction,
-    );
+    // The subscription window is bounded from connect: `snapshot_deadline`
+    // below only arms once every acknowledgement is in, so without this a
+    // single lost acknowledgement left the socket unhealthy forever with no
+    // event naming the cause and nothing recycling it (the other streams
+    // kept the idle timer alive).
+    let ready_deadline = tokio::time::Instant::now()
+        + Duration::from_millis(args.config.account_snapshot_timeout_ms);
     for subscription in account_subscriptions(
         args.credentials.account(),
         &args.instrument.dex,
@@ -595,16 +622,43 @@ where
                                     http_status: 200,
                                     body: payload,
                                 };
+                                // Answer the awaiting caller first: if the
+                                // event channel is full the `?` below ends the
+                                // connection, and the caller must still learn
+                                // the venue's actual answer rather than a
+                                // dropped-response error.
+                                if let Some(response) = entry.response {
+                                    let _ = response.send(Ok(outcome.clone()));
+                                }
                                 deliver_event(&args.events, healthy, SessionEvent::ActionCompleted {
                                         purpose: entry.purpose,
-                                        outcome: outcome.clone(),
+                                        outcome,
                                         received_ns,
                                     })?;
-                                if let Some(response) = entry.response {
-                                    let _ = response.send(Ok(outcome));
-                                }
                             }
                             "" => {}
+                            "error"
+                                if already_subscribed_type(&root).is_some_and(|subscription| {
+                                    subscription_acks.insert(subscription);
+                                    true
+                                }) =>
+                            {
+                                // The venue answers a duplicate subscribe with
+                                // an error naming the subscription; for our
+                                // purposes that is the acknowledgement.
+                                if subscription_acks.len() == ACCOUNT_SUBSCRIPTION_COUNT
+                                    && !subscriptions_ready
+                                {
+                                    subscriptions_ready = true;
+                                    healthy.store(true, Ordering::Release);
+                                    snapshot_deadline = Some(
+                                        tokio::time::Instant::now()
+                                            + Duration::from_millis(
+                                                args.config.account_snapshot_timeout_ms,
+                                            ),
+                                    );
+                                }
+                            }
                             _ => {
                                 if REQUIRED_INITIAL_SNAPSHOT_CHANNELS.contains(&channel.as_str()) {
                                     snapshot_channels.insert(channel.clone());
@@ -717,19 +771,40 @@ where
                 let id = request_id;
                 request_id = request_id.saturating_add(1);
                 let nonce_value = nonce.next_nonce()?;
-                let preparation_started_ns = args.clock.now_ns();
-                let cloids = prepare_action_state(&args.state, &command.action, nonce_value, id)?;
+                // Build and sign before anything is persisted as `Sent`: a
+                // caller-side input error (empty batch, off-grid price) is a
+                // refusal of this one command, not a reason to drop the
+                // socket and turn every in-flight action into an unknown
+                // outcome. The nonce is spent either way, which is harmless.
                 let signing_started_ns = args.clock.now_ns();
-                args.latency.record(
-                    LatencyKind::ActionPreparation,
-                    signing_started_ns.saturating_sub(preparation_started_ns),
-                    signing_started_ns,
-                );
-                let envelope = signed_action_envelope(args, &command.action, nonce_value)?;
-                let write_started_ns = args.clock.now_ns();
+                let envelope = match signed_action_envelope(args, &command.action, nonce_value) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        let reason = format!("action could not be built or signed: {error}");
+                        warn!(reason, "live action refused before send");
+                        if let Some(response) = command.response {
+                            let _ = response.send(Err(anyhow::anyhow!(reason)));
+                        } else {
+                            deliver_event(&args.events, healthy, SessionEvent::ActionRefused {
+                                purpose,
+                                reason,
+                                received_ns: args.clock.now_ns(),
+                            })?;
+                        }
+                        continue;
+                    }
+                };
+                let preparation_started_ns = args.clock.now_ns();
                 args.latency.record(
                     LatencyKind::Signing,
-                    write_started_ns.saturating_sub(signing_started_ns),
+                    preparation_started_ns.saturating_sub(signing_started_ns),
+                    preparation_started_ns,
+                );
+                let cloids = prepare_action_state(&args.state, &command.action, nonce_value, id)?;
+                let write_started_ns = args.clock.now_ns();
+                args.latency.record(
+                    LatencyKind::ActionPreparation,
+                    write_started_ns.saturating_sub(preparation_started_ns),
                     write_started_ns,
                 );
                 inflight.entries.insert(id, Inflight {
@@ -818,6 +893,22 @@ where
                         received_ns: args.clock.now_ns(),
                     },
                 )?;
+            }
+            () = tokio::time::sleep_until(ready_deadline), if !subscriptions_ready => {
+                let missing: Vec<String> = account_subscriptions(
+                    args.credentials.account(),
+                    &args.instrument.dex,
+                    &args.instrument.symbol,
+                )
+                .iter()
+                .filter_map(|subscription| subscription.get("type").and_then(serde_json::Value::as_str))
+                .filter(|subscription| !subscription_acks.contains(*subscription))
+                .map(ToOwned::to_owned)
+                .collect();
+                bail!(
+                    "live WebSocket subscriptions not acknowledged within {}ms: missing {missing:?}",
+                    args.config.account_snapshot_timeout_ms
+                );
             }
             () = tokio::time::sleep_until(last_inbound + args.idle_timeout) => {
                 bail!("live WebSocket idle timeout");
@@ -1167,6 +1258,22 @@ fn apply_action_response(
 /// Marking it `Canceled` cannot lose a fill: fill accounting reads `userFills`
 /// keyed by fill id and never a cancel response, so a cancel that lost the race
 /// to a fill is still booked from the fill stream.
+/// The subscription named by a venue `error` frame of the form
+/// `Already subscribed: {"type":"orderUpdates","user":"0x..."}`. Any other
+/// error text yields `None`.
+fn already_subscribed_type(root: &serde_json::Value) -> Option<String> {
+    let text = root.get("data").and_then(serde_json::Value::as_str)?;
+    if !text.to_ascii_lowercase().contains("already subscribed") {
+        return None;
+    }
+    let start = text.find('{')?;
+    let payload: serde_json::Value = serde_json::from_str(&text[start..]).ok()?;
+    payload
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
 fn cancel_error_is_terminal(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     error.contains("never placed")
@@ -1242,11 +1349,7 @@ impl WebSocketRateLimiter {
         }
     }
 
-    fn consume(
-        &mut self,
-        safety_critical: bool,
-    ) -> std::result::Result<(), WebSocketBudgetExhausted> {
-        let now = tokio::time::Instant::now();
+    fn expire(&mut self, now: tokio::time::Instant) {
         let cutoff = now - Duration::from_secs(60);
         while self.sent.front().is_some_and(|sent| sent.at < cutoff) {
             if let Some(expired) = self.sent.pop_front() {
@@ -1255,6 +1358,21 @@ impl WebSocketRateLimiter {
                 }
             }
         }
+    }
+
+    /// Regular (non-safety-critical) messages still admissible in the current
+    /// window. Used to hold a reconnect until its subscriptions are affordable.
+    fn regular_headroom(&mut self) -> u64 {
+        self.expire(tokio::time::Instant::now());
+        self.regular_limit.saturating_sub(self.regular_in_window)
+    }
+
+    fn consume(
+        &mut self,
+        safety_critical: bool,
+    ) -> std::result::Result<(), WebSocketBudgetExhausted> {
+        let now = tokio::time::Instant::now();
+        self.expire(now);
         if self.sent.len() as u64 >= self.maximum_per_minute {
             return Err(WebSocketBudgetExhausted {
                 retry_after_ms: retry_after_ms(self.sent.front(), now),
@@ -1464,6 +1582,35 @@ mod tests {
             .last_error
             .as_deref()
             .is_some_and(|text| text.contains("immediately match")));
+    }
+
+    #[test]
+    fn an_already_subscribed_error_names_its_subscription() {
+        let frame = serde_json::json!({
+            "channel": "error",
+            "data": "Already subscribed: {\"type\":\"orderUpdates\",\"user\":\"0x1\"}"
+        });
+        assert_eq!(
+            already_subscribed_type(&frame).as_deref(),
+            Some("orderUpdates")
+        );
+        let other = serde_json::json!({"channel": "error", "data": "Invalid subscription"});
+        assert!(already_subscribed_type(&other).is_none());
+        let not_text = serde_json::json!({"channel": "error", "data": {"type": "x"}});
+        assert!(already_subscribed_type(&not_text).is_none());
+    }
+
+    #[test]
+    fn regular_headroom_tracks_the_shared_window() {
+        let mut rate = WebSocketRateLimiter::new(20, 0.25);
+        assert_eq!(rate.regular_headroom(), 15);
+        for _ in 0..8 {
+            rate.consume(false).unwrap();
+        }
+        assert_eq!(rate.regular_headroom(), 7, "eight subscribes spent");
+        // Safety-critical traffic does not consume regular headroom.
+        rate.consume(true).unwrap();
+        assert_eq!(rate.regular_headroom(), 7);
     }
 
     #[test]

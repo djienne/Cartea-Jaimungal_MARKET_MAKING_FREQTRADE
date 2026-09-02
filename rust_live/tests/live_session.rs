@@ -139,6 +139,238 @@ async fn socket_loss_after_write_returns_unknown_and_persists_it() {
     server.await.unwrap();
 }
 
+/// A server that never acknowledges one subscription used to leave the
+/// session unhealthy forever: the readiness deadline only armed after all
+/// eight acknowledgements, and the other streams kept the idle timer alive.
+/// Now the connect-to-ready window is bounded, the socket is recycled with a
+/// reason naming the missing subscription, and the next connection is Ready.
+#[tokio::test]
+async fn a_lost_subscription_ack_recycles_the_socket_within_the_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        // First connection: acknowledge seven of eight, then stay silent but
+        // alive (answer pings so the idle timeout cannot be what recycles it).
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        for index in 0..8 {
+            let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
+                panic!("subscription was not text");
+            };
+            let request: serde_json::Value = serde_json::from_str(text.as_ref()).unwrap();
+            if index == 3 {
+                continue;
+            }
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "channel": "subscriptionResponse",
+                        "data": request["subscription"].clone()
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        }
+        send_initial_snapshots(&mut socket).await;
+        let first = async {
+            while let Some(message) = socket.next().await {
+                match message {
+                    Ok(Message::Text(text)) if text.as_str().contains("ping") => {
+                        socket
+                            .send(Message::Text(r#"{"channel":"pong"}"#.into()))
+                            .await
+                            .unwrap();
+                    }
+                    Ok(Message::Close(_)) | Err(_) => return,
+                    _ => {}
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), first)
+            .await
+            .expect("the client must recycle the socket itself");
+        // Second connection: behave.
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        acknowledge_subscriptions(&mut socket, false).await;
+        while let Some(message) = socket.next().await {
+            if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+                return;
+            }
+        }
+    });
+    let fixture = Fixture::with_live_config(
+        format!("ws://{address}"),
+        LiveConfig {
+            action_timeout_ms: 500,
+            account_snapshot_timeout_ms: 400,
+            ..LiveConfig::default()
+        },
+    );
+    let mut saw_disconnect = None;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match fixture.events.lock().await.recv().await {
+                Some(SessionEvent::Disconnected { reason, .. }) => saw_disconnect = Some(reason),
+                Some(SessionEvent::Ready { generation, .. }) => {
+                    assert_eq!(generation, 2, "Ready must come from the recycled socket");
+                    return;
+                }
+                Some(_) => {}
+                None => panic!("session ended"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let reason = saw_disconnect.expect("the stalled connection must be reported");
+    assert!(reason.contains("not acknowledged"), "{reason}");
+    assert!(reason.contains("clearinghouseState"), "{reason}");
+    fixture.stop().await;
+    server.await.unwrap();
+}
+
+/// The venue answers a duplicate subscribe with an `error` frame naming the
+/// subscription; that counts as the acknowledgement.
+#[tokio::test]
+async fn an_already_subscribed_error_counts_as_the_acknowledgement() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        for index in 0..8 {
+            let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
+                panic!("subscription was not text");
+            };
+            let request: serde_json::Value = serde_json::from_str(text.as_ref()).unwrap();
+            let reply = if index == 5 {
+                serde_json::json!({
+                    "channel": "error",
+                    "data": format!("Already subscribed: {}", request["subscription"])
+                })
+            } else {
+                serde_json::json!({
+                    "channel": "subscriptionResponse",
+                    "data": request["subscription"].clone()
+                })
+            };
+            socket
+                .send(Message::Text(reply.to_string().into()))
+                .await
+                .unwrap();
+        }
+        send_initial_snapshots(&mut socket).await;
+        while let Some(message) = socket.next().await {
+            if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+                return;
+            }
+        }
+    });
+    let fixture = Fixture::new(format!("ws://{address}"));
+    fixture.wait_ready().await;
+    assert!(fixture.handle.healthy());
+    fixture.stop().await;
+    server.await.unwrap();
+}
+
+/// A caller-side input error (here an empty batch) is refused for that one
+/// command; it must not drop the socket, and the next valid action goes out
+/// on the same connection.
+#[tokio::test]
+async fn an_unsignable_action_is_refused_without_dropping_the_socket() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        acknowledge_subscriptions(&mut socket, false).await;
+        let mut posts = 0_u32;
+        loop {
+            let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
+                continue;
+            };
+            let request: serde_json::Value = serde_json::from_str(text.as_ref()).unwrap();
+            if request["method"] == "ping" {
+                socket
+                    .send(Message::Text(r#"{"channel":"pong"}"#.into()))
+                    .await
+                    .unwrap();
+                continue;
+            }
+            assert_eq!(request["method"], "post");
+            posts += 1;
+            let id = request["id"].as_u64().unwrap();
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "channel": "post",
+                        "data": {
+                            "id": id,
+                            "response": {
+                                "type": "action",
+                                "payload": {
+                                    "status": "ok",
+                                    "response": {"type":"order","data":{"statuses":[{"resting":{"oid":78}}]}}
+                                }
+                            }
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            while let Some(message) = socket.next().await {
+                if matches!(message, Ok(Message::Close(_))) {
+                    return posts;
+                }
+            }
+        }
+    });
+    let fixture = Fixture::new(format!("ws://{address}"));
+    fixture.wait_ready().await;
+    let refused = fixture.handle.place_orders(2, Vec::new()).await;
+    assert!(refused.is_err(), "an empty batch cannot be signed");
+    assert!(
+        fixture.handle.healthy(),
+        "the socket must survive the refusal"
+    );
+    let cloid = make_cloid(1, 2, Side::Buy, 4);
+    let outcome = fixture
+        .handle
+        .place_orders(
+            2,
+            vec![LiveOrderRequest {
+                side: Side::Buy,
+                px_units: 110_000,
+                qty_units: 100,
+                reduce_only: false,
+                time_in_force: TimeInForce::Alo,
+                cloid: cloid.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ActionOutcome::Response { .. }));
+    assert_eq!(
+        fixture.state.load_required().unwrap().orders[&cloid].status,
+        LiveOrderStatus::Resting
+    );
+    assert!(
+        fixture.state.load_required().unwrap().orders.len() == 1,
+        "the refused batch must not have persisted anything"
+    );
+    fixture.stop().await;
+    assert_eq!(
+        server.await.unwrap(),
+        1,
+        "exactly one post reached the venue"
+    );
+}
+
 async fn acknowledge_subscriptions<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
     snapshots_first: bool,
@@ -197,6 +429,16 @@ struct Fixture {
 
 impl Fixture {
     fn new(ws_url: String) -> Self {
+        Self::with_live_config(
+            ws_url,
+            LiveConfig {
+                action_timeout_ms: 500,
+                ..LiveConfig::default()
+            },
+        )
+    }
+
+    fn with_live_config(ws_url: String, live: LiveConfig) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let credential_path = directory.path().join("hyperliquid.env");
         std::fs::write(
@@ -233,10 +475,7 @@ impl Fixture {
             instrument: instrument(),
             credentials,
             state: state.clone(),
-            config: LiveConfig {
-                action_timeout_ms: 500,
-                ..LiveConfig::default()
-            },
+            config: live,
             clock: Arc::new(ProcessClock::default()),
             latency,
             events: events_tx,

@@ -205,6 +205,16 @@ enum StaleSnapshotHandling {
     AdoptNext,
 }
 
+/// Watchdog state for the session actor's readiness as seen from the
+/// maintenance tick. The session itself reconnects; this only makes a long
+/// not-ready stretch visible in health and the heartbeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionReadiness {
+    Ready,
+    NotReadySince(u64),
+    Reported,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RejectionRecovery {
     Idle,
@@ -272,6 +282,11 @@ pub struct HyperliquidLiveBackend {
     rejection_recovery: RejectionRecovery,
     startup_reconciliation: StartupReconciliation,
     stale_snapshot_handling: StaleSnapshotHandling,
+    /// How long the session may stay not-ready before the backend names it
+    /// as the reason quoting is paused: one subscription window plus one
+    /// connect attempt.
+    session_ready_grace_ms: u64,
+    session_readiness: SessionReadiness,
 }
 
 impl HyperliquidLiveBackend {
@@ -441,6 +456,11 @@ impl HyperliquidLiveBackend {
             rejection_recovery: RejectionRecovery::Idle,
             startup_reconciliation,
             stale_snapshot_handling: StaleSnapshotHandling::RefuseOnce,
+            session_ready_grace_ms: config
+                .live
+                .account_snapshot_timeout_ms
+                .saturating_add(config.runtime.ws_connect_timeout_ms),
+            session_readiness: SessionReadiness::Ready,
         };
         backend.initialize_campaign()?;
         Ok(LiveBootstrap {
@@ -1050,6 +1070,7 @@ impl HyperliquidLiveBackend {
     }
 
     pub async fn maintenance(&mut self, now_ms: u64) -> Result<Vec<ExecutionEvent>> {
+        self.watch_session_readiness(now_ms);
         if !self.state.persistence_healthy() {
             self.diagnostics.operationally_healthy = false;
             self.diagnostics.invalid_reason =
@@ -1094,6 +1115,34 @@ impl HyperliquidLiveBackend {
             }
         }
         Ok(std::mem::take(&mut self.pending_events))
+    }
+
+    /// Name a session that has stayed not-ready past the grace period. The
+    /// session actor recycles the socket itself; without this the pause was
+    /// silent — health simply stayed false with no reason in the heartbeat.
+    fn watch_session_readiness(&mut self, now_ms: u64) {
+        if self.session.healthy() {
+            self.session_readiness = SessionReadiness::Ready;
+            return;
+        }
+        match self.session_readiness {
+            SessionReadiness::Ready => {
+                self.session_readiness = SessionReadiness::NotReadySince(now_ms);
+            }
+            SessionReadiness::NotReadySince(since_ms)
+                if now_ms.saturating_sub(since_ms) >= self.session_ready_grace_ms =>
+            {
+                self.session_readiness = SessionReadiness::Reported;
+                self.degrade(
+                    "live session not ready",
+                    &anyhow::anyhow!(
+                        "account WebSocket has not been ready for {}ms",
+                        now_ms.saturating_sub(since_ms)
+                    ),
+                );
+            }
+            SessionReadiness::NotReadySince(_) | SessionReadiness::Reported => {}
+        }
     }
 
     pub const fn reconciliation_requested(&self) -> bool {
@@ -2921,6 +2970,8 @@ mod tests {
             rejection_recovery: RejectionRecovery::Idle,
             startup_reconciliation: StartupReconciliation::Complete,
             stale_snapshot_handling: StaleSnapshotHandling::RefuseOnce,
+            session_ready_grace_ms: 20_000,
+            session_readiness: SessionReadiness::Ready,
         };
         (directory, backend, cloid)
     }
