@@ -22,10 +22,12 @@ Writes ``docs/cashcat_phi_ladder.{json,md}``.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import itertools
 import json
 import multiprocessing as mp
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,10 +38,21 @@ if str(SCRIPTS) not in sys.path:
 import sweep_replay as sw  # noqa: E402
 from replay_market_maker import ReplayConfig  # noqa: E402
 
-# The ladder the 2026-09-02 promotion was chosen from. 600 is not in the sweep's
-# own grid; it is here because the interesting question is where the curve
-# turns, and it turns out not to.
-DEFAULT_PHI = (30.0, 100.0, 200.0, 300.0, 400.0, 600.0, 1000.0, 3000.0)
+# The ladder the 2026-09-02 promotion was chosen from. 600 and 800 are not in
+# the sweep's own grid; they are here because the interesting question is where
+# the curve turns, and at the shipped horizon it turns twice -- 400 and 800 are
+# both local dips, so a grid without them reads as monotone when it is not.
+DEFAULT_PHI = (30.0, 100.0, 200.0, 300.0, 400.0, 600.0, 800.0, 1000.0, 3000.0)
+
+# The horizon this ladder is scored at, and the single most dangerous default in
+# this file. `phi_kappa_t` is dimensionless only with T held fixed: the solver
+# uses raw phi = phi_kappa_t/(kappa*T), so a rung scored at T=300 describes a
+# DIFFERENT control than the same rung shipped at T=150 -- 400@300 is exactly
+# 200@150. The first run of this ladder defaulted to 300 while every shipped
+# profile runs 150, and the promotion chosen from it was silently twice the
+# intended step. This default now tracks `model.horizon_seconds` in
+# rust_live/config/cashcat.toml; change them together.
+SHIPPED_HORIZON_SECONDS = 150.0
 
 _STATE: dict = {}
 
@@ -124,7 +137,13 @@ def to_markdown(rows: list[dict], key: str, args: argparse.Namespace) -> str:
         "",
         f"- calibration held fixed: `{key}`",
         f"- risk held fixed: `alpha_kappa={args.alpha_kappa:g}`, "
-        f"`T={args.horizon_seconds:g} s`, scenario `{args.scenario}`",
+        f"**`horizon_seconds={args.horizon_seconds:g}`**, scenario `{args.scenario}`",
+        "- **`phi_kappa_t` is only comparable at a FIXED horizon.** The solver uses",
+        "  raw `phi = phi_kappa_t / (kappa * T)` and the surface is stationary away",
+        "  from the terminal layer, so a rung here matches a shipped config only when",
+        "  this horizon equals `model.horizon_seconds` in the profile being changed.",
+        f"  Rungs below are directly comparable to a profile with `horizon_seconds ="
+        f" {args.horizon_seconds:g}` and to no other.",
         f"- floor: at least {args.min_fills} fills and {args.min_fills_per_day:g}/day",
         "",
         "| phi*kappa*T | q_max | guard | held-out P&L | fills | fills/day | "
@@ -153,7 +172,16 @@ def parse_args() -> argparse.Namespace:
         help="1 on, 0 off; both by default so every row carries its own A/B",
     )
     parser.add_argument("--alpha-kappa", type=float, default=0.05)
-    parser.add_argument("--horizon-seconds", type=float, default=300.0)
+    parser.add_argument(
+        "--horizon-seconds",
+        type=float,
+        default=SHIPPED_HORIZON_SECONDS,
+        help=(
+            "MUST equal model.horizon_seconds in the profile you intend to change, "
+            "or the rungs describe controls you cannot ship. See "
+            "SHIPPED_HORIZON_SECONDS."
+        ),
+    )
     parser.add_argument("--scenario", default="good")
     parser.add_argument("--sweep", type=Path, default=ROOT / "docs" / "cashcat_sweep.json")
     parser.add_argument(
@@ -198,7 +226,31 @@ def main() -> int:
     with mp.Pool(max(1, args.workers), initializer=_init, initargs=(state,)) as pool:
         rows = pool.map(_run, combos)
 
-    args.output.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    # Provenance, not just rows. Written because it was not: the first version
+    # of this artifact recorded phi/q_max/guard and the metrics and nothing
+    # else, so it could not say which tape, which split, which calibration or
+    # -- the one that actually bit -- WHICH HORIZON it was scored at. A ladder
+    # run at a horizon other than the shipped one is not comparable to the
+    # shipped config at all, since phi_kappa_t is only dimensionless with T
+    # held fixed, and a reader had no way to notice.
+    payload = {
+        "generated_at": datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+        "calibration_key": key,
+        "params": params,
+        "held_fixed": {
+            "horizon_seconds": float(args.horizon_seconds),
+            "alpha_kappa": float(args.alpha_kappa),
+            "scenario": dataclasses.asdict(sw.scenario_by_name(args.scenario)),
+            "min_fills": int(args.min_fills),
+            "min_fills_per_day": float(args.min_fills_per_day),
+        },
+        "sweep": str(args.sweep),
+        "held_out_tape": str(held_out),
+        "rows": rows,
+    }
+    args.output.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     args.markdown_output.write_text(to_markdown(rows, key, args), encoding="utf-8")
     for row in sorted(rows, key=lambda row: row["phi"]):
         print(

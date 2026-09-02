@@ -6,81 +6,94 @@ only its finalists to the held-out slice, so it cannot say whether a middle
 varies phi alone, on data the search never saw.
 
 - calibration held fixed: `eps500/500_klo0.75/0.75|phiKT3000_alphaK0.05_T300_q3_guard`
-- risk held fixed: `alpha_kappa=0.05`, `T=300 s`, scenario `good`
+- risk held fixed: `alpha_kappa=0.05`, **`horizon_seconds=150`**, scenario `good`
+- **`phi_kappa_t` is only comparable at a FIXED horizon.** The solver uses
+  raw `phi = phi_kappa_t / (kappa * T)` and the surface is stationary away
+  from the terminal layer, so a rung here matches a shipped config only when
+  this horizon equals `model.horizon_seconds` in the profile being changed.
+  Rungs below are directly comparable to a profile with `horizon_seconds = 150` and to no other.
 - floor: at least 30 fills and 3/day
 
 | phi*kappa*T | q_max | guard | held-out P&L | fills | fills/day | net spread | directional | trips | usable |
 | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| 30 | 6 | on | -910.29 | 12053 | 2437.4 | +3237.21 | -4147.50 | 0 | True |
-| 30 | 6 | off | -910.29 | 12053 | 2437.4 | +3237.21 | -4147.50 | 0 | True |
-| 100 | 6 | on | -530.44 | 7226 | 1461.3 | +2490.64 | -3021.08 | 0 | True |
-| 100 | 6 | off | -530.44 | 7226 | 1461.3 | +2490.64 | -3021.08 | 0 | True |
-| 200 | 6 | on | -346.18 | 5320 | 1075.8 | +2085.14 | -2431.32 | 0 | True |
-| 200 | 6 | off | -346.18 | 5320 | 1075.8 | +2085.14 | -2431.32 | 0 | True |
-| 300 | 6 | on | -297.51 | 4525 | 915.1 | +1910.12 | -2207.63 | 0 | True |
-| 300 | 6 | off | -297.51 | 4525 | 915.1 | +1910.12 | -2207.63 | 0 | True |
-| 400 | 6 | on | -235.47 | 3907 | 790.1 | +1757.93 | -1993.40 | 0 | True |
-| 400 | 6 | off | -235.47 | 3907 | 790.1 | +1757.93 | -1993.40 | 0 | True |
-| 600 | 6 | on | -137.14 | 3379 | 683.3 | +1614.53 | -1751.67 | 0 | True |
-| 600 | 6 | off | -137.14 | 3379 | 683.3 | +1614.53 | -1751.67 | 0 | True |
-| 1000 | 6 | on | -166.69 | 2808 | 567.8 | +1461.33 | -1628.02 | 0 | True |
-| 1000 | 6 | off | -166.69 | 2808 | 567.8 | +1461.33 | -1628.02 | 0 | True |
-| 3000 | 6 | on | -16.19 | 1800 | 364.0 | +1096.82 | -1113.01 | 0 | True |
-| 3000 | 6 | off | -16.19 | 1800 | 364.0 | +1096.82 | -1113.01 | 0 | True |
+| 100 | 6 | on | -346.16 | 5319 | 1075.6 | +2085.13 | -2431.29 | 0 | True |
+| 200 | 6 | on | -235.47 | 3907 | 790.1 | +1757.93 | -1993.40 | 0 | True |
+| 300 | 6 | on | -137.14 | 3379 | 683.3 | +1614.53 | -1751.67 | 0 | True |
+| 400 | 6 | on | -149.95 | 3062 | 619.2 | +1543.44 | -1693.39 | 0 | True |
+| 600 | 6 | on | -69.86 | 2475 | 500.5 | +1331.89 | -1401.75 | 0 | True |
+| 800 | 6 | on | -85.40 | 2274 | 459.9 | +1249.51 | -1334.90 | 0 | True |
+| 1000 | 6 | on | -57.65 | 2023 | 409.1 | +1172.44 | -1230.09 | 0 | True |
+| 3000 | 6 | on | -52.73 | 1517 | 306.8 | +974.96 | -1027.69 | 0 | True |
 
 ## Cross-check: the other finalist calibration
 
-The table above holds `eps500/klo0.75` fixed, stage C's best held-out row. Run
-again against `eps1000/klo0.75` — stage B's best, and the other calibration
-that reached stage C — the ladder moves but its shape barely does:
+Same horizon, same slice, `eps1000/klo0.75` instead of `eps500/klo0.75`.
+Both are `klo0.75` and share kappa and lambda exactly; they differ only in
+epsilon (4.8 vs 5.8 bps), so treat this as sensitivity to one parameter, not
+as independent confirmation.
 
-| phi*kappa*T | `eps500/klo0.75` | `eps1000/klo0.75` | agree on direction? |
+| phi*kappa*T | `eps500` | `eps1000` | both better than previous rung? |
 | ---: | ---: | ---: | :--- |
-| 30 | -910.29 | -840.11 | — |
-| 100 | -530.44 | -506.24 | yes |
-| 200 | -346.18 | -310.83 | yes |
-| 300 | -297.51 | -293.27 | yes |
-| 400 | -235.47 | -220.04 | yes |
-| 600 | -137.14 | -171.74 | yes |
-| 1000 | -166.69 | -85.65 | **no** |
-| 3000 | -16.19 | -15.46 | yes |
+| 100 | -346.16 | -309.92 | — |
+| 200 | -235.47 | -213.92 | yes |
+| 300 | -137.14 | -166.15 | yes |
+| 400 | -149.95 | -204.17 | **no, both worse** |
+| 600 | -69.86 | -119.38 | yes |
+| 800 | -85.40 | -79.02 | **disagree** |
+| 1000 | -57.65 | -39.60 | yes |
+| 3000 | -52.73 | -22.62 | yes |
 
 ## What it says
 
-**Rising, and calibration-robust up to 600.** Held-out P&L improves at every
-step from phi 30 to phi 600 under both calibrations, and the shipped 200 is
-near the bottom of that run. The two disagree in exactly one place: from 600 to
-1000, `eps1000` keeps improving (-171.74 -> -85.65) while `eps500` gives back
-(-137.14 -> -166.69). Below 600 there is no disagreement at all.
+**The horizon is part of the number.** `phi_kappa_t` is dimensionless only
+with T fixed: the solver uses raw `phi = phi_kappa_t/(kappa*T)` and the
+surface is stationary away from the terminal layer, so **400 at T=300 is the
+same control as 200 at T=150** — verified to 6 decimals on quoted depth. The
+first version of this ladder ran at T=300 while every shipped profile runs
+150, so its rungs were mis-paired with the config by a factor of two and the
+promotion chosen from it was twice the intended step. This table is at 150.
 
-**Every value is a loss, and the gradient is "quote less".** Net spread capture
-is positive at every phi and directional P&L is always slightly larger and
-negative — +1699.21 against -1919.25 at phi 400, +3167.52 against -4007.63 at
-phi 30. Widening shrinks both legs and shrinks the gap between them; it never
-closes it. This is the adverse-selection result restated on the phi axis, not a
-new finding.
+**The curve is not monotone.** 400 is a local dip in both calibrations, and
+800 dips in `eps500`. A grid that skips them reads as a clean gradient when it
+is not, which is how the earlier reading went wrong.
 
-**The fill floor never binds.** Even phi 3000 takes 364/day against a 3/day
-validity floor, so nothing in this table was excluded for trading too rarely,
-and "fewer fills, better P&L" never had to break a tie.
+**Every rung loses, and the gradient is "quote less".** Net spread capture is
+positive at every phi and directional P&L is always slightly larger and
+negative. Widening shrinks both legs and the gap between them; it never closes
+it. Most of the improvement along the ladder is fill count rather than
+per-fill economics.
 
-**The guard column is all zeros, and that is a measurement rather than the
-counter bug** fixed the same day in `ReplayMetrics.to_dict`. On this slice the
-fastest 5 s mid move is 474.8 bps against an 800 bps threshold and peak VPIN is
-0.3316 against 0.40, so the guard never arms and `guard`/`noguard` rows are
-bit-identical. It fires on the 08-22 cascade in the train slice and on nothing
-else in 395 h of tape, which is why the guard axis cannot be scored out of
-sample on this data at all.
+**The fill floor never binds.** Even 3000 takes 306.8 fills/day against a
+3/day validity floor, so nothing here was excluded for trading too rarely.
+
+**The guard never arms on this slice.** Peak 5 s mid move is 474.8 bps against
+an 800 bps breaker and peak VPIN 0.3316 against 0.40, so `guard`/`noguard`
+rows are bit-identical out of sample; the guard fires on the 08-22 cascade in
+the train slice and nowhere else in 395 h.
+
+## The caveat that limits all of it
+
+At any `phi*kappa*T >= 100` the **integer-inventory quotes are identical after
+clamping** — 80 bps (the cap) when flat, 1.5 bps (the floor) when unwinding.
+Phi only changes anything through the linear interpolation between those two
+clamped rows at fractional inventory, which is where fills actually land
+(mean fill depth 26-34 bps). So this ladder is steering a clamp geometry, not
+the Cartea-Jaimungal control, and the differences between adjacent rungs
+should not be read as the model expressing a risk preference.
+
+Underneath that, epsilon is fitted from *unconditional* market-order impact
+(~5 bps) while the fills we actually get suffer 22-29 bps of adverse
+selection: a behind-touch maker is filled by sweeps, which are not average
+orders. The HJB therefore prices fills as far more benign than they are, and
+no value of phi repairs that. **Phi is the wrong lever; epsilon is the bug.**
 
 ## What was promoted
 
-`phi_kappa_t` 200 -> **400**, `phi_kappa_t_max` 300 -> **600** (the cap has to
-move with it, and `AppConfig::validate` now refuses a config where it did not),
-`q_max` unchanged at 6.
+`phi_kappa_t` 200 -> **300**, `phi_kappa_t_max` 300 -> **450**, `q_max`
+unchanged at 6.
 
-400 is **not** the argmax — 3000 is, under both calibrations. It was chosen
-because it sits inside the region where the two calibrations agree on the
-ordering, while 1000 sits in the one place they contradict each other and 3000
-sits at a grid edge the sweep never bracketed. What it buys is measured and
-modest: -346.18 -> -235.47 under `eps500`, -310.83 -> -220.04 under `eps1000`.
-That is a 30-32% smaller loss on held-out data. It is not a profit.
+300 is not an argmax — 3000 is, in both calibrations, at the top of the grid.
+300 is the largest step that is better than the value it replaces in **both**
+calibrations without landing on a dip or a boundary. What it buys is
+-235.47 -> -137.14 (`eps500`) and -213.92 -> -166.15 (`eps1000`): a smaller
+loss, not a profit.

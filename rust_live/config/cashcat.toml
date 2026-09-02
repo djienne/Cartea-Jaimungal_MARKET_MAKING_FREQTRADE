@@ -83,28 +83,48 @@ max_shard_failure_rate = 0.05
 [model]
 q_max = 6
 horizon_seconds = 150.0
-# Raised 200 -> 400 on 2026-09-02 from the guarded v5 sweep's held-out phi
-# ladder (docs/cashcat_sweep.md, 118.7 h after the 08-28 split, q_max = 6,
-# eps1000/klo0.75). Held-out P&L against phi*kappa*T:
+# Raised 200 -> 300 (cap 300 -> 450) on 2026-09-02 from the held-out phi
+# ladder, docs/cashcat_phi_ladder.md. Held-out P&L, 118.7 h after the 08-28
+# split, AT THIS PROFILE'S horizon_seconds = 150:
 #
-#     30 -> -840.11   100 -> -506.24   200 -> -310.83  (shipped)
-#    300 -> -293.27   400 -> -220.04   600 -> -171.74
-#   1000 ->  -85.65  3000 ->  -15.46
+#   phi*kappa*T   100     200     300     400     600    1000    3000
+#   eps500      -346.16 -235.47 -137.14 -149.95  -69.86  -57.65  -52.73
+#   eps1000     -309.92 -213.92 -166.15 -204.17 -119.38  -39.60  -22.62
 #
-# READ THAT CAREFULLY: it is monotone over the whole axis and never turns, so
-# there is no interior optimum and 400 is NOT an argmax. The gradient points at
-# "quote less", because held-out spread capture is positive at every phi
-# (+1699 here) and adverse selection is always slightly larger (-1919). Trading
-# less shrinks both and shrinks the loss; it does not make it a profit. 400 is a
-# deliberate, bounded step along that gradient rather than a jump to the grid
-# edge, whose 3000 sits at a boundary the sweep never bracketed.
+# READ THREE THINGS OFF THAT, none of them comfortable:
 #
-# THE CAP MUST MOVE WITH IT. hjb.rs rescales phi so phi*kappa*T never exceeds
-# phi_kappa_t_max, so raising phi_kappa_t alone silently keeps running the old
-# ceiling -- the trap documented at length in grid_cashcat.toml. The 1.5x
-# headroom over phi_kappa_t is preserved.
-phi_kappa_t = 400.0
-phi_kappa_t_max = 600.0
+# 1. THE HORIZON IS PART OF THE NUMBER. phi_kappa_t is dimensionless only with
+#    T fixed -- the solver uses raw phi = phi_kappa_t/(kappa*T) and the surface
+#    is stationary away from the terminal layer, so 400 at T=300 is the SAME
+#    control as 200 at T=150. A first version of this promotion was chosen from
+#    a ladder run at T=300 and shipped at T=150, which silently doubled the
+#    intended step. Any future ladder must be run at the horizon it will ship
+#    at; scripts/phi_ladder.py now defaults to 150 and prints it.
+#
+# 2. THE CURVE IS NOT MONOTONE. 400 is a local dip in BOTH calibrations, which
+#    is why this is 300 and not 400. Neither is 300 an argmax -- the argmax is
+#    3000, at the top of the grid, and the gradient points there the whole way.
+#    300 is a deliberately small step that is better than the value it replaces
+#    in both calibrations.
+#
+# 3. IT IS STILL A LOSS. Every rung loses. Held-out spread capture is positive
+#    at every phi and adverse selection is always slightly larger, so raising
+#    phi trades less and loses less; it never turns a profit. Most of the
+#    improvement is fill count, not better per-fill economics.
+#
+# And a caveat that limits all of the above: at any phi*kappa*T >= 100 the
+# integer-inventory quotes are IDENTICAL after clamping (cap 80 bps when flat,
+# floor 1.5 bps when unwinding). Phi only bites through the fractional-q
+# interpolation between those two clamped rows. So this axis is steering a
+# clamp geometry rather than the Cartea-Jaimungal control, and no value of it
+# addresses the real problem -- epsilon is fitted from unconditional market
+# order impact (~5 bps) while our fills actually suffer 22-29 bps.
+#
+# THE CAP MUST MOVE WITH PHI. hjb.rs rescales phi so phi*kappa*T never exceeds
+# phi_kappa_t_max, so raising phi alone silently keeps the old ceiling.
+# AppConfig::validate now refuses a cap below its phi. 1.5x headroom preserved.
+phi_kappa_t = 300.0
+phi_kappa_t_max = 450.0
 alpha_kappa = 0.05
 raw_phi_fallback = 0.0001
 raw_alpha_fallback = 0.001

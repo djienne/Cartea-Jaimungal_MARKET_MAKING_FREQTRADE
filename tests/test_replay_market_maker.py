@@ -851,7 +851,8 @@ _INTERNAL_METRICS_FIELDS = frozenset({
     "markout_usdc_by_side",
     "q_residual_abs_sum",
     "q_residual_samples",
-    # Gap percentiles in ms; the seconds forms are what to_dict publishes.
+    # Gap percentiles, published under `price_event_cadence_ms.p10/p50/p90`
+    # rather than under their own field names.
     "price_gap_ms_p10",
     "price_gap_ms_p50",
     "price_gap_ms_p90",

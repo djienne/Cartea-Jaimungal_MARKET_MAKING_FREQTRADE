@@ -25,13 +25,34 @@ const RELATIVE_TOLERANCE: f64 = 1.0e-8;
 /// keying the fixture to the live default made every retune look like a parity
 /// failure, and the cheapest way out of a failing golden is to regenerate it,
 /// which is exactly how a real drift would get waved through. Frozen at the
-/// values `scripts/parity_fixture.py` pins (`phi_kappa_t` 200/300, the shipped
-/// pair until 2026-09-02); the two must be changed together or not at all.
+/// values `scripts/parity_fixture.py` pins; the two must be changed together or
+/// not at all.
+///
+/// EVERY field is written out, with no `..ModelConfig::default()` tail. Pinning
+/// only the two phi fields left the rest of the fixture still tracking the live
+/// defaults, so the next retune of `alpha_kappa`, `horizon_seconds`, `q_max` or
+/// the Newton knobs would have reproduced exactly the breakage this function
+/// was added to stop. A struct literal without a tail also means adding a field
+/// to `ModelConfig` fails to compile here, which is the reminder to decide
+/// whether the fixture should carry it.
 fn parity_model_config() -> ModelConfig {
     ModelConfig {
+        q_max: 6,
+        horizon_seconds: 150.0,
         phi_kappa_t: 200.0,
         phi_kappa_t_max: 300.0,
-        ..ModelConfig::default()
+        alpha_kappa: 0.05,
+        raw_phi_fallback: 0.0001,
+        raw_alpha_fallback: 0.001,
+        volatility_risk_coefficient: 0.05,
+        max_dt_seconds: 0.25,
+        min_steps: 200,
+        max_steps: 2_000,
+        newton_max_iterations: 50,
+        newton_tolerance: 1.0e-8,
+        newton_damping: 0.7,
+        episode_reset_on_flat: true,
+        episode_min_elapsed_fraction: 0.25,
     }
 }
 

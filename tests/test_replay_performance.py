@@ -74,6 +74,18 @@ from replay_reference_matrix import (  # noqa: E402
 
 def _flatten(prefix: str, value, out: dict) -> None:
     if isinstance(value, dict):
+        # An empty dict otherwise emits NO keys at all. Since the comparison
+        # below iterates only the RECORDED keys, a reference that recorded `{}`
+        # could never notice the exporter starting to fill it -- and the frozen
+        # reference records `{}` for all four calibration maps
+        # (`calibration_attempts_by_key`, `calibration_fills_by_key`, and both
+        # `fill_calibration.fill_probability_by_*`), which are exactly the
+        # throttle branch this golden exists to pin. A marker on the empty case
+        # only: it is absent from the actual side the moment the map fills, so
+        # the mismatch is caught, while a NON-empty dict still emits no length
+        # of its own and so still tolerates a purely additive new key.
+        if not value:
+            out[f"{prefix}.__empty__"] = True
         for key in sorted(value):
             _flatten(f"{prefix}.{key}", value[key], out)
     elif isinstance(value, list):

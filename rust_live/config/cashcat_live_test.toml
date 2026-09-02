@@ -79,15 +79,12 @@ max_shard_failure_rate = 0.05
 [model]
 q_max = 9
 horizon_seconds = 150.0
-# Follows rust_live/config/cashcat.toml, promoted 200/300 -> 400/600 on
-# 2026-09-02 from the held-out phi ladder (docs/cashcat_phi_ladder.md). The
-# reasoning lives in cashcat.toml; this profile only has to agree with it, since
-# a comparison run against a different inventory penalty measures the penalty.
-# THE CAP MOVES WITH PHI -- hjb.rs rescales phi against phi_kappa_t_max, so a
-# cap left behind silently runs the old ceiling. AppConfig::validate now refuses
-# that, so the two cannot drift apart unnoticed again.
-phi_kappa_t = 400.0
-phi_kappa_t_max = 600.0
+# Follows rust_live/config/cashcat.toml (200/300 -> 300/450, 2026-09-02); the
+# reasoning and the measured ladder live there. This profile only has to agree
+# with it, since a comparison run against a different inventory penalty measures
+# the penalty. The cap moves with phi or AppConfig::validate refuses the config.
+phi_kappa_t = 300.0
+phi_kappa_t_max = 450.0
 alpha_kappa = 0.05
 raw_phi_fallback = 0.0001
 raw_alpha_fallback = 0.001
