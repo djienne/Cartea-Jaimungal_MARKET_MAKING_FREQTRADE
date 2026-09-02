@@ -141,7 +141,16 @@ pub struct PersistedLiveOrder {
     pub transport_id: Option<u64>,
     pub oid: Option<u64>,
     pub prepared_at_ms: u64,
+    /// Local wall-clock time of the last mutation. Drives the in-flight
+    /// cancel guard and terminal-order pruning; never compared with venue
+    /// timestamps.
     pub last_update_ms: u64,
+    /// Exchange time of the newest venue status or fill applied to this order.
+    /// The only field that may order WebSocket `orderUpdates` — the local and
+    /// venue clocks differ by an unknown offset, so comparing across them
+    /// silently dropped legitimate acknowledgements and cancels.
+    #[serde(default)]
+    pub last_venue_status_ms: u64,
     pub last_error: Option<String>,
 }
 
@@ -1040,6 +1049,7 @@ mod tests {
             oid: None,
             prepared_at_ms: 1,
             last_update_ms,
+            last_venue_status_ms: 0,
             last_error: None,
         }
     }
@@ -1284,6 +1294,7 @@ mod tests {
                             oid: None,
                             prepared_at_ms: 1,
                             last_update_ms: 1,
+                            last_venue_status_ms: 0,
                             last_error: None,
                         },
                     );
@@ -1396,6 +1407,7 @@ mod tests {
                 oid: Some(7),
                 prepared_at_ms: 1,
                 last_update_ms: 1,
+                last_venue_status_ms: 0,
                 last_error: None,
             },
         );

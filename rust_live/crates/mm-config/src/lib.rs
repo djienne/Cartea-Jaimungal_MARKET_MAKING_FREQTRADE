@@ -211,10 +211,19 @@ pub struct LiveConfig {
     pub max_order_notional_multiplier: f64,
     pub max_directional_notional_multiplier: f64,
     pub max_working_gross_multiplier: f64,
+    /// Bounds on exposure *including* orders whose cancel is still in flight.
+    /// A replacement enqueues the cancel and the new order together, so for
+    /// one action round trip both lots exist; the steady-state caps above
+    /// apply once the cancel lands, these apply to the overlap. Defaults are
+    /// exactly one in-flight duplicate per side.
+    pub max_transient_directional_notional_multiplier: f64,
+    pub max_transient_working_gross_multiplier: f64,
     pub production_max_daily_realized_loss_usdc: f64,
     pub acceptance_max_order_notional_usdc: f64,
     pub acceptance_max_directional_notional_usdc: f64,
     pub acceptance_max_working_gross_usdc: f64,
+    pub acceptance_max_transient_directional_notional_usdc: f64,
+    pub acceptance_max_transient_working_gross_usdc: f64,
     pub acceptance_max_turnover_usdc: f64,
     pub acceptance_max_realized_loss_usdc: f64,
 }
@@ -253,10 +262,14 @@ impl Default for LiveConfig {
             max_order_notional_multiplier: 1.10,
             max_directional_notional_multiplier: 1.10,
             max_working_gross_multiplier: 2.20,
+            max_transient_directional_notional_multiplier: 2.20,
+            max_transient_working_gross_multiplier: 4.40,
             production_max_daily_realized_loss_usdc: 1.0,
             acceptance_max_order_notional_usdc: 12.0,
             acceptance_max_directional_notional_usdc: 12.0,
             acceptance_max_working_gross_usdc: 24.0,
+            acceptance_max_transient_directional_notional_usdc: 24.0,
+            acceptance_max_transient_working_gross_usdc: 48.0,
             acceptance_max_turnover_usdc: 60.0,
             acceptance_max_realized_loss_usdc: 0.5,
         }
@@ -489,6 +502,40 @@ impl AppConfig {
             || self.live.production_max_daily_realized_loss_usdc <= 0.0
         {
             bail!("invalid live micro-notional risk envelope");
+        }
+        // The transient caps must admit one in-flight duplicate per side,
+        // otherwise every replacement is refused while its cancel is pending.
+        if !self
+            .live
+            .max_transient_directional_notional_multiplier
+            .is_finite()
+            || self.live.max_transient_directional_notional_multiplier
+                < 2.0 * self.live.max_directional_notional_multiplier
+            || !self.live.max_transient_working_gross_multiplier.is_finite()
+            || self.live.max_transient_working_gross_multiplier
+                < 2.0 * self.live.max_working_gross_multiplier
+        {
+            bail!("live transient caps must be finite and at least twice their steady-state caps");
+        }
+        if !self
+            .live
+            .acceptance_max_transient_directional_notional_usdc
+            .is_finite()
+            || self.live.acceptance_max_transient_directional_notional_usdc
+                < 2.0 * self.live.acceptance_max_directional_notional_usdc
+            || self.live.acceptance_max_transient_directional_notional_usdc > 24.0
+            || !self
+                .live
+                .acceptance_max_transient_working_gross_usdc
+                .is_finite()
+            || self.live.acceptance_max_transient_working_gross_usdc
+                < 2.0 * self.live.acceptance_max_working_gross_usdc
+            || self.live.acceptance_max_transient_working_gross_usdc > 48.0
+        {
+            bail!(
+                "acceptance transient caps must be at least twice the steady caps and within \
+                 the 24/48 USDC hard maxima"
+            );
         }
         for (name, value, hard_maximum) in [
             (

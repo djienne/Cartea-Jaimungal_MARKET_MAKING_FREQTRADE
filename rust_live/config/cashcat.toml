@@ -190,9 +190,16 @@ min_order_notional_multiplier = 1.05
 max_order_notional_multiplier = 1.10
 max_directional_notional_multiplier = 1.10
 max_working_gross_multiplier = 2.20
+# Transient caps bound exposure while a replacement's cancel is still in
+# flight (the old and new lot both exist for one round trip). The steady caps
+# above apply once the cancel lands. Exactly one in-flight duplicate per side.
+max_transient_directional_notional_multiplier = 2.20
+max_transient_working_gross_multiplier = 4.40
 production_max_daily_realized_loss_usdc = 1.0
 acceptance_max_order_notional_usdc = 12.0
 acceptance_max_directional_notional_usdc = 12.0
 acceptance_max_working_gross_usdc = 24.0
+acceptance_max_transient_directional_notional_usdc = 24.0
+acceptance_max_transient_working_gross_usdc = 48.0
 acceptance_max_turnover_usdc = 60.0
 acceptance_max_realized_loss_usdc = 0.5

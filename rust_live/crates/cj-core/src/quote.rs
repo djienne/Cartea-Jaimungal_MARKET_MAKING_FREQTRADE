@@ -242,16 +242,24 @@ impl CarteaJaimungalPolicy {
         }
         let next_base = self.instrument.size_from_units(next_inventory.abs());
         let next_notional = next_base * mid;
-        if self.risk.max_notional_usdc > 0.0 && next_notional > self.risk.max_notional_usdc {
-            return None;
-        }
-        let margin = next_notional / self.quoting.leverage;
-        if self.risk.max_margin_usdc > 0.0 && margin > self.risk.max_margin_usdc {
-            return None;
-        }
-        let maintenance = next_notional * self.risk.maintenance_margin_rate;
-        if risk_state.equity_usdc - maintenance < self.risk.min_liquidation_buffer_usdc {
-            return None;
+        // The notional, margin and liquidation-buffer limits bound *increases*
+        // in exposure. An order that reduces |inventory| must never be refused
+        // by them: once a limit is already breached, that order is the only
+        // way back inside it, and refusing it left the engine silent while
+        // over-exposed.
+        let reduces_exposure = next_inventory.abs() < inventory_units.abs();
+        if !reduces_exposure {
+            if self.risk.max_notional_usdc > 0.0 && next_notional > self.risk.max_notional_usdc {
+                return None;
+            }
+            let margin = next_notional / self.quoting.leverage;
+            if self.risk.max_margin_usdc > 0.0 && margin > self.risk.max_margin_usdc {
+                return None;
+            }
+            let maintenance = next_notional * self.risk.maintenance_margin_rate;
+            if risk_state.equity_usdc - maintenance < self.risk.min_liquidation_buffer_usdc {
+                return None;
+            }
         }
         let order_notional = self.instrument.size_from_units(qty_units) * mid;
         if order_notional < self.instrument.minimum_notional {
@@ -454,5 +462,52 @@ mod tests {
         );
         assert!(decision.quotes.bid.is_none());
         assert!(decision.quotes.ask.is_some());
+    }
+
+    /// Once a limit is already breached — here both the notional cap and the
+    /// liquidation buffer — the reducing side must still be quoted; only the
+    /// increasing side is refused.
+    #[test]
+    fn a_breached_limit_never_refuses_the_reducing_order() {
+        let policy = CarteaJaimungalPolicy::new(
+            instrument("CASHCAT", 6, 0),
+            QuotingConfig::default(),
+            RiskConfig {
+                max_notional_usdc: 300.0,
+                max_margin_usdc: 10_000.0,
+                min_liquidation_buffer_usdc: 100.0,
+                maintenance_margin_rate: 0.05,
+                ..RiskConfig::default()
+            },
+        )
+        .unwrap();
+        let decision = policy.compute(
+            &surface(),
+            Bbo {
+                bid_px: 131_970,
+                bid_sz: 2_000,
+                ask_px: 132_200,
+                ask_sz: 3_000,
+                exchange_ms: 1,
+                recv_ns: 1,
+            },
+            6_000,
+            2_000,
+            75.0,
+            1,
+            1,
+            QuoteReason::Market,
+            RiskState {
+                equity_usdc: 130.0,
+                ..RiskState::default()
+            },
+        );
+        assert!(
+            decision.quotes.bid.is_none(),
+            "increasing side stays refused"
+        );
+        let ask = decision.quotes.ask.expect("reducing side must be quoted");
+        assert_eq!(ask.side, Side::Sell);
+        assert_eq!(ask.qty_units, 2_000);
     }
 }

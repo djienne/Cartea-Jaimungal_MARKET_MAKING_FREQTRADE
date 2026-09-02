@@ -1021,6 +1021,7 @@ fn prepare_action_state(
                         oid: None,
                         prepared_at_ms: now_ms,
                         last_update_ms: now_ms,
+                        last_venue_status_ms: 0,
                         last_error: None,
                     },
                 );
@@ -1107,7 +1108,9 @@ fn apply_action_response(
                 } else if let Some(error) = status.and_then(|value| value.get("error")) {
                     let text = error.as_str().unwrap_or_default();
                     (
-                        if purpose == ActionPurpose::Order {
+                        // Reduce-only batches (the flatten path) are orders
+                        // too: their rejections are terminal, not unknown.
+                        if matches!(purpose, ActionPurpose::Order | ActionPurpose::ReduceOnly) {
                             LiveOrderStatus::Rejected
                         } else if cancel_error_is_terminal(text) {
                             LiveOrderStatus::Canceled
@@ -1408,6 +1411,61 @@ mod tests {
         assert!(!cancel_error_is_terminal(""));
     }
 
+    /// A reduce-only batch is the emergency-flatten path; its rejections
+    /// (a thin book returns "could not immediately match") used to land on
+    /// the non-terminal `UnknownOutcome`, which blocked health during the
+    /// flatten and cost REST lookups exactly when the budget mattered.
+    #[test]
+    fn reduce_only_rejections_are_terminal() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LiveStateStore::open(
+            &directory.path().join("state.redb"),
+            "CASHCAT",
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "config",
+            "meta",
+            SessionIntent::Quote {
+                venue_is_flat: true,
+            },
+        )
+        .unwrap();
+        let request = LiveOrderRequest {
+            side: crate::types::Side::Sell,
+            px_units: 100_000,
+            qty_units: 100,
+            reduce_only: true,
+            time_in_force: crate::hyperliquid::signing::TimeInForce::Ioc,
+            cloid: "0x434a4d4d000000000000000000000009".to_owned(),
+        };
+        let action = SessionAction::Orders {
+            quote_seq: 0,
+            requests: vec![request.clone()],
+        };
+        assert_eq!(action.purpose(), ActionPurpose::ReduceOnly);
+        let slots = prepare_action_state(&store, &action, 5, 5).unwrap();
+        apply_action_response(
+            &store,
+            &slots,
+            action.purpose(),
+            &serde_json::json!({
+                "status": "ok",
+                "response": {"data": {"statuses": [
+                    {"error": "Order could not immediately match against any resting orders."}
+                ]}}
+            }),
+            3,
+        )
+        .unwrap();
+        let order = &store.load_required().unwrap().orders[&request.cloid];
+        assert_eq!(order.status, LiveOrderStatus::Rejected);
+        assert_eq!(order.remaining_qty_units, 0);
+        assert!(order
+            .last_error
+            .as_deref()
+            .is_some_and(|text| text.contains("immediately match")));
+    }
+
     #[test]
     fn order_expiry_uses_send_time_when_nonce_lease_is_old() {
         assert_eq!(order_expires_after(1_000, 50_000, 5_000), 55_000);
@@ -1448,6 +1506,7 @@ mod tests {
                         oid: Some(7),
                         prepared_at_ms: 1,
                         last_update_ms: 2,
+                        last_venue_status_ms: 0,
                         last_error: None,
                     },
                 );
@@ -1517,6 +1576,7 @@ mod tests {
             oid: Some(7),
             prepared_at_ms: 1,
             last_update_ms: 2,
+            last_venue_status_ms: 0,
             last_error: None,
         };
         store
@@ -1599,6 +1659,7 @@ mod tests {
                         oid: None,
                         prepared_at_ms: 1,
                         last_update_ms: 2,
+                        last_venue_status_ms: 0,
                         last_error: None,
                     },
                 );

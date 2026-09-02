@@ -381,6 +381,7 @@ mod tests {
             },
             asset_positions: Vec::<AssetPosition>::new(),
             withdrawable: "299.782699".to_owned(),
+            time: 0,
         };
         let active = serde_json::json!({
             "availableToTrade": ["299.782699", "299.782699"],

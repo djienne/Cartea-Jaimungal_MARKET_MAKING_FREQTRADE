@@ -340,12 +340,7 @@ impl HyperliquidExchangeClient {
             .text()
             .await
             .context("cannot read Hyperliquid action response")?;
-        let body = serde_json::from_str(&text).unwrap_or_else(|_| json!({"raw": text}));
-        Ok(ActionOutcome::Response {
-            nonce,
-            http_status,
-            body,
-        })
+        Ok(classify_action_response(nonce, http_status, &text))
     }
 
     fn consume_rest_weight(&self, weight: u64, safety_critical: bool) -> Result<()> {
@@ -424,6 +419,45 @@ pub enum ActionOutcome {
     },
 }
 
+/// Turn an HTTP action reply into an outcome the callers can trust.
+///
+/// Only a JSON body under a non-5xx status is a *known* outcome. A 5xx, or a
+/// body that is not JSON (a gateway's HTML error page), says nothing about
+/// whether the venue executed the action before failing — treating it as
+/// known used to record a REST cancel as delivered while the orders still
+/// rested. A 429 is known-not-executed and is surfaced as a rate-limit error
+/// body so the cooldown logic recognises it.
+fn classify_action_response(nonce: u64, http_status: u16, text: &str) -> ActionOutcome {
+    let excerpt: String = text.chars().take(200).collect();
+    if http_status >= 500 {
+        return ActionOutcome::Unknown {
+            nonce,
+            error: format!("HTTP {http_status} from the action endpoint: {excerpt}"),
+        };
+    }
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(text) else {
+        return ActionOutcome::Unknown {
+            nonce,
+            error: format!("HTTP {http_status} with a non-JSON body: {excerpt}"),
+        };
+    };
+    if http_status == 429 {
+        return ActionOutcome::Response {
+            nonce,
+            http_status,
+            body: json!({
+                "status": "err",
+                "response": format!("rate limit (HTTP 429): {body}"),
+            }),
+        };
+    }
+    ActionOutcome::Response {
+        nonce,
+        http_status,
+        body,
+    }
+}
+
 impl ActionOutcome {
     pub fn body(&self) -> Option<&serde_json::Value> {
         match self {
@@ -450,6 +484,11 @@ pub struct ClearinghouseState {
     pub asset_positions: Vec<AssetPosition>,
     #[serde(default)]
     pub withdrawable: String,
+    /// Venue time the snapshot reflects. Used as the inventory watermark so a
+    /// REST snapshot older than an already-applied WebSocket fill cannot roll
+    /// inventory back. Optional: absent means "unknown", not zero trust.
+    #[serde(default)]
+    pub time: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -552,6 +591,49 @@ impl MonotonicNonce {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gateway failure says nothing about whether the venue executed the
+    /// action; only a JSON body under a non-5xx status is a known outcome.
+    #[test]
+    fn server_errors_and_non_json_bodies_are_unknown_outcomes() {
+        assert!(matches!(
+            classify_action_response(7, 502, "<html>Bad Gateway</html>"),
+            ActionOutcome::Unknown { nonce: 7, .. }
+        ));
+        assert!(matches!(
+            classify_action_response(7, 500, r#"{"status":"ok"}"#),
+            ActionOutcome::Unknown { nonce: 7, .. }
+        ));
+        assert!(matches!(
+            classify_action_response(7, 200, "not json"),
+            ActionOutcome::Unknown { nonce: 7, .. }
+        ));
+        match classify_action_response(7, 200, r#"{"status":"ok"}"#) {
+            ActionOutcome::Response {
+                nonce,
+                http_status,
+                body,
+            } => {
+                assert_eq!(nonce, 7);
+                assert_eq!(http_status, 200);
+                assert_eq!(body["status"], "ok");
+            }
+            ActionOutcome::Unknown { .. } => panic!("a JSON 200 is a known outcome"),
+        }
+    }
+
+    #[test]
+    fn a_429_is_a_known_rate_limit_error() {
+        match classify_action_response(7, 429, r#"{"message":"Too many requests"}"#) {
+            ActionOutcome::Response { body, .. } => {
+                assert_eq!(body["status"], "err");
+                let text = body["response"].as_str().unwrap_or_default();
+                assert!(text.contains("rate limit"), "{text}");
+                assert!(text.contains("Too many requests"), "{text}");
+            }
+            ActionOutcome::Unknown { .. } => panic!("a 429 is known-not-executed"),
+        }
+    }
 
     #[test]
     fn nonce_is_strictly_increasing_inside_one_signer_process() {

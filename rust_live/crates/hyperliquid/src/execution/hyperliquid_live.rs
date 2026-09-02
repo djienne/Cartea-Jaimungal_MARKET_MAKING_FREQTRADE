@@ -65,6 +65,9 @@ pub struct LiveExecutionDiagnostics {
     pub placement_throttles: u64,
     pub consecutive_rejections: u32,
     pub next_placement_allowed_ms: u64,
+    /// Authoritative snapshots that predated an already-applied WebSocket
+    /// fill and were therefore not allowed to roll inventory back.
+    pub stale_snapshot_inventory_retained: u64,
 }
 
 pub struct LiveBootstrap {
@@ -128,6 +131,10 @@ const EVENT_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
 /// Keep terminal orders at least this long so late acknowledgements and status
 /// rows can still be attributed before the entry is dropped.
 const MINIMUM_TERMINAL_ORDER_RETENTION_MS: u64 = 10 * 60 * 1_000;
+/// Grace added to the action expiry before an order the venue does not
+/// recognise (or reports with a status this build cannot classify) is treated
+/// as never placed.
+const UNRESOLVED_ORDER_GRACE_MS: u64 = 2_000;
 
 /// Scalars an authoritative reconcile needs from the durable state, projected
 /// under the lock so the growing collections are never cloned.
@@ -149,6 +156,53 @@ enum FillAdmission {
         cumulative_fees_usdc: f64,
         cumulative_realized_pnl_usdc: f64,
     },
+}
+
+/// Gross working notional and worst-case directional notional for one
+/// projection of the order set.
+struct ExposureProjection {
+    gross: f64,
+    directional: f64,
+}
+
+/// Why `validate_new_orders` refused a placement.
+#[derive(Debug)]
+enum PlacementRefusal {
+    /// A transient condition — typically the transient exposure cap while a
+    /// replacement's cancel is still in flight. Keep the target and retry.
+    Defer(String),
+    /// A risk, quota, or venue-limit breach. Pause quoting until reconciled.
+    Degrade(anyhow::Error),
+}
+
+impl PlacementRefusal {
+    fn degrade(reason: impl Into<String>) -> Self {
+        Self::Degrade(anyhow::anyhow!(reason.into()))
+    }
+}
+
+impl From<anyhow::Error> for PlacementRefusal {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Degrade(error)
+    }
+}
+
+impl From<PlacementRefusal> for anyhow::Error {
+    fn from(refusal: PlacementRefusal) -> Self {
+        match refusal {
+            PlacementRefusal::Defer(reason) => anyhow::anyhow!(reason),
+            PlacementRefusal::Degrade(error) => error,
+        }
+    }
+}
+
+/// What to do with an authoritative snapshot that predates an already-applied
+/// WebSocket fill. The first is refused and a fresher one requested; the next
+/// is adopted even if still stale, bounding the retry to a single round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaleSnapshotHandling {
+    RefuseOnce,
+    AdoptNext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +271,7 @@ pub struct HyperliquidLiveBackend {
     consecutive_rejections: u32,
     rejection_recovery: RejectionRecovery,
     startup_reconciliation: StartupReconciliation,
+    stale_snapshot_handling: StaleSnapshotHandling,
 }
 
 impl HyperliquidLiveBackend {
@@ -385,6 +440,7 @@ impl HyperliquidLiveBackend {
             consecutive_rejections: 0,
             rejection_recovery: RejectionRecovery::Idle,
             startup_reconciliation,
+            stale_snapshot_handling: StaleSnapshotHandling::RefuseOnce,
         };
         backend.initialize_campaign()?;
         Ok(LiveBootstrap {
@@ -695,7 +751,7 @@ impl HyperliquidLiveBackend {
             });
         }
         let bbo = self.fresh_bbo().await?;
-        self.validate_new_orders(&requests, bbo)?;
+        self.validate_new_orders(&requests, bbo, unix_ms())?;
         let action_count = requests.len() as u64;
         let outcome = self.session.place_orders(quote_seq, requests).await?;
         self.count_address_actions(action_count);
@@ -1124,7 +1180,7 @@ impl HyperliquidLiveBackend {
         }
         let bbo = self.fresh_bbo().await?;
         let request = self.ioc_request(side, qty_units, false, max_slippage_bps, bbo)?;
-        self.validate_new_orders(std::slice::from_ref(&request), bbo)?;
+        self.validate_new_orders(std::slice::from_ref(&request), bbo, unix_ms())?;
         let outcome = self.session.place_orders(0, vec![request]).await?;
         self.count_address_actions(1);
         self.record_order_outcome(&outcome);
@@ -1251,6 +1307,18 @@ impl HyperliquidLiveBackend {
                 "userCrossRate": self.account.taker_fee_rate.to_string(),
             })
         });
+        // The snapshot was fetched on a background task and is applied here
+        // later; a WebSocket fill processed in between has already moved
+        // inventory (and is dedup-keyed, so re-applying it is impossible).
+        // Compare venue clocks only: the snapshot's own time (or, failing
+        // that, its newest fill) against the WebSocket watermark. Never a
+        // local clock, which would silently drop legitimate fills while it
+        // ran ahead.
+        let ws_watermark_ms = self.last_inventory_update_exchange_ms;
+        let ws_inventory_units = self.account.inventory_units;
+        let snapshot_watermark_ms = clearinghouse
+            .time
+            .max(fills.iter().map(|fill| fill.time).max().unwrap_or(0));
         self.account = LiveAccountSnapshot::from_rest(
             &clearinghouse,
             &active_asset,
@@ -1258,14 +1326,36 @@ impl HyperliquidLiveBackend {
             open_orders.clone(),
             &self.instrument,
         )?;
-        // The REST position reflects trading up to the newest fill the venue
-        // reports; that fill time is the only venue clock available here. With
-        // no fills there is nothing newer to guard against, so the watermark
-        // keeps its previous (exchange-time) value — never a local clock,
-        // which would silently drop legitimate fills while it ran ahead.
-        if let Some(latest_fill_ms) = fills.iter().map(|fill| fill.time).max() {
-            self.last_inventory_update_exchange_ms =
-                self.last_inventory_update_exchange_ms.max(latest_fill_ms);
+        if ws_watermark_ms > snapshot_watermark_ms
+            && self.stale_snapshot_handling == StaleSnapshotHandling::RefuseOnce
+        {
+            // The REST position predates a fill we have already applied:
+            // keep the WebSocket-derived inventory and ask for a fresher
+            // snapshot once. A second stale answer is accepted (and logged)
+            // so a venue clock behind its own fills cannot loop forever.
+            self.account.inventory_units = ws_inventory_units;
+            self.reconcile_requested = true;
+            self.stale_snapshot_handling = StaleSnapshotHandling::AdoptNext;
+            self.diagnostics.stale_snapshot_inventory_retained = self
+                .diagnostics
+                .stale_snapshot_inventory_retained
+                .saturating_add(1);
+            warn!(
+                ws_watermark_ms,
+                snapshot_watermark_ms,
+                ws_inventory_units,
+                "authoritative snapshot predates an applied fill; keeping WebSocket inventory"
+            );
+        } else {
+            if ws_watermark_ms > snapshot_watermark_ms {
+                warn!(
+                    ws_watermark_ms,
+                    snapshot_watermark_ms,
+                    "authoritative snapshot still predates the WebSocket watermark; adopting it"
+                );
+            }
+            self.stale_snapshot_handling = StaleSnapshotHandling::RefuseOnce;
+            self.last_inventory_update_exchange_ms = ws_watermark_ms.max(snapshot_watermark_ms);
         }
         self.account.realized_pnl_usdc = view.cumulative_realized_pnl_usdc;
         self.account.fees_usdc = view.cumulative_fees_usdc;
@@ -1298,6 +1388,7 @@ impl HyperliquidLiveBackend {
                 oid: Some(open.oid),
                 prepared_at_ms: open.timestamp,
                 last_update_ms: unix_ms(),
+                last_venue_status_ms: open.timestamp,
                 last_error: Some("recovered bot-prefixed venue order".to_owned()),
             });
         }
@@ -1423,17 +1514,23 @@ impl HyperliquidLiveBackend {
                         .and_then(serde_json::Value::as_str)
                         .or_else(|| status.get("status").and_then(serde_json::Value::as_str))
                 });
-                let terminal = if status == Some("unknownOid") {
-                    let safe_after = prepared_at_ms
+                let expired = unix_ms()
+                    >= prepared_at_ms
                         .saturating_add(self.live.action_expiry_ms)
-                        .saturating_add(2_000);
-                    if unix_ms() >= safe_after {
-                        LiveOrderStatus::Rejected
-                    } else {
-                        LiveOrderStatus::UnknownOutcome
-                    }
-                } else {
-                    status.map_or(LiveOrderStatus::UnknownOutcome, map_order_status)
+                        .saturating_add(UNRESOLVED_ORDER_GRACE_MS);
+                let terminal = match status {
+                    // Not paged yet (sixteen per reconcile): the venue has not
+                    // been asked, so nothing may be promoted.
+                    None => LiveOrderStatus::UnknownOutcome,
+                    // `unknownOid` (never placed) or a status this build does
+                    // not recognise: once the action expiry has passed the
+                    // venue can no longer accept the order, so it is gone.
+                    // Without this an unrecognised status stayed non-terminal
+                    // across every reconcile and health never recovered.
+                    Some(raw) => match map_order_status(raw) {
+                        LiveOrderStatus::UnknownOutcome if expired => LiveOrderStatus::Rejected,
+                        mapped => mapped,
+                    },
                 };
                 self.transition_terminal(&cloid, terminal, None)?;
             }
@@ -1477,7 +1574,10 @@ impl HyperliquidLiveBackend {
             let remaining = parse_fixed(&update.order.sz, self.instrument.sz_decimals)?;
             let applied = self.state.update(|state| {
                 if let Some(order) = state.orders.get_mut(cloid) {
-                    if update.status_timestamp < order.last_update_ms
+                    // Order venue updates by venue time only; the local clock
+                    // may run ahead of the exchange and must not decide that a
+                    // genuine acknowledgement or cancel is stale.
+                    if update.status_timestamp < order.last_venue_status_ms
                         || !order.status.can_transition_to(status)
                     {
                         return Ok(false);
@@ -1485,7 +1585,8 @@ impl HyperliquidLiveBackend {
                     order.status = status;
                     order.remaining_qty_units = order.remaining_qty_units.min(remaining);
                     order.oid = Some(update.order.oid);
-                    order.last_update_ms = update.status_timestamp;
+                    order.last_venue_status_ms = update.status_timestamp;
+                    order.last_update_ms = unix_ms();
                     return Ok(true);
                 }
                 Ok(false)
@@ -1636,7 +1737,8 @@ impl HyperliquidLiveBackend {
                             LiveOrderStatus::PartiallyFilled
                         };
                         order.oid = Some(fill.oid);
-                        order.last_update_ms = fill.time;
+                        order.last_venue_status_ms = order.last_venue_status_ms.max(fill.time);
+                        order.last_update_ms = unix_ms();
                     }
                     Ok(())
                 })?;
@@ -1827,7 +1929,44 @@ impl HyperliquidLiveBackend {
         Ok(quantity)
     }
 
-    fn validate_new_orders(&mut self, requests: &[LiveOrderRequest], bbo: Bbo) -> Result<()> {
+    /// Gross and directional exposure for one projection of the working set
+    /// plus the orders about to be placed.
+    fn project_exposure(
+        &self,
+        working: impl Iterator<Item = (Side, i64, i64)>,
+        requests: &[LiveOrderRequest],
+        mid: f64,
+    ) -> ExposureProjection {
+        let mut gross = 0.0;
+        let mut buy_units = self.account.inventory_units;
+        let mut sell_units = self.account.inventory_units;
+        for (side, px_units, qty_units) in working.chain(
+            requests
+                .iter()
+                .map(|order| (order.side, order.px_units, order.qty_units)),
+        ) {
+            gross += self.instrument.price_from_units(px_units)
+                * self.instrument.size_from_units(qty_units);
+            match side {
+                Side::Buy => buy_units = buy_units.saturating_add(qty_units),
+                Side::Sell => sell_units = sell_units.saturating_sub(qty_units),
+            }
+        }
+        ExposureProjection {
+            gross,
+            directional: self
+                .instrument
+                .size_from_units(buy_units.abs().max(sell_units.abs()))
+                * mid,
+        }
+    }
+
+    fn validate_new_orders(
+        &mut self,
+        requests: &[LiveOrderRequest],
+        bbo: Bbo,
+        now_ms: u64,
+    ) -> std::result::Result<(), PlacementRefusal> {
         if self.diagnostics.address_requests_cap != 0
             && self
                 .diagnostics
@@ -1835,44 +1974,46 @@ impl HyperliquidLiveBackend {
                 .saturating_sub(self.diagnostics.address_requests_used)
                 < 100
         {
-            bail!("venue address-action reserve is below 100 requests");
+            return Err(PlacementRefusal::degrade(
+                "venue address-action reserve is below 100 requests",
+            ));
         }
         let mid = self.instrument.price_from_units(bbo.mid_units());
         // Project the working set under the lock: this runs per quote
-        // replacement and must not clone the durable history.
+        // replacement and must not clone the durable history. Each row also
+        // records whether its cancel is genuinely in flight, which is what
+        // separates the steady-state exposure from the transient one below.
+        let action_timeout_ms = self.live.action_timeout_ms;
         let (working, campaign) = self.state.with_state(|state| {
-            let working: Vec<(Side, i64, i64)> = state
+            let working: Vec<(Side, i64, i64, bool)> = state
                 .orders
                 .values()
                 .filter(|order| !order.status.terminal())
-                .map(|order| (order.side, order.px_units, order.remaining_qty_units))
+                .map(|order| {
+                    (
+                        order.side,
+                        order.px_units,
+                        order.remaining_qty_units,
+                        cancel_already_in_flight(order, now_ms, action_timeout_ms),
+                    )
+                })
                 .collect();
             (working, state.campaign)
         })?;
-        let existing_gross: f64 = working
-            .iter()
-            .map(|(_, px_units, remaining_qty_units)| {
-                self.instrument.price_from_units(*px_units)
-                    * self.instrument.size_from_units(*remaining_qty_units)
-            })
-            .sum();
-        let new_gross: f64 = requests
-            .iter()
-            .map(|order| {
-                self.instrument.price_from_units(order.px_units)
-                    * self.instrument.size_from_units(order.qty_units)
-            })
-            .sum();
         for request in requests {
             let notional = self.instrument.price_from_units(request.px_units)
                 * self.instrument.size_from_units(request.qty_units);
             if notional < self.instrument.minimum_notional {
-                bail!("live order is below venue minimum notional");
+                return Err(PlacementRefusal::degrade(
+                    "live order is below venue minimum notional",
+                ));
             }
             if self.live.mode == LiveMode::AcceptanceTest
                 && notional > self.live.acceptance_max_order_notional_usdc
             {
-                bail!("acceptance order exceeds 12-USDC hard cap");
+                return Err(PlacementRefusal::degrade(
+                    "acceptance order exceeds 12-USDC hard cap",
+                ));
             }
             if self.live.mode == LiveMode::Production && !request.reduce_only {
                 let minimum =
@@ -1880,10 +2021,10 @@ impl HyperliquidLiveBackend {
                 let maximum =
                     self.instrument.minimum_notional * self.live.max_order_notional_multiplier;
                 if notional < minimum || notional > maximum {
-                    bail!(
+                    return Err(PlacementRefusal::degrade(format!(
                         "production order {notional:.6} USDC is outside micro-live range \
                          [{minimum:.6}, {maximum:.6}]"
-                    );
+                    )));
                 }
             }
             let side_index = usize::from(request.side == Side::Sell);
@@ -1891,64 +2032,103 @@ impl HyperliquidLiveBackend {
                 && (request.qty_units > self.account.max_trade_units[side_index]
                     || notional > self.account.available_to_trade_usdc[side_index])
             {
-                bail!("live order exceeds venue-reported available-to-trade limits");
+                return Err(PlacementRefusal::degrade(
+                    "live order exceeds venue-reported available-to-trade limits",
+                ));
             }
         }
-        let mut buy_units = self.account.inventory_units;
-        let mut sell_units = self.account.inventory_units;
-        for (side, _, remaining_qty_units) in working {
-            match side {
-                Side::Buy => buy_units = buy_units.saturating_add(remaining_qty_units),
-                Side::Sell => sell_units = sell_units.saturating_sub(remaining_qty_units),
-            }
-        }
-        for request in requests {
-            match request.side {
-                Side::Buy => buy_units = buy_units.saturating_add(request.qty_units),
-                Side::Sell => sell_units = sell_units.saturating_sub(request.qty_units),
-            }
-        }
-        let directional = self
-            .instrument
-            .size_from_units(buy_units.abs().max(sell_units.abs()))
-            * mid;
+        // Two projections of the same working set:
+        // - steady state excludes orders whose cancel is in flight and is what
+        //   the configured caps bound — once every outstanding cancel lands,
+        //   exposure is inside them;
+        // - transient counts every non-terminal order, because an order can
+        //   still fill before its cancel lands, and is bounded by the wider
+        //   transient caps. Breaching only the transient cap is backpressure
+        //   from a replacement in progress, not a risk breach: the target is
+        //   kept and retried once the cancel resolves, without pausing quoting.
+        let steady = self.project_exposure(
+            working
+                .iter()
+                .filter(|(_, _, _, cancel_in_flight)| !cancel_in_flight)
+                .map(|(side, px, qty, _)| (*side, *px, *qty)),
+            requests,
+            mid,
+        );
+        let transient = self.project_exposure(
+            working.iter().map(|(side, px, qty, _)| (*side, *px, *qty)),
+            requests,
+            mid,
+        );
         if self.live.mode == LiveMode::AcceptanceTest {
-            if existing_gross + new_gross > self.live.acceptance_max_working_gross_usdc {
-                bail!("acceptance working gross exceeds 24-USDC hard cap");
+            if steady.gross > self.live.acceptance_max_working_gross_usdc {
+                return Err(PlacementRefusal::degrade(
+                    "acceptance working gross exceeds 24-USDC hard cap",
+                ));
             }
-            if directional > self.live.acceptance_max_directional_notional_usdc {
-                bail!("acceptance directional exposure exceeds 12-USDC hard cap");
+            if steady.directional > self.live.acceptance_max_directional_notional_usdc {
+                return Err(PlacementRefusal::degrade(
+                    "acceptance directional exposure exceeds 12-USDC hard cap",
+                ));
+            }
+            if transient.gross > self.live.acceptance_max_transient_working_gross_usdc
+                || transient.directional
+                    > self.live.acceptance_max_transient_directional_notional_usdc
+            {
+                return Err(PlacementRefusal::Defer(
+                    "acceptance transient exposure cap reached while a cancel is in flight"
+                        .to_owned(),
+                ));
             }
             if campaign.turnover_usdc >= self.live.acceptance_max_turnover_usdc - 12.0
                 || campaign.realized_pnl_usdc
                     <= -(self.live.acceptance_max_realized_loss_usdc - 0.1)
             {
-                bail!("acceptance campaign cleanup reserve reached");
+                return Err(PlacementRefusal::degrade(
+                    "acceptance campaign cleanup reserve reached",
+                ));
             }
         } else {
             let directional_cap =
                 self.instrument.minimum_notional * self.live.max_directional_notional_multiplier;
             let working_gross_cap =
                 self.instrument.minimum_notional * self.live.max_working_gross_multiplier;
-            if directional > directional_cap {
-                bail!("prospective live directional exposure exceeds micro-live cap");
+            if steady.directional > directional_cap {
+                return Err(PlacementRefusal::degrade(
+                    "prospective live directional exposure exceeds micro-live cap",
+                ));
             }
-            if existing_gross + new_gross > working_gross_cap {
-                bail!("prospective live working gross exceeds micro-live cap");
+            if steady.gross > working_gross_cap {
+                return Err(PlacementRefusal::degrade(
+                    "prospective live working gross exceeds micro-live cap",
+                ));
+            }
+            let transient_directional_cap = self.instrument.minimum_notional
+                * self.live.max_transient_directional_notional_multiplier;
+            let transient_gross_cap =
+                self.instrument.minimum_notional * self.live.max_transient_working_gross_multiplier;
+            if transient.directional > transient_directional_cap
+                || transient.gross > transient_gross_cap
+            {
+                return Err(PlacementRefusal::Defer(
+                    "transient exposure cap reached while a cancel is in flight".to_owned(),
+                ));
             }
             let daily = self.state.risk_scalars(unix_ms() / 86_400_000)?;
             if daily.daily_realized_pnl_usdc <= -self.live.production_max_daily_realized_loss_usdc {
-                bail!("production daily realized-loss stop is active");
+                return Err(PlacementRefusal::degrade(
+                    "production daily realized-loss stop is active",
+                ));
             }
         }
+        // Report the true (transient) exposure: it is what the venue can fill.
         self.diagnostics.maximum_working_gross_usdc = self
             .diagnostics
             .maximum_working_gross_usdc
-            .max(existing_gross + new_gross);
+            .max(transient.gross);
         self.diagnostics.maximum_directional_notional_usdc = self
             .diagnostics
             .maximum_directional_notional_usdc
-            .max(directional);
+            .max(transient.directional);
         Ok(())
     }
 
@@ -2190,16 +2370,30 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             // A refused validation means "do not place this order", never
             // "end the session": risk breaches and quota exhaustion both land
             // here, and the address-action reserve check is itself a rate
-            // limit.
-            if let Err(error) = self.validate_new_orders(&place, bbo) {
-                let reason = error.to_string();
-                self.note_rate_limit_if_applicable(now_ms, &reason);
-                self.degrade("order validation refused", &error);
-                if action_submitted {
-                    self.last_quote_action_ms = now_ms;
-                    self.inventory_at_last_quote_action = self.account.inventory_units;
+            // limit. A transient-cap refusal is weaker still — a replacement
+            // whose cancel has not landed yet — so it keeps the target for
+            // the next maintenance tick instead of pausing quoting.
+            match self.validate_new_orders(&place, bbo, now_ms) {
+                Ok(()) => {}
+                Err(PlacementRefusal::Defer(reason)) => {
+                    warn!(reason, "order placement deferred");
+                    self.deferred_desired = Some(desired);
+                    if action_submitted {
+                        self.last_quote_action_ms = now_ms;
+                        self.inventory_at_last_quote_action = self.account.inventory_units;
+                    }
+                    return Ok(());
                 }
-                return Ok(());
+                Err(PlacementRefusal::Degrade(error)) => {
+                    let reason = error.to_string();
+                    self.note_rate_limit_if_applicable(now_ms, &reason);
+                    self.degrade("order validation refused", &error);
+                    if action_submitted {
+                        self.last_quote_action_ms = now_ms;
+                        self.inventory_at_last_quote_action = self.account.inventory_units;
+                    }
+                    return Ok(());
+                }
             }
             if let Err(error) = self.session.enqueue_orders(desired.quote_seq, place) {
                 self.degrade("order enqueue refused", &error);
@@ -2418,16 +2612,31 @@ async fn fetch_authoritative_snapshot(
     })
 }
 
+fn ends_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack.len() >= needle.len()
+        && haystack.is_char_boundary(haystack.len() - needle.len())
+        && haystack[haystack.len() - needle.len()..].eq_ignore_ascii_case(needle)
+}
+
+/// Classify a venue order status. The venue's vocabulary is a family of
+/// suffixes — `marginCanceled`, `scheduledCancel`, `badAloPxRejected`, plain
+/// `rejected` — so match case-insensitively on the suffix; an exact-case match
+/// used to leave `rejected` and `scheduledCancel` (the dead-man's own status)
+/// permanently non-terminal, which wedged health after every dead-man trigger.
 fn map_order_status(status: &str) -> LiveOrderStatus {
-    match status {
-        "open" => LiveOrderStatus::Resting,
-        "filled" => LiveOrderStatus::Filled,
-        "canceled" | "cancelled" => LiveOrderStatus::Canceled,
-        value if value.ends_with("Canceled") || value.ends_with("Cancelled") => {
-            LiveOrderStatus::Canceled
-        }
-        value if value.ends_with("Rejected") => LiveOrderStatus::Rejected,
-        _ => LiveOrderStatus::UnknownOutcome,
+    if status.eq_ignore_ascii_case("open") || status.eq_ignore_ascii_case("triggered") {
+        LiveOrderStatus::Resting
+    } else if status.eq_ignore_ascii_case("filled") {
+        LiveOrderStatus::Filled
+    } else if ends_with_ignore_ascii_case(status, "rejected") {
+        LiveOrderStatus::Rejected
+    } else if ends_with_ignore_ascii_case(status, "canceled")
+        || ends_with_ignore_ascii_case(status, "cancelled")
+        || ends_with_ignore_ascii_case(status, "cancel")
+    {
+        LiveOrderStatus::Canceled
+    } else {
+        LiveOrderStatus::UnknownOutcome
     }
 }
 
@@ -2621,6 +2830,7 @@ mod tests {
                         oid: None,
                         prepared_at_ms: checkpoint,
                         last_update_ms: checkpoint,
+                        last_venue_status_ms: 0,
                         last_error: None,
                     },
                 );
@@ -2657,6 +2867,8 @@ mod tests {
         test_live.acceptance_max_order_notional_usdc = 1_000.0;
         test_live.acceptance_max_directional_notional_usdc = 1_000.0;
         test_live.acceptance_max_working_gross_usdc = 2_000.0;
+        test_live.acceptance_max_transient_directional_notional_usdc = 2_000.0;
+        test_live.acceptance_max_transient_working_gross_usdc = 4_000.0;
         test_live.acceptance_max_turnover_usdc = 10_000.0;
         test_live.acceptance_max_realized_loss_usdc = 100.0;
         let backend = HyperliquidLiveBackend {
@@ -2708,6 +2920,7 @@ mod tests {
             consecutive_rejections: 0,
             rejection_recovery: RejectionRecovery::Idle,
             startup_reconciliation: StartupReconciliation::Complete,
+            stale_snapshot_handling: StaleSnapshotHandling::RefuseOnce,
         };
         (directory, backend, cloid)
     }
@@ -2740,6 +2953,105 @@ mod tests {
             recv_ns: 1,
         });
         (directory, backend)
+    }
+
+    /// A production backend with realistic CASHCAT numbers: 0.19679 USDC,
+    /// 54-unit lots (10.63 USDC, inside the 1.05..1.10 micro-live band), one
+    /// resting bid and one resting ask, flat inventory.
+    fn production_requote_backend() -> (tempfile::TempDir, HyperliquidLiveBackend, String) {
+        let (directory, mut backend, bid_cloid) = lifecycle_backend();
+        backend.live.mode = LiveMode::Production;
+        let ask_cloid = make_cloid(unix_ms(), 1, Side::Sell, 2);
+        backend
+            .state
+            .update(|state| {
+                let bid = state.orders.get_mut(&bid_cloid).expect("seeded order");
+                bid.px_units = 196_790;
+                bid.original_qty_units = 54;
+                bid.remaining_qty_units = 54;
+                bid.status = LiveOrderStatus::Resting;
+                let mut ask = bid.clone();
+                ask.cloid = ask_cloid.clone();
+                ask.side = Side::Sell;
+                ask.px_units = 196_850;
+                state.orders.insert(ask_cloid.clone(), ask);
+                Ok(())
+            })
+            .unwrap();
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 196_800,
+            bid_sz: 1_000,
+            ask_px: 196_840,
+            ask_sz: 1_000,
+            exchange_ms: 1,
+            recv_ns: 1,
+        });
+        (directory, backend, bid_cloid)
+    }
+
+    /// The regression lock for the replacement livelock: with both sides
+    /// resting, replacing one side used to be refused by the steady caps
+    /// because the lot being cancelled still counted. That refusal degraded
+    /// health, which forced a REST reconcile and a full re-quote from empty
+    /// on every requote.
+    #[tokio::test]
+    async fn production_replacement_does_not_double_count_the_cancelled_lot() {
+        let (_directory, mut backend, _) = production_requote_backend();
+        backend
+            .reconcile(bid_target(196_700, 54), 1_000)
+            .await
+            .unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert_eq!(backend.diagnostics.orders_submitted, 1);
+        assert!(backend.deferred_desired.is_none());
+        assert!(
+            backend.operationally_healthy(),
+            "a routine replacement must not pause quoting: {:?}",
+            backend.diagnostics.invalid_reason
+        );
+        // The transient projection (old bid + new bid + ask) is what the venue
+        // can fill, so it is what the report records.
+        assert!(backend.diagnostics.maximum_working_gross_usdc > 30.0);
+    }
+
+    /// The transient cap still bounds the overlap: a third lot on one side
+    /// while two cancels are in flight is deferred, not degraded.
+    #[tokio::test]
+    async fn transient_cap_defers_a_third_lot_on_the_same_side() {
+        let (_directory, mut backend, bid_cloid) = production_requote_backend();
+        let now_ms = 50_000;
+        let second_cloid = make_cloid(unix_ms(), 1, Side::Buy, 3);
+        backend
+            .state
+            .update(|state| {
+                let first = state.orders.get_mut(&bid_cloid).expect("seeded bid");
+                first.status = LiveOrderStatus::CancelPending;
+                first.last_update_ms = now_ms;
+                let mut second = first.clone();
+                second.cloid = second_cloid.clone();
+                second.px_units = 196_780;
+                state.orders.insert(second_cloid.clone(), second);
+                Ok(())
+            })
+            .unwrap();
+        // Keep the ask where it rests so the only candidate action is the
+        // third bid; the two bid cancels are in flight and must not be resent.
+        let mut desired = bid_target(196_700, 54);
+        desired.ask = Some(crate::types::OrderIntent {
+            side: Side::Sell,
+            px: 196_850,
+            qty_units: 54,
+            post_only: true,
+            reduce_only: false,
+        });
+        backend.reconcile(desired, now_ms).await.unwrap();
+        assert_eq!(
+            backend.diagnostics.cancels_submitted, 0,
+            "cancels are in flight"
+        );
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
+        assert!(backend.deferred_desired.is_some());
+        assert!(backend.operationally_healthy());
     }
 
     #[test]
@@ -3057,6 +3369,7 @@ mod tests {
             oid: None,
             prepared_at_ms: 10_000,
             last_update_ms: 10_000,
+            last_venue_status_ms: 0,
             last_error: None,
         };
         // Inside the action timeout the first cancel is still outstanding.
@@ -3082,6 +3395,91 @@ mod tests {
             LiveOrderStatus::Rejected
         );
         assert_eq!(map_order_status("mystery"), LiveOrderStatus::UnknownOutcome);
+    }
+
+    /// Every documented venue status family must land on a terminal state
+    /// (or Resting); `rejected` and `scheduledCancel` used to fall through to
+    /// the non-terminal `UnknownOutcome` and wedge health forever.
+    #[test]
+    fn venue_terminal_statuses_are_case_insensitive_and_terminal() {
+        for (raw, expected) in [
+            ("rejected", LiveOrderStatus::Rejected),
+            ("tickRejected", LiveOrderStatus::Rejected),
+            ("iocCancelRejected", LiveOrderStatus::Rejected),
+            ("perpMaxPositionRejected", LiveOrderStatus::Rejected),
+            ("scheduledCancel", LiveOrderStatus::Canceled),
+            ("canceled", LiveOrderStatus::Canceled),
+            ("CANCELED", LiveOrderStatus::Canceled),
+            ("cancelled", LiveOrderStatus::Canceled),
+            ("marginCanceled", LiveOrderStatus::Canceled),
+            ("liquidatedCanceled", LiveOrderStatus::Canceled),
+            ("filled", LiveOrderStatus::Filled),
+            ("open", LiveOrderStatus::Resting),
+            ("triggered", LiveOrderStatus::Resting),
+            ("unknownOid", LiveOrderStatus::UnknownOutcome),
+        ] {
+            assert_eq!(map_order_status(raw), expected, "status {raw:?}");
+            if !matches!(
+                expected,
+                LiveOrderStatus::Resting | LiveOrderStatus::UnknownOutcome
+            ) {
+                assert!(expected.terminal(), "status {raw:?} must be terminal");
+            }
+        }
+    }
+
+    /// A working order the venue does not list as open, does not report a
+    /// fill for, and answers with an unclassifiable status becomes terminal
+    /// once the action expiry has passed, so health can recover.
+    #[test]
+    fn an_unrecognised_venue_status_becomes_terminal_after_the_expiry_grace() {
+        let (_directory, backend, cloid) = lifecycle_backend();
+        backend
+            .state
+            .update(|state| {
+                let order = state.orders.get_mut(&cloid).expect("seeded order");
+                order.status = LiveOrderStatus::Resting;
+                order.prepared_at_ms = unix_ms()
+                    .saturating_sub(backend.live.action_expiry_ms)
+                    .saturating_sub(UNRESOLVED_ORDER_GRACE_MS)
+                    .saturating_sub(1);
+                Ok(())
+            })
+            .unwrap();
+        let mut statuses = BTreeMap::new();
+        statuses.insert(
+            cloid.clone(),
+            serde_json::json!({"order": {"status": "somethingNew"}}),
+        );
+        backend.reconcile_orders(&[], &[], &statuses).unwrap();
+        let order = backend.state.load_required().unwrap().orders[&cloid].clone();
+        assert_eq!(order.status, LiveOrderStatus::Rejected);
+        assert_eq!(order.remaining_qty_units, 0);
+    }
+
+    /// Before the expiry the same order is still genuinely unknown.
+    #[test]
+    fn an_unrecognised_venue_status_stays_unknown_before_the_expiry_grace() {
+        let (_directory, backend, cloid) = lifecycle_backend();
+        backend
+            .state
+            .update(|state| {
+                let order = state.orders.get_mut(&cloid).expect("seeded order");
+                order.status = LiveOrderStatus::Resting;
+                order.prepared_at_ms = unix_ms();
+                Ok(())
+            })
+            .unwrap();
+        let mut statuses = BTreeMap::new();
+        statuses.insert(
+            cloid.clone(),
+            serde_json::json!({"order": {"status": "somethingNew"}}),
+        );
+        backend.reconcile_orders(&[], &[], &statuses).unwrap();
+        assert_eq!(
+            backend.state.load_required().unwrap().orders[&cloid].status,
+            LiveOrderStatus::UnknownOutcome
+        );
     }
 
     #[test]
@@ -3221,6 +3619,181 @@ mod tests {
             backend.state.load_required().unwrap().orders[&cloid].status,
             LiveOrderStatus::Canceled
         );
+    }
+
+    /// Venue and local clocks are different domains. The seeded order carries
+    /// a local `last_update_ms` (wall clock at store open); a venue update
+    /// stamped with a tiny exchange time must still apply, because only
+    /// `last_venue_status_ms` may order venue updates.
+    #[test]
+    fn a_venue_clock_behind_the_local_clock_does_not_drop_order_updates() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        let ack = serde_json::json!([{
+            "order": {
+                "coin":"CASHCAT", "side":"B", "limitPx":"0.1", "sz":"10",
+                "oid":7, "timestamp":1, "cloid":cloid
+            },
+            "status":"open", "statusTimestamp":5
+        }]);
+        let events = backend
+            .process_session_event(SessionEvent::AccountData {
+                generation: 1,
+                received_ns: 100,
+                channel: AccountChannel::OrderUpdates,
+                data: ack,
+            })
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ExecutionEvent::OrderAcknowledged { .. }]
+        ));
+        let order = backend.state.load_required().unwrap().orders[&cloid].clone();
+        assert_eq!(order.status, LiveOrderStatus::Resting);
+        assert_eq!(order.last_venue_status_ms, 5);
+        assert!(
+            order.last_update_ms >= unix_ms().saturating_sub(60_000),
+            "local touch time must stay on the local clock"
+        );
+    }
+
+    #[test]
+    fn out_of_order_venue_updates_are_still_dropped() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        let update = |sz: &str, status_timestamp: u64| {
+            serde_json::json!([{
+                "order": {
+                    "coin":"CASHCAT", "side":"B", "limitPx":"0.1", "sz":sz,
+                    "oid":7, "timestamp":1, "cloid":cloid
+                },
+                "status":"open", "statusTimestamp":status_timestamp
+            }])
+        };
+        for (sz, status_timestamp) in [("10", 500), ("3", 499)] {
+            backend
+                .process_session_event(SessionEvent::AccountData {
+                    generation: 1,
+                    received_ns: 100,
+                    channel: AccountChannel::OrderUpdates,
+                    data: update(sz, status_timestamp),
+                })
+                .unwrap();
+        }
+        let order = backend.state.load_required().unwrap().orders[&cloid].clone();
+        assert_eq!(order.status, LiveOrderStatus::Resting);
+        assert_eq!(
+            order.remaining_qty_units, 10,
+            "the stale update must not apply"
+        );
+        assert_eq!(order.last_venue_status_ms, 500);
+    }
+
+    fn flat_snapshot_at(time: u64) -> AuthoritativeSnapshot {
+        AuthoritativeSnapshot {
+            clearinghouse: crate::hyperliquid::exchange::ClearinghouseState {
+                margin_summary: crate::hyperliquid::exchange::MarginSummary {
+                    account_value: "300.0".to_owned(),
+                    total_margin_used: "0.0".to_owned(),
+                    total_ntl_pos: "0.0".to_owned(),
+                },
+                asset_positions: Vec::new(),
+                withdrawable: "300.0".to_owned(),
+                time,
+            },
+            open_orders: Vec::new(),
+            active_asset: serde_json::json!({
+                "availableToTrade": ["300.0", "300.0"],
+                "maxTradeSzs": ["5000", "5000"],
+                "leverage": {"type": "isolated", "value": 2}
+            }),
+            fees: Some(serde_json::json!({
+                "userAddRate": "0.00015",
+                "userCrossRate": "0.00045"
+            })),
+            fills: Vec::new(),
+            order_statuses: BTreeMap::new(),
+        }
+    }
+
+    fn apply_ws_fill(backend: &mut HyperliquidLiveBackend, cloid: &str, time: u64) {
+        let fill = serde_json::json!({
+            "isSnapshot": false,
+            "fills": [{
+                "coin":"CASHCAT", "px":"0.1", "sz":"4", "side":"B",
+                "time":time, "oid":7, "tid":9, "cloid":cloid,
+                "startPosition":"0", "crossed":false, "fee":"0.001",
+                "closedPnl":"0", "hash":"0xabc"
+            }]
+        });
+        backend
+            .process_session_event(SessionEvent::AccountData {
+                generation: 1,
+                received_ns: 100,
+                channel: AccountChannel::UserFills,
+                data: fill,
+            })
+            .unwrap();
+        assert_eq!(backend.account.inventory_units, 4);
+    }
+
+    /// The authoritative snapshot is fetched asynchronously. A WebSocket fill
+    /// applied between fetch and apply must not be rolled back by the older
+    /// REST position; the snapshot is refused once and a fresher one asked for.
+    #[test]
+    fn a_websocket_fill_newer_than_the_rest_snapshot_survives_reconciliation() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        backend
+            .state
+            .update(|state| {
+                state.inventory_unit = Some(4);
+                Ok(())
+            })
+            .unwrap();
+        let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
+        let fill_time = checkpoint.saturating_add(10);
+        apply_ws_fill(&mut backend, &cloid, fill_time);
+
+        backend
+            .apply_authoritative_snapshot(flat_snapshot_at(fill_time - 1))
+            .unwrap();
+        assert_eq!(
+            backend.account.inventory_units, 4,
+            "stale REST position must not win"
+        );
+        assert!(backend.reconciliation_requested());
+        assert_eq!(backend.diagnostics.stale_snapshot_inventory_retained, 1);
+        assert_eq!(backend.last_inventory_update_exchange_ms, fill_time);
+
+        // A second stale snapshot is adopted so a venue clock behind its own
+        // fills cannot loop forever.
+        backend.reconcile_requested = false;
+        backend
+            .apply_authoritative_snapshot(flat_snapshot_at(fill_time - 1))
+            .unwrap();
+        assert_eq!(backend.account.inventory_units, 0);
+        assert!(!backend.reconciliation_requested());
+        assert_eq!(backend.diagnostics.stale_snapshot_inventory_retained, 1);
+    }
+
+    #[test]
+    fn a_rest_snapshot_newer_than_the_websocket_watermark_wins() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        backend
+            .state
+            .update(|state| {
+                state.inventory_unit = Some(4);
+                Ok(())
+            })
+            .unwrap();
+        let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
+        let fill_time = checkpoint.saturating_add(10);
+        apply_ws_fill(&mut backend, &cloid, fill_time);
+
+        backend
+            .apply_authoritative_snapshot(flat_snapshot_at(fill_time + 1))
+            .unwrap();
+        assert_eq!(backend.account.inventory_units, 0);
+        assert_eq!(backend.diagnostics.stale_snapshot_inventory_retained, 0);
+        assert_eq!(backend.last_inventory_update_exchange_ms, fill_time + 1);
     }
 
     #[test]
