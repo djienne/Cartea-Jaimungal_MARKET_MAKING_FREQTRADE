@@ -10,10 +10,11 @@
 # allows ten per IP and that budget is shared with the collector containers and
 # any live session (docs/DATA_COLLECTION.md).
 #
-# WHY THESE LEVERS. The staged replay (docs/cashcat_sweep.md) localises the
-# entire loss to one six-hour burst. Re-run 2026-09-02 on 393.77 h under
-# estimator schema v5: 63 of 64 windows sum to +371.31, and `08-22 03:57` alone
-# is -323.70 on 1,473 fills. Its coupled latency/refresh scenarios (v5, and the
+# WHY THESE LEVERS. The staged replay (docs/cashcat_sweep.md) localises the loss
+# to one six-hour burst IN THE TRAIN SLICE: 45 of 46 windows there sum to
+# +402.68 against -323.70 for `08-22 03:57` alone (1,473 fills). The held-out
+# slice has no cascade and still loses -31.38 over 20 windows, so these levers
+# probe the burst and not the steady bleed. Its coupled latency/refresh scenarios (v5, and the
 # 161.95 h v4 figures the rows below were written from) were:
 #
 #     colocated   50 ms /   100 ms refresh    -28.99   (v4 -418.11)

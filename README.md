@@ -55,9 +55,13 @@ is explicitly void after a 19.65-hour feed blackout and is not evidence.
 **The loss is one window, not a steady bleed.** The evidence below is a staged
 parameter sweep on a pinned **393.77 h** CASHCAT tape (3,308,934 price rows,
 1,622,905 trades, 0.7 train/held-out split) under estimator schema v5 —
-`docs/cashcat_sweep.md`. Across 64 six-hour windows it sums to **+47.60**, and
-the single `08-22 03:57` cascade window is **−323.70**: the other 63 sum to
-**+371.31**. It replaces the 161.95 h v4 artifact, kept as
+`docs/cashcat_sweep.md`. **Split the windows by slice before reading them**, because
+the aggregate hides the finding. Over the *train* slice, 45 of 46 six-hour windows
+sum to **+402.68** and the single `08-22 03:57` cascade is **−323.70** — that is
+where "the loss is one window" comes from. Over the *held-out* slice there is no
+cascade at all and it still bleeds: **−31.38** across 20 windows, 11 of them
+negative, and removing the worst still leaves **−8.70**. Per fill the sign flips,
+**+0.0118** in sample against **−0.0166** out of it. It replaces the 161.95 h v4 artifact, kept as
 `docs/cashcat_sweep_20260823_162h_v4.*`, whose winner and latency ordering both
 moved; a 95.23 h predecessor is kept as `docs/cashcat_sweep_20260820_95h.*`.
 

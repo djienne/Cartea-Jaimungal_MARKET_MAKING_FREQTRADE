@@ -35,10 +35,12 @@ healthy; the count does not grow with the number of variants.
 ## What a variant may change
 
 A deliberately narrow set, because only these are implicated by the evidence.
-The staged sweep (`cashcat_sweep.md`) localises the entire loss to one six-hour
-burst. Re-run 2026-09-02 on 393.77 h under estimator schema v5: 63 of 64
-windows sum to **+371.31**, and `08-22 03:57` alone is **−323.70** on 1,473
-fills. (The 161.95 h v4 artifact read +35.28 against −241.17 on 1,771 fills.) So the question a variant should answer is *how much
+The staged sweep (`cashcat_sweep.md`) localises the loss to one six-hour burst
+**in the train slice**: 45 of 46 windows there sum to +402.68 against −323.70 for
+`08-22 03:57` alone (1,473 fills). That is the burst these levers were chosen to
+probe. It does not generalise — the held-out slice has no cascade and still loses
+−31.38 across 20 windows — so a variant that only survives bursts has answered
+half the question. So the question a variant should answer is *how much
 of a burst does this take*.
 
 | key | maps to | evidence |
