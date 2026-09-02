@@ -108,13 +108,37 @@ KAPPA_SUPPORT_LOWER = (0.0, 0.5, 0.75)
 # 60 bps on the ask. A grid stopping at 100 therefore could not reach the region
 # it is supposed to be searching -- it would have reported "no setting is
 # profitable" about a range that never contained the candidate.
-PHI_KAPPA_T = (3.0, 10.0, 30.0, 100.0, 300.0, 1000.0)
+# Extended 2026-09-02: 200 is the shipped value, 400 fills the middle band a
+# promotion would be chosen from, and 3000 exists so the top of the grid is a
+# demonstration rather than a boundary the winner leans on.
+PHI_KAPPA_T = (3.0, 10.0, 30.0, 100.0, 200.0, 300.0, 400.0, 1000.0, 3000.0)
 
-# The terminal penalty, same normalisation. This one has never been swept: it was
-# set to 0.05 while the agent read only the t=0 slice, which left alpha
-# structurally inert. Making the control episodic made it live, so the shipped
-# value carries no evidence at all.
-ALPHA_KAPPA = (0.05, 0.5, 5.0)
+# The terminal penalty, same normalisation.
+#
+# MEASURED INERT, 2026-09-02. alpha only reaches back a short boundary layer
+# from the terminal condition, and phi sets how short. Measured on
+# delta_ask(q=2) over a 150 s episode, the largest tau at which alpha still
+# moves the depth at all:
+#
+#     phi*kappa*T = 10    ->  130.75 s  (87% of the episode)
+#     phi*kappa*T = 200   ->   12.25 s  (8.2%)
+#     phi*kappa*T = 300   ->    8.75 s  (5.8%)
+#     phi*kappa*T = 1000  ->    3.50 s  (2.3%)
+#
+# At every phi this grid searches, the quotes that differ are confined to the
+# last seconds of each episode, and Stage B returned P&L identical to full
+# float precision (95.01449289884886) across 0.05/0.5/5.0. So the axis is not
+# merely uninformative, it is provably dead, and it multiplied Stage B's cost
+# by three. Collapsed to one value; --alpha-kappa-grid re-opens it deliberately
+# for anyone testing at low phi, where the reach above shows it is live.
+ALPHA_KAPPA = (0.05,)
+
+# Toxic-flow guard on/off. The Python replay gained the guard on 2026-09-02
+# (scripts/flow_guard.py); before that every sweep selected against a cascade
+# risk the live bot already handles, because the 08-22 cascade sits in the
+# TRAIN slice. Keeping both legs in the grid means every artifact carries its
+# own A/B rather than relying on a separate study.
+FLOW_GUARD = (True, False)
 
 # Episode length in seconds. 150 was best in docs/time_mode_ab.md, but that A/B
 # ran at 500 ms latency with a symmetric long-only solve, so it is a prior rather
@@ -153,11 +177,13 @@ class RiskSetting:
     alpha_kappa: float = 0.05
     horizon_seconds: float = 150.0
     q_max: int = 6
+    flow_guard: bool = True
 
     def key(self) -> str:
         return (
             f"phiKT{self.phi_kappa_t:g}_alphaK{self.alpha_kappa:g}"
             f"_T{self.horizon_seconds:g}_q{self.q_max}"
+            f"_{'guard' if self.flow_guard else 'noguard'}"
         )
 
 
@@ -292,7 +318,16 @@ def _worker_score(job: dict[str, Any]) -> dict[str, Any]:
     """Score one grid point inside a pool worker."""
     tape = _WORKER_TAPES[job["tape"]]
     config = ReplayConfig(**job["config"])
-    return {"index": job["index"], **score(config, job["params"], tape, min_fills=job["min_fills"])}
+    return {
+        "index": job["index"],
+        **score(
+            config,
+            job["params"],
+            tape,
+            min_fills=job["min_fills"],
+            min_fills_per_day=job.get("min_fills_per_day", 0.0),
+        ),
+    }
 
 
 def _config_kwargs(config: ReplayConfig) -> dict[str, Any]:
@@ -310,6 +345,7 @@ def run_jobs(
             results.append({"index": job["index"], **score(
                 ReplayConfig(**job["config"]), job["params"], _WORKER_TAPES[job["tape"]],
                 min_fills=job["min_fills"],
+                min_fills_per_day=job.get("min_fills_per_day", 0.0),
             )})
             print(f"  [{progress}] {position}/{len(jobs)}", flush=True)
         return results
@@ -637,6 +673,7 @@ def build_config(
         hjb_horizon_seconds=risk.horizon_seconds,
         q_max=risk.q_max,
         q_min=-risk.q_max,
+        flow_guard_enabled=risk.flow_guard,
         decision_latency_ms=latency_half,
         order_ack_latency_ms=scenario.latency_ms - latency_half,
         quote_refresh_interval_ms=scenario.refresh_ms,
@@ -649,12 +686,20 @@ def score(
     tape: ReplayTape,
     *,
     min_fills: int,
+    min_fills_per_day: float = 0.0,
 ) -> dict[str, Any]:
     """Run one configuration and reduce it to the numbers a sweep compares.
 
     ``usable`` is separate from P&L on purpose. A configuration that quotes so wide
     it takes three fills can post a lovely number and has measured nothing; the
     honest way to express that is to keep the P&L and refuse to rank it.
+
+    Filling less and winning beats filling more and losing, so this is a
+    measurement-validity floor and never a preference for trading: between two
+    usable rows, the one with fewer fills and better P&L wins. ``min_fills`` is
+    an absolute count and is not scale-correct across the very different spans
+    this sweep scores (train ~11.5 d, held-out ~4.9 d, windows 6 h), so
+    ``min_fills_per_day`` is the rate form and is the one to prefer.
     """
     try:
         metrics = run_replay(config, params, tape=tape).to_dict()
@@ -665,9 +710,22 @@ def score(
     by_side = metrics.get("fills_by_side") or {}
     pnl_by_side = metrics.get("pnl_by_side") or {}
     depth_by_side = metrics.get("mean_fill_depth_bps_by_side") or {}
+    span_days = max(float(metrics.get("data_span_seconds", 0.0)) / 86_400.0, 1e-9)
+    fills_per_day = fills / span_days
+    required_rate = float(min_fills_per_day)
+    if fills < int(min_fills):
+        usable, reason = False, f"insufficient_fills:{fills}<{min_fills}"
+    elif required_rate > 0.0 and fills_per_day < required_rate:
+        usable = False
+        reason = f"insufficient_fill_rate:{fills_per_day:.2f}/day<{required_rate:g}"
+    else:
+        usable, reason = True, None
     return {
-        "usable": fills >= int(min_fills),
-        "reason": None if fills >= int(min_fills) else f"insufficient_fills:{fills}<{min_fills}",
+        "usable": usable,
+        "reason": reason,
+        "fills_per_day": fills_per_day,
+        "flow_guard_trips": int(metrics.get("flow_guard_trips", 0)),
+        "flow_guard_withheld_decisions": int(metrics.get("flow_guard_withheld_decisions", 0)),
         "pnl_usdc": float(metrics.get("equity_usdc", 0.0)) - float(metrics.get("starting_equity_usdc", 0.0)),
         "net_realized_spread_usdc": float(metrics.get("realized_spread_usdc", 0.0)) - float(metrics.get("fees_usdc", 0.0)),
         "maker_fills": fills,
@@ -747,9 +805,9 @@ def risk_grid(
     phis = tuple(phi_values) if phi_values is not None else PHI_KAPPA_T
     alphas = tuple(alpha_values) if alpha_values is not None else ALPHA_KAPPA
     return [
-        RiskSetting(phi, alpha, horizon, q_max)
-        for phi, alpha, horizon, q_max in itertools.product(
-            phis, alphas, HORIZONS_SECONDS, Q_MAX
+        RiskSetting(phi, alpha, horizon, q_max, guard)
+        for phi, alpha, horizon, q_max, guard in itertools.product(
+            phis, alphas, HORIZONS_SECONDS, Q_MAX, FLOW_GUARD
         )
     ]
 
@@ -897,6 +955,7 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
             "config": _config_kwargs(build_config(base, reference_risk, search)),
             "params": fitted["params"],
             "min_fills": args.min_fills,
+            "min_fills_per_day": args.min_fills_per_day,
         })
 
     for result in run_jobs(jobs, workers=args.workers, progress="stage A"):
@@ -958,6 +1017,7 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
                 "config": _config_kwargs(build_config(base, risk, search)),
                 "params": survivor["params"],
                 "min_fills": args.min_fills,
+                "min_fills_per_day": args.min_fills_per_day,
             })
     for result in run_jobs(jobs, workers=args.workers, progress="stage B"):
         index = result.pop("index")
@@ -972,7 +1032,13 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
     for row in finalists:
         risk = RiskSetting(**row["risk"])
         config = build_config(base, risk, search)
-        out_of_sample = score(config, row["params"], held_out, min_fills=args.min_fills)
+        out_of_sample = score(
+            config,
+            row["params"],
+            held_out,
+            min_fills=args.min_fills,
+            min_fills_per_day=args.min_fills_per_day,
+        )
         # Sub-windows across the WHOLE tape, train included. The point is not the
         # train/held-out split -- it is whether the candidate survives a change of
         # regime, and the train stretch is regime evidence like any other.
@@ -1037,6 +1103,7 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
         "train_fraction": float(args.train_fraction),
         "search_scenario": dataclasses.asdict(search),
         "min_fills": int(args.min_fills),
+        "min_fills_per_day": float(args.min_fills_per_day),
         "calibration_mode": args.calibration_mode,
         "grids": {
             "epsilon_horizons_ms": list(EPSILON_HORIZONS_MS),
@@ -1045,6 +1112,7 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
             "alpha_kappa": list(ALPHA_KAPPA),
             "horizons_seconds": list(HORIZONS_SECONDS),
             "q_max": list(Q_MAX),
+            "flow_guard": list(FLOW_GUARD),
         },
         "stage_a": stage_a,
         "stage_b_top": sorted(stage_b, key=rank_key, reverse=True)[:40],
@@ -1086,7 +1154,14 @@ def to_markdown(payload: dict[str, Any]) -> str:
         f"- searched at scenario `{(payload.get('search_scenario') or {}).get('name')}` "
         f"(latency {(payload.get('search_scenario') or {}).get('latency_ms')} ms, "
         f"refresh {(payload.get('search_scenario') or {}).get('refresh_ms')} ms)",
-        f"- a row is ranked only if it took ≥ {payload.get('min_fills')} maker fills",
+        f"- a row is ranked only if it took ≥ {payload.get('min_fills')} maker fills"
+        + (
+            f" and ≥ {payload.get('min_fills_per_day')}/day"
+            if payload.get("min_fills_per_day")
+            else ""
+        ),
+        "- the toxic-flow guard is an axis: `guard` on rows is the shipped guard, "
+        "`off` reproduces every sweep before 2026-09-02",
         "",
         "Calibration is fitted on the train slice only and applied unchanged to the",
         "held-out slice. Epsilon horizons stop at 1 s because epsilon is the arrival",
@@ -1123,19 +1198,23 @@ def to_markdown(payload: dict[str, Any]) -> str:
         lines += [
             "## Stage B — the book's risk preference (top 15 on train)",
             "",
-            _row(["calibration", "risk", "P&L", "net spread", "directional", "fills (bid/ask)"]),
-            _row(["---", "---", "---:", "---:", "---:", "---:"]),
+            _row(["calibration", "risk", "guard", "P&L", "net spread", "directional", "fills (bid/ask)", "fills/day"]),
+            _row(["---", "---", "---", "---:", "---:", "---:", "---:", "---:"]),
         ]
         for row in stage_b[:15]:
             risk = row.get("risk", {})
+            guarded = risk.get("flow_guard", True)
+            trips = row.get("flow_guard_trips", 0)
             lines.append(_row([
                 f"`{row.get('calibration_key')}`",
                 f"φκT={risk.get('phi_kappa_t')} ακ={risk.get('alpha_kappa')} "
                 f"T={risk.get('horizon_seconds')} q={risk.get('q_max')}",
+                (f"on ({trips} trip{'s' if trips != 1 else ''})" if guarded else "off"),
                 f"{row.get('pnl_usdc', 0.0):+.2f}",
                 f"{row.get('net_realized_spread_usdc', 0.0):+.2f}",
                 f"{row.get('directional_usdc', 0.0):+.2f}",
                 f"{row.get('maker_fills', 0)} ({row.get('fills_bid', 0)}/{row.get('fills_ask', 0)})",
+                f"{row.get('fills_per_day', 0.0):.1f}",
             ]))
         lines.append("")
 
@@ -1254,9 +1333,14 @@ def parse_args() -> argparse.Namespace:
         type=lambda text: parse_float_list(text, ALPHA_KAPPA),
         default=None,
         help=(
-            "Comma-separated override for the alpha*kappa axis. Swept 2026-08-18 and "
-            "found INERT at high phi -- all values returned bit-identical metrics -- so "
-            "a single value is usually the right choice."
+            "Comma-separated override for the alpha*kappa axis. MEASURED INERT at "
+            "every phi this grid searches, and now defaulted to one value. alpha is "
+            "the terminal penalty, so its influence decays backwards from T and phi "
+            "sets how fast: on delta_ask(q=2) over a 150 s episode it still moves the "
+            "depth for 130.75 s at phi*kappa*T=10, but only 12.25 s at 200 and 3.50 s "
+            "at 1000. Above ~100 the quotes that differ are confined to the last "
+            "seconds of an episode, and Stage B returned bit-identical P&L across "
+            "0.05/0.5/5.0. Re-open this only at low phi, where the reach is real."
         ),
     )
     parser.add_argument(
@@ -1274,6 +1358,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=30,
         help="a configuration below this took too few fills to have measured anything",
+    )
+    parser.add_argument(
+        "--min-fills-per-day",
+        type=float,
+        default=3.0,
+        help=(
+            "rate form of the same floor, and the scale-correct one: the sweep "
+            "scores spans from 6 h to 11.5 d, so an absolute count means "
+            "different things in each. A few fills a day is the point below "
+            "which a result has not measured anything. It is a validity floor, "
+            "not a preference for trading -- fewer fills with better P&L wins."
+        ),
     )
     parser.add_argument(
         "--workers",

@@ -203,6 +203,21 @@ class QuoteConfig:
     # to exercise and measure the model, which is this project's stated goal.
     # Raising it would lose less money and demonstrate less.
     hjb_phi_kappa_t: float = 10.0
+    # Terminal penalty h(T,q) = -alpha*q^2, same dimensionless normalisation.
+    #
+    # It is NOT a free knob at the phi values this project runs. alpha's
+    # influence decays backwards from the terminal condition and phi sets how
+    # fast, because the running penalty reaches its stationary profile within a
+    # boundary layer of T. Measured 2026-09-02 on delta_ask(q=2) over a 150 s
+    # episode -- the largest tau at which alpha still changes the depth at all:
+    #
+    #     phi*kappa*T = 10    ->  130.75 s   (87% of the episode)
+    #     phi*kappa*T = 200   ->   12.25 s   (8.2%)
+    #     phi*kappa*T = 1000  ->    3.50 s   (2.3%)
+    #
+    # So at the shipped phi this value is doing almost nothing, and a sweep of
+    # it returns bit-identical P&L. That is a statement about phi crowding it
+    # out, not about alpha being unimportant in the model.
     hjb_alpha_kappa: float = 0.05
     # Ceiling on the SAME dimensionless product, so the volatility channel --
     # which is still in absolute price units -- cannot quietly undo the
