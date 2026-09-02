@@ -43,6 +43,13 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+from flow_guard import (
+    FlowGuard,
+    FlowGuardConfig,
+    MidWindow,
+    VpinTracker,
+    bucket_volume_from_totals,
+)
 from hjb import compute_h_asymmetric, compute_h_symmetric
 import mm_core
 from mm_core import QuoteConfig, finite_float_or_none
@@ -144,6 +151,21 @@ class ReplayConfig:
     # apply_event_clock: "exchange" is correct, "local" reproduces artifacts
     # recorded before 2026-08-17.
     event_clock: str = "exchange"
+    # Toxic-flow guard, on by default so the replay models what the live bot
+    # actually runs. Until 2026-09-02 the Python replay had no guard at all,
+    # which biased every sweep: the 08-22 cascade sits in the sweep's TRAIN
+    # slice, so selection was tuning the inventory penalty to avoid a cascade
+    # the guard already bounds. Semantics and defaults are the Rust ones
+    # (rust_live/crates/mm-runtime/src/flow_guard.rs).
+    flow_guard_enabled: bool = True
+    flow_guard_fast_move_window_ms: float = FlowGuardConfig.fast_move_window_ms
+    flow_guard_fast_move_threshold_bps: float = FlowGuardConfig.fast_move_threshold_bps
+    flow_guard_vpin_buckets_per_day: int = FlowGuardConfig.vpin_buckets_per_day
+    flow_guard_vpin_window_buckets: int = FlowGuardConfig.vpin_window_buckets
+    flow_guard_vpin_threshold: float = FlowGuardConfig.vpin_threshold
+    flow_guard_cooldown_ms: float = FlowGuardConfig.cooldown_ms
+    flow_guard_warmup_reentry_cooldown_ms: float = FlowGuardConfig.warmup_reentry_cooldown_ms
+    flow_guard_warmup_reentry_calm_fraction: float = FlowGuardConfig.warmup_reentry_calm_fraction
 
 
 @dataclass
@@ -204,6 +226,15 @@ class ReplayMetrics:
     maintenance_margin_usdc: float = 0.0
     min_liquidation_buffer_usdc: float | None = None
     liquidation_breach_events: int = 0
+    # Toxic-flow guard observability. `flow_guard_trips` counts fresh trips
+    # (a re-arm inside an open trip is not a new one); `withheld` counts quote
+    # decisions the guard blanked, which is the analogue of a Rust
+    # QuoteReason::ToxicFlow publication.
+    flow_guard_enabled: bool = False
+    flow_guard_trips: int = 0
+    flow_guard_withheld_decisions: int = 0
+    flow_guard_vpin_bucket_volume: float = 0.0
+    flow_guard_vpin_buckets_seen: int = 0
     queue_decay_base: float = 0.0
     time_at_q_boundary: dict[str, int] = field(default_factory=lambda: {"q_min": 0, "q_max": 0})
     inventory_histogram: dict[int, int] = field(default_factory=dict)
@@ -1077,6 +1108,25 @@ def trade_event_arrays(trades: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np
     return price, size, size_falsy
 
 
+def trade_flow_arrays(trades: pd.DataFrame) -> tuple[list[bool], list[str]]:
+    """(is_buy, trade_id) for the VPIN feed.
+
+    The fill simulator matches on price alone and never needed the aggressor
+    side; VPIN is an order-flow imbalance and cannot be computed without it.
+    A missing side column reads as sell so an absent column cannot manufacture
+    a one-sided imbalance.
+    """
+    if "side" in trades.columns:
+        is_buy = (trades["side"].astype(str).str.lower() == "buy").tolist()
+    else:
+        is_buy = [False] * len(trades)
+    if "trade_id" in trades.columns:
+        trade_ids = trades["trade_id"].astype(str).tolist()
+    else:
+        trade_ids = [""] * len(trades)
+    return is_buy, trade_ids
+
+
 def first_level_size_array(frame: pd.DataFrame, side: str) -> np.ndarray:
     """:func:`first_level_size` for every row of ``frame``, column-wise.
 
@@ -1670,6 +1720,7 @@ def run_replay(
     trade_price = trade_price_arr.tolist()
     trade_size = trade_size_arr.tolist()
     trade_size_falsy = trade_size_falsy_arr.tolist()
+    trade_is_buy, trade_ids = trade_flow_arrays(trades)
     trade_ts_series = trades["timestamp"] if "timestamp" in trades.columns else None
     # A boolean mask instead of the set of consumed row labels, and the window
     # instead of a filtered copy of it: the old pair cost an isin() over a fresh
@@ -1713,6 +1764,41 @@ def run_replay(
     episode_min_elapsed = horizon * float(config.episode_min_elapsed_fraction)
     consumed_trade_events = 0
 
+    # ---- toxic-flow guard -------------------------------------------------
+    # Sized from this tape's own traded volume, exactly as vpin_bucket_units
+    # does live. NOTE a fidelity limit worth remembering when reading per-window
+    # scores: a 6 h window never completes 30 buckets of ADV/50, so those runs
+    # exercise the fast breaker and the warm-up re-entry rule rather than
+    # steady-state VPIN.
+    guard_config = FlowGuardConfig(
+        enabled=bool(config.flow_guard_enabled),
+        fast_move_window_ms=float(config.flow_guard_fast_move_window_ms),
+        fast_move_threshold_bps=float(config.flow_guard_fast_move_threshold_bps),
+        vpin_buckets_per_day=int(config.flow_guard_vpin_buckets_per_day),
+        vpin_window_buckets=int(config.flow_guard_vpin_window_buckets),
+        vpin_threshold=float(config.flow_guard_vpin_threshold),
+        cooldown_ms=float(config.flow_guard_cooldown_ms),
+        warmup_reentry_cooldown_ms=float(config.flow_guard_warmup_reentry_cooldown_ms),
+        warmup_reentry_calm_fraction=float(config.flow_guard_warmup_reentry_calm_fraction),
+    )
+    metrics.flow_guard_enabled = guard_config.enabled
+    flow_guard = FlowGuard(guard_config)
+    mid_window = MidWindow(guard_config.fast_move_window_ms)
+    if trades_empty or trade_ts is None:
+        guard_bucket_volume = 1.0
+    else:
+        guard_bucket_volume = bucket_volume_from_totals(
+            float(sum(v for v in trade_size if v > 0.0)),
+            (trade_ts[-1] - trade_ts[0]) / _NS_PER_MS,
+            guard_config.vpin_buckets_per_day,
+        )
+    metrics.flow_guard_vpin_bucket_volume = guard_bucket_volume
+    vpin_tracker = VpinTracker(guard_bucket_volume, guard_config.vpin_window_buckets)
+    # Read-only cursor over the SAME trade arrays the fill simulator uses. It
+    # never touches `trade_used`, so feeding the guard cannot consume a fill.
+    guard_trade_cursor = 0
+    guard_vpin: float | None = None
+
     for row_idx in range(price_count):
         row_ts_ns = price_ts[row_idx]
         mid = price_mid_list[row_idx]
@@ -1755,6 +1841,24 @@ def run_replay(
             metrics.funding_usdc += funding
             metrics.cash_usdc += funding
 
+        # Feed the guard on every price event, before the refresh gate: the
+        # breaker window and VPIN are properties of the market, not of our
+        # quoting cadence, so they must see the whole stream.
+        if guard_config.enabled:
+            if not trades_empty and trade_ts is not None:
+                while guard_trade_cursor < len(trade_ts) and trade_ts[guard_trade_cursor] <= row_ts_ns:
+                    if not trade_size_falsy[guard_trade_cursor]:
+                        guard_vpin = vpin_tracker.observe(
+                            trade_is_buy[guard_trade_cursor],
+                            trade_size[guard_trade_cursor],
+                            trade_ids[guard_trade_cursor],
+                        )
+                    guard_trade_cursor += 1
+            guard_move_bps = mid_window.observe(row_ts_ns / _NS_PER_MS, mid)
+            guard_tripped = flow_guard.evaluate(row_ts_ns / _NS_PER_MS, guard_move_bps, guard_vpin)
+        else:
+            guard_tripped = False
+
         if next_quote_decision_ns is not None and row_ts_ns < next_quote_decision_ns:
             update_margin_metrics(metrics, config, mid)
             continue
@@ -1778,6 +1882,12 @@ def run_replay(
             q_exact=q_exact,
             quote_config=quote_config,
         )
+        if guard_tripped:
+            # The analogue of the live path publishing
+            # DesiredQuotes::empty(QuoteReason::ToxicFlow, ..): both sides go
+            # dark, which also cancels anything resting.
+            bid = ask = None
+            metrics.flow_guard_withheld_decisions += 1
         inventory_at_decision = metrics.inventory_base
         active_at_ns = row_ts_ns + latency_ns
         refresh_due_ns = row_ts_ns + refresh_ns
@@ -1941,6 +2051,8 @@ def run_replay(
 
         update_margin_metrics(metrics, config, mid)
 
+    metrics.flow_guard_trips = flow_guard.trips
+    metrics.flow_guard_vpin_buckets_seen = vpin_tracker.buckets_seen()
     if metrics.final_mid is not None:
         metrics.mark_to_market_pnl_usdc = metrics.cash_usdc + metrics.inventory_base * metrics.final_mid
 
