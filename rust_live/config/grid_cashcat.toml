@@ -10,10 +10,19 @@
 # allows ten per IP and that budget is shared with the collector containers and
 # any live session (docs/DATA_COLLECTION.md).
 #
-# WHY THESE LEVERS. The 161.95 h staged replay (docs/cashcat_sweep.md)
-# localised the entire loss to one six-hour burst: 26 of 27 windows sum to
-# +35.28, and `08-22 03:57` alone is -241.17 on 1,771 fills. Its coupled
-# latency/refresh scenarios were:
+# WHY THESE LEVERS. The staged replay (docs/cashcat_sweep.md) localises the
+# entire loss to one six-hour burst. Re-run 2026-09-02 on 393.77 h under
+# estimator schema v5: 63 of 64 windows sum to +371.31, and `08-22 03:57` alone
+# is -323.70 on 1,473 fills. Its coupled latency/refresh scenarios (v5, and the
+# 161.95 h v4 figures the rows below were written from) were:
+#
+#     colocated   50 ms /   100 ms refresh    -28.99   (v4 -418.11)
+#     good       100 ms /   250 ms refresh   -102.07   (v4 -279.11)
+#     mid        200 ms /   500 ms refresh   -122.76   (v4 -388.59)
+#
+# Note the v5 ladder is monotone in latency while the v4 one was not, so the
+# "colocation is worse" reading the rows below inherited no longer holds.
+# The v4 figures follow for continuity:
 #
 #     colocated   50 ms /   100 ms refresh   -418.11
 #     good       100 ms /   250 ms refresh   -279.11

@@ -35,9 +35,10 @@ healthy; the count does not grow with the number of variants.
 ## What a variant may change
 
 A deliberately narrow set, because only these are implicated by the evidence.
-The 161.95 h staged sweep (`cashcat_sweep.md`) localised the entire loss to one
-six-hour burst: 26 of 27 windows sum to **+35.28**, and `08-22 03:57` alone is
-**−241.17** on 1,771 fills. So the question a variant should answer is *how much
+The staged sweep (`cashcat_sweep.md`) localises the entire loss to one six-hour
+burst. Re-run 2026-09-02 on 393.77 h under estimator schema v5: 63 of 64
+windows sum to **+371.31**, and `08-22 03:57` alone is **−323.70** on 1,473
+fills. (The 161.95 h v4 artifact read +35.28 against −241.17 on 1,771 fills.) So the question a variant should answer is *how much
 of a burst does this take*.
 
 | key | maps to | evidence |

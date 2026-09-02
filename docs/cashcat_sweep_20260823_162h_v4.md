@@ -1,0 +1,126 @@
+# Parameter sweep — CASHCAT
+
+> **ESTIMATOR SCHEMA (added 2026-09-02).** Every figure in this document was
+> produced under parameter schema v4, where λ± was the raw market-order rate.
+> Schema v5 scales λ± by the survival-fit intercept (≈1.04 / 0.99 on CASHCAT),
+> so these rankings are indicative until the sweep is re-run under v5.
+
+> **SELECTION PROVENANCE (added 2026-08-24).** This sweep predates the fix that
+> records which tape the grid was selected on. Its Stage A and Stage B rankings
+> were produced by scoring ~3.2 h of the ~113 h train slice
+> (`--search-max-price-events 25000`), even though the header below says
+> "tape: 161.951 h" — that is the tape *loaded*, not the tape *selected on*.
+> The held-out numbers in Stage C are full-tape and unaffected. The truncation
+> was justified by a cost estimate that was stale by ~40x; the default is now 0
+> (full train slice) and every future artifact records this line itself.
+
+- generated: `2026-08-23T16:02:07Z`
+- tape: **161.951 h**, 918417 price rows, 417923 trades (`2026-08-16T21:57:55.999000+00:00` → `2026-08-23T15:54:59.556000+00:00`)
+- train/held-out split at `2026-08-21T15:19:52.488000+00:00` (0.7 train)
+- searched at scenario `good` (latency 100 ms, refresh 250 ms)
+- a row is ranked only if it took ≥ 30 maker fills
+
+Calibration is fitted on the train slice only and applied unchanged to the
+held-out slice. Epsilon horizons stop at 1 s because epsilon is the arrival
+jump (eq. 10.22), not a markout.
+
+## Stage A — calibration (risk knobs at shipped values)
+
+| calibration | P&L | net spread | fills (bid/ask) | depth bid/ask bps | P&L bid/ask |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `eps1000/1000_klo0.75/0.75` | -5.58 | +107.79 | 411 (200/211) | 23.4 / 17.9 | +62.52 / +45.28 |
+| `eps1000/1000_klo0.5/0.75` | -10.03 | +110.48 | 460 (221/239) | 22.4 / 16.6 | +65.02 / +45.47 |
+| `eps500/500_klo0.75/0.75` | -10.85 | +110.68 | 455 (220/235) | 22.3 / 16.8 | +64.44 / +46.23 |
+| `eps200/1000_klo0/0.5` | -11.42 | +112.22 | 553 (263/290) | 19.6 / 15.5 | +64.90 / +47.32 |
+| `eps200/500_klo0.75/0.75` | -12.43 | +109.63 | 457 (221/236) | 22.5 / 16.4 | +64.84 / +44.79 |
+| `eps1000/200_klo0.75/0.75` | -12.63 | +110.10 | 449 (219/230) | 22.4 / 16.7 | +63.84 / +46.27 |
+| `eps200/1000_klo0.75/0.75` | -12.68 | +104.78 | 433 (209/224) | 22.8 / 16.6 | +61.90 / +42.88 |
+| `eps500/1000_klo0.75/0.5` | -12.86 | +111.04 | 463 (221/242) | 21.6 / 17.0 | +63.50 / +47.54 |
+| `eps200/1000_klo0.75/0.5` | -13.49 | +109.67 | 461 (224/237) | 21.1 / 17.4 | +62.06 / +47.61 |
+| `eps500/1000_klo0/0.75` | -13.62 | +110.55 | 492 (234/258) | 21.7 / 16.2 | +64.80 / +45.74 |
+| `eps1000/1000_klo0.75/0.5` | -13.83 | +107.06 | 444 (210/234) | 21.9 / 16.9 | +61.50 / +45.56 |
+| `eps200/1000_klo0/0.75` | -14.08 | +110.16 | 499 (239/260) | 21.0 / 16.5 | +63.00 / +47.16 |
+| `eps500/200_klo0/0.75` | -15.06 | +113.68 | 531 (252/279) | 20.6 / 15.8 | +66.55 / +47.13 |
+| `eps1000/1000_klo0.75/0` | -15.07 | +113.53 | 466 (218/248) | 22.2 / 16.7 | +65.89 / +47.63 |
+| `eps1000/500_klo0.75/0.75` | -15.16 | +106.95 | 422 (198/224) | 23.2 / 17.2 | +62.07 / +44.88 |
+
+## Stage B — the book's risk preference (top 15 on train)
+
+| calibration | risk | P&L | net spread | directional | fills (bid/ask) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `eps500/500_klo0.75/0.75` | φκT=300.0 ακ=0.05 T=150.0 q=3 | +15.35 | +48.53 | -33.18 | 119 (62/57) |
+| `eps500/500_klo0.75/0.75` | φκT=300.0 ακ=0.05 T=150.0 q=6 | +15.35 | +48.53 | -33.18 | 119 (62/57) |
+| `eps500/500_klo0.75/0.75` | φκT=300.0 ακ=0.5 T=150.0 q=3 | +15.35 | +48.53 | -33.18 | 119 (62/57) |
+| `eps500/500_klo0.75/0.75` | φκT=300.0 ακ=0.5 T=150.0 q=6 | +15.35 | +48.53 | -33.18 | 119 (62/57) |
+| `eps500/500_klo0.75/0.75` | φκT=300.0 ακ=5.0 T=150.0 q=3 | +15.35 | +48.53 | -33.18 | 119 (62/57) |
+| `eps500/500_klo0.75/0.75` | φκT=300.0 ακ=5.0 T=150.0 q=6 | +15.35 | +48.53 | -33.18 | 119 (62/57) |
+| `eps1000/1000_klo0.5/0.75` | φκT=300.0 ακ=0.05 T=300.0 q=3 | +12.64 | +58.16 | -45.52 | 158 (73/85) |
+| `eps1000/1000_klo0.5/0.75` | φκT=300.0 ακ=0.05 T=300.0 q=6 | +12.64 | +58.16 | -45.52 | 158 (73/85) |
+| `eps1000/1000_klo0.5/0.75` | φκT=300.0 ακ=0.5 T=300.0 q=3 | +12.64 | +58.16 | -45.52 | 158 (73/85) |
+| `eps1000/1000_klo0.5/0.75` | φκT=300.0 ακ=0.5 T=300.0 q=6 | +12.64 | +58.16 | -45.52 | 158 (73/85) |
+| `eps1000/1000_klo0.5/0.75` | φκT=300.0 ακ=5.0 T=300.0 q=3 | +12.64 | +58.16 | -45.52 | 158 (73/85) |
+| `eps1000/1000_klo0.5/0.75` | φκT=300.0 ακ=5.0 T=300.0 q=6 | +12.64 | +58.16 | -45.52 | 158 (73/85) |
+| `eps1000/1000_klo0.75/0.75` | φκT=1000.0 ακ=0.05 T=600.0 q=3 | +12.37 | +47.09 | -34.73 | 113 (59/54) |
+| `eps1000/1000_klo0.75/0.75` | φκT=1000.0 ακ=0.05 T=600.0 q=6 | +12.37 | +47.09 | -34.73 | 113 (59/54) |
+| `eps1000/1000_klo0.75/0.75` | φκT=1000.0 ακ=0.5 T=600.0 q=3 | +12.37 | +47.09 | -34.73 | 113 (59/54) |
+
+## Stage C — held-out
+
+| configuration | train P&L | held-out P&L | net spread | directional | fills | windows + | worst |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `eps500/500_klo0.75/0.75|phiKT300_alphaK0.05_T150_q3` | +15.35 | **-279.11** | +852.51 | -1131.62 | 2287 | 13/27 | -241.17 |
+| `eps500/500_klo0.75/0.75|phiKT300_alphaK0.05_T150_q6` | +15.35 | **-585.61** | +859.37 | -1444.98 | 2318 | 13/27 | -552.81 |
+| `eps500/500_klo0.75/0.75|phiKT300_alphaK0.5_T150_q3` | +15.35 | **-284.93** | +861.15 | -1146.07 | 2322 | 13/27 | -241.17 |
+
+### Leader per 6.0 h window — `eps500/500_klo0.75/0.75|phiKT300_alphaK0.05_T150_q3`
+
+| window | P&L | net spread | directional | fills (bid/ask) |
+| --- | ---: | ---: | ---: | ---: |
+| 08-16 21:57 | +13.74 | +57.68 | -43.94 | 141 (73/68) |
+| 08-17 03:57 | +3.64 | +12.41 | -8.77 | 35 (18/17) |
+| 08-17 09:57 | -5.62 | +17.17 | -22.79 | 46 (27/19) |
+| 08-17 15:57 | -1.05 | +82.40 | -83.45 | 239 (136/103) |
+| 08-17 21:57 | -1.61 | +2.72 | -4.33 | 7 (3/4) |
+| 08-18 03:57 | -1.48 | +6.02 | -7.50 | 17 (11/6) |
+| 08-18 09:57 | +4.33 | +5.20 | -0.86 | 18 (11/7) |
+| 08-18 15:57 | +1.40 | +41.36 | -39.96 | 123 (54/69) |
+| 08-18 21:57 | -8.45 | +28.41 | -36.86 | 83 (29/54) |
+| 08-19 03:57 | -0.86 | +3.47 | -4.33 | 8 (6/2) |
+| 08-19 09:57 | +2.48 | +23.11 | -20.63 | 73 (33/40) |
+| 08-19 15:57 | +16.55 | +49.92 | -33.36 | 155 (63/92) |
+| 08-19 21:57 | -9.13 | +32.95 | -42.07 | 96 (43/53) |
+| 08-20 03:57 | -7.44 | +19.57 | -27.02 | 60 (25/35) |
+| 08-20 09:57 | +0.99 | +51.43 | -50.44 | 186 (107/79) |
+| 08-20 15:57 | +4.56 | +35.46 | -30.89 | 127 (72/55) |
+| 08-20 21:57 | +0.44 | +12.42 | -11.98 | 36 (16/20) |
+| 08-21 03:57 | +3.55 | +14.94 | -11.39 | 64 (35/29) |
+| 08-21 09:57 | +27.38 | +223.67 | -196.29 | 627 (316/311) |
+| 08-21 15:57 | +3.09 | +39.12 | -36.02 | 115 (58/57) |
+| 08-21 21:57 | -8.86 | +32.84 | -41.71 | 109 (50/59) |
+| 08-22 03:57 | -241.17 | +683.89 | -925.05 | 1771 (912/859) |
+| 08-22 09:57 | -5.07 | +16.97 | -22.04 | 56 (25/31) |
+| 08-22 15:57 | -0.24 | +38.29 | -38.53 | 115 (46/69) |
+| 08-22 21:57 | -0.24 | +2.16 | -2.40 | 8 (5/3) |
+| 08-23 03:57 | +5.54 | +3.12 | +2.42 | 11 (7/4) |
+| 08-23 09:57 | -2.36 | +20.09 | -22.45 | 62 (35/27) |
+
+## Latency ladder — winner, held-out slice
+
+Latency and requote cadence move together: resting exposure is
+`max(0, refresh − latency) + cancel`, so cutting latency at a fixed refresh
+lengthens the time a quote sits. Each row is a plausible machine.
+
+| scenario | latency | refresh | P&L | net spread | directional | fills |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| colocated | 50 ms | 100 ms | -418.11 | +1076.72 | -1494.83 | 2884 |
+| good | 100 ms | 250 ms | -279.11 | +852.51 | -1131.62 | 2287 |
+| mid | 200 ms | 500 ms | -388.59 | +654.23 | -1042.82 | 1865 |
+| this_stack | 500 ms | 1000 ms | -398.20 | +480.30 | -878.49 | 1372 |
+| reality | 500 ms | 30000 ms | +9.36 | +396.52 | -387.16 | 1420 |
+
+## How to read the columns
+
+**net spread** is what market making earns: realized spread minus fees.
+**directional** is P&L minus that — a bet on where the mid went, which the
+tape decides and the model does not. A row whose P&L is mostly directional has
+not demonstrated market making, however good the total looks.

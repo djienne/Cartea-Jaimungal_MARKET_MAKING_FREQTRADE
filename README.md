@@ -53,19 +53,20 @@ between runs, so no winning wide rung is established. A later 46.4-hour artifact
 is explicitly void after a 19.65-hour feed blackout and is not evidence.
 
 **The loss is one window, not a steady bleed.** The evidence below is a staged
-parameter sweep on a pinned **161.95 h** CASHCAT tape (918,417 price rows,
-417,923 trades, 0.7 train/held-out split) — `docs/cashcat_sweep.md`. It replaces
-a 95.23 h run whose headline conclusions did **not** survive the extra 70% of
-tape; that earlier artifact is kept as `docs/cashcat_sweep_20260820_95h.*` for
-comparison.
+parameter sweep on a pinned **393.77 h** CASHCAT tape (3,308,934 price rows,
+1,622,905 trades, 0.7 train/held-out split) under estimator schema v5 —
+`docs/cashcat_sweep.md`. Across 64 six-hour windows it sums to **+47.60**, and
+the single `08-22 03:57` cascade window is **−323.70**: the other 63 sum to
+**+371.31**. It replaces the 161.95 h v4 artifact, kept as
+`docs/cashcat_sweep_20260823_162h_v4.*`, whose winner and latency ordering both
+moved; a 95.23 h predecessor is kept as `docs/cashcat_sweep_20260820_95h.*`.
 
-> **Read `docs/cashcat_sweep.md` with two caveats, both in its own header.** Its
-> Stage A/B *selection* scored ~3.2 h of a ~113 h train slice
-> (`--search-max-price-events 25000`) on a cost estimate that was stale by ~40× —
-> so the winning configuration was picked using 2.8% of its training data. The
-> held-out Stage C numbers are full-tape and unaffected. The truncation default
-> is now 0 (full slice; the real cost is ~30 min at four workers), and every
-> artifact records the value. Since 2026-08-30 the **period archive**
+> **Read `docs/cashcat_sweep.md` with two caveats, both in its own header.** The
+> Python replay models no toxic-flow guard, so the cascade window is unguarded,
+> and `alpha_kappa` is inert at every phi in Stage B. Selection ran on the full
+> train slice; the earlier v4 artifact picked its winner from ~2.8% of its
+> training data (`--search-max-price-events 25000`), a truncation whose default
+> is now 0 and which every artifact records. Since 2026-08-30 the **period archive**
 > (`docs/history/`) attempts a full-search sweep every 21 days and writes the
 > result for manual commit before the 30-day tape deletes the window — see
 > [`docs/DRY_RUN_GRID.md`](docs/DRY_RUN_GRID.md#the-period-archive--what-outlives-the-tape).

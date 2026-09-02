@@ -7,8 +7,10 @@
 //! collection, so the grid runs in one process behind one connection instead.
 //!
 //! What a variant may change is deliberately narrow: the four levers the
-//! 161.95 h staged sweep implicated in the one burst window that produced the
-//! entire loss (`docs/cashcat_sweep.md`). Everything else — latency, fees,
+//! staged sweep implicated in the one burst window that produced the entire
+//! loss (`docs/cashcat_sweep.md`; re-run 2026-09-02 on 393.77 h under
+//! estimator schema v5, where 63 of 64 windows sum to +371.31 against
+//! -323.70 for the cascade window alone). Everything else — latency, fees,
 //! funding, capital — is held identical across variants so the comparison
 //! stays like-for-like.
 
