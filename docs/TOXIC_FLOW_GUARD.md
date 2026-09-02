@@ -69,8 +69,23 @@ the aggressor side, so the buy/sell split is exact rather than reconstructed.
   expire its own cooldown. On this event VPIN cleared ~16 minutes after the
   trip, about when price stabilised — the two conditions agreed.
 - While VPIN is still warming up it reads `None`, which is treated as neither
-  safe nor toxic: only the fast breaker is armed, and a tripped guard stays
-  closed rather than re-opening on a statistic it does not have.
+  safe nor toxic: only the fast breaker is armed. A tripped guard does not
+  re-open on the ordinary rule (it has no statistic to clear on). Warm-up lasts
+  `vpin_window_buckets` buckets of `daily volume / vpin_buckets_per_day` —
+  about 14 h after a restart at the defaults — and until 2026-09-02 a trip in
+  that window stayed closed for the rest of it, inventory included. Warm-up
+  re-entry is now its own rule: `warmup_reentry_cooldown_ms` (2x the ordinary
+  cooldown) must have elapsed *and* the trailing mid move must be under
+  `warmup_reentry_calm_fraction` x `fast_move_threshold_bps`. That is still
+  not a bare timer — the breaker's own window has to be calm at a stricter
+  line than the trip line, and a fresh breach re-arms the clock — but it is a
+  bounded acceptance of a second-leg risk against a multi-hour blackout.
+- `reduce_only_while_tripped` (default off) publishes the inventory-reducing
+  side as a reduce-only quote while tripped instead of withdrawing entirely.
+  It is a strategy change, not a bug fix: it puts maker orders into exactly
+  the regime the guard withdraws from, and the guard's evidence base is one
+  cascade. It needs its own replay study against the 2026-08-22 window before
+  it is switched on.
 - It is a *quoting* gate, not a flattening action: it cancels resting orders but
   does not immediately close inventory. That limitation is why an earlier alarm
   can still perform worse when it freezes a directional position; see

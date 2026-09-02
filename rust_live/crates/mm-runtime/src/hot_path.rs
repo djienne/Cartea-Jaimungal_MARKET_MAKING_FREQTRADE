@@ -9,7 +9,7 @@ use crate::lockfree::{
 };
 use crate::metrics::Metrics;
 use crate::quote::{CarteaJaimungalPolicy, RiskState};
-use crate::types::{DesiredQuotes, ProcessClock, QuoteReason};
+use crate::types::{DesiredQuotes, OrderIntent, ProcessClock, QuoteReason};
 use anyhow::{bail, Context, Result};
 use arc_swap::ArcSwapOption;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
@@ -372,7 +372,47 @@ impl HotPathEngine {
         } else if !inputs.latency.trading_allowed() {
             DesiredQuotes::empty(QuoteReason::LatencyLimit, self.quote_seq, now_ns)
         } else if flow_tripped {
-            DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, now_ns)
+            let mut next = DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, now_ns);
+            if inputs.flow_guard.reduce_only_while_tripped && inventory != 0 {
+                // Keep only the side that reduces |inventory|, as reduce-only,
+                // one inventory unit at a time; the venue enforces the flag.
+                let decision = self.policy.compute(
+                    &bundle.surface,
+                    bbo,
+                    inventory,
+                    bundle.inventory_unit,
+                    tau,
+                    self.quote_seq,
+                    now_ns,
+                    QuoteReason::ToxicFlow,
+                    inputs.risk_state.load(),
+                );
+                let instrument = self.policy.instrument();
+                let qty_units = inventory.abs().min(bundle.inventory_unit);
+                let reducing = |intent: Option<OrderIntent>| {
+                    intent
+                        .map(|mut intent| {
+                            intent.reduce_only = true;
+                            intent.qty_units = qty_units;
+                            intent
+                        })
+                        .filter(|intent| {
+                            instrument.size_from_units(intent.qty_units) * decision.quotes.mid
+                                >= instrument.minimum_notional
+                        })
+                };
+                if inventory > 0 {
+                    next.ask = reducing(decision.quotes.ask);
+                } else {
+                    next.bid = reducing(decision.quotes.bid);
+                }
+                next.model_revision = decision.quotes.model_revision;
+                next.mid = decision.quotes.mid;
+                next.q_exact = decision.quotes.q_exact;
+                next.q_rounded = decision.quotes.q_rounded;
+                next.tau_remaining = decision.quotes.tau_remaining;
+            }
+            next
         } else {
             self.policy
                 .compute(

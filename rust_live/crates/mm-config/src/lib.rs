@@ -703,6 +703,15 @@ impl AppConfig {
         if guard.vpin_buckets_per_day == 0 {
             bail!("flow_guard.vpin_buckets_per_day must be greater than zero");
         }
+        if guard.warmup_reentry_cooldown_ms < guard.cooldown_ms {
+            bail!("flow_guard.warmup_reentry_cooldown_ms must be at least cooldown_ms");
+        }
+        if !guard.warmup_reentry_calm_fraction.is_finite()
+            || guard.warmup_reentry_calm_fraction <= 0.0
+            || guard.warmup_reentry_calm_fraction > 1.0
+        {
+            bail!("flow_guard.warmup_reentry_calm_fraction must be finite and inside (0, 1]");
+        }
         Ok(())
     }
 

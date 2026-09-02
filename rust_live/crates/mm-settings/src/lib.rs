@@ -282,6 +282,22 @@ pub struct FlowGuardConfig {
     /// requires VPIN to have fallen back under `vpin_threshold`, so this is a
     /// floor and not the whole rule.
     pub cooldown_ms: u64,
+    /// Re-entry rule while VPIN is still warming up (it reads `None` until
+    /// `vpin_window_buckets` buckets of `daily volume / vpin_buckets_per_day`
+    /// have accumulated — about 14 h after a restart at the defaults). A trip
+    /// in that window used to stay closed for the rest of it, inventory
+    /// included. Instead, re-open once this longer cooldown has elapsed AND
+    /// the trailing mid move is calm at a stricter line than the trip line.
+    /// A fresh breach re-arms the clock, so a live cascade cannot expire it.
+    pub warmup_reentry_cooldown_ms: u64,
+    /// Calm line for warm-up re-entry as a fraction of
+    /// `fast_move_threshold_bps`; the trailing move must be below it.
+    pub warmup_reentry_calm_fraction: f64,
+    /// While tripped, publish the inventory-reducing side as a reduce-only
+    /// quote instead of withdrawing entirely. Off by default: it puts maker
+    /// orders into exactly the regime the guard withdraws from, and needs its
+    /// own replay study against the 2026-08-22 cascade before being enabled.
+    pub reduce_only_while_tripped: bool,
 }
 
 impl Default for FlowGuardConfig {
@@ -294,6 +310,9 @@ impl Default for FlowGuardConfig {
             vpin_window_buckets: 30,
             vpin_threshold: 0.40,
             cooldown_ms: 900_000,
+            warmup_reentry_cooldown_ms: 1_800_000,
+            warmup_reentry_calm_fraction: 0.5,
+            reduce_only_while_tripped: false,
         }
     }
 }

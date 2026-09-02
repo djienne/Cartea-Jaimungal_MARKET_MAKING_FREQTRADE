@@ -349,11 +349,26 @@ impl FlowGuard {
         let Some(tripped_at_ms) = self.tripped_at_ms else {
             return false;
         };
-        let cooled = now_ms.saturating_sub(tripped_at_ms) >= self.config.cooldown_ms;
-        // Unknown VPIN keeps the guard closed: re-entering on a statistic we do
-        // not currently have would defeat the point of the cooldown.
-        let flow_calm = vpin.is_some_and(|value| value < self.config.vpin_threshold);
-        if cooled && flow_calm {
+        let elapsed_ms = now_ms.saturating_sub(tripped_at_ms);
+        let reopen = match vpin {
+            Some(value) => {
+                elapsed_ms >= self.config.cooldown_ms && value < self.config.vpin_threshold
+            }
+            // VPIN is warming up. Re-entering on a statistic we do not have
+            // would defeat the cooldown, but staying closed for the whole
+            // warm-up (~14 h after a restart) froze inventory for hours. The
+            // warm-up rule is not a bare timer: the trailing mid move — the
+            // same window the breaker reads — must be calm at a stricter line
+            // than the trip line, over a longer cooldown, and `trip` above
+            // has already re-armed the clock on any fresh breach.
+            None => {
+                elapsed_ms >= self.config.warmup_reentry_cooldown_ms
+                    && move_bps
+                        < self.config.fast_move_threshold_bps
+                            * self.config.warmup_reentry_calm_fraction
+            }
+        };
+        if reopen {
             self.tripped_at_ms = None;
             self.cause = None;
             return false;
@@ -409,6 +424,9 @@ mod tests {
             vpin_window_buckets: 2,
             vpin_threshold: 0.40,
             cooldown_ms: 60_000,
+            warmup_reentry_cooldown_ms: 1_800_000,
+            warmup_reentry_calm_fraction: 0.5,
+            reduce_only_while_tripped: false,
         }
     }
 
@@ -613,6 +631,9 @@ mod tests {
         assert!(!guard.evaluate(110_001, 10.0, Some(0.1)));
     }
 
+    /// Inside the warm-up cooldown (1 800 s here) an unknown VPIN keeps the
+    /// guard closed: the ordinary 60 s cooldown does not apply without the
+    /// statistic. This is *not* "never re-opens"; see the warm-up tests below.
     #[test]
     fn unknown_vpin_keeps_a_tripped_guard_closed() {
         let mut guard = FlowGuard::new(config());
@@ -620,6 +641,37 @@ mod tests {
         // Warming up: no VPIN available. Re-entering on a statistic we do not
         // have would defeat the cooldown.
         assert!(guard.evaluate(600_000, 10.0, None));
+    }
+
+    #[test]
+    fn warmup_reentry_reopens_after_the_longer_cooldown_when_the_mid_is_calm() {
+        let mut guard = FlowGuard::new(config());
+        assert!(guard.evaluate(0, 900.0, None));
+        // The ordinary cooldown is not enough without VPIN.
+        assert!(guard.evaluate(60_000, 10.0, None));
+        // The longer cooldown alone is not enough either: 500 bps is above the
+        // 0.5 x 800 calm line.
+        assert!(guard.evaluate(1_800_000, 500.0, None));
+        // Longer cooldown and a calm window: re-open.
+        assert!(!guard.evaluate(1_800_000, 10.0, None));
+        assert!(!guard.is_tripped());
+    }
+
+    #[test]
+    fn a_live_cascade_cannot_expire_its_own_warmup_cooldown() {
+        let mut guard = FlowGuard::new(config());
+        assert!(guard.evaluate(0, 900.0, None));
+        let mut now_ms = 0;
+        for _ in 0..5 {
+            now_ms += 1_800_000 - 1;
+            // A fresh breach re-arms the clock every time.
+            assert!(guard.evaluate(now_ms, 900.0, None));
+            assert!(
+                guard.evaluate(now_ms + 1, 10.0, None),
+                "re-armed by the breach"
+            );
+        }
+        assert!(guard.is_tripped());
     }
 
     #[test]
