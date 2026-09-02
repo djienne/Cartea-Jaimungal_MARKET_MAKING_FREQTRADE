@@ -543,6 +543,10 @@ def test_calibration_cache_key_covers_every_input():
     calibration = sweep_replay.Calibration()
     key = sweep_replay.calibration_cache_key(calibration, **base)
     assert key == sweep_replay.calibration_cache_key(calibration, **base)
+    # A fit made under another estimator schema must never be reused.
+    from param_utils import PARAM_SCHEMA_VERSION
+
+    assert key["estimator_schema"] == PARAM_SCHEMA_VERSION
     for other in (
         sweep_replay.Calibration(epsilon_ms_plus=500),
         sweep_replay.Calibration(epsilon_ms_minus=500),

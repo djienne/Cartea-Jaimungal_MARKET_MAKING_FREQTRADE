@@ -67,6 +67,7 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from param_utils import PARAM_SCHEMA_VERSION  # noqa: E402
 from replay_market_maker import (  # noqa: E402
     ReplayConfig,
     ReplayTape,
@@ -471,9 +472,15 @@ def calibration_cache_key(
     window_start: pd.Timestamp,
     window_end: pd.Timestamp,
 ) -> dict[str, Any]:
-    """Everything that decides what the estimator returns, except the data."""
+    """Everything that decides what the estimator returns, except the data.
+
+    The parameter schema is part of the key: the estimator's semantics changed
+    at v5 (lambda scaled by the survival intercept), and a cache keyed only on
+    the window and settings handed a v5 sweep the v4 numbers unchanged.
+    """
     return {
-        "schema": 1,
+        "schema": 2,
+        "estimator_schema": int(PARAM_SCHEMA_VERSION),
         "symbol": str(symbol),
         "data_dir": str(Path(data_dir).resolve()),
         "window_start": pd.Timestamp(window_start).isoformat(),

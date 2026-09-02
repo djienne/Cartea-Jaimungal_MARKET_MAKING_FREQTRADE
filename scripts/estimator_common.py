@@ -12,9 +12,12 @@ Methodology (schema v4):
   from the touch: that is the coordinate the strategy quotes in.
 - kappa is fitted on the empirical survival function P(depth >= delta), whose
   slope matches the model fill intensity lambda(delta) = Lambda * exp(-kappa
-  * delta). lambda is the raw per-side MO arrival rate (count / window), NOT
-  a regression intercept — the binned-density intercept equals
-  Lambda*kappa*binwidth and is bin-width dependent (kept only as diagnostic).
+  * delta). lambda is the per-side MO arrival rate (count / covered window)
+  times the survival fit's intercept A (schema v5), so that the model's
+  lambda * exp(-kappa * delta) equals the fitted A * exp(-kappa * delta);
+  the raw rate is published as lambda_raw. It is NOT the binned-density
+  regression intercept, which equals Lambda*kappa*binwidth and is bin-width
+  dependent (kept only as diagnostic).
 - The survival fit runs over a configurable depth support [lower, upper], both
   expressed as quantiles of that side's depth distribution. Defaults are
   [0.0, 0.99] — i.e. the whole distribution up to the 99th percentile, exactly
