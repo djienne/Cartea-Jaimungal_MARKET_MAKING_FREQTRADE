@@ -83,8 +83,28 @@ max_shard_failure_rate = 0.05
 [model]
 q_max = 6
 horizon_seconds = 150.0
-phi_kappa_t = 200.0
-phi_kappa_t_max = 300.0
+# Raised 200 -> 400 on 2026-09-02 from the guarded v5 sweep's held-out phi
+# ladder (docs/cashcat_sweep.md, 118.7 h after the 08-28 split, q_max = 6,
+# eps1000/klo0.75). Held-out P&L against phi*kappa*T:
+#
+#     30 -> -840.11   100 -> -506.24   200 -> -310.83  (shipped)
+#    300 -> -293.27   400 -> -220.04   600 -> -171.74
+#   1000 ->  -85.65  3000 ->  -15.46
+#
+# READ THAT CAREFULLY: it is monotone over the whole axis and never turns, so
+# there is no interior optimum and 400 is NOT an argmax. The gradient points at
+# "quote less", because held-out spread capture is positive at every phi
+# (+1699 here) and adverse selection is always slightly larger (-1919). Trading
+# less shrinks both and shrinks the loss; it does not make it a profit. 400 is a
+# deliberate, bounded step along that gradient rather than a jump to the grid
+# edge, whose 3000 sits at a boundary the sweep never bracketed.
+#
+# THE CAP MUST MOVE WITH IT. hjb.rs rescales phi so phi*kappa*T never exceeds
+# phi_kappa_t_max, so raising phi_kappa_t alone silently keeps running the old
+# ceiling -- the trap documented at length in grid_cashcat.toml. The 1.5x
+# headroom over phi_kappa_t is preserved.
+phi_kappa_t = 400.0
+phi_kappa_t_max = 600.0
 alpha_kappa = 0.05
 raw_phi_fallback = 0.0001
 raw_alpha_fallback = 0.001

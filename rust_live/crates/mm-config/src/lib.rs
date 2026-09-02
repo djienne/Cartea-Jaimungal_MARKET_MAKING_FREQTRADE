@@ -583,6 +583,23 @@ impl AppConfig {
         if self.model.newton_max_iterations == 0 {
             bail!("model.newton_max_iterations must be at least one");
         }
+        // hjb.rs rescales phi so phi*kappa*T never exceeds phi_kappa_t_max, so a
+        // cap left behind its phi does not warn -- it silently keeps running the
+        // old ceiling, and the config reads as though the new value were live.
+        // That trap is documented at length in config/grid_cashcat.toml because
+        // it has already been walked into. Equality is allowed: it pins phi and
+        // closes the volatility channel's headroom deliberately, which is what
+        // the grid variants do. A non-positive cap disables the ceiling.
+        if self.model.phi_kappa_t_max > 0.0
+            && self.model.phi_kappa_t > 0.0
+            && self.model.phi_kappa_t_max < self.model.phi_kappa_t
+        {
+            bail!(
+                "model.phi_kappa_t_max ({}) is below model.phi_kappa_t ({}), so the                  HJB would rescale phi back down to the cap and silently run the                  lower value -- raise the cap with phi, or set it to 0 to disable it",
+                self.model.phi_kappa_t_max,
+                self.model.phi_kappa_t
+            );
+        }
         // TOML accepts the literal `nan`, and every comparison with NaN is
         // false, so the ordering check alone let a NaN bound through to the
         // hot path where `f64::clamp` panics on it.
@@ -819,6 +836,48 @@ mod tests {
         .unwrap();
         let error = AppConfig::load(&poisoned).unwrap_err().to_string();
         assert!(error.contains("max_half_spread_bps"), "{error}");
+    }
+
+    #[test]
+    fn a_cap_left_behind_its_phi_is_refused_at_load() {
+        // Raising model.phi_kappa_t without the cap does not warn: hjb.rs just
+        // rescales phi back to the ceiling and the bot runs the old value while
+        // the config claims the new one. Fail closed instead.
+        let path = cashcat_config_path();
+        let mut config = AppConfig::load(&path).unwrap();
+        assert!(
+            config.model.phi_kappa_t_max >= config.model.phi_kappa_t,
+            "the shipped profile must not ship the trap it is guarding against"
+        );
+        config.model.phi_kappa_t = config.model.phi_kappa_t_max + 1.0;
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("phi_kappa_t_max"), "{error}");
+    }
+
+    #[test]
+    fn the_model_defaults_track_the_shipped_inventory_penalty() {
+        // Nothing inherits these today: every profile in config/ sets both
+        // explicitly. That is the danger -- a stale default sits unnoticed
+        // precisely because no current config exercises it, and then the first
+        // profile written without a [model] phi quietly runs the old penalty.
+        let shipped = AppConfig::load(&cashcat_config_path()).unwrap().model;
+        let fallback = ModelConfig::default();
+        assert_eq!(fallback.phi_kappa_t, shipped.phi_kappa_t);
+        assert_eq!(fallback.phi_kappa_t_max, shipped.phi_kappa_t_max);
+    }
+
+    #[test]
+    fn a_cap_equal_to_phi_is_allowed_and_a_disabled_cap_is_ignored() {
+        // Equality is how the grid variants pin phi and close the volatility
+        // channel's headroom on purpose (config/grid_cashcat.toml), and a
+        // non-positive cap disables the ceiling entirely.
+        let path = cashcat_config_path();
+        let mut config = AppConfig::load(&path).unwrap();
+        config.model.phi_kappa_t = 1_000.0;
+        config.model.phi_kappa_t_max = 1_000.0;
+        assert!(config.validate().is_ok());
+        config.model.phi_kappa_t_max = 0.0;
+        assert!(config.validate().is_ok());
     }
 
     #[test]

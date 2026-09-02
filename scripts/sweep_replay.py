@@ -972,6 +972,19 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
                 flush=True,
             )
 
+    # What the grid was actually SELECTED on. Recorded because it was not:
+    # published artifacts said "tape: 161.951 h" while selection had run on
+    # ~3.2 h of it, and a reader had no way to tell. It then lived inside the
+    # no_usable_calibration return ONLY, so every sweep that actually succeeded
+    # rendered "selection ran on the full None h train slice" instead.
+    search_tape_identity = {
+        "hours": search_identity["hours"],
+        "price_rows": int(len(search_tape.prices)),
+        "max_price_events": int(args.search_max_price_events),
+        "is_partial": bool(search_is_partial),
+        "train_hours": train_identity["hours"],
+    }
+
     survivors = [row for row in sorted(stage_a, key=rank_key, reverse=True) if row.get("usable")]
     survivors = survivors[: args.keep]
     if not survivors:
@@ -980,16 +993,7 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
             "tape": identity,
             "split_at": split_at.isoformat(),
             "search_scenario": dataclasses.asdict(search),
-        # What the grid was actually SELECTED on. Recorded because it was not:
-        # published artifacts said "tape: 161.951 h" while selection had run on
-        # ~3.2 h of it, and a reader had no way to tell.
-        "search_tape": {
-            "hours": search_identity["hours"],
-            "price_rows": int(len(search_tape.prices)),
-            "max_price_events": int(args.search_max_price_events),
-            "is_partial": bool(search_is_partial),
-            "train_hours": train_identity["hours"],
-        },
+            "search_tape": search_tape_identity,
             "stage_a": stage_a,
         }
 
@@ -1102,6 +1106,7 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
         "split_at": split_at.isoformat(),
         "train_fraction": float(args.train_fraction),
         "search_scenario": dataclasses.asdict(search),
+        "search_tape": search_tape_identity,
         "min_fills": int(args.min_fills),
         "min_fills_per_day": float(args.min_fills_per_day),
         "calibration_mode": args.calibration_mode,

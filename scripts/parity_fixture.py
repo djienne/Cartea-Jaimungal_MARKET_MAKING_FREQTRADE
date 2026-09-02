@@ -127,6 +127,12 @@ def model(parameters: dict) -> dict:
     config = QuoteConfig(
         inventory_unit_base=INVENTORY_UNIT_BASE,
         q_max=6,
+        # FROZEN FIXTURE VALUES, not the shipped ones -- config/cashcat.toml
+        # moved to 400/600 on 2026-09-02 and this pair deliberately did not.
+        # tests/python_parity.rs::parity_model_config holds the same two and
+        # explains why: a golden that tracks a tunable turns every retune into a
+        # parity failure, and regenerating it is how a real drift slips through.
+        # Change both sides together or neither.
         hjb_phi_kappa_t=200.0,
         hjb_phi_kappa_t_max=300.0,
         hjb_alpha_kappa=0.05,

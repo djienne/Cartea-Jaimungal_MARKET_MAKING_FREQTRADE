@@ -17,6 +17,24 @@ use mm_live::types::{Bbo, QuoteReason, Side};
 
 const RELATIVE_TOLERANCE: f64 = 1.0e-8;
 
+/// The model configuration the goldens below were generated against.
+///
+/// This deliberately does NOT read `ModelConfig::default()`. The question this
+/// file asks is whether the Rust solver reproduces the Python one to 1e-8, and
+/// that question does not change when the inventory penalty is retuned -- but
+/// keying the fixture to the live default made every retune look like a parity
+/// failure, and the cheapest way out of a failing golden is to regenerate it,
+/// which is exactly how a real drift would get waved through. Frozen at the
+/// values `scripts/parity_fixture.py` pins (`phi_kappa_t` 200/300, the shipped
+/// pair until 2026-09-02); the two must be changed together or not at all.
+fn parity_model_config() -> ModelConfig {
+    ModelConfig {
+        phi_kappa_t: 200.0,
+        phi_kappa_t_max: 300.0,
+        ..ModelConfig::default()
+    }
+}
+
 fn deterministic_python_fixture() -> MarketDataSet {
     let mids: Vec<MidRecord> = (0..=2_000)
         .map(|index| {
@@ -156,7 +174,7 @@ fn hjb_surface_and_final_spreads_match_python_reference() {
         epsilon_minus: 0.0,
         sigma2_per_second: Some(9.154_778_008_016_623e-11),
     };
-    let surface = solve_asymmetric(parameters, &ModelConfig::default(), 1_868.0, 1).unwrap();
+    let surface = solve_asymmetric(parameters, &parity_model_config(), 1_868.0, 1).unwrap();
     assert_eq!(surface.n_steps, 600);
     assert_relative_eq!(surface.dt, 0.25, epsilon = 0.0);
     assert_relative_eq!(

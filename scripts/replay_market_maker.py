@@ -346,6 +346,15 @@ class ReplayMetrics:
             "p95_price_gap_seconds": self.p95_price_gap_seconds,
             "quote_attempts": self.quote_attempts,
             "quote_decision_events": self.quote_decision_events,
+            # to_dict enumerates its keys, so a new ReplayMetrics field is NOT
+            # carried across automatically. The guard counters were added
+            # without this line and every sweep artifact recorded trips=0 while
+            # the guard was demonstrably firing.
+            "flow_guard_enabled": self.flow_guard_enabled,
+            "flow_guard_trips": self.flow_guard_trips,
+            "flow_guard_withheld_decisions": self.flow_guard_withheld_decisions,
+            "flow_guard_vpin_bucket_volume": self.flow_guard_vpin_bucket_volume,
+            "flow_guard_vpin_buckets_seen": self.flow_guard_vpin_buckets_seen,
             "post_only_rejects": self.post_only_rejects,
             "post_only_reject_ratio": self.post_only_rejects / attempts,
             "maker_fills": self.maker_fills,

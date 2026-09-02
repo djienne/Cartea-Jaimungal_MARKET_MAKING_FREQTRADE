@@ -115,10 +115,18 @@ def test_reference_grid_is_bit_identical(reference_payload, pinned_tape):
         flat_expected: dict = {}
         _flatten(name, actual, flat_actual)
         _flatten(name, expected_all[name], flat_expected)
-        for key in sorted(set(flat_actual) | set(flat_expected)):
-            if flat_actual.get(key, "<absent>") != flat_expected.get(key, "<absent>"):
+        # Iterate the RECORDED keys, not the union. The reference is frozen by
+        # construction (test_reference_was_recorded_before_the_rewrite), so it
+        # can only ever be missing keys the exporter has since gained, and a
+        # purely additive key with no recorded counterpart is observability
+        # rather than drift -- the toxic-flow guard counters added five of them
+        # in 2026-09 without moving a single recorded number. A key the
+        # reference HAS and the exporter no longer produces still fails here,
+        # reading as `-> now '<absent>'`, so a rename or a removal is caught.
+        for key in sorted(flat_expected):
+            if flat_actual.get(key, "<absent>") != flat_expected[key]:
                 differences.append(
-                    f"{key}: reference {flat_expected.get(key, '<absent>')!r} "
+                    f"{key}: reference {flat_expected[key]!r} "
                     f"-> now {flat_actual.get(key, '<absent>')!r}"
                 )
     assert not differences, "replay output moved:\n" + "\n".join(differences[:40])

@@ -831,3 +831,54 @@ def test_hjb_cache_solves_on_the_requested_domain():
     # that same inventory has a perfectly finite ask.
     assert np.isinf(long_only["delta_plus"][0])
     assert np.isfinite(symmetric["delta_plus"][list(symmetric["q_grid"]).index(0)])
+
+
+# --------------------------------------------------------------------- to_dict export
+# ``ReplayMetrics.to_dict`` enumerates its keys by hand, so a field added to the
+# dataclass is NOT carried across automatically. The toxic-flow guard counters
+# were added without touching it and every sweep artifact recorded trips=0 while
+# the guard was demonstrably firing -- the numbers looked like evidence that the
+# guard did nothing. Anything genuinely internal has to say so here, which makes
+# the omission a decision rather than an oversight.
+_INTERNAL_METRICS_FIELDS = frozenset({
+    # Latency inputs, exported only through the derived quote_exposure_ms.
+    "cancel_latency_ms",
+    "decision_latency_ms",
+    "order_ack_latency_ms",
+    # Running sums behind mean_fill_depth_bps_by_side / markout_by_side.
+    "fill_depth_bps_sum_by_side",
+    "markout_fills_by_side",
+    "markout_usdc_by_side",
+    "q_residual_abs_sum",
+    "q_residual_samples",
+    # Gap percentiles in ms; the seconds forms are what to_dict publishes.
+    "price_gap_ms_p10",
+    "price_gap_ms_p50",
+    "price_gap_ms_p90",
+})
+
+
+def test_every_metrics_field_is_exported_or_declared_internal():
+    import dataclasses
+
+    metrics = replay_market_maker.ReplayMetrics()
+    exported = set(metrics.to_dict())
+    declared = {field.name for field in dataclasses.fields(metrics)}
+    missing = declared - exported - _INTERNAL_METRICS_FIELDS
+    assert not missing, (
+        f"{sorted(missing)} exist on ReplayMetrics but never reach to_dict, so no "
+        "artifact can see them. Export them, or add them to _INTERNAL_METRICS_FIELDS."
+    )
+    stale = _INTERNAL_METRICS_FIELDS - declared
+    assert not stale, f"{sorted(stale)} no longer exist on ReplayMetrics"
+
+
+def test_flow_guard_counters_reach_the_artifact():
+    metrics = replay_market_maker.ReplayMetrics()
+    metrics.flow_guard_enabled = True
+    metrics.flow_guard_trips = 7
+    metrics.flow_guard_withheld_decisions = 42
+    exported = metrics.to_dict()
+    assert exported["flow_guard_enabled"] is True
+    assert exported["flow_guard_trips"] == 7
+    assert exported["flow_guard_withheld_decisions"] == 42

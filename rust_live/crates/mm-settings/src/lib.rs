@@ -28,8 +28,12 @@ impl Default for ModelConfig {
         Self {
             q_max: 6,
             horizon_seconds: 150.0,
-            phi_kappa_t: 200.0,
-            phi_kappa_t_max: 300.0,
+            // Kept equal to the shipped config/cashcat.toml. Every profile in
+            // the repo sets both explicitly, so nothing inherits these today --
+            // which is exactly why a stale pair here would sit unnoticed until
+            // the one config that omitted them quietly ran the old penalty.
+            phi_kappa_t: 400.0,
+            phi_kappa_t_max: 600.0,
             alpha_kappa: 0.05,
             raw_phi_fallback: 0.0001,
             raw_alpha_fallback: 0.001,
