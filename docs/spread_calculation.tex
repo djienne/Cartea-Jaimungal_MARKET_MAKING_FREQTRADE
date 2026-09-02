@@ -1120,7 +1120,7 @@ dimensionless $\phi\kappa T$ and $\alpha\kappa$ and derive the rest, then add th
 volatility term that \S10.3 calls for:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{457}{466}
+\snip{scripts/mm_core.py}{472}{481}
 \begin{lstlisting}
     if kappa_avg > 0:
         # Derive from the dimensionless targets so the same config expresses the
@@ -1505,7 +1505,7 @@ our own in between. The bracketing helper has two guards that look redundant and
 are not:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{617}{628}
+\snip{scripts/mm_core.py}{632}{643}
 \begin{lstlisting}
     n = len(axis)
     if n == 1 or value <= axis[0]:
@@ -1540,7 +1540,7 @@ reproduces the book exactly and only genuinely fractional inventory blends.
 
 And the blend itself refuses to average away a disabled side:
 
-\snip{scripts/mm_core.py}{645}{651}
+\snip{scripts/mm_core.py}{660}{666}
 \begin{lstlisting}
     if not np.isfinite(low) or not np.isfinite(high):
         return float("inf")
@@ -1638,7 +1638,7 @@ rejects orders.
 Everything below is ours, and every line of it can override the model:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{315}{329}
+\snip{scripts/mm_core.py}{330}{344}
 \begin{lstlisting}
 
     fee_cushion = float(config.maker_fee_rate) * mid
@@ -1763,7 +1763,7 @@ order into an exchange rejection.
 
 \subsection{The last check before posting}
 
-\snip{scripts/mm_core.py}{358}{369}
+\snip{scripts/mm_core.py}{373}{384}
 \begin{lstlisting}
     price_f = finite_float_or_none(price)
     bid_f = finite_float_or_none(best_bid)
