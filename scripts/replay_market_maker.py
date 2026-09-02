@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -235,7 +236,20 @@ class ReplayMetrics:
     flow_guard_withheld_decisions: int = 0
     flow_guard_vpin_bucket_volume: float = 0.0
     flow_guard_vpin_buckets_seen: int = 0
+    # How long inventory is actually held, FIFO-matched fill against offsetting
+    # fill. This exists to CHOOSE THE MARKOUT HORIZON rather than assume one:
+    # the fill-conditional adverse selection eps(d) grows steeply with the
+    # horizon it is measured over (scripts/epsilon_conditional.py -- on the
+    # held-out slice the per-fill edge at 26 bps runs +12.23 bps at 200 ms,
+    # +0.96 at 1 s and -4.10 at 5 s), so "how long do we hold" decides whether
+    # the strategy has an edge at all. Weighted by size, since a partial fill
+    # held for an hour is not the same evidence as a full lot held for a second.
+    holding_time_seconds_weighted: float = 0.0
+    holding_time_base_matched: float = 0.0
+    holding_time_pairs: int = 0
+    holding_time_base_unmatched: float = 0.0
     queue_decay_base: float = 0.0
+    holding_time_samples: list[tuple[float, float]] = field(default_factory=list)
     time_at_q_boundary: dict[str, int] = field(default_factory=lambda: {"q_min": 0, "q_max": 0})
     inventory_histogram: dict[int, int] = field(default_factory=dict)
     # Fractional inventory the integer grid cannot represent. The book's q is a
@@ -355,6 +369,22 @@ class ReplayMetrics:
             "flow_guard_withheld_decisions": self.flow_guard_withheld_decisions,
             "flow_guard_vpin_bucket_volume": self.flow_guard_vpin_bucket_volume,
             "flow_guard_vpin_buckets_seen": self.flow_guard_vpin_buckets_seen,
+            # The horizon evidence. `mean` is size-weighted; `unmatched_base` is
+            # inventory still open when the tape ended, which is censored rather
+            # than short-lived and is therefore excluded from the statistics
+            # instead of being counted as a fast round trip.
+            "holding_time": {
+                "pairs": self.holding_time_pairs,
+                "matched_base": self.holding_time_base_matched,
+                "unmatched_base": self.holding_time_base_unmatched,
+                "mean_seconds": (
+                    self.holding_time_seconds_weighted / self.holding_time_base_matched
+                    if self.holding_time_base_matched > 0.0
+                    else None
+                ),
+                "p50_seconds": holding_time_percentile(self.holding_time_samples, 0.50),
+                "p90_seconds": holding_time_percentile(self.holding_time_samples, 0.90),
+            },
             "post_only_rejects": self.post_only_rejects,
             "post_only_reject_ratio": self.post_only_rejects / attempts,
             "maker_fills": self.maker_fills,
@@ -1105,6 +1135,11 @@ def _float_column(frame: pd.DataFrame, name: str, missing: float) -> tuple[np.nd
     return values, falsy
 
 
+# Enough samples for stable percentiles without holding a list the length of
+# the fill count on a multi-hundred-hour tape.
+HOLDING_TIME_SAMPLE_CAP = 200_000
+
+
 def trade_event_arrays(trades: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(price, size, size_is_falsy) for a trade frame."""
     price, _ = _float_column(trades, "price", np.nan)
@@ -1115,6 +1150,60 @@ def trade_event_arrays(trades: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np
         # column must read as falsy for every row.
         size_falsy = np.ones(len(trades), dtype=bool)
     return price, size, size_falsy
+
+
+def match_holding_time(
+    open_lots: deque, fill_ts_ns: int, signed_size: float, metrics: "ReplayMetrics"
+) -> None:
+    """FIFO-match a fill against opposing open lots and record how long they were held.
+
+    A bid fill first closes any open short lots, oldest first, and only the
+    remainder opens a new long lot (and symmetrically for an ask). That is the
+    same accounting a venue applies to a position, so "holding time" here is the
+    life of an actual exposure rather than the gap between consecutive fills --
+    quoting both sides means those two differ by orders of magnitude.
+
+    Size-weighted on purpose: this feeds a horizon choice, and an unweighted mean
+    would let a dust partial count as much as a full lot.
+    """
+    remaining = float(signed_size)
+    while remaining != 0.0 and open_lots:
+        lot_ts, lot_size = open_lots[0]
+        if (lot_size > 0.0) == (remaining > 0.0):
+            break  # same direction: this fill adds to the position, nothing closes
+        matched = min(abs(lot_size), abs(remaining))
+        if matched <= 0.0:
+            break
+        held_seconds = max(0.0, total_seconds_from_ns(fill_ts_ns - lot_ts))
+        metrics.holding_time_seconds_weighted += held_seconds * matched
+        metrics.holding_time_base_matched += matched
+        metrics.holding_time_pairs += 1
+        if len(metrics.holding_time_samples) < HOLDING_TIME_SAMPLE_CAP:
+            metrics.holding_time_samples.append((held_seconds, matched))
+        if abs(lot_size) > matched:
+            open_lots[0] = (lot_ts, lot_size - math.copysign(matched, lot_size))
+        else:
+            open_lots.popleft()
+        remaining -= math.copysign(matched, remaining)
+    if remaining != 0.0:
+        open_lots.append((fill_ts_ns, remaining))
+
+
+def holding_time_percentile(samples: list[tuple[float, float]], quantile: float) -> float | None:
+    """Size-weighted percentile of the holding-time samples."""
+    if not samples:
+        return None
+    ordered = sorted(samples)
+    total = sum(weight for _, weight in ordered)
+    if total <= 0.0:
+        return None
+    target = float(quantile) * total
+    seen = 0.0
+    for seconds, weight in ordered:
+        seen += weight
+        if seen >= target:
+            return float(seconds)
+    return float(ordered[-1][0])
 
 
 def trade_flow_arrays(trades: pd.DataFrame) -> tuple[list[bool], list[str]]:
@@ -1808,6 +1897,9 @@ def run_replay(
     guard_trade_cursor = 0
     guard_vpin: float | None = None
 
+    # Open exposure, FIFO. Entries are (ts_ns, signed_base): positive is long.
+    open_lots: deque[tuple[int, float]] = deque()
+
     for row_idx in range(price_count):
         row_ts_ns = price_ts[row_idx]
         mid = price_mid_list[row_idx]
@@ -2028,6 +2120,12 @@ def run_replay(
                 metrics.cash_usdc += notional - fee
                 metrics.pnl_by_side["ask"] += side_pnl
             metrics.realized_spread_usdc += gross_spread
+            match_holding_time(
+                open_lots,
+                trade_ts[fill_index],
+                fill_size if side == "bid" else -fill_size,
+                metrics,
+            )
             metrics.fills_by_depth[depth_key] = metrics.fills_by_depth.get(depth_key, 0) + 1
             metrics.fills_by_side[side] = metrics.fills_by_side.get(side, 0) + 1
             metrics.fill_depth_bps_sum_by_side[side] = metrics.fill_depth_bps_sum_by_side.get(
@@ -2060,6 +2158,7 @@ def run_replay(
 
         update_margin_metrics(metrics, config, mid)
 
+    metrics.holding_time_base_unmatched = float(sum(abs(size) for _, size in open_lots))
     metrics.flow_guard_trips = flow_guard.trips
     metrics.flow_guard_vpin_buckets_seen = vpin_tracker.buckets_seen()
     if metrics.final_mid is not None:

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import pandas as pd
 
 
@@ -851,6 +852,13 @@ _INTERNAL_METRICS_FIELDS = frozenset({
     "markout_usdc_by_side",
     "q_residual_abs_sum",
     "q_residual_samples",
+    # FIFO holding-time accumulators, published under the derived
+    # `holding_time` block (pairs/matched_base/unmatched_base/mean/p50/p90).
+    "holding_time_seconds_weighted",
+    "holding_time_base_matched",
+    "holding_time_pairs",
+    "holding_time_base_unmatched",
+    "holding_time_samples",
     # Gap percentiles, published under `price_event_cadence_ms.p10/p50/p90`
     # rather than under their own field names.
     "price_gap_ms_p10",
@@ -883,3 +891,81 @@ def test_flow_guard_counters_reach_the_artifact():
     assert exported["flow_guard_enabled"] is True
     assert exported["flow_guard_trips"] == 7
     assert exported["flow_guard_withheld_decisions"] == 42
+
+
+# ----------------------------------------------------------- FIFO holding time
+# The horizon that the fill-conditional epsilon is measured over has to come
+# from how long inventory is actually held, because eps(d) grows steeply with it
+# -- on the held-out slice the per-fill edge at 26 bps is +12.23 bps at 200 ms
+# and -4.10 at 5 s. So this matcher decides whether the strategy reads as having
+# an edge, and it is worth pinning precisely.
+_NS = 1_000_000_000
+
+
+def _match(events):
+    """events: (seconds, signed_base) -> the metrics after FIFO matching."""
+    from collections import deque
+
+    metrics = replay_market_maker.ReplayMetrics()
+    lots: deque = deque()
+    for seconds, size in events:
+        replay_market_maker.match_holding_time(lots, int(seconds * _NS), size, metrics)
+    metrics.holding_time_base_unmatched = float(sum(abs(s) for _, s in lots))
+    return metrics
+
+
+def test_a_round_trip_records_the_time_between_the_two_legs():
+    metrics = _match([(0.0, 100.0), (2.5, -100.0)])
+    assert metrics.holding_time_pairs == 1
+    assert metrics.holding_time_base_matched == 100.0
+    assert metrics.holding_time_seconds_weighted == 250.0
+    assert metrics.to_dict()["holding_time"]["mean_seconds"] == 2.5
+    assert metrics.holding_time_base_unmatched == 0.0
+
+
+def test_same_side_fills_add_to_the_position_and_close_oldest_first():
+    # Two buys then one sell that only covers the first: FIFO, so the closed lot
+    # is the older one and the younger stays open.
+    metrics = _match([(0.0, 100.0), (1.0, 100.0), (4.0, -100.0)])
+    assert metrics.holding_time_pairs == 1
+    assert metrics.holding_time_seconds_weighted == 400.0  # 4.0 s x 100, not 3.0
+    assert metrics.holding_time_base_unmatched == 100.0
+
+
+def test_a_partial_close_leaves_the_remainder_open_at_its_original_timestamp():
+    metrics = _match([(0.0, 100.0), (1.0, -40.0), (3.0, -60.0)])
+    assert metrics.holding_time_pairs == 2
+    assert metrics.holding_time_base_matched == 100.0
+    # 40 held 1 s + 60 held 3 s: the remainder keeps the ORIGINAL open time.
+    assert metrics.holding_time_seconds_weighted == 40.0 * 1.0 + 60.0 * 3.0
+    assert metrics.to_dict()["holding_time"]["mean_seconds"] == pytest.approx(2.2)
+
+
+def test_a_fill_that_flips_the_position_closes_then_opens():
+    metrics = _match([(0.0, 50.0), (2.0, -80.0)])
+    assert metrics.holding_time_pairs == 1
+    assert metrics.holding_time_base_matched == 50.0
+    # The 30 that flipped us short is a NEW lot, not a closed one.
+    assert metrics.holding_time_base_unmatched == 30.0
+
+
+def test_shorts_are_measured_the_same_way_as_longs():
+    metrics = _match([(0.0, -100.0), (5.0, 100.0)])
+    assert metrics.holding_time_pairs == 1
+    assert metrics.to_dict()["holding_time"]["mean_seconds"] == 5.0
+
+
+def test_inventory_still_open_at_the_end_is_censored_not_counted():
+    # Counting an unclosed lot as a holding time would bias the horizon down,
+    # which is the direction that flatters the strategy.
+    metrics = _match([(0.0, 100.0)])
+    assert metrics.holding_time_pairs == 0
+    assert metrics.to_dict()["holding_time"]["mean_seconds"] is None
+    assert metrics.to_dict()["holding_time"]["unmatched_base"] == 100.0
+
+
+def test_percentiles_are_size_weighted():
+    # One big slow lot must outweigh several small fast ones.
+    samples = [(1.0, 1.0), (1.0, 1.0), (100.0, 98.0)]
+    assert replay_market_maker.holding_time_percentile(samples, 0.5) == 100.0
+    assert replay_market_maker.holding_time_percentile([], 0.5) is None
