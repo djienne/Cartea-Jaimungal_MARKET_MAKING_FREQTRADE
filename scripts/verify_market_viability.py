@@ -494,8 +494,10 @@ def build_market_viability_report(
         if r_squared is None or r_squared < MIN_KAPPA_R2:
             side_ok = False
             warnings.append(f"kappa_{label}_poor_fit_r2:{r_squared}")
+        # Since schema v5 the intercept is applied to lambda rather than
+        # assumed to be one, so an off-unity value is a fit-quality warning,
+        # not a failure of the model's premise.
         if intercept is None or not (MIN_SURVIVAL_INTERCEPT <= intercept <= MAX_SURVIVAL_INTERCEPT):
-            side_ok = False
             warnings.append(
                 f"kappa_{label}_survival_intercept_off_unity:{intercept}"
                 f" (expected {MIN_SURVIVAL_INTERCEPT}-{MAX_SURVIVAL_INTERCEPT})"

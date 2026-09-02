@@ -557,9 +557,9 @@ def _assert_unchanged(before: dict[Path, tuple[bytes, float]]) -> None:
 
 def _seed_snapshot_files(tmp_path: Path) -> list[Path]:
     snapshots = {
-        "kappa.json": {"SYN": {"kappa+": 1.0, "kappa-": 2.0, "status": "ok", "schema_version": 4}},
-        "lambda.json": {"SYN": {"lambda+": 0.1, "lambda-": 0.2, "status": "ok", "schema_version": 4}},
-        "epsilon.json": {"SYN": {"epsilon+": 0.01, "epsilon-": 0.02, "status": "ok", "schema_version": 4}},
+        "kappa.json": {"SYN": {"kappa+": 1.0, "kappa-": 2.0, "status": "ok", "schema_version": 5}},
+        "lambda.json": {"SYN": {"lambda+": 0.1, "lambda-": 0.2, "status": "ok", "schema_version": 5}},
+        "epsilon.json": {"SYN": {"epsilon+": 0.01, "epsilon-": 0.02, "status": "ok", "schema_version": 5}},
     }
     paths = []
     for name, payload in snapshots.items():
@@ -589,7 +589,7 @@ def test_emit_mode_writes_only_the_emit_file_epsilon(tmp_path):
     # The emitted block is the entry that would have been written, key for key.
     assert entry["epsilon+"] == entry["epsilon+_raw"]
     assert entry["window_ms_minus"] == 5000
-    assert entry["schema_version"] == 4
+    assert entry["schema_version"] == 5
 
 
 def test_emit_mode_writes_only_the_emit_file_kappa(tmp_path):

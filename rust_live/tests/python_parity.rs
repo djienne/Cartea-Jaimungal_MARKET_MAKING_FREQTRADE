@@ -1,6 +1,10 @@
 //! Golden values are produced by the untouched Python reference modules:
 //! `estimator_common.py`, `get_epsilon.py`, `hjb.py`, and `mm_core.py`.
 //! The fixture is deterministic and contains no venue/network dependency.
+//!
+//! Regenerate the literals with `python scripts/parity_fixture.py` (repository
+//! root); it rebuilds the same window in Python and prints every value pinned
+//! here. `--unscaled` reproduces the schema-v4 goldens as a self-check.
 
 use approx::assert_relative_eq;
 use mm_live::calibration::{CalibrationStatus, Calibrator};
@@ -63,7 +67,7 @@ fn deterministic_python_fixture() -> MarketDataSet {
 }
 
 #[test]
-fn schema_v4_parameters_match_python_reference() {
+fn schema_v5_parameters_match_python_reference() {
     let mut config = CalibrationConfig::default();
     config.max_toxicity = 10.0;
     let snapshot = Calibrator::new("ORACLE", config)
@@ -81,14 +85,35 @@ fn schema_v4_parameters_match_python_reference() {
         9_068.665_345_705_7,
         max_relative = RELATIVE_TOLERANCE
     );
+    // Schema v5: lambda is the raw rate times the survival-fit intercept.
     assert_relative_eq!(
         parameters.lambda_plus,
-        0.995,
+        0.998_544_300_340_291_4,
         max_relative = RELATIVE_TOLERANCE
     );
     assert_relative_eq!(
         parameters.lambda_minus,
+        1.000_449_358_777_403_3,
+        max_relative = RELATIVE_TOLERANCE
+    );
+    assert_relative_eq!(
+        snapshot.diagnostics.plus.lambda_raw.unwrap(),
+        0.995,
+        max_relative = RELATIVE_TOLERANCE
+    );
+    assert_relative_eq!(
+        snapshot.diagnostics.minus.lambda_raw.unwrap(),
         1.0,
+        max_relative = RELATIVE_TOLERANCE
+    );
+    assert_relative_eq!(
+        snapshot.diagnostics.plus.survival_intercept.unwrap(),
+        1.003_562_110_894_765_2,
+        max_relative = RELATIVE_TOLERANCE
+    );
+    assert_relative_eq!(
+        snapshot.diagnostics.minus.survival_intercept.unwrap(),
+        1.000_449_358_777_403_3,
         max_relative = RELATIVE_TOLERANCE
     );
     assert_relative_eq!(
@@ -125,8 +150,8 @@ fn hjb_surface_and_final_spreads_match_python_reference() {
     let parameters = CjParameters {
         kappa_plus: 8_993.138_741_402_856,
         kappa_minus: 9_068.665_345_705_7,
-        lambda_plus: 0.995,
-        lambda_minus: 1.0,
+        lambda_plus: 0.998_544_300_340_291_4,
+        lambda_minus: 1.000_449_358_777_403_3,
         epsilon_plus: 6.000_260_615_141_559e-9,
         epsilon_minus: 0.0,
         sigma2_per_second: Some(9.154_778_008_016_623e-11),
@@ -148,26 +173,26 @@ fn hjb_surface_and_final_spreads_match_python_reference() {
         (
             150.0,
             -5.0,
-            -0.000_387_721_704_849_348_4,
-            0.000_649_230_062_673_365_4,
+            -0.000_387_674_299_159_536_84,
+            0.000_649_182_034_339_312_7,
         ),
         (
             150.0,
             0.0,
-            0.000_265_922_028_844_813_45,
-            0.000_265_847_115_431_485_9,
+            0.000_265_568_793_491_248_55,
+            0.000_265_839_169_909_092_8,
         ),
         (
             75.0,
             1.5,
-            0.000_455_341_625_853_970_16,
-            -0.000_117_087_526_742_833_88,
+            0.000_454_955_356_588_174_5,
+            -0.000_116_719_437_232_775_29,
         ),
         (
             1.0,
             5.0,
-            0.000_642_618_373_452_232_8,
-            -0.000_377_893_212_132_885_3,
+            0.000_642_246_269_056_885_8,
+            -0.000_377_529_416_505_007_93,
         ),
     ];
     for (tau, q, expected_bid, expected_ask) in points {
@@ -245,6 +270,6 @@ fn hjb_surface_and_final_spreads_match_python_reference() {
             ..RiskState::default()
         },
     );
-    assert_eq!(fractional.quotes.bid.unwrap().px, 131_600);
+    assert_eq!(fractional.quotes.bid.unwrap().px, 131_610);
     assert_eq!(fractional.quotes.ask.unwrap().px, 132_110);
 }

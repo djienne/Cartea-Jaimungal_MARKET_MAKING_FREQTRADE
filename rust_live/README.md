@@ -3,8 +3,12 @@
 This directory contains the current trader. The Python estimators and replay
 harness provide an independent numerical comparison path;
 `tests/python_parity.rs` pins selected Rust calibration, HJB, and quote outputs
-against it. Both use schema-v4 direct-window calibration semantics: there is no
-EMA or other cross-window smoothing between observed parameters and the HJB.
+against it. Both use schema-v5 direct-window calibration semantics: there is no
+EMA or other cross-window smoothing between observed parameters and the HJB,
+and the arrival rate handed to the HJB is the raw per-side market-order rate
+scaled by the survival fit's intercept (v4 fed the raw rate, off by that factor;
+v4 snapshots are refused). `python scripts/parity_fixture.py` regenerates the
+parity goldens.
 
 The Rust model is intentionally singular: asymmetric Cartea–Jaimungal arrival
 and adverse-selection parameters feed the nonlinear backward-Euler HJB. The
@@ -259,7 +263,7 @@ docker build --build-arg "MM_RUSTFLAGS=-C target-cpu=native" `
 ```
 
 `tests/python_parity.rs` pins deterministic outputs from the Python reference for
-schema-v4 unsmoothed parameter estimation, HJB solving, time/inventory interpolation, fee
+schema-v5 unsmoothed parameter estimation, HJB solving, time/inventory interpolation, fee
 assembly, and final tick-rounded quotes. Parameters and ordinary HJB values use
 a `1e-8` tolerance, high-sensitivity HJB points use `1e-7`, and rounded prices
 must be exactly equal.
@@ -268,7 +272,9 @@ must be exactly equal.
 
 - price and HJB depth: USDC per base asset;
 - kappa: `1 / USDC`;
-- lambda: market orders per second per side;
+- lambda: market orders per second per side, times that side's survival-fit
+  intercept `A` (schema v5), so `lambda * exp(-kappa * depth)` is the measured
+  fill intensity; the unscaled rate is `diagnostics.*.lambda_raw`;
 - epsilon: USDC per base asset;
 - sigma squared: `USDC^2 / second`;
 - inventory `q`: physical base position divided by the flat-state inventory

@@ -1,5 +1,10 @@
 # Parameter sweep — CASHCAT
 
+> **ESTIMATOR SCHEMA (added 2026-09-02).** Every figure in this document was
+> produced under parameter schema v4, where λ± was the raw market-order rate.
+> Schema v5 scales λ± by the survival-fit intercept (≈1.04 / 0.99 on CASHCAT),
+> so these rankings are indicative until the sweep is re-run under v5.
+
 > **SELECTION PROVENANCE (added 2026-08-24).** This sweep predates the fix that
 > records which tape the grid was selected on. Its Stage A and Stage B rankings
 > were produced by scoring ~3.2 h of the ~113 h train slice

@@ -11,7 +11,13 @@ from typing import Any
 # the BBO stream, and epsilon± is the direct validated arrival-jump estimate.
 # No temporal smoothing is applied to model parameters. Consumers fail closed on
 # older schemas because the primary-value semantics changed from v3.
-PARAM_SCHEMA_VERSION = 4
+#
+# v5 (2026-09-02): lambda± is that raw rate scaled by the survival fit's
+# intercept A. The fit says P(depth >= delta) = A * exp(-kappa * delta) over its
+# support while the HJB models fill intensity as lambda * exp(-kappa * delta),
+# so v4 was off by A at every depth (1.04 / 0.99 on CASHCAT). The raw rate is
+# still published as lambda±_raw. Consumers fail closed on v4.
+PARAM_SCHEMA_VERSION = 5
 
 
 def utc_now_iso() -> str:

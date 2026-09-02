@@ -62,7 +62,7 @@ def _snapshot(now: datetime | None = None, **overrides):
     """A schema-v4 direct-parameter snapshot that passes every validation gate."""
     stamp = (now or datetime.now(timezone.utc)).isoformat()
     kappa = {
-        "schema_version": 4,
+        "schema_version": 5,
         "status": "ok",
         "generated_at": stamp,
         "kappa+": 2.0,
@@ -73,7 +73,7 @@ def _snapshot(now: datetime | None = None, **overrides):
         "r2_minus": 0.9,
     }
     epsilon = {
-        "schema_version": 4,
+        "schema_version": 5,
         "status": "ok",
         "generated_at": stamp,
         "epsilon+": 0.05,
@@ -82,7 +82,7 @@ def _snapshot(now: datetime | None = None, **overrides):
         "n_sell_events": 500,
     }
     lambda_ = {
-        "schema_version": 4,
+        "schema_version": 5,
         "status": "ok",
         "generated_at": stamp,
         "lambda+": 0.1,

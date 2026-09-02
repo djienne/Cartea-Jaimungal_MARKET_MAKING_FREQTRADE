@@ -2139,11 +2139,21 @@ async fn run_dry_run_grid(
         let fingerprint = variant_config.fingerprint()?;
         variant_configs.push((entry, variant_config, fingerprint));
     }
-    let grid_fingerprint = variant_configs
-        .iter()
-        .map(|(entry, _, fingerprint)| format!("{}={fingerprint}", entry.name))
-        .collect::<Vec<_>>()
-        .join(";");
+    // The estimator semantics are part of the run's identity: a resume across
+    // a parameter-schema change would splice two parameterisations into one
+    // P&L curve and keep an inventory unit sized under the old one.
+    let grid_fingerprint = std::iter::once(format!(
+        "estimator=v{}:{}",
+        mm_live::calibration::PARAMETER_SCHEMA_VERSION,
+        mm_live::calibration::ESTIMATOR_SEMANTICS
+    ))
+    .chain(
+        variant_configs
+            .iter()
+            .map(|(entry, _, fingerprint)| format!("{}={fingerprint}", entry.name)),
+    )
+    .collect::<Vec<_>>()
+    .join(";");
     let resume_from = load_resumable_checkpoint(
         &state_path,
         &instrument.symbol,
@@ -3424,7 +3434,11 @@ async fn run_public_dry_run(
         config.risk.clone(),
     )?;
     let config_fingerprint = config.fingerprint()?;
-    let _ = backend.restore_account_state(&config.storage.state_path, &config_fingerprint)?;
+    let _ = backend.restore_account_state(
+        &config.storage.state_path,
+        &config_fingerprint,
+        mm_live::calibration::PARAMETER_SCHEMA_VERSION,
+    )?;
     if initial_model.is_none() {
         if let (Ok(persisted), Some(inventory_unit)) = (
             CalibrationSnapshot::load(&config.storage.calibration_path),
@@ -3742,6 +3756,7 @@ async fn run_public_dry_run(
                 &config.storage.state_path,
                 &config_fingerprint,
                 &snapshot.fingerprint,
+                mm_live::calibration::PARAMETER_SCHEMA_VERSION,
                 bundle.inventory_unit,
             )
         } else {

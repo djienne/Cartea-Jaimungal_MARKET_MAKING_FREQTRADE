@@ -1,5 +1,13 @@
 # Validation status
 
+> **2026-09-02 — estimator schema v5.** `lambda_±` is now the raw per-side
+> market-order rate scaled by the survival fit's intercept `A`; v4 fed the raw
+> rate to the HJB while the fitted fill probability was `A·exp(-κδ)`, so fill
+> intensity was off by `A` (1.04 / 0.99 on CASHCAT). Every result below that
+> predates this note — sweeps, replay reports, grid leaderboards, and the parity
+> figures — was produced under v4. The parity goldens were regenerated
+> (`scripts/parity_fixture.py`); the sweeps and grid have not been re-run yet.
+
 > **Historical record.** Entries below are dated evidence, not a current host or
 > venue-status report. Current operational guidance lives in `README.md` and
 > `../docs/DRY_RUN_GRID.md`.
@@ -108,7 +116,8 @@ Checked on 2026-08-22 around 17:30 UTC:
 
 The deterministic oracle test covers all three scientific layers:
 
-1. schema-v4 direct-window kappa, lambda, epsilon, variance, counts, fit points and R-squared;
+1. schema-v5 direct-window kappa, lambda (raw rate times survival intercept), epsilon,
+   variance, counts, fit points and R-squared;
 2. asymmetric backward-Euler HJB solving plus time/inventory interpolation;
 3. maker-fee spread assembly, bps clamps and final venue-rounded prices.
 

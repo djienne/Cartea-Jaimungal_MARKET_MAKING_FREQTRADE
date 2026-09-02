@@ -19,8 +19,12 @@ Methodology:
   distribution up to the 99th percentile, which is the fit that has always
   shipped. Raising the lower bound refits kappa over only the deeper region
   where the measured edge is positive (see fit_kappa_survival for the argument).
-- lambda± is the raw per-side MO arrival rate (count / covered window
-  seconds). The old binned-density regression intercept equals
+- lambda± is the per-side MO arrival rate (count / covered window seconds)
+  scaled by that side's survival-fit intercept A (schema v5, 2026-09-02): the
+  fit says P(depth >= delta) = A * exp(-kappa * delta) over its support while
+  the HJB models fill intensity as lambda * exp(-kappa * delta), so feeding it
+  the raw rate was off by A at every depth. The raw rate is published as
+  lambda±_raw. The old binned-density regression intercept equals
   lambda*kappa*binwidth (bin-width dependent) and is kept only as the
   lambda0_intercept_± diagnostic.
 - Primary kappa±/lambda± values are the direct validated estimates from the
@@ -393,7 +397,18 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30,
     }
 
     kappa_plus_out, kappa_minus_out = kappa_plus_raw, kappa_minus_raw
-    lambda_plus_out, lambda_minus_out = lambda_plus_raw, lambda_minus_raw
+    # Schema v5: the arrival rate the HJB sees is lambda_raw * A, so that
+    # lambda * exp(-kappa * delta) equals the measured fill intensity.
+    lambda_plus_out = (
+        lambda_plus_raw * float(buy_fit["survival_intercept"])
+        if np.isfinite(buy_fit["survival_intercept"]) and np.isfinite(lambda_plus_raw)
+        else lambda_plus_raw
+    )
+    lambda_minus_out = (
+        lambda_minus_raw * float(sell_fit["survival_intercept"])
+        if np.isfinite(sell_fit["survival_intercept"]) and np.isfinite(lambda_minus_raw)
+        else lambda_minus_raw
+    )
 
     if emitting:
         kappa_entry, lambda_entry = build_kappa_lambda_entries(

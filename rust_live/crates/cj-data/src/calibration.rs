@@ -7,7 +7,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub const PARAMETER_SCHEMA_VERSION: u32 = 4;
+/// Schema v5: `lambda_±` is the per-side market-order rate scaled by that
+/// side's survival-fit intercept `A` (see `ESTIMATOR_SEMANTICS`). v4 fed the
+/// raw rate to the HJB while the fitted fill probability was `A·exp(-κδ)`, so
+/// fill intensity was off by `A`; v4 snapshots are refused by `is_quotable`.
+pub const PARAMETER_SCHEMA_VERSION: u32 = 5;
+/// Direct-window semantics, revision 2: no cross-window smoothing, and the
+/// arrival rate the HJB sees is `lambda_raw · survival_intercept`, so that
+/// `lambda · exp(-κδ)` is exactly the measured fill intensity at every depth
+/// inside the fit support. The raw rate is kept as `lambda_raw` per side.
+pub const ESTIMATOR_SEMANTICS: &str = "direct_window_v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +37,10 @@ pub struct SideFitDiagnostics {
     pub support_depth_lower: Option<f64>,
     pub support_depth_upper: Option<f64>,
     pub survival_intercept: Option<f64>,
+    /// Market orders per covered second on this side before the intercept
+    /// scaling; `parameters.lambda_±` is this times `survival_intercept`.
+    #[serde(default)]
+    pub lambda_raw: Option<f64>,
     pub negative_depths_truncated: usize,
     pub market_orders: usize,
     pub epsilon_events: usize,
@@ -71,7 +84,7 @@ impl CalibrationSnapshot {
         self.schema_version == PARAMETER_SCHEMA_VERSION
             && self.status == CalibrationStatus::Ok
             && self.lambda_source == "mo_survival_fit"
-            && self.estimator_semantics == "direct_window_v1"
+            && self.estimator_semantics == ESTIMATOR_SEMANTICS
             && self.parameters.validate().is_ok()
     }
 
@@ -227,8 +240,13 @@ impl Calibrator {
             .filter(|order| order.side == MarketOrderSide::Buy)
             .count();
         let minus_count = attached.len() - plus_count;
-        let lambda_plus = plus_count as f64 / covered_seconds;
-        let lambda_minus = minus_count as f64 / covered_seconds;
+        let lambda_plus_raw = plus_count as f64 / covered_seconds;
+        let lambda_minus_raw = minus_count as f64 / covered_seconds;
+        // The fit says P(depth >= δ) = A·exp(-κδ) over its support; the HJB
+        // models fill intensity as λ·exp(-κδ). Hand it λ_raw·A so the two
+        // agree at every depth, instead of being off by A everywhere.
+        let lambda_plus = lambda_plus_raw * plus_fit.survival_intercept.unwrap_or(1.0);
+        let lambda_minus = lambda_minus_raw * minus_fit.survival_intercept.unwrap_or(1.0);
 
         let (epsilon_plus, plus_epsilon_events) = estimate_epsilon(
             &attached,
@@ -311,6 +329,7 @@ impl Calibrator {
                 support_depth_lower: plus_fit.support_depth_lower,
                 support_depth_upper: plus_fit.support_depth_upper,
                 survival_intercept: plus_fit.survival_intercept,
+                lambda_raw: Some(lambda_plus_raw),
                 negative_depths_truncated: negative_plus,
                 market_orders: plus_count,
                 epsilon_events: plus_epsilon_events,
@@ -324,6 +343,7 @@ impl Calibrator {
                 support_depth_lower: minus_fit.support_depth_lower,
                 support_depth_upper: minus_fit.support_depth_upper,
                 survival_intercept: minus_fit.survival_intercept,
+                lambda_raw: Some(lambda_minus_raw),
                 negative_depths_truncated: negative_minus,
                 market_orders: minus_count,
                 epsilon_events: minus_epsilon_events,
@@ -339,7 +359,7 @@ impl Calibrator {
             generated_at,
             status,
             lambda_source: "mo_survival_fit".to_owned(),
-            estimator_semantics: "direct_window_v1".to_owned(),
+            estimator_semantics: ESTIMATOR_SEMANTICS.to_owned(),
             parameters,
             diagnostics,
             fingerprint: String::new(),

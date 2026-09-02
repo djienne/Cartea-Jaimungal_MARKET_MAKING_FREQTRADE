@@ -83,6 +83,11 @@ struct PersistedDryRunState {
     symbol: String,
     config_fingerprint: String,
     model_fingerprint: String,
+    /// Calibration schema the inventory unit and accounting were produced
+    /// under. A state saved by an older estimator is not a safe basis for a
+    /// new session even when the config fingerprint still matches.
+    #[serde(default)]
+    parameter_schema_version: u32,
     inventory_unit: i64,
     account: DryRunAccountState,
     saved_at_ms: u64,
@@ -260,6 +265,7 @@ impl DryRunBackend {
         path: &Path,
         config_fingerprint: &str,
         model_fingerprint: &str,
+        parameter_schema_version: u32,
         inventory_unit: i64,
     ) -> Result<()> {
         if let Some(parent) = path.parent() {
@@ -274,6 +280,7 @@ impl DryRunBackend {
                 symbol: self.instrument.symbol.clone(),
                 config_fingerprint: config_fingerprint.to_owned(),
                 model_fingerprint: model_fingerprint.to_owned(),
+                parameter_schema_version,
                 inventory_unit,
                 account: self.account,
                 saved_at_ms: unix_ms(),
@@ -292,6 +299,7 @@ impl DryRunBackend {
         &mut self,
         path: &Path,
         expected_config_fingerprint: &str,
+        expected_parameter_schema_version: u32,
     ) -> Result<bool> {
         let Ok(bytes) = std::fs::read(path) else {
             return Ok(false);
@@ -305,6 +313,7 @@ impl DryRunBackend {
         if persisted.schema_version != 3
             || persisted.symbol != self.instrument.symbol
             || persisted.config_fingerprint != expected_config_fingerprint
+            || persisted.parameter_schema_version != expected_parameter_schema_version
             || persisted.inventory_unit <= 0
             || now_ms.saturating_sub(persisted.saved_at_ms) > DRY_RUN_STATE_MAX_AGE_MS
             || persisted.saved_at_ms > now_ms.saturating_add(DRY_RUN_STATE_MAX_FUTURE_SKEW_MS)
@@ -1108,7 +1117,7 @@ mod tests {
         .unwrap();
         source.account.inventory_units = 7;
         source
-            .save_account_state(&path, "config-a", "model-a", 10)
+            .save_account_state(&path, "config-a", "model-a", 5, 10)
             .unwrap();
         let mut restored = DryRunBackend::new(
             instrument(),
@@ -1117,8 +1126,16 @@ mod tests {
             RiskConfig::default(),
         )
         .unwrap();
-        assert!(!restored.restore_account_state(&path, "wrong").unwrap());
-        assert!(restored.restore_account_state(&path, "config-a").unwrap());
+        assert!(!restored.restore_account_state(&path, "wrong", 5).unwrap());
+        assert!(
+            !restored
+                .restore_account_state(&path, "config-a", 4)
+                .unwrap(),
+            "a state from another estimator schema is not a safe basis"
+        );
+        assert!(restored
+            .restore_account_state(&path, "config-a", 5)
+            .unwrap());
         assert_eq!(restored.account.inventory_units, 7);
         assert_eq!(restored.restored_inventory_unit(), Some(10));
         assert_eq!(restored.working_order_count(), 0);
@@ -1136,7 +1153,7 @@ mod tests {
         )
         .unwrap();
         source
-            .save_account_state(&path, "config-a", "model-a", 10)
+            .save_account_state(&path, "config-a", "model-a", 5, 10)
             .unwrap();
         let mut value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1149,7 +1166,9 @@ mod tests {
             RiskConfig::default(),
         )
         .unwrap();
-        assert!(!restored.restore_account_state(&path, "config-a").unwrap());
+        assert!(!restored
+            .restore_account_state(&path, "config-a", 5)
+            .unwrap());
     }
 
     #[tokio::test]

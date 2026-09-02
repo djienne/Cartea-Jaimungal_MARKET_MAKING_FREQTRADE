@@ -96,7 +96,7 @@ def round_price_for_side(
 
 
 # Parameter snapshot schema this module consumes (scripts/param_utils.py).
-SUPPORTED_PARAM_SCHEMA_VERSION = 4
+SUPPORTED_PARAM_SCHEMA_VERSION = 5
 
 # Keys every snapshot must carry before a quote may be built from it.
 REQUIRED_PARAM_KEYS = ("kappa+", "kappa-", "lambda+", "lambda-", "epsilon+", "epsilon-")
