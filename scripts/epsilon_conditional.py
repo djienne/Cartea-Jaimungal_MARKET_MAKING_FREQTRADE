@@ -246,10 +246,18 @@ def analyse(
                 "fit": fit,
             }
             if fit.get("ok"):
+                # Only inside the fitted range. `b` is a local slope, and
+                # quoting an edge at a depth the fit never saw is the same class
+                # of error as quoting a phi without its horizon: on a 0.5-5 bps
+                # grid, extrapolating to 26 bps turned b=0.04 into "+21 bps of
+                # edge" on an instrument that is comfortably unmakeable.
+                lo, hi = min(grid_bps), max(grid_bps)
                 entry["edge_bps_at"] = {
                     str(int(d)): edge_bps(d, fit["a_bps"], fit["b"], fee_bps)
                     for d in (10.0, 26.0, 40.0, 60.0)
+                    if lo <= d <= hi
                 }
+                entry["fit_range_bps"] = [float(lo), float(hi)]
             per_side[label] = entry
         out["horizons"][str(horizon)] = per_side
     return out
@@ -303,7 +311,7 @@ def to_markdown(payload: dict[str, Any], args: argparse.Namespace) -> str:
             lines.append(
                 f"| `{label}` | {side['unconditional_mean_bps']:.2f} | {fit['a_bps']:+.2f} | "
                 f"{fit['b']:.3f} | {ci_text} | {fit.get('makeable')} | "
-                f"{'—' if edge is None else format(edge, '+.2f')} |"
+                f"{'outside fit range' if edge is None else format(edge, '+.2f')} |"
             )
         lines.append("")
     return "\n".join(lines) + "\n"
@@ -387,7 +395,11 @@ def main() -> int:
             f"  {int(horizon):>6} ms: uncond={pooled['unconditional_mean_bps']:5.2f} bps  "
             f"a={fit['a_bps']:+6.2f}  b={fit['b']:.3f} CI95={ci_text}  "
             f"makeable={fit.get('makeable')}  "
-            f"edge@26bps={pooled.get('edge_bps_at', {}).get('26', float('nan')):+.2f}",
+            + (
+                f"edge@26bps={pooled['edge_bps_at']['26']:+.2f}"
+                if "26" in pooled.get("edge_bps_at", {})
+                else "edge@26bps=outside-fit-range"
+            ),
             flush=True,
         )
     return 0

@@ -166,3 +166,52 @@ fill less often on the offsetting side, so inventory sits longer. Widening there
 raises the markout horizon that applies to each fill, which raises adverse selection per
 fill. Quoting wider is not a free reduction in toxicity, and the phi ladder scored it as
 though it were.
+
+## It is the venue, not CASHCAT
+
+Same statistic on every instrument with a tape, common window 2026-08-30 20:35 to
+09-02 20:20, each on a depth grid that actually covers where its sweeps land:
+
+| pooled b | 200 ms | 1 s | 5 s |
+| :--- | ---: | ---: | ---: |
+| CASHCAT | 0.35 | 0.84 | 1.01 |
+| ETH | 0.78 | **1.03** | **1.01** |
+| ACE | 0.87 | **1.32** | **1.54** |
+| CHIP | 0.59 | **1.09** | **1.35** |
+
+PENGU and NIL have too few deep sweeps to fit and the script refuses rather than
+guessing. **Every instrument that fits has `b >= 1` from 1 s out**, and 200 ms is the
+only horizon anywhere that reads below 1 -- and it is far shorter than anything is
+actually held. Passively resting behind the touch does not have an edge on this venue,
+on any symbol we have data for. That is not a CASHCAT property to be tuned away.
+
+### Why `b ~ 1` is not merely mechanical
+
+A sweep that empties the ask to depth `d` moves the mid by `d/2` with the bid
+unchanged, so there is a mechanical floor of `b0 >= 0.5`. Measured at the first mid
+after the print, `b0 = 0.595`. What happens next is the part that matters:
+
+| horizon | 0 ms | 200 ms | 1 s | 5 s | 30 s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| b | 0.595 | 0.378 | 0.873 | 1.051 | 0.988 |
+
+The book refills and `b` **falls** to 0.38 -- the shipped 200 ms horizon sits in the
+trough of a transient reversion, which is precisely why it flatters the model -- and
+then the mid *continues* in the sweep direction to ~1.05 by 5 s and stays there at 30 s.
+Continuation after the instant is the opposite of temporary impact: the permanent
+component is ~1.0 d and the temporary component is ~0 at any horizon we actually hold.
+Restricting to tight books (pre half-spread <= 10 bps, 92% of market orders) still gives
+1.05 at 5 s, and four sub-periods give 1.18, 1.16, 0.95, 1.00 -- never a makeable window.
+
+One nuance so the linear fit is not over-read: a *single* sweep of depth `d` moves the
+mid by ~0.6-0.75 d. The tail slope reaches ~1 because deeper sweeps retain a larger
+fraction and because the sweep that fills us at `d` overshoots by ~1/kappa (~9 bps) on
+average. The maker is filled by the whole tail, so the tail statistic is the right one,
+but "the mid ends exactly where the sweep reached" overstates the mechanism.
+
+### Queue priority makes this worse, not better
+
+Our order is filled only when the sweep passes `d` by at least the size queued ahead of
+us, and the jump rises monotonically with reach (marginal bins at 5 s: 2.3, 4.7, 7.4,
+12.4, 16.8 bps for d in 5-30). So `E[jump | reach >= d]` is a **lower bound** on realised
+adverse selection. Modelling the queue can only lower the estimate of our edge.
