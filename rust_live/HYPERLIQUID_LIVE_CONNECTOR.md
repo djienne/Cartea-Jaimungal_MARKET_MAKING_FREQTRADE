@@ -439,6 +439,21 @@ Recommended policy: refresh a deadline around 30 seconds ahead every 10 seconds.
 On a graceful stop, explicitly cancel all bot orders, reconcile an empty open
 order set, then clear the schedule. On a process/network failure, let it fire.
 
+**What the shipped profile actually does (2026-09-02).** `config/cashcat.toml`
+sets an 8 h deadline refreshed every 6 h. That is a budget decision: each
+refresh is one address action against the venue's lifetime budget
+(10k + 1 per USDC of volume, ~115 left on the test account), and the
+recommended 30 s / 10 s policy would cost ~8.6k actions a day. The consequence
+is that after a hard crash resting orders can sit for up to 8 h; the venue's
+own documented constraints are only a 5 s minimum offset and 10 triggers per
+UTC day. The safety net that actually protects a session is the teardown that
+runs on every exit path — cancel resting orders, reconcile, clear the schedule
+— together with `live-flatten`. Tighten the deadline once the account has
+earned budget. Note also that on 2026-08-22 the venue refused `scheduleCancel`
+on this subaccount for lacking 1M USDC cumulative volume, so on such an account
+the dead-man is not available at all and `deadman_enabled = true` refuses to
+arm.
+
 ### 7.6 No-op nonce invalidation
 
 `{type:"noop"}` can consume a pending nonce and is documented as an alternative

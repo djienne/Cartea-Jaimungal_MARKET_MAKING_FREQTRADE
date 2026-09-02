@@ -182,6 +182,16 @@ reconcile_interval_ms = 300000
 startup_warmup_seconds = 120
 account_snapshot_timeout_ms = 10000
 deadman_enabled = true
+# 8 h deadline / 6 h refresh is an address-action BUDGET decision, not a safety
+# choice: every refresh spends one action from the venue's lifetime budget
+# (10k + 1 per USDC of volume; ~115 left on this account, 2026-09-01), so a
+# 30 s deadline refreshed every 10 s (the recommended policy in
+# HYPERLIQUID_LIVE_CONNECTOR.md 7.5) would cost ~8.6k actions a day. The
+# consequence: after a hard crash, resting orders can sit for up to 8 h. The
+# real safety net is the teardown that runs on every exit path (cancel,
+# reconcile, clear) plus `live-flatten`; tighten this once the account has
+# earned budget. The venue also refused scheduleCancel on this subaccount on
+# 2026-08-22 for lacking 1M USDC cumulative volume.
 deadman_deadline_ms = 28800000
 deadman_refresh_ms = 21600000
 max_maker_fee_rate = 0.0002

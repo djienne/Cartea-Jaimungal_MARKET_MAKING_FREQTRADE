@@ -529,6 +529,12 @@ impl LiveStateStore {
             .map_err(|_| anyhow::anyhow!("live-state memory lock poisoned"))?;
         let nonce = unix_ms().max(state.nonce_reserved_through.saturating_add(1));
         state.nonce_reserved_through = nonce;
+        drop(state);
+        // Best effort only: this path exists for when persistence is already
+        // degraded, so a failed wake must not block the cancel. When the
+        // writer is alive the advance reaches disk and a restart cannot
+        // reissue this nonce.
+        let _ = self.signal_persistence();
         Ok(nonce)
     }
 

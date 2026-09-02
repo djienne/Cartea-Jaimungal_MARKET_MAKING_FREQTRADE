@@ -1,6 +1,6 @@
 use crate::types::{Bbo, DesiredQuotes, OrderIntent, QuoteReason, Side};
 use crossbeam_queue::ArrayQueue;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicI64, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::thread::{self, Thread};
@@ -333,6 +333,12 @@ impl SharedQuotes {
     #[inline]
     fn publish(&self, quotes: DesiredQuotes) {
         self.value.store(quotes);
+        // Store-then-load on different locations is not ordered by
+        // Acquire/Release alone: without this fence the publisher can read
+        // `waiters == 0` while the waiter, having already registered, still
+        // reads the pre-publish value — a lost wakeup. The waiter side fences
+        // symmetrically after registering.
+        fence(Ordering::SeqCst);
         if self.waiters.load(Ordering::Acquire) != 0 {
             self.changed.notify_one();
         }
@@ -355,6 +361,7 @@ impl SharedQuotes {
             // mid-await by select loops.
             let _waiter = WaiterGuard::register(&self.waiters);
             notified.as_mut().enable();
+            fence(Ordering::SeqCst);
             let current = self.load();
             if current.quote_seq != observed_quote_seq {
                 return current;
@@ -458,6 +465,8 @@ impl<T> AsyncRing<T> {
     pub fn try_push(&self, value: T) -> Result<(), T> {
         self.queue.push(value).map(|()| {
             self.observe_high_water();
+            // Same store-then-load ordering as `SharedQuotes::publish`.
+            fence(Ordering::SeqCst);
             if self.waiting_consumers.load(Ordering::Acquire) != 0 {
                 self.not_empty.notify_one();
             }
@@ -480,6 +489,7 @@ impl<T> AsyncRing<T> {
             // mid-await on every iteration another branch wins.
             let _waiter = WaiterGuard::register(&self.waiting_consumers);
             notified.as_mut().enable();
+            fence(Ordering::SeqCst);
             if let Some(value) = self.try_pop() {
                 return value;
             }

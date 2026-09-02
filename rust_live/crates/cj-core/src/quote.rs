@@ -48,10 +48,18 @@ impl CarteaJaimungalPolicy {
         if !quoting.maker_fee_rate.is_finite() || quoting.maker_fee_rate < 0.0 {
             bail!("maker_fee_rate must be finite and non-negative");
         }
-        if quoting.min_half_spread_bps < 0.0
+        // A NaN bound passes `min >= max` (every comparison with NaN is
+        // false) and then panics inside `f64::clamp` on the hot thread, which
+        // would leave the last quotes resting with nothing to withdraw them.
+        if !quoting.min_half_spread_bps.is_finite()
+            || !quoting.max_half_spread_bps.is_finite()
+            || quoting.min_half_spread_bps < 0.0
             || quoting.min_half_spread_bps >= quoting.max_half_spread_bps
         {
             bail!("invalid half-spread bounds");
+        }
+        if !quoting.extra_cushion_bps.is_finite() || quoting.extra_cushion_bps < 0.0 {
+            bail!("extra_cushion_bps must be finite and non-negative");
         }
         Ok(Self {
             instrument,
@@ -462,6 +470,32 @@ mod tests {
         );
         assert!(decision.quotes.bid.is_none());
         assert!(decision.quotes.ask.is_some());
+    }
+
+    #[test]
+    fn non_finite_spread_bounds_are_rejected_before_they_can_panic_the_hot_path() {
+        for (minimum, maximum, cushion) in [
+            (1.5, f64::NAN, 0.0),
+            (f64::NAN, 80.0, 0.0),
+            (1.5, f64::INFINITY, 0.0),
+            (1.5, 80.0, f64::NAN),
+        ] {
+            let quoting = QuotingConfig {
+                min_half_spread_bps: minimum,
+                max_half_spread_bps: maximum,
+                extra_cushion_bps: cushion,
+                ..QuotingConfig::default()
+            };
+            assert!(
+                CarteaJaimungalPolicy::new(
+                    instrument("CASHCAT", 6, 0),
+                    quoting,
+                    RiskConfig::default()
+                )
+                .is_err(),
+                "({minimum}, {maximum}, {cushion}) must be refused"
+            );
+        }
     }
 
     /// Once a limit is already breached — here both the notional cap and the

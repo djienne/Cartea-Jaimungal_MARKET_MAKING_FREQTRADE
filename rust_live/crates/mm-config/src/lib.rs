@@ -583,6 +583,29 @@ impl AppConfig {
         if self.model.newton_max_iterations == 0 {
             bail!("model.newton_max_iterations must be at least one");
         }
+        // TOML accepts the literal `nan`, and every comparison with NaN is
+        // false, so the ordering check alone let a NaN bound through to the
+        // hot path where `f64::clamp` panics on it.
+        for (name, value) in [
+            (
+                "quoting.min_half_spread_bps",
+                self.quoting.min_half_spread_bps,
+            ),
+            (
+                "quoting.max_half_spread_bps",
+                self.quoting.max_half_spread_bps,
+            ),
+            ("quoting.extra_cushion_bps", self.quoting.extra_cushion_bps),
+            ("quoting.spread_multiplier", self.quoting.spread_multiplier),
+            ("quoting.maker_fee_rate", self.quoting.maker_fee_rate),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                bail!("{name} must be finite and non-negative");
+            }
+        }
+        if self.quoting.spread_multiplier <= 0.0 {
+            bail!("quoting.spread_multiplier must be positive");
+        }
         if self.quoting.min_half_spread_bps >= self.quoting.max_half_spread_bps {
             bail!("minimum half-spread must be below maximum half-spread");
         }
@@ -719,6 +742,16 @@ impl AppConfig {
         if !self.instrument.validated {
             bail!("instrument profile is not scientifically validated");
         }
+        // The metadata lookup (`meta.rs`) requests the base perp universe and
+        // ignores `dex`, so a builder-dex profile would resolve the wrong asset
+        // id, guarded only by the size-decimals check. Refuse until the lookup
+        // is dex-aware.
+        if !self.instrument.dex.is_empty() {
+            bail!(
+                "instrument.dex {:?} is unsupported: metadata resolution ignores builder dexes",
+                self.instrument.dex
+            );
+        }
         let raw = std::fs::read_to_string(&self.instrument.evidence_path).with_context(|| {
             format!(
                 "cannot read instrument validation evidence {}",
@@ -759,6 +792,41 @@ mod tests {
     fn validated_cashcat_defaults_pass() {
         let path = cashcat_config_path();
         assert!(AppConfig::load(&path).is_ok());
+    }
+
+    #[test]
+    fn a_nan_spread_bound_in_toml_is_rejected_at_load() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = cashcat_config_path();
+        std::fs::copy(
+            source.parent().unwrap().join("cashcat.validation.json"),
+            directory.path().join("cashcat.validation.json"),
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(&source).unwrap();
+        assert!(raw.contains("max_half_spread_bps = 80.0"));
+        let control = directory.path().join("control.toml");
+        std::fs::write(&control, &raw).unwrap();
+        assert!(
+            AppConfig::load(&control).is_ok(),
+            "the copied profile must load"
+        );
+        let poisoned = directory.path().join("poisoned.toml");
+        std::fs::write(
+            &poisoned,
+            raw.replace("max_half_spread_bps = 80.0", "max_half_spread_bps = nan"),
+        )
+        .unwrap();
+        let error = AppConfig::load(&poisoned).unwrap_err().to_string();
+        assert!(error.contains("max_half_spread_bps"), "{error}");
+    }
+
+    #[test]
+    fn a_builder_dex_is_refused_until_metadata_resolution_supports_it() {
+        let path = cashcat_config_path();
+        let mut config = AppConfig::load(&path).unwrap();
+        config.instrument.dex = "xyz".to_owned();
+        assert!(config.validate().is_err());
     }
 
     #[test]
