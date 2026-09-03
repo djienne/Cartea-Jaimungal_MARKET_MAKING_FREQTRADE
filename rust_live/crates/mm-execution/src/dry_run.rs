@@ -156,6 +156,13 @@ impl DryRunBackend {
                 "queue_decay_per_second must be zero until a queue-decay model is calibrated from venue evidence"
             );
         }
+        if !config.flatten_fee_rate.is_finite()
+            || config.flatten_fee_rate < 0.0
+            || !config.flatten_slippage_bps.is_finite()
+            || config.flatten_slippage_bps < 0.0
+        {
+            bail!("flatten fee and slippage must be finite and non-negative");
+        }
         if !config.promotion_flatten_fee_rate.is_finite()
             || config.promotion_flatten_fee_rate < 0.0
             || !config.promotion_flatten_slippage_bps.is_finite()
@@ -626,6 +633,14 @@ impl DryRunBackend {
             if !exit_px.is_finite() || exit_px <= 0.0 {
                 break;
             }
+            // Round to the tick FIRST, then derive notional and fee from the
+            // rounded price. The Fill carries integer units and `apply_fill`
+            // reads the price back out of them, so a fee computed from the raw
+            // price would not match the cash the same fill moves.
+            let Ok(exit_units) = self.instrument.price_to_units(exit_px) else {
+                break;
+            };
+            let exit_px = self.instrument.price_from_units(exit_units);
             let qty_units = lot.abs();
             let qty_base = self.instrument.size_from_units(qty_units);
             let notional = qty_base * exit_px;
@@ -636,10 +651,7 @@ impl DryRunBackend {
             self.diagnostics.flatten_cost_usdc += (mid - exit_px).abs() * qty_base + fee;
             let fill = Fill {
                 side: if long { Side::Sell } else { Side::Buy },
-                px: self
-                    .instrument
-                    .price_to_units(exit_px)
-                    .unwrap_or(touch_units),
+                px: exit_units,
                 qty_units,
                 fee_usdc: fee,
                 exchange_ms: now_ms,
@@ -1208,6 +1220,73 @@ mod tests {
             RiskConfig::default(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_flatten_charges_its_own_knobs_not_the_promotion_ones() {
+        // This is the regression that matters most. Reusing promotion_flatten_*
+        // charged 25 bps a side instead of 2.5 and flipped the policy's SIGN --
+        // measured at -5.1 USDC/day against +13.4 on the same fills. Every other
+        // flatten test asserts counts, so without this the sign is unpinned.
+        let mut config = DryRunConfig::default();
+        config.flatten_after_ms = 1;
+        config.flatten_slippage_bps = 2.5;
+        config.flatten_fee_rate = 0.001;
+        // Deliberately hostile: if the flatten ever reads these again, the
+        // numbers below move by an order of magnitude and this test fails.
+        config.promotion_flatten_slippage_bps = 250.0;
+        config.promotion_flatten_fee_rate = 0.1;
+        let mut backend = DryRunBackend::new(
+            instrument(),
+            config,
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 50,
+            ask_px: 10_002,
+            ask_sz: 50,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        let cash_before = backend.account.cash_usdc;
+        backend.record_lot(0, 10);
+        assert_eq!(backend.flatten_stale_lots(1_000).len(), 1);
+
+        // Sold 10 units into a bid of 10_000 units-of-price, minus 2.5 bps of
+        // slippage, minus a 10 bps fee on the notional. The exit price is
+        // tick-ROUNDED on the way into the Fill, so the cash reflects the
+        // rounded price rather than the raw one -- assert against the same path
+        // the code takes, or this pins the rounding instead of the cost.
+        let touch = backend.instrument.price_from_units(10_000);
+        let raw_exit = touch * (1.0 - 2.5 / 10_000.0);
+        let exit = backend
+            .instrument
+            .price_from_units(backend.instrument.price_to_units(raw_exit).unwrap());
+        assert!(exit < touch, "the slippage must move the exit against us");
+        let qty = backend.instrument.size_from_units(10);
+        let expected = cash_before + qty * exit - qty * exit * 0.001;
+        assert!(
+            (backend.account.cash_usdc - expected).abs() < 1e-9,
+            "cash {} != expected {}",
+            backend.account.cash_usdc,
+            expected
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nan_flatten_cost_is_refused_at_construction() {
+        let mut config = DryRunConfig::default();
+        config.flatten_slippage_bps = f64::NAN;
+        assert!(DryRunBackend::new(
+            instrument(),
+            config,
+            QuotingConfig::default(),
+            RiskConfig::default()
+        )
+        .is_err());
     }
 
     #[tokio::test]

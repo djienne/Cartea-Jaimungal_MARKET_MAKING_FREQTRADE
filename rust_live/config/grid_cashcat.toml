@@ -198,14 +198,19 @@ min_half_spread_bps = 60.0
 # acknowledgement latency (150 + 150 here) to whatever is configured, because a
 # taker order reaches the venue one trip after we decide to send it. So the
 # EFFECTIVE exit ages are 301 ms and 550 ms, chosen to bracket the replay's
-# predicted 450-500 ms breakeven from both sides rather than to sit on one side
-# of it. If the replay is right, flatten0 is positive and flatten450 is not.
+# predicted 450-520 ms breakeven from both sides rather than to sit on one side
+# of it. If the replay is right, flatten300 is positive and flatten550 is not.
+#
+# The names are the EFFECTIVE age, not the configured one, because that is what
+# the row means and the leaderboard is read by someone who did not write this
+# file. `flatten_after_ms` is the configured half; the backend adds the round
+# trip on top.
 [[variant]]
-name = "flatten0"
+name = "flatten300"
 flatten_after_ms = 1
 min_half_spread_bps = 60.0
 
 [[variant]]
-name = "flatten450"
+name = "flatten550"
 flatten_after_ms = 250
 min_half_spread_bps = 60.0
