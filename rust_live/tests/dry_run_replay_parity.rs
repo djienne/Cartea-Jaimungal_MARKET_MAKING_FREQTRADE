@@ -48,6 +48,8 @@ fn backend() -> DryRunBackend {
             // flatten policy exists only on the dry-run side. Turning it on
             // here would compare two different strategies.
             flatten_after_ms: 0,
+            flatten_slippage_bps: 2.5,
+            flatten_fee_rate: 0.00045,
             markout_horizons_ms: vec![],
         },
         QuotingConfig::default(),

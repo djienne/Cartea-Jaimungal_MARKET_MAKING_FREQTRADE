@@ -194,15 +194,18 @@ min_half_spread_bps = 60.0
 # ceiling for a 42 min median hold, while the flatten ends flat with 0.3 s
 # holds. Two hypotheses, two risk profiles; the P&L column alone hides that.
 #
-# Replay breakeven is a 450-500 ms round trip and the venue RTT is p50 281 ms,
-# so flatten0 is expected to be the better of the two. flatten250 exists so the
-# live data says where the cliff is rather than assuming the replay's answer.
+# THE DEADLINE CARRIES THE ROUND TRIP. The backend adds decision +
+# acknowledgement latency (150 + 150 here) to whatever is configured, because a
+# taker order reaches the venue one trip after we decide to send it. So the
+# EFFECTIVE exit ages are 301 ms and 550 ms, chosen to bracket the replay's
+# predicted 450-500 ms breakeven from both sides rather than to sit on one side
+# of it. If the replay is right, flatten0 is positive and flatten450 is not.
 [[variant]]
 name = "flatten0"
 flatten_after_ms = 1
 min_half_spread_bps = 60.0
 
 [[variant]]
-name = "flatten250"
+name = "flatten450"
 flatten_after_ms = 250
 min_half_spread_bps = 60.0

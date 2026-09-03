@@ -203,6 +203,18 @@ pub struct DryRunConfig {
     /// replay puts breakeven near a 450-500 ms round trip; this exists to find
     /// out whether that survives contact with the live feed.
     pub flatten_after_ms: u64,
+    /// Cost of a flatten, kept SEPARATE from `promotion_flatten_*`.
+    ///
+    /// Those exist for the deliberately pessimistic teardown flatten that marks
+    /// a variant's residual inventory, where 25 bps is a conservative haircut
+    /// applied once. Charging it per exit is a different thing entirely: at
+    /// 25 bps the policy loses under every timing convention, so the grid would
+    /// "refute" the hypothesis whether or not it is true. The measured walk for
+    /// this lot is 1.6-2.1 bps (median) past the touch, and the replay charges
+    /// 2.5 with a 4.5 bps taker fee -- match that, so the two simulators are
+    /// comparable and the answer comes from the market rather than a knob.
+    pub flatten_slippage_bps: f64,
+    pub flatten_fee_rate: f64,
 }
 
 impl Default for DryRunConfig {
@@ -220,6 +232,8 @@ impl Default for DryRunConfig {
             promotion_flatten_fee_rate: 0.00035,
             promotion_flatten_slippage_bps: 25.0,
             flatten_after_ms: 0,
+            flatten_slippage_bps: 2.5,
+            flatten_fee_rate: 0.00045,
             funding_rate_per_hour: 0.0,
             markout_horizons_ms: vec![100, 1_000, 5_000, 30_000],
         }

@@ -233,6 +233,20 @@ impl DryRunBackend {
         self.orders.clear();
         self.pending_markouts.clear();
         self.deferred_desired = None;
+        // Restored inventory has no lot behind it, and an empty deque would
+        // make the flatten silently self-destruct: every reducing maker fill
+        // would land as a NEW opposite-direction lot, get crossed back out, and
+        // re-establish the position while paying taker each time -- the variant
+        // could never get flat. Seed one lot for the whole position, aged from
+        // now, so the deadline applies to it like any other.
+        self.open_lots.clear();
+        if self.account.inventory_units != 0 {
+            self.open_lots
+                // Timestamp 0: a position carried across a restart is older
+                // than any deadline by definition, so it is crossed out on the
+                // first event that offers a touch.
+                .push_back((0, self.account.inventory_units));
+        }
         self.last_quote_action_ms = 0;
         self.inventory_at_last_quote_action = self.account.inventory_units;
         Ok(())
@@ -349,6 +363,20 @@ impl DryRunBackend {
         self.pending_markouts.clear();
         // A target deferred against the previous session's book is meaningless
         // once the book is gone, and the cooldown restarts with the session.
+        // Restored inventory has no lot behind it, and an empty deque would
+        // make the flatten silently self-destruct: every reducing maker fill
+        // would land as a NEW opposite-direction lot, get crossed back out, and
+        // re-establish the position while paying taker each time -- the variant
+        // could never get flat. Seed one lot for the whole position, aged from
+        // now, so the deadline applies to it like any other.
+        self.open_lots.clear();
+        if self.account.inventory_units != 0 {
+            self.open_lots
+                // Timestamp 0: a position carried across a restart is older
+                // than any deadline by definition, so it is crossed out on the
+                // first event that offers a touch.
+                .push_back((0, self.account.inventory_units));
+        }
         self.deferred_desired = None;
         self.last_quote_action_ms = 0;
         self.inventory_at_last_quote_action = self.account.inventory_units;
@@ -552,11 +580,23 @@ impl DryRunBackend {
     /// so the lot simply waits -- inventing a price here would be the easiest
     /// way to manufacture an edge that does not exist.
     fn flatten_stale_lots(&mut self, now_ms: u64) -> Vec<ExecutionEvent> {
-        let deadline_ms = self.config.flatten_after_ms;
+        // The deadline carries the SAME round trip a quote pays: we notice the
+        // position, decide, and the taker order reaches the venue one trip
+        // later. Without it `flatten0` was a ~130 ms exit -- unreachable at a
+        // p50 281 ms RTT -- so the grid would have tested a rung that does not
+        // exist rather than the 450-500 ms cliff the replay predicts.
         let mut events = Vec::new();
-        if deadline_ms == 0 {
+        // Disabled is a property of the CONFIGURED deadline, not the computed
+        // one: adding the round trip makes the latter non-zero even when the
+        // policy is off.
+        if self.config.flatten_after_ms == 0 {
             return events;
         }
+        let deadline_ms = self
+            .config
+            .flatten_after_ms
+            .saturating_add(self.config.decision_latency_ms)
+            .saturating_add(self.config.acknowledgement_latency_ms);
         let Some(bbo) = self.latest_bbo else {
             return events;
         };
@@ -574,7 +614,7 @@ impl DryRunBackend {
                 break;
             }
             let touch = self.instrument.price_from_units(touch_units);
-            let slip = touch * (self.config.promotion_flatten_slippage_bps / 10_000.0);
+            let slip = touch * (self.config.flatten_slippage_bps / 10_000.0);
             let exit_px = if long { touch - slip } else { touch + slip };
             if !exit_px.is_finite() || exit_px <= 0.0 {
                 break;
@@ -582,7 +622,7 @@ impl DryRunBackend {
             let qty_units = lot.abs();
             let qty_base = self.instrument.size_from_units(qty_units);
             let notional = qty_base * exit_px;
-            let fee = notional * self.config.promotion_flatten_fee_rate;
+            let fee = notional * self.config.flatten_fee_rate;
             let mid = self.instrument.price_from_units(bbo.mid_units());
             self.diagnostics.flatten_events += 1;
             self.diagnostics.flatten_units += qty_units;
@@ -710,6 +750,18 @@ impl DryRunBackend {
             }
             let order = &mut self.orders[index];
             order.last_queue_update_ms = trade.exchange_ms;
+            // A print strictly beyond our price consumed our whole level, so
+            // there is no queue left to wait behind -- whether or not we could
+            // see it. Charging it only in the unknown case made shallow
+            // variants ~10% harder to fill than deep ones, a cross-variant bias
+            // in exactly the comparison the grid exists to make.
+            let beyond = match maker_side {
+                Side::Buy => trade.px < order.intent.px,
+                Side::Sell => trade.px > order.intent.px,
+            };
+            if beyond {
+                order.queue_ahead_units = 0.0;
+            }
             let queue_consumed = order.queue_ahead_units.min(remaining_trade);
             order.queue_ahead_units -= queue_consumed;
             remaining_trade -= queue_consumed;
@@ -1122,6 +1174,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_flatten_deadline_includes_the_round_trip() {
+        // Without this the deadline was "next event", a ~130 ms exit that is
+        // unreachable at a p50 281 ms RTT -- the grid would test a rung that
+        // does not exist.
+        let mut backend = flatten_backend(250);
+        backend.record_lot(1_000, 10);
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 50,
+            ask_px: 10_002,
+            ask_sz: 50,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        let rtt = DryRunConfig::default().decision_latency_ms
+            + DryRunConfig::default().acknowledgement_latency_ms;
+        assert!(backend.flatten_stale_lots(1_000 + 250 + rtt - 1).is_empty());
+        assert_eq!(backend.flatten_stale_lots(1_000 + 250 + rtt).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn restored_inventory_is_seeded_as_a_lot_so_it_can_be_flattened() {
+        // An empty deque would make the policy self-destruct: every reducing
+        // maker fill would open a NEW opposite lot, get crossed back out, and
+        // re-establish the position while paying taker each time.
+        let mut backend = flatten_backend(250);
+        let mut account = backend.account;
+        account.inventory_units = 40;
+        backend
+            .restore_from_snapshot(account, DryRunDiagnostics::default(), 10, None, 0.0)
+            .unwrap();
+        assert_eq!(backend.open_lots.len(), 1);
+        assert_eq!(backend.open_lots.front().unwrap().1, 40);
+        // Aged from 0, so it is past any deadline immediately.
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 50,
+            ask_px: 10_002,
+            ask_sz: 50,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        assert_eq!(backend.flatten_stale_lots(1_000).len(), 1);
+        assert!(backend.open_lots.is_empty());
+    }
+
+    #[tokio::test]
     async fn a_lot_held_past_the_deadline_is_crossed_out() {
         let mut backend = flatten_backend(250);
         backend.record_lot(1_000, 10);
@@ -1133,11 +1232,13 @@ mod tests {
             exchange_ms: 1_000,
             recv_ns: 0,
         });
+        let rtt = DryRunConfig::default().decision_latency_ms
+            + DryRunConfig::default().acknowledgement_latency_ms;
         // Before the deadline nothing happens.
-        assert!(backend.flatten_stale_lots(1_200).is_empty());
+        assert!(backend.flatten_stale_lots(1_200 + rtt).is_empty());
         assert_eq!(backend.open_lots.len(), 1);
         // After it, the lot is sold into the bid and the book is flat.
-        let events = backend.flatten_stale_lots(1_250);
+        let events = backend.flatten_stale_lots(1_250 + rtt);
         assert_eq!(events.len(), 1);
         assert!(backend.open_lots.is_empty());
         assert_eq!(backend.account.inventory_units, -10);
@@ -1159,7 +1260,9 @@ mod tests {
         });
         backend.record_lot(1_000, 5);
         backend.record_lot(1_200, 5);
-        let events = backend.flatten_stale_lots(1_250);
+        let rtt = DryRunConfig::default().decision_latency_ms
+            + DryRunConfig::default().acknowledgement_latency_ms;
+        let events = backend.flatten_stale_lots(1_250 + rtt);
         assert_eq!(events.len(), 1, "only the aged lot leaves");
         assert_eq!(backend.open_lots.len(), 1);
         assert_eq!(backend.open_lots.front().unwrap().0, 1_200);
