@@ -161,3 +161,35 @@ doubles actions per round trip against a near-exhausted lifetime budget.
 
 The honest next step is the dry-run grid, which costs nothing and answers the
 reproducibility question directly.
+
+## Correction: the queue model had the wrong pairing
+
+The first `book_depth` model charged the **cumulative** size at our level or better
+(~51k units at 60 bps out). But `scan_for_matching_trade` decrements the queue only on
+prints at our price **or beyond** (`candidate_price >= price` for an ask) -- the volume
+that clears the *better* levels arrives as prints BELOW our price and never decrements
+anything. So the queue was charged against a stream that can only ever be a fraction of
+it: an **~19x over-penalty** (51,124 cumulative against 2,652 at our own level).
+
+`queue_model = "book_level"` is the correct pairing: a sweep that reaches us has already
+cleared the better levels by definition, so what stands between us and the fill is the
+size queued at our own price -- median 2,652 units against our 2,092-unit lot, so still
+a real queue. `book_depth` is retained deliberately as a stress bound.
+
+| round trip | `book_level` (the model) | fills | `book_depth` (stress bound) | fills |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 ms | +379.38 | 670 | +282.39 | 388 |
+| 200 ms | +315.58 | 598 | +281.92 | 349 |
+| **250 ms** | **+253.92** | 581 | **+242.54** | 324 |
+| 300 ms | +201.49 | 519 | +174.39 | 278 |
+| 400 ms | +93.37 | 562 | +113.74 | 299 |
+| 500 ms | -36.63 | 542 | +20.61 | 284 |
+| 600 ms | -110.58 | 558 | -49.74 | 291 |
+
+**Breakeven is ~450 ms (correct model) to ~520 ms (stress bound), and 250 ms returns
++243 to +254 either way.** The conclusion did not move -- the earlier table was right
+for the wrong reason, having survived a penalty 19x harsher than reality.
+
+The three models now bracket the answer from both sides: `touch_only` assumes no queue
+at all, `book_level` is the honest one, `book_depth` is ~19x too harsh. All three are
+positive at 250 ms, which is a stronger statement than any one of them alone.

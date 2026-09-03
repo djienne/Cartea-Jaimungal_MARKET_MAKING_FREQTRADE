@@ -186,11 +186,15 @@ class ReplayConfig:
     #                    60 bps against a 5.6 bps half-spread therefore fills on
     #                    the first print that reaches its price, as though we
     #                    were always first in queue at that level.
-    #   "book_depth"  -- cumulative resting size at our level or better, from
-    #                    the 20-level snapshots. At 60 bps out that median is
-    #                    ~51k units against our 2092-unit lot, so the two models
-    #                    disagree by more than an order of magnitude exactly
-    #                    where the flatten policy earns its P&L.
+    #   "book_level"  -- size resting at OUR price level, from the 20-level
+    #                    snapshots (median ~2652 units at 60 bps out, against our
+    #                    2092-unit lot). This is the correct pairing with the
+    #                    fill rule, which decrements the queue only on prints at
+    #                    our price or beyond.
+    #   "book_depth"  -- cumulative at-or-better (~51k units at 60 bps). Charges
+    #                    the whole ladder against prints that can only be a
+    #                    fraction of it, so it over-penalises by ~19x. Kept
+    #                    deliberately as a stress bound, not as the model.
     queue_model: str = "touch_only"
 
 
@@ -1622,13 +1626,27 @@ def queue_ahead_from_book(
     book_idx: int,
     side: str,
     price: float,
+    *,
+    cumulative: bool = False,
 ) -> float:
     """Resting size a sweep must clear before reaching our quote at ``price``.
 
-    Assumes we joined the BACK of the queue at our own level: the cumulative
-    size includes the level we sit on. A quote that refreshes every few hundred
-    ms is re-placed constantly, so it has no aged priority to claim, and the
-    conservative reading is the honest one here.
+    Assumes we joined the BACK of the queue at our own level, which is right for
+    a quote re-placed every few hundred ms: it has no aged priority to claim.
+
+    ``cumulative`` selects which of two quantities is returned, and the choice
+    MATTERS because it has to pair with how the queue is consumed.
+    ``scan_for_matching_trade`` decrements only on prints at our price or beyond
+    (``candidate_price >= price`` for an ask). The volume that clears the better
+    levels arrives as prints BELOW our price and never decrements anything.
+
+    So ``cumulative=False`` -- our own level only -- is the CORRECT pairing: a
+    sweep that reaches us has already cleared the better levels by definition,
+    and what stands between us and the fill is the size queued at our own price.
+    ``cumulative=True`` charges the whole at-or-better ladder against prints that
+    can only ever be a fraction of it, over-penalising by ~19x at 60 bps on this
+    tape. It is kept because a result that survives it is robust to anything a
+    real queue could do.
     """
     levels = price_matrix[book_idx]
     if side == "ask":
@@ -1640,8 +1658,12 @@ def queue_ahead_from_book(
     if index < 0:
         return 0.0
     index = min(index, cum_sizes.shape[1] - 1)
-    value = float(cum_sizes[book_idx, index])
-    return value if math.isfinite(value) else 0.0
+    if cumulative:
+        value = float(cum_sizes[book_idx, index])
+    else:
+        previous = float(cum_sizes[book_idx, index - 1]) if index > 0 else 0.0
+        value = float(cum_sizes[book_idx, index]) - previous
+    return value if math.isfinite(value) and value > 0.0 else 0.0
 
 
 def is_joining_best(side: str, price: float, best_bid: float, best_ask: float) -> bool:
@@ -1990,7 +2012,8 @@ def run_replay(
     guard_vpin: float | None = None
 
     flatten_slippage_bps = float(config.flatten_slippage_bps)
-    queue_model_is_book_depth = str(config.queue_model) == "book_depth"
+    queue_model_uses_book = str(config.queue_model) in {"book_level", "book_depth"}
+    queue_model_is_cumulative = str(config.queue_model) == "book_depth"
     flatten_after_ns = (
         None if config.flatten_after_ms is None
         else int(float(config.flatten_after_ms) * _NS_PER_MS)
@@ -2196,14 +2219,15 @@ def run_replay(
                 book_idx = int(book_ts_ns.searchsorted(active_at_ns, side="right")) - 1
                 if book_idx >= 0:
                     depth = book_bid_depth if side == "bid" else book_ask_depth
-                    if queue_model_is_book_depth and depth is not None:
+                    if queue_model_uses_book and depth is not None:
                         # Everything resting at our level or better. Uses the
                         # most recent snapshot, which is up to ~5.4 s old: queue
                         # DEPTH is slowly varying, unlike a directional signal,
                         # so a stale snapshot is a far weaker assumption here
                         # than pretending the queue is empty.
                         queue_ahead = queue_ahead_from_book(
-                            depth[0], depth[1], book_idx, side, price
+                            depth[0], depth[1], book_idx, side, price,
+                            cumulative=queue_model_is_cumulative,
                         )
                     elif is_joining_best(side, price, best_bid, best_ask):
                         sizes = book_bid_size if side == "bid" else book_ask_size
