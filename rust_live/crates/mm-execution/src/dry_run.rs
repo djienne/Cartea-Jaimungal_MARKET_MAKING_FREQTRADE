@@ -30,6 +30,12 @@ pub struct DryRunDiagnostics {
     pub liquidation_breach_events: u64,
     /// Aggressive-flatten accounting, kept apart from maker economics so the
     /// two legs stay separable: this is what the truncation cost.
+    /// Post-only orders the venue would have rejected because the market moved
+    /// through their price during the latency window. The live path sends ALO
+    /// and handles `badAloPxRejected`; the dry run used to rest them anyway,
+    /// letting them fill through the touch at a worse price than a real venue
+    /// would ever have given.
+    pub post_only_rejects: u64,
     pub flatten_events: u64,
     pub flatten_units: i64,
     pub flatten_cost_usdc: f64,
@@ -52,6 +58,7 @@ impl Default for DryRunDiagnostics {
             unknown_queue_activations: 0,
             max_working_orders: 0,
             liquidation_breach_events: 0,
+            post_only_rejects: 0,
             flatten_events: 0,
             flatten_units: 0,
             flatten_cost_usdc: 0.0,
@@ -647,6 +654,28 @@ impl DryRunBackend {
     }
 
     fn activate_orders(&mut self, now_ms: u64) {
+        // ALO first: a post-only order that reaches the venue crossing the
+        // opposite touch is REJECTED, not rested. The market moves during the
+        // ~300 ms latency window, so this is not rare -- measured at ~8% of
+        // baseline fills, and every one of them filled through the touch at a
+        // price no venue would have given us.
+        if let Some(bbo) = self.latest_bbo {
+            let mut rejected = 0_u64;
+            self.orders.retain(|order| {
+                if order.activated || order.active_ms > now_ms || !order.intent.post_only {
+                    return true;
+                }
+                let crosses = match order.intent.side {
+                    Side::Buy => bbo.ask_px > 0 && order.intent.px >= bbo.ask_px,
+                    Side::Sell => bbo.bid_px > 0 && order.intent.px <= bbo.bid_px,
+                };
+                if crosses {
+                    rejected += 1;
+                }
+                !crosses
+            });
+            self.diagnostics.post_only_rejects += rejected;
+        }
         for order in self
             .orders
             .iter_mut()
@@ -830,7 +859,7 @@ impl DryRunBackend {
         self.account.fees_usdc += fill.fee_usdc;
         if let Some(bbo) = self.latest_bbo {
             let mid = self.instrument.price_from_units(bbo.mid_units());
-            if mid > 0.0 {
+            if mid > 0.0 && fill.maker {
                 let depth_bps = (price - mid).abs() / mid * 10_000.0;
                 let bucket = (depth_bps * 10.0).floor() / 10.0;
                 *self
@@ -878,7 +907,15 @@ impl DryRunBackend {
                 self.account.consecutive_losses = 0;
             }
         }
+        // Markouts measure what our PASSIVE quotes are picked off by. A taker
+        // exit is us choosing the price, so folding it in would contaminate the
+        // one statistic that says whether the maker side is adversely selected.
+        // Same for the depth histogram: an exit at the touch is not a quote
+        // depth.
         for horizon in &self.config.markout_horizons_ms {
+            if !fill.maker {
+                break;
+            }
             self.pending_markouts.push(PendingMarkout {
                 due_ms: fill.exchange_ms.saturating_add(*horizon),
                 side: fill.side,
@@ -1171,6 +1208,48 @@ mod tests {
             RiskConfig::default(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_post_only_order_that_arrives_crossing_is_rejected_not_rested() {
+        // The market moves during the latency window. The live path sends ALO
+        // and the venue answers `badAloPxRejected`; resting it instead let the
+        // order fill THROUGH the touch at a price no venue would have given.
+        let mut backend = flatten_backend(0);
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 5,
+            ask_px: 10_002,
+            ask_sz: 5,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        let mut quote = bid_quotes();
+        // A bid at the ask: marketable, so ALO refuses it.
+        quote.bid.as_mut().unwrap().px = 10_002;
+        backend.reconcile(quote, 1_000).await.unwrap();
+        backend.activate_orders(5_000);
+        assert_eq!(backend.diagnostics.post_only_rejects, 1);
+        assert!(backend.orders.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_passive_post_only_order_still_rests() {
+        let mut backend = flatten_backend(0);
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 5,
+            ask_px: 10_002,
+            ask_sz: 5,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        let mut quote = bid_quotes();
+        quote.bid.as_mut().unwrap().px = 9_999;
+        backend.reconcile(quote, 1_000).await.unwrap();
+        backend.activate_orders(5_000);
+        assert_eq!(backend.diagnostics.post_only_rejects, 0);
+        assert_eq!(backend.orders.len(), 1);
     }
 
     #[tokio::test]

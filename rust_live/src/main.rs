@@ -37,7 +37,9 @@ use mm_live::report::{
     JsonlEventLogger, LiveSessionReport, LogBackpressure, LogFormat, LogRotation, ModelReport,
     SessionReport,
 };
-use mm_live::types::{unix_ms, Bbo, DesiredQuotes, MarketEvent, ProcessClock, QuoteReason};
+use mm_live::types::{
+    unix_ms, Bbo, DesiredQuotes, ExecutionEvent, MarketEvent, ProcessClock, QuoteReason,
+};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -1940,7 +1942,16 @@ async fn step_grid_variant(
             .logger
             .log("execution_event", Some(event_time), execution_event)?;
     }
-    variant.fills = variant.fills.saturating_add(execution_events.len() as u64);
+    // MAKER fills only. Counting every execution event made a flatten variant
+    // show roughly twice its fills, since each maker entry is followed by a
+    // taker exit -- and the leaderboard's fills column is what a reader uses to
+    // judge whether a row has measured anything.
+    variant.fills = variant.fills.saturating_add(
+        execution_events
+            .iter()
+            .filter(|event| matches!(event, ExecutionEvent::Fill(fill) if fill.maker))
+            .count() as u64,
+    );
     let reason = if execution_events.is_empty() {
         QuoteReason::Market
     } else {
