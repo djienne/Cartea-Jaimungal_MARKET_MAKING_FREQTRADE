@@ -180,6 +180,18 @@ class ReplayConfig:
     # sits 1.6-2.1 bps (median) past the touch. Charging zero here is the single
     # most flattering assumption this policy could make.
     flatten_slippage_bps: float = 2.5
+    # How much resting size a sweep must clear before it reaches our quote.
+    #   "touch_only"  -- the shipped model: the visible touch size when we join
+    #                    the best, and ZERO for anything behind it. A quote at
+    #                    60 bps against a 5.6 bps half-spread therefore fills on
+    #                    the first print that reaches its price, as though we
+    #                    were always first in queue at that level.
+    #   "book_depth"  -- cumulative resting size at our level or better, from
+    #                    the 20-level snapshots. At 60 bps out that median is
+    #                    ~51k units against our 2092-unit lot, so the two models
+    #                    disagree by more than an order of magnitude exactly
+    #                    where the flatten policy earns its P&L.
+    queue_model: str = "touch_only"
 
 
 @dataclass
@@ -1579,6 +1591,59 @@ def first_level_size(row: pd.Series | None, side: str) -> float:
     return 0.0
 
 
+def book_depth_arrays(frame: pd.DataFrame, side: str) -> tuple[np.ndarray, np.ndarray] | None:
+    """(prices, cumulative_sizes) per snapshot for one side of the book.
+
+    Cumulative along the level axis, so `cum[i, j]` is all the size resting at
+    level j or better in snapshot i. That is exactly the volume an incoming
+    sweep must consume before it can reach a quote sitting at level j.
+
+    Returns None when the frame carries no level columns, which keeps the
+    caller on the touch-only queue model instead of silently pretending the
+    book is empty -- an empty book would mean "we are always first in queue",
+    the most flattering possible assumption.
+    """
+    prices, sizes = [], []
+    level = 0
+    while f"{side}_price_{level}" in frame.columns and f"{side}_size_{level}" in frame.columns:
+        prices.append(pd.to_numeric(frame[f"{side}_price_{level}"], errors="coerce").to_numpy(float))
+        sizes.append(pd.to_numeric(frame[f"{side}_size_{level}"], errors="coerce").to_numpy(float))
+        level += 1
+    if not prices:
+        return None
+    price_matrix = np.column_stack(prices)
+    size_matrix = np.nan_to_num(np.column_stack(sizes), nan=0.0)
+    return price_matrix, np.cumsum(size_matrix, axis=1)
+
+
+def queue_ahead_from_book(
+    price_matrix: np.ndarray,
+    cum_sizes: np.ndarray,
+    book_idx: int,
+    side: str,
+    price: float,
+) -> float:
+    """Resting size a sweep must clear before reaching our quote at ``price``.
+
+    Assumes we joined the BACK of the queue at our own level: the cumulative
+    size includes the level we sit on. A quote that refreshes every few hundred
+    ms is re-placed constantly, so it has no aged priority to claim, and the
+    conservative reading is the honest one here.
+    """
+    levels = price_matrix[book_idx]
+    if side == "ask":
+        # Ask prices ascend; a buy sweep clears every level at or below ours.
+        index = int(np.searchsorted(levels, float(price), side="right")) - 1
+    else:
+        # Bid prices descend, so search the negated ladder to keep it ascending.
+        index = int(np.searchsorted(-levels, -float(price), side="right")) - 1
+    if index < 0:
+        return 0.0
+    index = min(index, cum_sizes.shape[1] - 1)
+    value = float(cum_sizes[book_idx, index])
+    return value if math.isfinite(value) else 0.0
+
+
 def is_joining_best(side: str, price: float, best_bid: float, best_ask: float) -> bool:
     if side == "bid":
         return abs(float(price) - float(best_bid)) <= max(1e-9, abs(float(best_bid)) * 1e-9)
@@ -1855,9 +1920,12 @@ def run_replay(
     if book_ts_ns is not None and len(book_ts_ns):
         book_bid_size = first_level_size_array(orderbooks, "bid")
         book_ask_size = first_level_size_array(orderbooks, "ask")
+        book_bid_depth = book_depth_arrays(orderbooks, "bid")
+        book_ask_depth = book_depth_arrays(orderbooks, "ask")
     else:
         book_ts_ns = None
         book_bid_size = book_ask_size = None
+        book_bid_depth = book_ask_depth = None
 
     inventory_config = _inventory_config(config.inventory_unit_base, config.q_max, config.q_min)
     quote_config = half_spread_quote_config(
@@ -1922,6 +1990,7 @@ def run_replay(
     guard_vpin: float | None = None
 
     flatten_slippage_bps = float(config.flatten_slippage_bps)
+    queue_model_is_book_depth = str(config.queue_model) == "book_depth"
     flatten_after_ns = (
         None if config.flatten_after_ms is None
         else int(float(config.flatten_after_ms) * _NS_PER_MS)
@@ -2123,11 +2192,22 @@ def run_replay(
                 continue
 
             queue_ahead = 0.0
-            if book_ts_ns is not None and is_joining_best(side, price, best_bid, best_ask):
+            if book_ts_ns is not None:
                 book_idx = int(book_ts_ns.searchsorted(active_at_ns, side="right")) - 1
                 if book_idx >= 0:
-                    sizes = book_bid_size if side == "bid" else book_ask_size
-                    queue_ahead = float(sizes[book_idx])
+                    depth = book_bid_depth if side == "bid" else book_ask_depth
+                    if queue_model_is_book_depth and depth is not None:
+                        # Everything resting at our level or better. Uses the
+                        # most recent snapshot, which is up to ~5.4 s old: queue
+                        # DEPTH is slowly varying, unlike a directional signal,
+                        # so a stale snapshot is a far weaker assumption here
+                        # than pretending the queue is empty.
+                        queue_ahead = queue_ahead_from_book(
+                            depth[0], depth[1], book_idx, side, price
+                        )
+                    elif is_joining_best(side, price, best_bid, best_ask):
+                        sizes = book_bid_size if side == "bid" else book_ask_size
+                        queue_ahead = float(sizes[book_idx])
             fill_index, queue_decay_base = scan_for_matching_trade(
                 side,
                 price,

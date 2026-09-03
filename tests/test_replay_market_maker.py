@@ -974,3 +974,61 @@ def test_percentiles_are_size_weighted():
     samples = [(1.0, 1.0), (1.0, 1.0), (100.0, 98.0)]
     assert replay_market_maker.holding_time_percentile(samples, 0.5) == 100.0
     assert replay_market_maker.holding_time_percentile([], 0.5) is None
+
+
+# --------------------------------------------------- book-depth queue model
+# The flatten-fast result quotes at ~60 bps, where the shipped touch-only model
+# assigns queue_ahead = 0 and fills us on the first print to reach our price.
+# The 20-level snapshots say ~51k units rest at or better than that, 22-24x our
+# lot, so this is the difference between an upper bound and a measurement.
+def _depth_frame():
+    return pd.DataFrame({
+        "ask_price_0": [100.0], "ask_size_0": [5.0],
+        "ask_price_1": [101.0], "ask_size_1": [7.0],
+        "ask_price_2": [102.0], "ask_size_2": [11.0],
+        "bid_price_0": [99.0], "bid_size_0": [3.0],
+        "bid_price_1": [98.0], "bid_size_1": [4.0],
+        "bid_price_2": [97.0], "bid_size_2": [6.0],
+    })
+
+
+def test_book_depth_arrays_accumulate_along_levels():
+    built = replay_market_maker.book_depth_arrays(_depth_frame(), "ask")
+    assert built is not None
+    prices, cum = built
+    assert list(prices[0]) == [100.0, 101.0, 102.0]
+    assert list(cum[0]) == [5.0, 12.0, 23.0]
+
+
+def test_book_depth_arrays_returns_none_without_levels():
+    # Falling through to an empty book would mean "always first in queue",
+    # which is the most flattering assumption available -- refuse instead.
+    assert replay_market_maker.book_depth_arrays(pd.DataFrame({"x": [1]}), "ask") is None
+
+
+def test_queue_ahead_counts_our_own_level_and_everything_better():
+    prices, cum = replay_market_maker.book_depth_arrays(_depth_frame(), "ask")
+    q = replay_market_maker.queue_ahead_from_book
+    # A sweep reaching 101 must clear level 0 and all of level 1: we joined the
+    # back of our own level, so it counts in full.
+    assert q(prices, cum, 0, "ask", 101.0) == 12.0
+    assert q(prices, cum, 0, "ask", 100.0) == 5.0
+    assert q(prices, cum, 0, "ask", 102.5) == 23.0
+    # Better than the whole visible book: nothing is ahead of us.
+    assert q(prices, cum, 0, "ask", 99.5) == 0.0
+
+
+def test_queue_ahead_handles_the_descending_bid_ladder():
+    prices, cum = replay_market_maker.book_depth_arrays(_depth_frame(), "bid")
+    q = replay_market_maker.queue_ahead_from_book
+    assert q(prices, cum, 0, "bid", 99.0) == 3.0
+    assert q(prices, cum, 0, "bid", 98.0) == 7.0
+    assert q(prices, cum, 0, "bid", 99.5) == 0.0
+
+
+def test_book_depth_queue_is_never_smaller_than_touch_only():
+    # The whole point: the new model can only ever make fills HARDER, so a
+    # result that survives it is not an artefact of an empty queue.
+    prices, cum = replay_market_maker.book_depth_arrays(_depth_frame(), "ask")
+    for price in (100.0, 101.0, 102.0):
+        assert replay_market_maker.queue_ahead_from_book(prices, cum, 0, "ask", price) >= 5.0

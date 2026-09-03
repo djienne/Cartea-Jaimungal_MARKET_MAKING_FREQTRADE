@@ -107,3 +107,57 @@ Two consequences, and the second is the one that matters:
 
 So this is not yet a number to trade on. A queue-position model at depth is the single
 modelling gap between this result and a trustworthy one, and it is the obvious next step.
+
+## The latency threshold
+
+The question this whole line of work exists to answer: **how fast does the round trip
+have to be for this to make money?** Held-out slice, `phi*kappa*T = 1000`, flatten as
+soon as possible, run under BOTH queue models so the answer is bracketed rather than
+asserted.
+
+| round trip | `touch_only` P&L | fills | `book_depth` P&L | fills |
+| ---: | ---: | ---: | ---: | ---: |
+| 50 ms | +277.49 | 781 | +294.76 | 433 |
+| 100 ms | +289.81 | 712 | +282.39 | 388 |
+| 150 ms | +236.54 | 631 | +280.08 | 343 |
+| 200 ms | +254.10 | 632 | +281.92 | 349 |
+| **250 ms** | **+203.14** | 638 | **+242.54** | 324 |
+| 300 ms | +170.33 | 591 | +174.39 | 278 |
+| 400 ms | +80.54 | 628 | +113.74 | 299 |
+| 450 ms | +36.35 | 601 | +49.84 | 287 |
+| **500 ms** | **-3.83** | 615 | **+20.61** | 284 |
+| 550 ms | -35.06 | 613 | -24.76 | 282 |
+| 700 ms | -135.37 | 657 | -124.31 | 274 |
+
+**Breakeven is ~500 ms** under both models. At 250 ms the result is +203 to +243, so a
+sub-250 ms target carries roughly a **2x margin** over breakeven rather than sitting on
+the edge of it.
+
+### The queue model barely moves the answer, which is the reassuring part
+
+`book_depth` makes fills much harder -- it counts the ~51k units resting at or better
+than a 60 bps quote, cutting fill counts by ~45% -- and the P&L is **unchanged or
+slightly better** at every latency. I expected the opposite: that real time priority
+would leave us filled only by the largest, most toxic sweeps and degrade the per-fill
+economics. It does not. The fills the queue removes are worth less than average, so the
+result survives the assumption it most depended on.
+
+That is the difference between an upper bound and a finding. The number is not an
+artefact of an empty queue.
+
+### What can still be said, and what cannot
+
+**Can be said:** on 118.7 h of held-out CASHCAT, a Cartea-Jaimungal maker that flattens
+inventory immediately rather than waiting for an offsetting maker fill is profitable in
+replay at round trips under ~500 ms, with a comfortable margin at 250 ms, and the result
+holds under a conservative queue model, a measured book-walking cost and latency charged
+on both the quoting and the exit path.
+
+**Cannot be said:** that it is profitable live. This is one instrument, one tape, and one
+held-out slice that many analyses have now touched -- the multiple-comparison risk is
+real and a fresh window is the first thing to check. The policy always crosses, where a
+passive-first exit with a crossing deadline should dominate and is untested. And crossing
+doubles actions per round trip against a near-exhausted lifetime budget.
+
+The honest next step is the dry-run grid, which costs nothing and answers the
+reproducibility question directly.
