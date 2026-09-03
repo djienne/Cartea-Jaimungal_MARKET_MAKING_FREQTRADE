@@ -72,6 +72,14 @@ pub struct VariantOverrides {
     /// earned +683.89 of spread across 1,771 fills, about 0.39 per fill, which
     /// did not cover the adverse selection it took.
     pub min_half_spread_bps: Option<f64>,
+    /// `dry_run.flatten_after_ms` — cross out inventory once a lot has been held
+    /// this long, instead of waiting for an offsetting maker fill. Zero keeps the
+    /// shipped hold. The replay says adverse selection grows steeply with the
+    /// markout horizon while a passive offset takes a 6.5 s median, so crossing
+    /// early truncates it; breakeven lands near a 450-500 ms round trip
+    /// (`docs/cashcat_flatten_fast.md`). Untested against a live feed, which is
+    /// what this variant is for.
+    pub flatten_after_ms: Option<u64>,
     /// `quoting.min_order_lifetime_ms` — requote cadence. The only positive rung
     /// of the latency ladder was the 30 s-refresh one.
     pub min_order_lifetime_ms: Option<u64>,
@@ -111,6 +119,9 @@ impl VariantOverrides {
         if let Some(value) = self.min_half_spread_bps {
             config.quoting.min_half_spread_bps = value;
         }
+        if let Some(value) = self.flatten_after_ms {
+            config.dry_run.flatten_after_ms = value;
+        }
         if let Some(value) = self.min_order_lifetime_ms {
             config.quoting.min_order_lifetime_ms = value;
         }
@@ -147,6 +158,9 @@ impl VariantOverrides {
         }
         if let Some(value) = self.min_half_spread_bps {
             parts.push(format!("minHalf={value}bps"));
+        }
+        if let Some(value) = self.flatten_after_ms {
+            parts.push(format!("flatten={value}ms"));
         }
         if let Some(value) = self.min_order_lifetime_ms {
             parts.push(format!("lifetime={value}ms"));

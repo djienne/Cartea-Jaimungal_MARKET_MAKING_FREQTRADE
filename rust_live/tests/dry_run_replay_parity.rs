@@ -44,6 +44,10 @@ fn backend() -> DryRunBackend {
             promotion_flatten_fee_rate: 0.00035,
             promotion_flatten_slippage_bps: 25.0,
             funding_rate_per_hour: 0.0,
+            // Zero: this fixture pins Rust/Python replay parity, and the
+            // flatten policy exists only on the dry-run side. Turning it on
+            // here would compare two different strategies.
+            flatten_after_ms: 0,
             markout_horizons_ms: vec![],
         },
         QuotingConfig::default(),

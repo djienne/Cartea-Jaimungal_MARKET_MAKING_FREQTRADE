@@ -191,6 +191,18 @@ pub struct DryRunConfig {
     pub promotion_flatten_slippage_bps: f64,
     pub funding_rate_per_hour: f64,
     pub markout_horizons_ms: Vec<u64>,
+    /// Flatten inventory by CROSSING once a lot has been held this long.
+    /// Zero disables it, which is the shipped behaviour: hold until an
+    /// offsetting maker fill arrives.
+    ///
+    /// The replay evidence for this is `docs/cashcat_flatten_fast.md`.
+    /// Adverse selection grows steeply with the markout horizon -- 12.84 bps at
+    /// 200 ms against 29.77 at 6.6 s -- and waiting for a passive offset takes a
+    /// 6.5 s median, so the position eats the whole accrual. Crossing early
+    /// truncates it, and pays the half-spread plus taker fee to do so. The
+    /// replay puts breakeven near a 450-500 ms round trip; this exists to find
+    /// out whether that survives contact with the live feed.
+    pub flatten_after_ms: u64,
 }
 
 impl Default for DryRunConfig {
@@ -207,6 +219,7 @@ impl Default for DryRunConfig {
             queue_decay_per_second: 0.0,
             promotion_flatten_fee_rate: 0.00035,
             promotion_flatten_slippage_bps: 25.0,
+            flatten_after_ms: 0,
             funding_rate_per_hour: 0.0,
             markout_horizons_ms: vec![100, 1_000, 5_000, 30_000],
         }

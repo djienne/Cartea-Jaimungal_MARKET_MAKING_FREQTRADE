@@ -180,3 +180,29 @@ min_half_spread_bps = 48.0
 [[variant]]
 name = "wide60"
 min_half_spread_bps = 60.0
+
+# --- exit policy ---
+# Everything above varies how we QUOTE. These vary how we EXIT, which the grid
+# has never tested. The replay's case (docs/cashcat_flatten_fast.md): adverse
+# selection grows steeply with the markout horizon -- 12.84 bps at 200 ms
+# against 29.77 at 6.6 s -- while waiting for an offsetting maker fill takes a
+# 6.5 s median, so the position eats the whole accrual. Crossing out early
+# truncates it and pays the half-spread plus taker fee to do so.
+#
+# READ THESE AGAINST wide60/wide48, NOT baseline. The replay says a plain wide
+# quoter earns more than the flatten but carries ~9,700 units near the q_max
+# ceiling for a 42 min median hold, while the flatten ends flat with 0.3 s
+# holds. Two hypotheses, two risk profiles; the P&L column alone hides that.
+#
+# Replay breakeven is a 450-500 ms round trip and the venue RTT is p50 281 ms,
+# so flatten0 is expected to be the better of the two. flatten250 exists so the
+# live data says where the cliff is rather than assuming the replay's answer.
+[[variant]]
+name = "flatten0"
+flatten_after_ms = 1
+min_half_spread_bps = 60.0
+
+[[variant]]
+name = "flatten250"
+flatten_after_ms = 250
+min_half_spread_bps = 60.0

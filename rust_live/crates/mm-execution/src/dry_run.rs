@@ -28,6 +28,11 @@ pub struct DryRunDiagnostics {
     pub unknown_queue_activations: u64,
     pub max_working_orders: usize,
     pub liquidation_breach_events: u64,
+    /// Aggressive-flatten accounting, kept apart from maker economics so the
+    /// two legs stay separable: this is what the truncation cost.
+    pub flatten_events: u64,
+    pub flatten_units: i64,
+    pub flatten_cost_usdc: f64,
     pub markout_usdc: BTreeMap<u64, f64>,
     pub markout_samples: BTreeMap<u64, u64>,
     pub fills_by_depth_bps: BTreeMap<String, u64>,
@@ -47,6 +52,9 @@ impl Default for DryRunDiagnostics {
             unknown_queue_activations: 0,
             max_working_orders: 0,
             liquidation_breach_events: 0,
+            flatten_events: 0,
+            flatten_units: 0,
+            flatten_cost_usdc: 0.0,
             markout_usdc: BTreeMap::new(),
             markout_samples: BTreeMap::new(),
             fills_by_depth_bps: BTreeMap::new(),
@@ -121,6 +129,11 @@ pub struct DryRunBackend {
     /// A replacement that arrived inside the cooldown, applied on the next
     /// market event. Mirrors the live backend's `deferred_desired`.
     deferred_desired: Option<DesiredQuotes>,
+    /// Open exposure in arrival order, `(exchange_ms, signed_units)`. Positive
+    /// is long. Used only by the flatten policy, to age the OLDEST lot rather
+    /// than the net position: a position that is repeatedly topped up would
+    /// otherwise never look old enough to exit.
+    open_lots: std::collections::VecDeque<(u64, i64)>,
 }
 
 impl DryRunBackend {
@@ -168,6 +181,7 @@ impl DryRunBackend {
             last_quote_action_ms: 0,
             inventory_at_last_quote_action: 0,
             deferred_desired: None,
+            open_lots: std::collections::VecDeque::new(),
         })
     }
 
@@ -486,12 +500,110 @@ impl DryRunBackend {
             MarketEvent::Trade(trade) => {
                 self.refresh_unknown_queues(now_ms);
                 for fill in self.match_trade(*trade) {
+                    self.record_lot(
+                        fill.exchange_ms,
+                        fill.side.inventory_sign().saturating_mul(fill.qty_units),
+                    );
                     self.apply_fill(fill);
                     output.push(ExecutionEvent::Fill(fill));
                 }
             }
         }
+        // After the event, not before: a lot opened by this very trade must be
+        // allowed to age before it can be crossed out.
+        output.extend(self.flatten_stale_lots(now_ms));
         output
+    }
+
+    /// FIFO-match a fill against opposing open lots; the remainder opens a new
+    /// one. Mirrors `match_holding_time` in `scripts/replay_market_maker.py`, so
+    /// the two simulators age a position the same way.
+    fn record_lot(&mut self, ts_ms: u64, signed_units: i64) {
+        let mut remaining = signed_units;
+        while remaining != 0 {
+            let Some(&(_, lot)) = self.open_lots.front() else {
+                break;
+            };
+            if (lot > 0) == (remaining > 0) {
+                break; // same direction: this adds to the position
+            }
+            let matched = lot.abs().min(remaining.abs());
+            if matched <= 0 {
+                break;
+            }
+            if lot.abs() > matched {
+                let front = self.open_lots.front_mut().expect("checked above");
+                front.1 -= matched * lot.signum();
+            } else {
+                self.open_lots.pop_front();
+            }
+            remaining -= matched * remaining.signum();
+        }
+        if remaining != 0 {
+            self.open_lots.push_back((ts_ms, remaining));
+        }
+    }
+
+    /// Cross out the oldest lot once it has been held past the deadline.
+    ///
+    /// Charges the same costs the replay does: the crossed half-spread (we take
+    /// the far touch) plus `promotion_flatten_slippage_bps` for walking the
+    /// book, plus the taker fee. Without a touch there is nothing to cross into,
+    /// so the lot simply waits -- inventing a price here would be the easiest
+    /// way to manufacture an edge that does not exist.
+    fn flatten_stale_lots(&mut self, now_ms: u64) -> Vec<ExecutionEvent> {
+        let deadline_ms = self.config.flatten_after_ms;
+        let mut events = Vec::new();
+        if deadline_ms == 0 {
+            return events;
+        }
+        let Some(bbo) = self.latest_bbo else {
+            return events;
+        };
+        while let Some(&(opened_ms, lot)) = self.open_lots.front() {
+            if lot == 0 {
+                self.open_lots.pop_front();
+                continue;
+            }
+            if now_ms.saturating_sub(opened_ms) < deadline_ms {
+                break;
+            }
+            let long = lot > 0;
+            let touch_units = if long { bbo.bid_px } else { bbo.ask_px };
+            if touch_units <= 0 {
+                break;
+            }
+            let touch = self.instrument.price_from_units(touch_units);
+            let slip = touch * (self.config.promotion_flatten_slippage_bps / 10_000.0);
+            let exit_px = if long { touch - slip } else { touch + slip };
+            if !exit_px.is_finite() || exit_px <= 0.0 {
+                break;
+            }
+            let qty_units = lot.abs();
+            let qty_base = self.instrument.size_from_units(qty_units);
+            let notional = qty_base * exit_px;
+            let fee = notional * self.config.promotion_flatten_fee_rate;
+            let mid = self.instrument.price_from_units(bbo.mid_units());
+            self.diagnostics.flatten_events += 1;
+            self.diagnostics.flatten_units += qty_units;
+            self.diagnostics.flatten_cost_usdc += (mid - exit_px).abs() * qty_base + fee;
+            let fill = Fill {
+                side: if long { Side::Sell } else { Side::Buy },
+                px: self
+                    .instrument
+                    .price_to_units(exit_px)
+                    .unwrap_or(touch_units),
+                qty_units,
+                fee_usdc: fee,
+                exchange_ms: now_ms,
+                virtual_order_id: 0,
+                maker: false,
+            };
+            self.open_lots.pop_front();
+            self.apply_fill(fill);
+            events.push(ExecutionEvent::Fill(fill));
+        }
+        events
     }
 
     fn activate_orders(&mut self, now_ms: u64) {
@@ -993,6 +1105,101 @@ mod tests {
         assert_eq!(backend.simulated_latency_ms(100, 18_000), 100);
         assert_eq!(backend.simulated_latency_ms(100, 19_000), 235);
         assert_eq!(backend.simulated_latency_ms(100, 20_000), 100);
+    }
+
+    fn flatten_backend(after_ms: u64) -> DryRunBackend {
+        let mut config = DryRunConfig::default();
+        config.flatten_after_ms = after_ms;
+        config.promotion_flatten_slippage_bps = 0.0;
+        config.promotion_flatten_fee_rate = 0.0;
+        DryRunBackend::new(
+            instrument(),
+            config,
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_lot_held_past_the_deadline_is_crossed_out() {
+        let mut backend = flatten_backend(250);
+        backend.record_lot(1_000, 10);
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 50,
+            ask_px: 10_002,
+            ask_sz: 50,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        // Before the deadline nothing happens.
+        assert!(backend.flatten_stale_lots(1_200).is_empty());
+        assert_eq!(backend.open_lots.len(), 1);
+        // After it, the lot is sold into the bid and the book is flat.
+        let events = backend.flatten_stale_lots(1_250);
+        assert_eq!(events.len(), 1);
+        assert!(backend.open_lots.is_empty());
+        assert_eq!(backend.account.inventory_units, -10);
+        assert_eq!(backend.diagnostics.flatten_events, 1);
+    }
+
+    #[tokio::test]
+    async fn the_deadline_ages_the_oldest_lot_not_the_net_position() {
+        // A position topped up repeatedly must still exit on the FIRST lot's
+        // clock, or a busy market defers the exit forever.
+        let mut backend = flatten_backend(250);
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 50,
+            ask_px: 10_002,
+            ask_sz: 50,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        backend.record_lot(1_000, 5);
+        backend.record_lot(1_200, 5);
+        let events = backend.flatten_stale_lots(1_250);
+        assert_eq!(events.len(), 1, "only the aged lot leaves");
+        assert_eq!(backend.open_lots.len(), 1);
+        assert_eq!(backend.open_lots.front().unwrap().0, 1_200);
+    }
+
+    #[tokio::test]
+    async fn opposing_fills_close_lots_fifo_so_nothing_is_left_to_flatten() {
+        let mut backend = flatten_backend(250);
+        backend.record_lot(1_000, 10);
+        backend.record_lot(1_100, -4);
+        assert_eq!(backend.open_lots.len(), 1);
+        assert_eq!(backend.open_lots.front().unwrap().1, 6);
+        // A flip closes the remainder and opens the other way at the new time.
+        backend.record_lot(1_200, -9);
+        assert_eq!(backend.open_lots.len(), 1);
+        assert_eq!(*backend.open_lots.front().unwrap(), (1_200, -3));
+    }
+
+    #[tokio::test]
+    async fn a_zero_deadline_disables_the_flatten() {
+        let mut backend = flatten_backend(0);
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 50,
+            ask_px: 10_002,
+            ask_sz: 50,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        backend.record_lot(1_000, 10);
+        assert!(backend.flatten_stale_lots(9_999_999).is_empty());
+        assert_eq!(backend.open_lots.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn without_a_touch_the_lot_waits_rather_than_inventing_a_price() {
+        let mut backend = flatten_backend(250);
+        backend.record_lot(1_000, 10);
+        assert!(backend.flatten_stale_lots(5_000).is_empty());
+        assert_eq!(backend.open_lots.len(), 1);
     }
 
     #[tokio::test]
