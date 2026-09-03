@@ -59,3 +59,51 @@ That is an infrastructure question, and it is answerable before any more modelli
   cross on a deadline, which should dominate this and is untested.
 - Crossing doubles actions per round trip, and the Hyperliquid action budget is a
   near-exhausted lifetime allowance, so this is replay/dry-run only for now.
+
+## At 200 ms — the realistic operating point
+
+`mid` scenario (200 ms latency, 500 ms refresh), held-out slice. `flatten@0ms` means
+flatten as soon as possible; the exit still lands 200 ms later because the deadline
+carries the round trip.
+
+| phi*kappa*T | hold | **flatten@0ms** | @100ms | @200ms | @500ms |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 300 | -294.87 | **+218.34** | +152.65 | +89.35 | -236.80 |
+| 1000 | -182.60 | **+256.58** | +205.73 | +139.35 | -96.30 |
+| 3000 | -111.74 | **+227.45** | +191.27 | +135.44 | -34.38 |
+
+Positive at every phi, and the ordering barely depends on phi -- which is itself a
+result, since phi was the axis that could never find an optimum. Flattening sooner is
+always better, so the policy is "exit as fast as the venue allows", not a tuned deadline.
+
+## Why the per-fill number is so large, and the caveat that limits it
+
+| | mean fill depth | maker fills | per maker fill |
+| :--- | ---: | ---: | ---: |
+| hold | 31.2 / 23.4 bps | 1978 | -4.35 bps |
+| flatten@0 | **60.8 / 57.4 bps** | 683 | **+17.69 bps** |
+
+Flattening keeps inventory near zero, so `q ~ 0` and the HJB quotes near its 80 bps cap
+instead of tightening one side to unwind. The economics are consistent at that depth --
+capture ~60 bps against a ~24 bps markout at 200 ms -- but it means **the whole result
+rests on getting filled at ~60 bps**.
+
+**And that is where the replay is most optimistic.** `queue_ahead` is set to 0 for any
+quote that does not join the best (`replay_market_maker.py:2124-2130`), and a 60 bps
+quote never joins the best against a 5.6 bps median half-spread. So the simulator fills
+us on the first print that reaches our price, with no time priority. Measured from the
+20-level snapshots, the size resting at-or-better at 60 bps out is a median of **51,124
+units (ask) / 46,061 (bid) -- 22-24x our 2092-unit lot**.
+
+Two consequences, and the second is the one that matters:
+
+1. **The fill COUNT is an upper bound.** 683 maker fills against ~916 sweeps that reached
+   60 bps in the same window means we are capturing most deep sweeps, which only happens
+   with no queue ahead of us.
+2. **The per-fill economics would degrade too, not just the count.** With real time
+   priority we are filled only by sweeps large enough to clear the queue -- and those are
+   the sweeps with the worst markout. It is the same selection effect that makes
+   `eps(d)` conditional in the first place, one level deeper.
+
+So this is not yet a number to trade on. A queue-position model at depth is the single
+modelling gap between this result and a trustworthy one, and it is the obvious next step.
