@@ -554,7 +554,19 @@ impl DryRunBackend {
             .enumerate()
             .filter(|(_, order)| {
                 order.activated
-                    && order.queue_known
+                    // A print STRICTLY BEYOND our price means the venue consumed
+                    // everything resting at our price and kept going, so we were
+                    // filled whatever our queue position was. Requiring
+                    // `queue_known` for those excluded any quote resting deeper
+                    // than the 20-level book from ever filling: the book reaches
+                    // 60 bps on 0.2% of snapshots, so `wide60` took 4 fills in
+                    // 15 h where the tape had 87 sweeps past it. Queue position
+                    // only decides an AT-price print, which still needs it.
+                    && (order.queue_known
+                        || match maker_side {
+                            Side::Buy => trade.px < order.intent.px,
+                            Side::Sell => trade.px > order.intent.px,
+                        })
                     && order.intent.side == maker_side
                     && order
                         .cancel_effective_ms
@@ -981,6 +993,48 @@ mod tests {
         assert_eq!(backend.simulated_latency_ms(100, 18_000), 100);
         assert_eq!(backend.simulated_latency_ms(100, 19_000), 235);
         assert_eq!(backend.simulated_latency_ms(100, 20_000), 100);
+    }
+
+    #[tokio::test]
+    async fn a_print_beyond_an_off_book_quote_fills_it_despite_an_unknown_queue() {
+        // The counterpart to the test below, and the one that was missing. A
+        // print STRICTLY BEYOND our price means the venue cleared everything
+        // resting at our price and carried on, so queue position cannot save us
+        // -- we were filled. Excluding these cost `wide60` all but 4 of ~100
+        // fills over 15 h of live tape, and made the whole dry-run leaderboard
+        // a measurement of exact-level coincidence rather than fill economics.
+        let mut backend = DryRunBackend::new(
+            instrument(),
+            DryRunConfig::default(),
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 5,
+            ask_px: 10_002,
+            ask_sz: 5,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        let mut quote = bid_quotes();
+        quote.bid.as_mut().unwrap().px = 9_990;
+        backend.reconcile(quote, 1_000).await.unwrap();
+        // Sweeps through 9_990 down to 9_985: everything at 9_990 is gone.
+        let trade = TradePrint {
+            aggressor: AggressorSide::Sell,
+            px: 9_985,
+            qty_units: 20,
+            exchange_ms: 2_000,
+            recv_ns: 0,
+            trade_id: 1,
+        };
+        assert!(!backend
+            .on_market_event(&MarketEvent::Trade(trade))
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
