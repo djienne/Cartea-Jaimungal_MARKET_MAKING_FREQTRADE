@@ -852,6 +852,11 @@ _INTERNAL_METRICS_FIELDS = frozenset({
     "markout_usdc_by_side",
     "q_residual_abs_sum",
     "q_residual_samples",
+    # Aggressive-flatten accumulators, published under the derived `flatten`
+    # block (events/base/cost_usdc).
+    "flatten_events",
+    "flatten_base",
+    "flatten_cost_usdc",
     # FIFO holding-time accumulators, published under the derived
     # `holding_time` block (pairs/matched_base/unmatched_base/mean/p50/p90).
     "holding_time_seconds_weighted",

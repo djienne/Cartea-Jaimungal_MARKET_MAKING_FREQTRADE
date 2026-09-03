@@ -167,6 +167,19 @@ class ReplayConfig:
     flow_guard_cooldown_ms: float = FlowGuardConfig.cooldown_ms
     flow_guard_warmup_reentry_cooldown_ms: float = FlowGuardConfig.warmup_reentry_cooldown_ms
     flow_guard_warmup_reentry_calm_fraction: float = FlowGuardConfig.warmup_reentry_calm_fraction
+    # Aggressive flatten. None keeps the shipped behaviour: hold inventory until
+    # an offsetting MAKER fill arrives, which takes 6.5 s median and eats the
+    # full adverse-selection accrual -- eps(d) grows from 12.84 bps at 200 ms to
+    # 29.77 bps at 6.6 s, which is the whole reason the strategy loses. Setting
+    # this crosses the spread to go flat once a lot has been held that long,
+    # paying half-spread plus taker fee to truncate the markout.
+    flatten_after_ms: float | None = None
+    # What crossing actually costs beyond the touch. Our lot is 2.5-2.9x the
+    # median touch size and exceeds it on 81-88% of events, so a flatten walks
+    # the book; measured from the 20-level snapshots the volume-weighted fill
+    # sits 1.6-2.1 bps (median) past the touch. Charging zero here is the single
+    # most flattering assumption this policy could make.
+    flatten_slippage_bps: float = 2.5
 
 
 @dataclass
@@ -248,6 +261,11 @@ class ReplayMetrics:
     holding_time_base_matched: float = 0.0
     holding_time_pairs: int = 0
     holding_time_base_unmatched: float = 0.0
+    # Aggressive-flatten accounting, kept apart from maker economics so the two
+    # legs stay separable: this is what the truncation COST.
+    flatten_events: int = 0
+    flatten_base: float = 0.0
+    flatten_cost_usdc: float = 0.0
     queue_decay_base: float = 0.0
     holding_time_samples: list[tuple[float, float]] = field(default_factory=list)
     time_at_q_boundary: dict[str, int] = field(default_factory=lambda: {"q_min": 0, "q_max": 0})
@@ -373,6 +391,11 @@ class ReplayMetrics:
             # inventory still open when the tape ended, which is censored rather
             # than short-lived and is therefore excluded from the statistics
             # instead of being counted as a fast round trip.
+            "flatten": {
+                "events": self.flatten_events,
+                "base": self.flatten_base,
+                "cost_usdc": self.flatten_cost_usdc,
+            },
             "holding_time": {
                 "pairs": self.holding_time_pairs,
                 "matched_base": self.holding_time_base_matched,
@@ -1855,6 +1878,7 @@ def run_replay(
     long_only = q_min >= 0
     short_floor = float(q_min) * float(config.inventory_unit_base)
     maker_fee = config.maker_fee
+    taker_fee = config.taker_fee
     price_tick = usable_tick_size(config.price_tick_size)
     latency_ns = int(total_quote_latency_ms) * _NS_PER_MS
     refresh_ns = quote_refresh_interval_ms * _NS_PER_MS
@@ -1897,6 +1921,11 @@ def run_replay(
     guard_trade_cursor = 0
     guard_vpin: float | None = None
 
+    flatten_slippage_bps = float(config.flatten_slippage_bps)
+    flatten_after_ns = (
+        None if config.flatten_after_ms is None
+        else int(float(config.flatten_after_ms) * _NS_PER_MS)
+    )
     # Open exposure, FIFO. Entries are (ts_ns, signed_base): positive is long.
     open_lots: deque[tuple[int, float]] = deque()
 
@@ -1959,6 +1988,47 @@ def run_replay(
             guard_tripped = flow_guard.evaluate(row_ts_ns / _NS_PER_MS, guard_move_bps, guard_vpin)
         else:
             guard_tripped = False
+
+        # Aggressive flatten, before the refresh gate: the exit deadline belongs
+        # to the position, not to the quoting cadence, so it must be checked on
+        # every event rather than once per refresh.
+        if flatten_after_ns is not None and open_lots:
+            oldest_ts, oldest_size = open_lots[0]
+            # The deadline carries the SAME latency the quoting path pays: we
+            # notice the position, decide, and the taker order reaches the venue
+            # one round trip later. Executing at the deadline price instead
+            # would be reading a book we could not have traded on.
+            if row_ts_ns - oldest_ts >= flatten_after_ns + latency_ns:
+                touch_bid = price_best_bid_list[row_idx]
+                touch_ask = price_best_ask_list[row_idx]
+                # Cross to go flat: sell a long into the bid, buy a short from
+                # the ask. Without a touch there is nothing to cross into, so
+                # the lot simply waits -- refusing to invent a price is the
+                # difference between measuring this policy and flattering it.
+                exit_price = touch_bid if oldest_size > 0.0 else touch_ask
+                if exit_price is not None and math.isfinite(exit_price) and exit_price > 0.0:
+                    # Walk the book: a sell lands below the bid, a buy above the ask.
+                    slip = exit_price * (flatten_slippage_bps / 10_000.0)
+                    exit_price = exit_price - slip if oldest_size > 0.0 else exit_price + slip
+                    size = abs(oldest_size)
+                    notional = size * exit_price
+                    fee = notional * taker_fee
+                    if oldest_size > 0.0:
+                        metrics.inventory_base -= size
+                        metrics.cash_usdc += notional - fee
+                    else:
+                        metrics.inventory_base += size
+                        metrics.cash_usdc -= notional + fee
+                    metrics.taker_fills += 1
+                    metrics.fees_usdc += fee
+                    metrics.flatten_events += 1
+                    metrics.flatten_base += size
+                    # What the truncation cost: the half-spread crossed plus the
+                    # taker fee. Recorded so the two legs stay separable.
+                    metrics.flatten_cost_usdc += abs(mid - exit_price) * size + fee
+                    match_holding_time(
+                        open_lots, row_ts_ns, -oldest_size, metrics
+                    )
 
         if next_quote_decision_ns is not None and row_ts_ns < next_quote_decision_ns:
             update_margin_metrics(metrics, config, mid)
