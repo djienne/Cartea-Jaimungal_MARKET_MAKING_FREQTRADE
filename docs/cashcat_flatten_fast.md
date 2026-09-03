@@ -193,3 +193,96 @@ for the wrong reason, having survived a penalty 19x harsher than reality.
 The three models now bracket the answer from both sides: `touch_only` assumes no queue
 at all, `book_level` is the honest one, `book_depth` is ~19x too harsh. All three are
 positive at 250 ms, which is a stronger statement than any one of them alone.
+
+---
+
+# Review corrections (2026-09-03)
+
+An adversarial review reproduced the headline, then refuted two explanations, found a
+bug, and turned up a control that reframes the whole result.
+
+## It holds out of sample — the check that mattered
+
+Scored on the **train slice**, 277 h the flatten work never touched, at 250 ms:
+hold +2.51 against **flat0 +425.32**. Positive in **6 of 6** ~65 h sub-periods and
+beating hold in 6 of 6. Per round trip: held-out 462 trips, mean +4.63 bps, **t = 7.95**;
+train 1180 trips, mean +1.53 bps, **t = 7.66**, 10 of 13 days positive. Survives 5 bps
+slippage (+213 / +347) and 10 bps (+132 / +189). Breakeven still 400-500 ms.
+
+## Bug found and fixed: stale `q` at the flatten row
+
+`q` was computed at the top of the row loop, before the flatten mutated inventory. When a
+flatten and a quote decision shared a row, the HJB priced the **unwinding branch** -- the
+1.5 bps floor on a side flattening a position we no longer held -- and that quote filled,
+opening a fresh position crossed out a deadline later. 40 of 164 non-flat decisions on a
+34 h slice. A drag, not a source: fixing it moves held-out 250 ms +253.92 -> **+258.04**.
+
+## Correction 1: the mechanism, and the control that reframes it
+
+I wrote that flattening keeps `q ~ 0` so the HJB quotes wide. **Hold is also at q = 0 on
+98-99% of events with nearly the same quoted depth** (68/65 vs 74/75 bps). The real
+difference is the unwinding branch: at `q = +-1` the HJB puts the unwinding side at the
+**1.5 bps floor**, and hold's fills are dominated by those.
+
+So the decisive control is a plain wide quoter -- `min_half_spread_bps = 60`, passive
+exits, no crossing at all:
+
+| tape | policy | P&L | spread | directional | final inv | hold p50 |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| held-out | **hold, floor 60** | **+417.79** | +957.3 | -539.5 | **9,735** | **42 min** |
+| held-out | flat0 | +258.04 | +1049.3 | -791.3 | 0 | 0.3 s |
+| train | **hold, floor 60** | **+1337.58** | +2715.1 | -1377.5 | **6,380** | 9 min |
+| train | flat0 | +438.90 | +2361.1 | -1922.2 | 0 | 0.3 s |
+
+**A plain wide quoter beats the flatten on both tapes.** So the flatten is not what makes
+deep quoting profitable -- the spread floor is. It is still not the phi dead end (phi
+300->3000 never fixes hold, because phi cannot remove the 1.5 bps unwinding branch, while
+a floor can), but the new element is the FLOOR, not the exit.
+
+And the wide quoter's edge is **not drift**: directional is negative on both tapes, so
+the +418/+1338 is spread capture net of adverse selection, not a long ride on a tape that
+went 0.203 -> 0.268. What it is instead is **leveraged**: ~9,700 units long, near the
+`q_max` ceiling, for a 42 min median hold on a 1,000 USDC account. The flatten earns less
+and ends flat with 0.3 s holds. **These are two different hypotheses with two different
+risk profiles, and the P&L column alone hides that.**
+
+What the edge actually is, measured on the raw tape with no simulator: after the 916
+sweeps reaching >=60 bps, the crossing-side touch is a median **30.8 bps** beyond the
+pre-sweep mid at +250 ms, **39.4** at +500 ms, **58.3** at +1 s. Spikes continue rather
+than revert, and the flatten banks a thin slice (1.5-4.6 bps net of a ~60 bps entry)
+inside a ~300 ms partial-refill window. A venue-microstructure edge, not a model edge --
+which is why the latency curve is a cliff.
+
+## Correction 2: the "correct pairing" argument for `book_level` is wrong
+
+The 20-level snapshot reaches only **28.9 / 37 / 47 bps** (p10/p50/p90) from mid and
+reaches 60 bps on **0.9%** of snapshots. At a 60 bps quote `book_level` returns the size
+of the deepest *visible* level (~37 bps out) -- that is what the "2,652 units at our own
+level" figure really was. **Neither model observes anything at our price.** The true queue
+there is unobservable from this data and is not thin: sweeps reaching 60 bps print a
+median **31k units at-or-beyond** it.
+
+What survives is weaker but still useful: three thresholds spanning an order of magnitude
+give +203/+254/+243 (held-out) and +298/+425/+207 (train), so the result is **insensitive
+to the queue threshold**. Robustness by insensitivity, not by having the right model.
+Commit 2a26220's reasoning should be read with this correction.
+
+## Also established
+
+- **Passive-first is worse.** A crossing deadline of 100/250/500 ms (the HJB's 1.5 bps
+  quote as the passive leg) is monotone worse on both tapes: held +166/+21/-158, train
+  +321/+111/-153. Cross-ASAP is the right variant of this policy.
+- **No lookahead.** The exit fires on the first BBO row at or after the deadline and takes
+  that row's touch, both streams on the exchange clock; cash, inventory and FIFO reconcile
+  event-by-event (1068 events = 253.92; 2788 = 425.32). Taking the first row *after* the
+  deadline is conservative, since the exit price worsens with time.
+- **The 100 ms rows are inflated** by a pre-existing quirk: with a fixed 250 ms cancel
+  latency, consecutive quote generations overlap 150 ms and both can fill. The 250 ms rows
+  are clean.
+
+## Where this leaves the grid decision
+
+The grid already tests the spread-floor hypothesis -- `wide40`, `wide48` and `wide60` are
+exactly `min_half_spread_bps` variants. What it does not test is the **exit policy**. So
+the flatten is the genuinely new thing a grid slot would buy, and it should be read
+against the existing `wide60` rather than against `baseline`.

@@ -2121,6 +2121,18 @@ def run_replay(
                     match_holding_time(
                         open_lots, row_ts_ns, -oldest_size, metrics
                     )
+                    # Inventory just moved, and `q` was computed at the top of
+                    # this row. Leaving it stale makes compute_quotes price the
+                    # UNWINDING branch -- the 1.5 bps floor on the side that
+                    # would flatten a position we no longer hold -- and that
+                    # quote fills, opening a fresh position 1.5 bps from mid
+                    # that is crossed out one deadline later. Measured on a 34 h
+                    # slice: 40 of 164 non-flat decisions were stale, a real
+                    # P&L drag rather than a source of the result, but wrong.
+                    q_exact = mm_core.inventory_to_q_exact(
+                        metrics.inventory_base, inventory_config
+                    )
+                    q = int(round(q_exact))
 
         if next_quote_decision_ns is not None and row_ts_ns < next_quote_decision_ns:
             update_margin_metrics(metrics, config, mid)
