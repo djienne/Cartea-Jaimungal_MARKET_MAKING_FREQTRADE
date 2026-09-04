@@ -107,12 +107,16 @@ min_half_spread_bps = 24.0
 
 # --- toxic-flow guard A/B ---
 # The whole point of the guard is the one losing window, and a live grid is the
-# only way to see what it costs in normal conditions. These two are identical
-# except for the guard, quoting the same feed, so the difference IS the guard.
-[[variant]]
-name = "guarded"
-flow_guard_enabled = true
-
+# only way to see what it costs in normal conditions.
+#
+# There used to be a `guarded` row here setting `flow_guard_enabled = true`.
+# That is already the shipped default, so it shared `baseline`'s config
+# fingerprint exactly (cbff25b99fb7141f) and spent every run re-measuring its
+# neighbour -- one slot in twenty producing nothing. Confirmed live on
+# 2026-09-04: over 15 h it matched `baseline` to four decimal places on P&L,
+# fills and orders created. The A/B is `baseline` vs `unguarded`, and always
+# was; `baseline` IS the guarded arm. The grid now warns at startup when two
+# variants share a fingerprint, so this cannot come back silently.
 [[variant]]
 name = "unguarded"
 flow_guard_enabled = false
@@ -214,3 +218,21 @@ min_half_spread_bps = 60.0
 name = "flatten550"
 flatten_after_ms = 250
 min_half_spread_bps = 60.0
+
+# The flatten rows are the only market-neutral P&L on the board -- they hold no
+# inventory, so their result is spread capture net of adverse selection rather
+# than a directional bet, which is what every wide row's P&L actually is. They
+# are also the most sample-starved: at 60 bps `flatten300` took 5.4 fills/h
+# against `baseline`'s 98, so 500 fills is 91 hours away and the
+# 300-vs-550 ordering cannot reach significance in any reasonable run.
+#
+# Width is the lever that controls fill rate, so this row holds the flatten
+# policy at the winning setting and moves only the floor: 40 bps, the rung the
+# replay found profitable on the wide ladder. It asks the one question the
+# other two cannot -- does the flatten edge survive at a width that actually
+# gets hit, or was it only ever an artefact of quoting so wide that the few
+# fills were unrepresentative?
+[[variant]]
+name = "flatten300w40"
+flatten_after_ms = 1
+min_half_spread_bps = 40.0

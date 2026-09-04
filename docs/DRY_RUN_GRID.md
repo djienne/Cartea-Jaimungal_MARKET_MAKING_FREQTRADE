@@ -55,7 +55,7 @@ of a burst does this take*.
 | `phi_kappa_t` | `model.phi_kappa_t` | the held-out phi ladder improved 200→300 but every rung lost; `phi1000` probes rather than assumes the gradient |
 | `min_half_spread_bps` | `quoting.min_half_spread_bps` | replay and dated live runs motivate the width ladder; current corrected runs must establish whether it survives |
 | `min_order_lifetime_ms`, `replace_threshold_bps` | `quoting.*` | cadence and width interact non-monotonically; retained rows are controls, not presumed improvements |
-| `flow_guard_enabled`, `vpin_threshold`, `fast_move_threshold_bps` | `flow_guard.*` | paired guarded/unguarded variants isolate the toxic-flow guard on one feed |
+| `flow_guard_enabled`, `vpin_threshold`, `fast_move_threshold_bps` | `flow_guard.*` | `baseline` vs `unguarded` isolates the toxic-flow guard on one feed — `baseline` *is* the guarded arm, since the guard ships on |
 | `phi_kappa_t_max` | `model.phi_kappa_t_max` | a variant requesting φ·κ·T above the base ceiling of 450 must raise this ceiling too |
 | `flatten_after_ms` | `dry_run.flatten_after_ms` | experimental taker exit after a lot-age deadline; not implemented by the live backend and therefore not promotable |
 
