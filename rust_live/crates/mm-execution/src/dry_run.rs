@@ -266,6 +266,54 @@ impl DryRunBackend {
         Ok(())
     }
 
+    /// Close a position carried across a long restart gap at the last price
+    /// the run actually observed, returning the P&L that became realized.
+    ///
+    /// `restore_from_snapshot` deliberately carries inventory, which is right
+    /// for a brief interruption: the position is marked a few seconds later at
+    /// a price the run all but saw. Across a long gap it is wrong, and wrong in
+    /// the direction that flatters. The first mark of the new session prices
+    /// the carried position at a level whose whole path was unobserved, so the
+    /// move lands in `mark_to_market_pnl_usdc` as though the strategy had
+    /// earned it -- the mechanism that made the 46.4 h leaderboard of
+    /// 2026-08-27 report a 13.2% rally as profit.
+    ///
+    /// Closing at the checkpoint's own mark is the honest resolution. Equity is
+    /// unchanged across the call, because the position's market value simply
+    /// moves into cash: the P&L curve stays continuous and no gain or loss is
+    /// invented. What goes away is the exposure, so nothing that happens during
+    /// the unobserved window can be attributed to a decision the strategy made
+    /// before it.
+    ///
+    /// Returns `None` when the variant was already flat, so the caller can
+    /// report how many positions this actually touched.
+    pub fn flatten_carried_position(&mut self) -> Option<f64> {
+        if self.account.inventory_units == 0 {
+            return None;
+        }
+        // `mark_account` maintains `equity = cash + inventory_base * mid`, so
+        // the difference is the position's value at the last observed mid --
+        // recovered without needing that price to have been checkpointed.
+        let market_value_usdc = self.account.equity_usdc - self.account.cash_usdc;
+        let inventory_base = self
+            .instrument
+            .size_from_units(self.account.inventory_units);
+        let closed_pnl_usdc = market_value_usdc - inventory_base * self.account.average_entry_px;
+
+        self.account.realized_pnl_usdc += closed_pnl_usdc;
+        self.account.cash_usdc = self.account.equity_usdc;
+        self.account.inventory_units = 0;
+        self.account.average_entry_px = 0.0;
+        self.account.position_notional_usdc = 0.0;
+        self.account.margin_used_usdc = 0.0;
+        self.account.maintenance_margin_usdc = 0.0;
+        self.account.liquidation_buffer_usdc = self.account.equity_usdc;
+        // The seeded carry lot describes a position that no longer exists.
+        self.open_lots.clear();
+        self.inventory_at_last_quote_action = 0;
+        Some(closed_pnl_usdc)
+    }
+
     pub const fn daily_realized_pnl_usdc(&self) -> f64 {
         self.daily_realized_pnl_usdc
     }
@@ -1375,6 +1423,50 @@ mod tests {
         });
         assert_eq!(backend.flatten_stale_lots(1_000).len(), 1);
         assert!(backend.open_lots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_gap_flatten_moves_the_position_into_cash_without_moving_equity() {
+        // The whole point: closing at the checkpoint's own mark invents no P&L.
+        // If equity moved here, the resume would be manufacturing exactly the
+        // unearned gain the carry window exists to prevent.
+        let mut backend = flatten_backend(250);
+        let mut account = backend.account;
+        account.inventory_units = 40;
+        account.average_entry_px = 1.00;
+        account.cash_usdc = 100.0;
+        // 40 units marked above the entry: an unrealized gain of 20.
+        account.equity_usdc = 160.0;
+        account.realized_pnl_usdc = 5.0;
+        backend
+            .restore_from_snapshot(account, DryRunDiagnostics::default(), 10, None, 0.0)
+            .unwrap();
+
+        let equity_before = backend.account.equity_usdc;
+        let position_value = backend.account.equity_usdc - backend.account.cash_usdc;
+        let cost_basis = backend
+            .instrument
+            .size_from_units(backend.account.inventory_units)
+            * backend.account.average_entry_px;
+
+        let closed = backend.flatten_carried_position().unwrap();
+
+        assert!((closed - (position_value - cost_basis)).abs() < 1e-9);
+        assert!((backend.account.equity_usdc - equity_before).abs() < 1e-9);
+        assert!((backend.account.cash_usdc - equity_before).abs() < 1e-9);
+        assert!((backend.account.realized_pnl_usdc - (5.0 + closed)).abs() < 1e-9);
+        assert_eq!(backend.account.inventory_units, 0);
+        assert_eq!(backend.account.position_notional_usdc, 0.0);
+        // The seeded carry lot describes a position that no longer exists;
+        // leaving it would have the flatten policy cross out thin air.
+        assert!(backend.open_lots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_gap_flatten_on_a_flat_variant_reports_nothing() {
+        let mut backend = flatten_backend(250);
+        assert_eq!(backend.account.inventory_units, 0);
+        assert!(backend.flatten_carried_position().is_none());
     }
 
     #[tokio::test]

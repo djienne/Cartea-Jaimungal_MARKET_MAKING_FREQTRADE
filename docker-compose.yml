@@ -51,6 +51,15 @@ services:
 
     # --duration-seconds 0 runs until stopped. The out-dir is the path the
     # healthcheck in the Dockerfile reads.
+    #
+    # The two gap windows are spelled out rather than left on their defaults,
+    # because they encode a decision about this host: it is a desktop that gets
+    # rebooted, sometimes by Windows on its own schedule. An hour of resume
+    # window covers an update reboot; the 900 s carry window inside it is the
+    # limit past which a variant's open position is closed at its last observed
+    # mark instead of being carried into prices nobody watched. Raising the
+    # resume window without that second limit would re-create the 2026-08-27
+    # leaderboard that booked a 13.2% rally as profit.
     command:
       - --config
       - /opt/mm/config/cashcat_dryrun_realistic.toml
@@ -61,6 +70,10 @@ services:
       - "0"
       - --out-dir
       - /opt/mm/reports/grid_live
+      - --max-resume-gap-seconds
+      - "3600"
+      - --max-carry-inventory-gap-seconds
+      - "900"
 
     # Deliberately tiny (user, 2026-08-30) -- host headroom matters more here
     # than speed. Measured steady state is 0.48% of a core, so a 25% quota is

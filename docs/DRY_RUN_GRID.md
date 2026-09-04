@@ -197,15 +197,45 @@ uninterrupted one:
 | the interruption | counted in `feed_health.downtime_ms`, so it erodes the 5% budget |
 | | **not** added to `feed_longest_gap_ms` — that limit is about a long hole *while quoting*, and a restart leaves no working orders |
 | visible as | `resumes`, `resumed_downtime_ms`, and `[RESUMED]` in the rendered table |
-| gap > `--max-resume-gap-seconds` (900) | starts fresh instead |
+| gap > `--max-carry-inventory-gap-seconds` (900) | resumes, but flattens every open position first |
+| gap > `--max-resume-gap-seconds` (3600) | starts fresh instead |
 | grid spec edited | starts fresh — the checkpoint fingerprints every variant's config |
 | resume failure | all-or-nothing; a half-resumed grid has rows that are not comparable |
 
-The long-gap refusal is the important one. Resuming means marking held inventory
-at a price whose path was never observed, and that is precisely the mechanism
-that turned the 46.4 h leaderboard into a 13.2% rally reported as trading
-profit. Fifteen minutes covers a reboot; hours do not, and are not worth
-pretending about.
+#### Two windows, because the resume and the inventory are different hazards
+
+These were one number until 2026-09-04, and conflating them was costing more
+than it protected. The hazard in a long gap is never the resume itself: the
+checkpoint restores a book with **no working orders**, so nothing stale can
+fill. The hazard is the *position*. Carrying inventory across the gap means the
+first mark of the new session prices it at a level whose entire path went
+unobserved, and the move lands in `mark_to_market_pnl_usdc` as though the
+strategy had earned it — which is exactly how the 46.4 h leaderboard came to
+report a 13.2% rally as trading profit.
+
+A single 900 s limit answered that by throwing away the whole run, all twenty
+variants of it, whenever a reboot ran long. Windows updates routinely take
+longer than fifteen minutes, so the guard fired on the ordinary case and
+destroyed the evidence it was meant to protect.
+
+The two limits now separate:
+
+- **Inside the carry window (900 s)** nothing changes. The position is marked
+  seconds later at a price the run all but saw.
+- **Between the two (900 s – 1 h)** the run resumes in full — equity, fills,
+  diagnostics, markouts and the elapsed clock all continue — but every variant
+  is closed out at its own last observed mark before a single new price
+  arrives. Equity does not move when this happens; the position's market value
+  simply becomes cash, and `realized_pnl_usdc` absorbs what had been
+  unrealized. What ends is the exposure, so no P&L after the gap can be
+  attributed to a decision taken before it.
+- **Beyond an hour** the grid still starts fresh.
+
+The flatten is announced at `WARN` on the resume line, with
+`flattened_variants` and `flattened_pnl_usdc`. A row that went through one is
+not lying about its P&L, but it did have its inventory reset by the harness
+rather than by its own policy — so an inventory series that jumps to zero at a
+gap boundary is the harness, not the strategy.
 
 `run_started_ms` in `equity_history.csv` now stays constant across a restart, so
 a *change* in it marks a genuine boundary — a refused resume — rather than

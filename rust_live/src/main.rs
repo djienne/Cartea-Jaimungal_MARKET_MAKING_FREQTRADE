@@ -134,15 +134,40 @@ enum Command {
         /// Longest interruption the grid will resume across, in seconds.
         ///
         /// A restart inside this window continues the existing run: equity,
-        /// inventory, fills and the elapsed clock all carry forward, and the
-        /// time the process was down is counted as feed downtime. Beyond it the
-        /// grid starts fresh, because resuming means marking held inventory at
-        /// a price whose path was never seen -- the mechanism that made the
-        /// 46.4 h leaderboard of 2026-08-27 report a 13.2% rally as profit.
+        /// fills and the elapsed clock all carry forward, and the time the
+        /// process was down is counted as feed downtime. Beyond it the grid
+        /// starts fresh.
+        ///
+        /// An hour, because the thing that actually interrupts this grid is a
+        /// host reboot, and a Windows update reboot routinely takes longer than
+        /// the 900 s this used to allow. Losing 20 variants' accumulated
+        /// evidence to a reboot is a far more expensive failure than the one
+        /// the tight window was guarding against -- and that one is now guarded
+        /// directly instead, by `max_carry_inventory_gap_seconds` below.
         ///
         /// Zero disables resuming entirely.
-        #[arg(long, default_value_t = 900)]
+        #[arg(long, default_value_t = 3600)]
         max_resume_gap_seconds: u64,
+        /// Longest interruption a variant will carry open inventory across.
+        ///
+        /// Resuming with a position intact marks it at the first price of the
+        /// new session -- a price whose path was never observed. That is what
+        /// made the 46.4 h leaderboard of 2026-08-27 report a 13.2% rally as
+        /// profit, and it is the real hazard in a long gap; the resume itself
+        /// is harmless, since the checkpoint restores a book with no working
+        /// orders.
+        ///
+        /// So the two limits are separated. Inside this window inventory
+        /// carries as before. Between here and `max_resume_gap_seconds` the run
+        /// still resumes -- equity, fills, diagnostics and the clock all
+        /// continue -- but every variant is closed out at its own last observed
+        /// mark first. Equity does not move when that happens; only the
+        /// exposure to the unobserved path goes away.
+        ///
+        /// Must not exceed `max_resume_gap_seconds`. Zero flattens on any
+        /// resume at all.
+        #[arg(long, default_value_t = 900)]
+        max_carry_inventory_gap_seconds: u64,
         /// Roll each variant's event log once it reaches this many MB.
         ///
         /// The logs append across restarts and the run now resumes across
@@ -422,6 +447,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             out_dir,
             history_seconds,
             max_resume_gap_seconds,
+            max_carry_inventory_gap_seconds,
             log_max_mb,
             log_keep,
         } => {
@@ -433,6 +459,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
                 out_dir.as_deref(),
                 history_seconds,
                 max_resume_gap_seconds,
+                max_carry_inventory_gap_seconds,
                 mm_live::report::LogRotation {
                     max_bytes: log_max_mb.saturating_mul(1024 * 1024),
                     keep: log_keep,
@@ -2098,8 +2125,16 @@ async fn run_dry_run_grid(
     out_dir: Option<&Path>,
     history_seconds: u64,
     max_resume_gap_seconds: u64,
+    max_carry_inventory_gap_seconds: u64,
     log_rotation: mm_live::report::LogRotation,
 ) -> Result<()> {
+    if max_resume_gap_seconds > 0 && max_carry_inventory_gap_seconds > max_resume_gap_seconds {
+        bail!(
+            "--max-carry-inventory-gap-seconds ({max_carry_inventory_gap_seconds}) exceeds \
+             --max-resume-gap-seconds ({max_resume_gap_seconds}): the carry window can \
+             only narrow the resume window, never widen it"
+        );
+    }
     let launched_at_ms = unix_ms();
     // Overwritten by a resumed checkpoint below, so that elapsed time, the
     // downtime fraction and the equity curve all run from the original start
@@ -2294,14 +2329,44 @@ async fn run_dry_run_grid(
                     state.replayed_trades_ignored,
                 );
                 resumed_event_loss = state.feed_health.event_loss;
+                // Past the carry window the position is closed at the mark the
+                // checkpoint was written on, before a single new price is seen.
+                // Equity is untouched; what ends is the exposure to a path the
+                // run never observed.
+                let carry_limit_ms = max_carry_inventory_gap_seconds.saturating_mul(1_000);
+                let (flattened_variants, flattened_pnl_usdc) = if gap_ms > carry_limit_ms {
+                    let mut count = 0_usize;
+                    let mut total = 0.0_f64;
+                    for variant in &mut variants {
+                        if let Some(closed) = variant.backend.flatten_carried_position() {
+                            count += 1;
+                            total += closed;
+                        }
+                    }
+                    (count, total)
+                } else {
+                    (0, 0.0)
+                };
                 info!(
                     gap_ms,
                     resumes,
                     resumed_downtime_ms,
                     elapsed_seconds = launched_at_ms.saturating_sub(started_at_ms) / 1_000,
                     variants = variants.len(),
+                    flattened_variants,
+                    flattened_pnl_usdc,
                     "resumed the previous grid run; the interruption counts as feed downtime"
                 );
+                if flattened_variants > 0 {
+                    warn!(
+                        gap_ms,
+                        carry_limit_ms,
+                        flattened_variants,
+                        "the gap exceeded the inventory carry window; every open position was \
+                         closed at its last observed mark, so P&L after the gap is \
+                         attributable to decisions taken after it"
+                    );
+                }
             }
             Err(error) => {
                 warn!(%error, "cannot resume the previous grid run; starting fresh");
