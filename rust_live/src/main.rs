@@ -2189,6 +2189,25 @@ async fn run_dry_run_grid(
         let fingerprint = variant_config.fingerprint()?;
         variant_configs.push((entry, variant_config, fingerprint));
     }
+    // Two variants with one fingerprint are the same strategy under two names,
+    // so one of twenty slots spends the whole run re-measuring its neighbour.
+    // `guarded` did exactly that: `flow_guard_enabled = true` is already the
+    // shipped default, so it was `baseline` with a label. Warned rather than
+    // refused on purpose -- this grid's job is to come back unattended after a
+    // reboot, and a startup check that can decline to start is a worse failure
+    // than a wasted row.
+    {
+        let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+        for (entry, _, fingerprint) in &variant_configs {
+            if let Some(twin) = seen.insert(fingerprint.as_str(), entry.name.as_str()) {
+                warn!(
+                    variant = %entry.name,
+                    duplicate_of = %twin,
+                    "two grid variants have identical configurations; one of them measures nothing"
+                );
+            }
+        }
+    }
     // The estimator semantics are part of the run's identity: a resume across
     // a parameter-schema change would splice two parameterisations into one
     // P&L curve and keep an inventory unit sized under the old one.
@@ -2316,14 +2335,20 @@ async fn run_dry_run_grid(
                 resumed_downtime_ms = state.resumed_downtime_ms.saturating_add(gap_ms);
                 resumed_feed = (
                     state.feed_health.gaps,
-                    // The interruption was time without market data, so it
-                    // belongs in the downtime budget however it arose. It is
-                    // deliberately NOT folded into `feed_longest_gap_ms`: that
-                    // limit guards against a long hole while *quoting* -- stale
-                    // resting orders, fills never seen -- and a restart has
-                    // none of that, since the checkpoint restores a book with
-                    // no working orders.
-                    state.feed_health.downtime_ms.saturating_add(gap_ms),
+                    // The interruption is NOT added here, and that reversal is
+                    // deliberate. `downtime_ms` feeds `downtime_fraction`, which
+                    // fails the run against `max_feed_downtime_fraction` and
+                    // marks every row invalid at once. That budget asks whether
+                    // the run was blind *while trading* -- stale quotes resting,
+                    // fills happening unseen -- and a restart has none of it:
+                    // the checkpoint restores a book with no working orders, and
+                    // past the carry window no position either. Charging the
+                    // pause here meant two update reboots could void a whole
+                    // 24 h run, which is the failure this grid can least afford.
+                    // Nothing is hidden by the change: `resumed_downtime_ms`
+                    // carries the pause, renders as `[RESUMED]`, and total blind
+                    // time is still `downtime_ms + resumed_downtime_ms`.
+                    state.feed_health.downtime_ms,
                     state.feed_health.longest_gap_ms,
                     state.trade_prints,
                     state.replayed_trades_ignored,
@@ -2355,7 +2380,7 @@ async fn run_dry_run_grid(
                     variants = variants.len(),
                     flattened_variants,
                     flattened_pnl_usdc,
-                    "resumed the previous grid run; the interruption counts as feed downtime"
+                    "resumed the previous grid run; the interruption is process downtime, not feed downtime"
                 );
                 if flattened_variants > 0 {
                     warn!(

@@ -194,13 +194,34 @@ uninterrupted one:
 
 | | |
 |---|---|
-| the interruption | counted in `feed_health.downtime_ms`, so it erodes the 5% budget |
-| | **not** added to `feed_longest_gap_ms` — that limit is about a long hole *while quoting*, and a restart leaves no working orders |
+| the interruption | counted in `resumed_downtime_ms`, **not** in `feed_health.downtime_ms` — so it does not erode the 5% validity budget |
+| | **not** added to `feed_longest_gap_ms` either — that limit is about a long hole *while quoting*, and a restart leaves no working orders |
+| total blind time | `downtime_ms + resumed_downtime_ms`, if you want the whole picture |
 | visible as | `resumes`, `resumed_downtime_ms`, and `[RESUMED]` in the rendered table |
 | gap > `--max-carry-inventory-gap-seconds` (900) | resumes, but flattens every open position first |
 | gap > `--max-resume-gap-seconds` (3600) | starts fresh instead |
 | grid spec edited | starts fresh — the checkpoint fingerprints every variant's config |
 | resume failure | all-or-nothing; a half-resumed grid has rows that are not comparable |
+
+#### Downtime has two meanings, and only one of them invalidates
+
+Until 2026-09-04 a restart's downtime was charged to `feed_health.downtime_ms`,
+on the reasoning that it was time without market data however it arose. That
+reasoning was half right and the consequence was severe: `downtime_fraction`
+runs against `runtime.max_feed_downtime_fraction` (5%), and failing it marks
+**every row** invalid at once. 5% of 24 h is 72 minutes, so two Windows update
+reboots could void a full day of twenty variants.
+
+The budget is asking whether the run was blind *while trading* — stale quotes
+resting, fills happening unseen, the market moving against a live book. A
+restart has none of that: the checkpoint restores a book with no working
+orders, and past the carry window no position either. The experiment is paused,
+not corrupted.
+
+So the pause now lives only in `resumed_downtime_ms`, which is persisted and
+rendered as `[RESUMED]`. Nothing is hidden — total blind time is still
+`downtime_ms + resumed_downtime_ms` — but a reboot no longer spends a budget
+that exists to police a different failure.
 
 #### Two windows, because the resume and the inventory are different hazards
 
@@ -268,10 +289,17 @@ purpose: `cashcat_dryrun_realistic.toml` runs **500**, `cashcat.toml` and
 buffer remain the real runaway guards on both sides. Never set it to `0` — the
 check is `>=`, so zero halts everything on the first tick.
 
-**A halted row still reports valid.** Until that is fixed, a row whose
-`virtual_orders_created` has stopped growing while its peers' climbs is halted,
-whatever the `valid` column says. `consecutive_losses` in `grid_state.json` is
-the confirmation.
+**A halted row now reports itself invalid.** Reaching the cap calls
+`invalidate("consecutive-loss breaker latched")`, so the row's
+`scientifically_valid` goes false and `invalid_reason` names the cause in
+`grid_state.json` and the variant's `report.json`. It goes quiet rather than
+erroring, because the risk gate already returns empty quotes and only a
+*non-empty* quote against an invalidated backend is an error. The flag survives
+a resume, as the latch itself does.
+
+The manual tell still works and is worth knowing, since it needs no restart to
+see: a row whose `virtual_orders_created` has stopped growing while its peers'
+climbs is halted, and `consecutive_losses` confirms it.
 
 #### Carrying a run across a base-config change
 

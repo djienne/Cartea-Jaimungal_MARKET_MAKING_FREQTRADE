@@ -962,6 +962,17 @@ impl DryRunBackend {
         if reduced_existing_position {
             if realized_delta < 0.0 {
                 self.account.consecutive_losses = self.account.consecutive_losses.saturating_add(1);
+                // The breaker LATCHES rather than cooling off: `quote.rs` stops
+                // quoting at the cap, and this counter only resets on a winning
+                // closing fill -- which a variant that can no longer fill will
+                // never get. So the variant is finished, and a row that keeps
+                // reporting itself valid is a lie rather than a result. On
+                // 2026-09-04 that hid a variant frozen for 8.7 h of a 9.6 h run.
+                // Nothing else would have shown it: `Metrics::risk_refusals` is
+                // hot-path-only and the grid spawns no hot-path threads.
+                if self.account.consecutive_losses >= self.risk.max_consecutive_losses {
+                    self.invalidate("consecutive-loss breaker latched");
+                }
             } else if realized_delta > 0.0 {
                 self.account.consecutive_losses = 0;
             }
@@ -1003,9 +1014,7 @@ impl DryRunBackend {
             self.account.equity_usdc - self.account.maintenance_margin_usdc;
         if self.account.liquidation_buffer_usdc < self.risk.min_liquidation_buffer_usdc {
             self.diagnostics.liquidation_breach_events += 1;
-            self.diagnostics.scientifically_valid = false;
-            self.diagnostics.invalid_reason = Some("liquidation buffer breached".to_owned());
-            self.orders.clear();
+            self.invalidate("liquidation buffer breached");
         }
     }
 
@@ -1715,6 +1724,95 @@ mod tests {
         backend.invalidate("event loss");
         assert!(backend.reconcile(bid_quotes(), 0).await.is_err());
         assert!(!backend.scientifically_valid());
+    }
+
+    /// Drive `count` losing closing fills: buy a unit at 100, sell it back at
+    /// 99, so each round trip reduces the position at a loss.
+    fn take_losing_round_trips(backend: &mut DryRunBackend, count: u32) {
+        for i in 0..count {
+            backend.apply_fill(Fill {
+                side: Side::Buy,
+                px: 10_000,
+                qty_units: 1,
+                fee_usdc: 0.0,
+                exchange_ms: u64::from(i),
+                virtual_order_id: 0,
+                maker: true,
+            });
+            backend.apply_fill(Fill {
+                side: Side::Sell,
+                px: 9_900,
+                qty_units: 1,
+                fee_usdc: 0.0,
+                exchange_ms: u64::from(i),
+                virtual_order_id: 0,
+                maker: true,
+            });
+        }
+    }
+
+    #[test]
+    fn the_latched_loss_breaker_marks_the_variant_invalid() {
+        // The breaker never releases -- it resets only on a winning closing
+        // fill, which a variant that has stopped quoting can never take. So a
+        // row that reached the cap is finished, and must not keep reporting
+        // itself as a result.
+        let risk = RiskConfig {
+            max_consecutive_losses: 3,
+            ..RiskConfig::default()
+        };
+        let mut backend = DryRunBackend::new(
+            instrument(),
+            DryRunConfig::default(),
+            QuotingConfig::default(),
+            risk,
+        )
+        .unwrap();
+
+        take_losing_round_trips(&mut backend, 2);
+        assert_eq!(backend.account.consecutive_losses, 2);
+        assert!(
+            backend.scientifically_valid(),
+            "one short of the cap still measures something"
+        );
+
+        take_losing_round_trips(&mut backend, 1);
+        assert_eq!(backend.account.consecutive_losses, 3);
+        assert!(!backend.scientifically_valid());
+        assert_eq!(
+            backend.diagnostics.invalid_reason.as_deref(),
+            Some("consecutive-loss breaker latched")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_liquidation_breach_invalidates_and_clears_the_deferred_target() {
+        // Regression: this path used to hand-roll `invalidate` and forget
+        // `deferred_desired`, leaving a queued target behind on the one code
+        // path that means the account is in trouble.
+        let risk = RiskConfig {
+            min_liquidation_buffer_usdc: 1.0e9,
+            ..RiskConfig::default()
+        };
+        let mut backend = DryRunBackend::new(
+            instrument(),
+            DryRunConfig::default(),
+            QuotingConfig::default(),
+            risk,
+        )
+        .unwrap();
+        backend.deferred_desired = Some(bid_quotes());
+
+        backend.mark_account(10_000);
+
+        assert!(!backend.scientifically_valid());
+        assert_eq!(backend.diagnostics.liquidation_breach_events, 1);
+        assert_eq!(
+            backend.diagnostics.invalid_reason.as_deref(),
+            Some("liquidation buffer breached")
+        );
+        assert!(backend.deferred_desired.is_none());
+        assert!(backend.reconcile(bid_quotes(), 0).await.is_err());
     }
 
     #[test]
