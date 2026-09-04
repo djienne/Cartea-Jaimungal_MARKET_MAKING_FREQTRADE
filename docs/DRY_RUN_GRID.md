@@ -184,8 +184,9 @@ python scripts/grid_pnl_curve.py wide8 baseline     # a subset
 ### A restart continues the run
 
 The grid checkpoints every variant's accounting to `grid_state.json` on each
-stats tick, and resumes from it on startup. Equity, inventory, fills, drawdown,
-markouts and the elapsed clock all carry across, so a reboot costs a gap rather
+stats tick, and resumes from it on startup. Equity, inventory, fills, drawdown
+and the elapsed clock all carry across (markouts still pending at the checkpoint
+are dropped, since their horizon spans the gap), so a reboot costs a gap rather
 than the measurement — which is what the 2026-08-27 Windows update cost before
 this existed.
 
@@ -244,7 +245,7 @@ The two limits now separate:
 - **Inside the carry window (900 s)** nothing changes. The position is marked
   seconds later at a price the run all but saw.
 - **Between the two (900 s – 1 h)** the run resumes in full — equity, fills,
-  diagnostics, markouts and the elapsed clock all continue — but every variant
+  diagnostics and the elapsed clock all continue — but every variant
   is closed out at its own last observed mark before a single new price
   arrives. Equity does not move when this happens; the position's market value
   simply becomes cash, and `realized_pnl_usdc` absorbs what had been
@@ -252,8 +253,9 @@ The two limits now separate:
   attributed to a decision taken before it.
 - **Beyond an hour** the grid still starts fresh.
 
-The flatten is announced at `WARN` on the resume line, with
-`flattened_variants` and `flattened_pnl_usdc`. A row that went through one is
+The flatten is announced with a `WARN` beside the resume line; the resume
+line itself carries `flattened_variants` and `flattened_pnl_usdc`. A row that
+went through one is
 not lying about its P&L, but it did have its inventory reset by the harness
 rather than by its own policy — so an inventory series that jumps to zero at a
 gap boundary is the harness, not the strategy.
@@ -322,9 +324,10 @@ schema moved, or the spec gained a variant:
    here `wide16slow30s`, whose history the raised cap invalidates;
 5. delete the throwaway run directory from step 2 and restart.
 
-Keep the original `checkpoint_ms`. The whole procedure then has to finish inside
-`--max-resume-gap-seconds` (900) or the binary refuses the resume on its own —
-which is the point: the gap check stays honest instead of being papered over.
+Keep the original `checkpoint_ms`. The gap check then adjudicates the whole
+procedure honestly: finish inside `--max-carry-inventory-gap-seconds` (900) and
+inventory carries; take longer and every position is closed at its checkpoint
+mark; exceed `--max-resume-gap-seconds` (3600) and the resume is refused.
 The 2026-09-04 splice recorded `resumes: 1`, `resumed_downtime_ms: 204493`.
 
 One consequence to read for, and it cannot be avoided: a restarted row's

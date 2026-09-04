@@ -301,6 +301,7 @@ impl DryRunBackend {
         let closed_pnl_usdc = market_value_usdc - inventory_base * self.account.average_entry_px;
 
         self.account.realized_pnl_usdc += closed_pnl_usdc;
+        self.daily_realized_pnl_usdc += closed_pnl_usdc;
         self.account.cash_usdc = self.account.equity_usdc;
         self.account.inventory_units = 0;
         self.account.average_entry_px = 0.0;

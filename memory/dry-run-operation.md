@@ -57,17 +57,18 @@ than the run.
 
 Three things bound that, and they are the point rather than an afterthought:
 
-- **The interruption is counted as feed downtime**, so it erodes the 5%
-  `max_feed_downtime_fraction` budget like any other blindness. It is
-  deliberately *not* added to `feed_longest_gap_ms` — that limit guards against
-  a long hole while *quoting* (stale resting orders, fills never seen), and a
-  restart has none of that, since the checkpoint restores a book with no working
-  orders. `resumes` and `resumed_downtime_ms` in `leaderboard.json` say how much
-  of the downtime was restarts, and the rendered table prints `[RESUMED]`.
-- **Beyond `--max-resume-gap-seconds` (default 900) it starts fresh instead.**
-  Resuming means marking held inventory at a price whose path was never
-  observed; across a long gap that is exactly the mechanism that made the 46.4 h
-  run report a 13.2% rally as profit.
+- **The interruption is NOT counted as feed downtime.** The 5%
+  `max_feed_downtime_fraction` budget measures blindness *while quoting* (stale
+  resting orders, fills never seen), and a stopped process has none of that. It
+  lives in `resumed_downtime_ms` instead, is subtracted from the budget's
+  denominator, and the rendered table prints `[RESUMED]`. Two windows bound the
+  resume (2026-09-04): inside `--max-carry-inventory-gap-seconds` (900)
+  inventory carries; between that and `--max-resume-gap-seconds` (3600) the run
+  resumes but every position is closed at its checkpoint mark first.
+- **Beyond `--max-resume-gap-seconds` (default 3600) it starts fresh instead.**
+  Resuming with a position intact means marking it at a price whose path was
+  never observed; that is the mechanism that made the 46.4 h run report a 13.2%
+  rally as profit, and the carry window above is what now guards it.
 - **An edited grid spec starts fresh.** The checkpoint carries a fingerprint of
   every variant's config, and resume is all-or-nothing — a partially-resumed
   grid would have rows that are not comparable, which is the one thing the grid

@@ -134,9 +134,9 @@ enum Command {
         /// Longest interruption the grid will resume across, in seconds.
         ///
         /// A restart inside this window continues the existing run: equity,
-        /// fills and the elapsed clock all carry forward, and the time the
-        /// process was down is counted as feed downtime. Beyond it the grid
-        /// starts fresh.
+        /// fills and the elapsed clock all carry forward; the time the
+        /// process was down is recorded as `resumed_downtime_ms`, not as feed
+        /// downtime. Beyond it the grid starts fresh.
         ///
         /// An hour, because the thing that actually interrupts this grid is a
         /// host reboot, and a Windows update reboot routinely takes longer than
@@ -2615,8 +2615,12 @@ async fn run_dry_run_grid(
                             // independent hypotheses: one blowing up (a
                             // liquidation-buffer breach is the realistic case)
                             // must not take the other variants with it, which
-                            // is exactly what `?` here used to do.
-                            if variant.failure.is_some() {
+                            // is exactly what `?` here used to do. An
+                            // invalidated one is left alone too: its backend
+                            // refuses non-empty quotes, and a latched loss
+                            // counter can still reset on a taker exit, so
+                            // stepping it would turn the halt into an error.
+                            if variant.failure.is_some() || !variant.backend.scientifically_valid() {
                                 continue;
                             }
                             let stepped = step_grid_variant(
@@ -2899,7 +2903,9 @@ fn checkpoint_grid(
                 .saturating_add(u64::from(feed_down_for_ms > 0)),
             feed.feed_downtime_ms.saturating_add(feed_down_for_ms),
             feed.feed_longest_gap_ms.max(feed_down_for_ms),
-            checkpoint_ms.saturating_sub(started_at_ms),
+            checkpoint_ms
+                .saturating_sub(started_at_ms)
+                .saturating_sub(resumed_downtime_ms),
             event_loss,
         ),
         trade_prints: feed.trade_prints,
@@ -3107,7 +3113,8 @@ fn write_grid_leaderboard(
         feed.feed_gaps,
         feed.feed_downtime_ms.saturating_add(feed_down_for_ms),
         feed.feed_longest_gap_ms.max(feed_down_for_ms),
-        now.saturating_sub(started_at_ms),
+        now.saturating_sub(started_at_ms)
+            .saturating_sub(resumed_downtime_ms),
         event_loss,
     );
     let feed_failures = feed_health.failures(runtime);

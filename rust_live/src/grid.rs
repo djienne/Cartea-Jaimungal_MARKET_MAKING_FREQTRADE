@@ -304,8 +304,9 @@ pub struct Leaderboard {
     pub resumes: u32,
     /// Total wall time the grid was *not running* across those resumes.
     ///
-    /// Counted inside `feed_health.downtime_ms` as well — it is missing market
-    /// data however it went missing — but kept separately because the two have
+    /// Not counted inside `feed_health.downtime_ms` — that budget measures
+    /// blindness *while quoting*, and a stopped process quotes nothing — and
+    /// kept separately because the two have
     /// different risk. A feed gap means the grid was quoting into the dark; a
     /// restart gap means it was not quoting at all.
     pub resumed_downtime_ms: u64,
