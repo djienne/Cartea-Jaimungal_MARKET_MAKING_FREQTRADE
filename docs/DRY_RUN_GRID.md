@@ -204,6 +204,61 @@ constant ~54 KB. The `.bak` is what makes a checkpoint torn by something outside
 the process (a full disk, power loss mid-write) cost one stats interval instead
 of the whole run; `load` falls back to it automatically.
 
+### The consecutive-loss breaker latches, and the grid runs it loose
+
+`risk.max_consecutive_losses` stops a variant quoting once it reaches the cap
+(`quote.rs:122`). The counter only resets on a **winning closing fill**
+(`dry_run.rs:919`), so a variant that reaches the cap stops quoting, therefore
+never fills, therefore can never reset. It is a latch, not a cooldown.
+
+That fired for real on 2026-09-04: `wide16slow30s` hit 25 fifty minutes into a
+9.6 h run and sat frozen for the remaining **91%** of it — 361 orders created
+against 65,044 for its peers — while still reporting `scientifically_valid:
+true`. The row was not a bad result, it was a dead row wearing one.
+
+Twenty-five losing round trips in a row is unremarkable for a strategy with a
+negative edge, and a strategy with a negative edge is exactly what the grid
+exists to **measure**. So the harness and the live profiles now differ on
+purpose: `cashcat_dryrun_realistic.toml` runs **500**, `cashcat.toml` and
+`cashcat_live_test.toml` keep **25**. `max_daily_loss_usdc` and the liquidation
+buffer remain the real runaway guards on both sides. Never set it to `0` — the
+check is `>=`, so zero halts everything on the first tick.
+
+**A halted row still reports valid.** Until that is fixed, a row whose
+`virtual_orders_created` has stopped growing while its peers' climbs is halted,
+whatever the `valid` column says. `consecutive_losses` in `grid_state.json` is
+the confirmation.
+
+#### Carrying a run across a base-config change
+
+Any edit to the base config rewrites every variant's `config_fingerprint`, so
+the resume check refuses the checkpoint and all twenty rows restart from zero —
+correct by default, and wrong when the edit provably changed nothing for most of
+them. Raising a cap that only one row ever reached is that case.
+
+The 9.6 h run was carried forward with `scripts/splice_grid_state.py`, which
+does steps 3-4 and refuses to run if the fingerprints already agree, the state
+schema moved, or the spec gained a variant:
+
+1. stop the grid, and copy `grid_state.json` aside;
+2. start it once so it **computes** the new fingerprints itself and checkpoints
+   them — never write a fingerprint by hand;
+3. stop it, and splice the old accounting into that fresh checkpoint as a
+   template, keeping its `grid_fingerprint`/`config_fingerprint` and the old
+   `run_id`, `started_at_ms` and `feed_health`;
+4. leave the rows the change *did* affect at their fresh zeroed accounts —
+   here `wide16slow30s`, whose history the raised cap invalidates;
+5. delete the throwaway run directory from step 2 and restart.
+
+Keep the original `checkpoint_ms`. The whole procedure then has to finish inside
+`--max-resume-gap-seconds` (900) or the binary refuses the resume on its own —
+which is the point: the gap check stays honest instead of being papered over.
+The 2026-09-04 splice recorded `resumes: 1`, `resumed_downtime_ms: 204493`.
+
+One consequence to read for, and it cannot be avoided: a restarted row's
+`equity_history.csv` is discontinuous, and its elapsed hours no longer match the
+rest of the grid. Compare it on a rate, never on a total.
+
 ### The period archive — what outlives the tape
 
 Both of this project's evidence streams expire on a clock:

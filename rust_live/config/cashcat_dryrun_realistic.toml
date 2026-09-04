@@ -136,7 +136,19 @@ max_margin_usdc = 1600.0
 min_liquidation_buffer_usdc = 100.0
 maintenance_margin_rate = 0.05
 max_daily_loss_usdc = 200.0
-max_consecutive_losses = 25
+# DELIBERATELY LOOSER THAN THE LIVE PROFILES (cashcat.toml, cashcat_live_test.toml
+# keep 25). This gate latches: `consecutive_losses` only resets on a WINNING
+# closing fill (dry_run.rs:919), so a variant that reaches the cap stops quoting,
+# can never fill again, and therefore can never reset. On 2026-09-04 that killed
+# `wide16slow30s` 50 minutes into a 9.6 h run -- it sat frozen for the remaining
+# 91% while still reporting `scientifically_valid: true`, so its row was a lie
+# rather than a result. 25 closing losses in a row is ordinary for a strategy
+# with a negative edge, which is precisely the strategy the grid exists to
+# MEASURE rather than to protect capital from. Live keeps the tight breaker; the
+# harness does not. `max_daily_loss_usdc` and the liquidation buffer are the real
+# runaway guards here, and both stay as they are. Never set this to 0: the check
+# is `>=`, so 0 halts everything immediately.
+max_consecutive_losses = 500
 max_market_spread_bps = 100.0
 
 [dry_run]
