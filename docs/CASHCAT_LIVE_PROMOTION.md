@@ -21,9 +21,11 @@ After at least 43,200 seconds, generate the live configuration with:
 scripts\Manage-CashcatLive.ps1 -Action Promote
 ```
 
-The selector takes the valid row with the highest `promotion_pnl_usdc`, even
-when every row is negative. It writes `rust_live/run/cashcat-active-live.toml`
-and `cashcat-promotion.json` atomically.
+The selector takes the valid, live-equivalent row with the highest
+`promotion_pnl_usdc` and requires that value to be positive; otherwise live
+remains disabled. Dry-run-only taker-flatten variants are excluded because the
+live backend has no equivalent exit policy. A successful selection writes
+`rust_live/run/cashcat-active-live.toml` and `cashcat-promotion.json` atomically.
 
 Live orders are the first valid lot between 1.05 and 1.10 times the current
 CASHCAT minimum notional. Directional exposure is one such order, working gross

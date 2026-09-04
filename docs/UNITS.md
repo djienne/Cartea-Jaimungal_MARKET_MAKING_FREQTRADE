@@ -73,10 +73,11 @@ not a current acceptance threshold.
 
 ### Named departures from the book
 
-1. **No forced liquidation at `T`.** The book liquidates the residual at market
-   and pays `alpha*q^2`. Every quote here is post-only by construction, so
-   taking liquidity to flatten would contradict the rest of the design. The
-   terminal condition acts through the depths alone and the clock restarts.
+1. **No HJB-forced liquidation at `T`.** The book liquidates the residual at
+   market and pays `alpha*q^2`; the implemented terminal condition acts through
+   quote depths and the episode clock restarts. Ordinary quotes remain post-only.
+   Two dry-run-grid variants test a separately accounted taker exit, but that
+   policy is not part of the HJB or live backend.
 2. **Episodes restart on a real clock**, at `T` or once flat past
    `episode_min_elapsed_fraction * T`. A perpetual instrument has no natural
    terminal time; the book's agent starts flat at `t=0`, so reaching flat is the
@@ -92,8 +93,8 @@ not a current acceptance threshold.
 
 Not the textbook "flatten harder as `t -> T`" picture, because the *running*
 penalty dwarfs the terminal one. The shipped config runs
-`phi*kappa*T = 200` (ceiling `phi_kappa_t_max = 300`) against
-`alpha*kappa = 0.05`, a factor of 4000. Historical Python sweeps used 10, a
+`phi*kappa*T = 300` (ceiling `phi_kappa_t_max = 450`) against
+`alpha*kappa = 0.05`, a factor of 6000. Historical Python sweeps used 10, a
 factor of 200; those artifacts are dated and should not be read as the current
 Rust profile. In either case the running penalty is what remains to be **paid**
 over the time left, so it is largest at `t=0` and vanishes at `T`. Measured at
@@ -111,8 +112,10 @@ alpha=0.0001`, i.e. `phi*kappa*T = 60` against `alpha*kappa = 0.01`, a ratio of
 ours, so the agreement is expected. Checked against the book PDF 2026-08-17.
 
 Consequence: Python's `hjb_alpha_kappa` / Rust's `alpha_kappa` was chosen while
-`alpha` was effectively inert. Episodic control makes it active, but it has not
-been tuned; treat it as an open model parameter.
+`alpha` was effectively inert. Episodic control makes it mathematically active,
+but at the current `phi*kappa*T=300` its influence is confined to the final 8.75
+seconds. A later sweep returned bit-identical P&L at 0.05, 0.5, and 5.0, so this
+regime cannot tune it; revisit only with a lower running penalty.
 
 ### Solver resolution
 

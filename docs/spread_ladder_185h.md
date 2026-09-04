@@ -9,11 +9,12 @@
 > still the only profitable region, but at roughly half the magnitude, and the
 > middle of the ladder is no longer cleanly ordered.
 
-> **Subsequent live evidence.** Two independent day-length grid runs with a
-> binding `q_max` kept 24/40/48/60 bps positive, but reversed the ordering of
-> 40/48/60 and ended with material directional inventory. The replay table below
-> is evidence for a promising width region, not a deployable winner; see
-> `DRY_RUN_GRID.md`.
+> **Dated live evidence.** Two pre-2026-08-31 day-length grid runs with a binding
+> `q_max` kept 24/40/48/60 bps positive, but reversed the ordering of 40/48/60
+> and ended with material directional inventory. Those runs used the superseded
+> queue/feed model and cannot support promotion. Together with the replay below,
+> they motivate a width region to retest; they do not establish a deployable
+> winner. See `DRY_RUN_GRID.md`.
 
 | half-spread | pre-fix | **post-fix** | delta | fills | 5 s markout | end inv |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -121,7 +122,7 @@ anything narrower.
 
 ## What this changes
 
-The current 18-variant grid carries 40/48/60 bps rungs and a limited
+The current grid carries 40/48/60 bps rungs and a limited
 spread-by-cadence matrix. Its completed runs support **a broad 24–60 bps region**
 over the 1.5–8 bps controls, but do not rank the wide rungs and do not eliminate
 directional inventory risk. The remaining question is whether that region stays

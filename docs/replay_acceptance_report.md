@@ -1,5 +1,9 @@
 # Replay Acceptance Report
 
+> **Historical smoke artifact.** This 24-minute pre-schema-v5 report is retained
+> as fail-closed evidence, not as the current replay result. See
+> `cashcat_sweep.md` for the latest staged train/held-out sweep.
+
 - status: FAIL
 - symbol: `CASHCAT`
 - generated_at: `2026-08-20T22:11:13Z`

@@ -154,10 +154,11 @@ the plausible range:
 | b | 0.378 | 0.873 | 1.051 | **1.050** | 0.988 |
 | edge @26 bps | +12.23 | +0.96 | -4.10 | **-4.15** | -3.64 |
 
-**The shipped 200 ms horizon is the only one that makes this strategy look profitable,
-and it is roughly 30x shorter than the median holding period.** That is the whole error in
-one line: the model books the adverse selection of the first 200 ms and then holds the
-position for seconds to minutes.
+**At the representative 26 bps depth, the shipped 200 ms horizon is the only
+reported horizon with a positive conditional edge, and it is roughly 30x
+shorter than the median holding period.** The model books the first 200 ms of
+adverse selection and then holds the position for seconds to minutes; deeper
+policies must be evaluated separately.
 
 ### A feedback loop the phi ladder never modelled
 
@@ -181,9 +182,11 @@ Same statistic on every instrument with a tape, common window 2026-08-30 20:35 t
 
 PENGU and NIL have too few deep sweeps to fit and the script refuses rather than
 guessing. **Every instrument that fits has `b >= 1` from 1 s out**, and 200 ms is the
-only horizon anywhere that reads below 1 -- and it is far shorter than anything is
-actually held. Passively resting behind the touch does not have an edge on this venue,
-on any symbol we have data for. That is not a CASHCAT property to be tuned away.
+only horizon anywhere that reads below 1. At the depths and 1--5 s horizons measured
+here, conditional markout consumes the quoted depth. This does not rule out a deeper
+or longer-hold policy: the later 60 bps replay is positive but carries large inventory
+and rests beyond the recorded book, so its queue and live achievability remain unknown
+(`cashcat_flatten_fast.md`).
 
 ### Why `b ~ 1` is not merely mechanical
 
@@ -211,7 +214,9 @@ but "the mid ends exactly where the sweep reached" overstates the mechanism.
 
 ### Queue priority makes this worse, not better
 
-Our order is filled only when the sweep passes `d` by at least the size queued ahead of
-us, and the jump rises monotonically with reach (marginal bins at 5 s: 2.3, 4.7, 7.4,
-12.4, 16.8 bps for d in 5-30). So `E[jump | reach >= d]` is a **lower bound** on realised
-adverse selection. Modelling the queue can only lower the estimate of our edge.
+Our order is filled only when the sweep passes `d` far enough to clear the queue ahead,
+and the jump rises with reach (marginal bins at 5 s: 2.3, 4.7, 7.4, 12.4, 16.8 bps for
+d in 5--30). The conditional curve therefore understates markout for a fixed quote
+whose queue is non-zero. The net P&L effect is not identified here, however: queueing
+also removes fills, and the 20-level snapshots rarely reach the 60 bps quotes now under
+study, so they do not measure the queue at our price.

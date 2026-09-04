@@ -339,7 +339,7 @@ def test_default_epsilon_matches_the_single_horizon_path(tmp_path, monkeypatch):
     window = load_market_window("SYN", 10, data_dir=ds)
     mos = get_epsilon.attach_pre_mid(get_epsilon.aggregate_market_orders(window.trades), window.mids)
     reference = get_epsilon.compute_mo_impacts(mos, window.mids, 200, window.window_end_ms)
-    ref_plus, ref_minus, _ = get_epsilon._floored_trimmed_means(reference)
+    ref_plus, ref_minus, _ = get_epsilon._floored_mean_estimates(reference)
 
     assert entry["window_ms"] == 200
     assert entry["window_ms_plus"] == 200

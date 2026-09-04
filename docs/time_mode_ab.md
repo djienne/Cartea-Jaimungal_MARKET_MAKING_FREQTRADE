@@ -29,8 +29,8 @@ sizing (`q_max=6`, `inventory_unit_base=2430`, leverage 2, tick 1e-5).
 it fixed across a horizon sweep would sweep two things at once. `ακ = 0.05`.
 
 (`φκT = 10` was the deployed value when this A/B was run. The current Rust
-profile uses 200 with a ceiling of 300. The numbers below are the A/B as run and
-have not been re-measured at 200.)
+profile uses 300 with a ceiling of 450. The numbers below are the A/B as run and
+have not been re-measured at 300.)
 
 Reproduce with `scripts/replay_market_maker.py --hjb-time-mode {stationary,episodic}`.
 
@@ -65,10 +65,11 @@ book's Fig. 10.8 runs `phi*kappa*T = 60` against `alpha*kappa = 0.01`, so it is
 in the same running-penalty-dominated regime and shows the same shape. Corrected
 2026-08-17 against the book PDF.)
 
-The corollary matters more than the number: **`alpha_kappa` affects current
-quotes and remains untuned.** It was set to 0.05 while α was structurally inert, so
-that value carries no evidence. Raising it is what would make the time axis do
-visible work, and that is the sweep worth running next.
+The corollary matters more than the number: **`alpha_kappa` remains untuned.** A
+later 2026-09-02 check found that at the current `φκT=300` its influence is
+confined to roughly the last 8.75 seconds of a 150-second episode, and Stage B
+returned identical P&L at `alpha_kappa=0.05`, `0.5`, and `5.0`. Revisit it only
+with a lower running penalty where the terminal layer is actually observable.
 
 **2. Every configuration loses money, and longer horizons lose more**
 (−42 → −100 as T goes 150 s → 1800 s, with fills rising 1171 → 1638). Consistent

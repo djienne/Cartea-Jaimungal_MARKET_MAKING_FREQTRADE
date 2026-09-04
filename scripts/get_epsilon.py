@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Event-level epsilon (adverse-selection impact) estimation (schema v4).
+"""Event-level epsilon (adverse-selection impact) estimation (schema v5).
 
 Methodology:
 - Impacts are measured per MARKET ORDER (prints sharing side + exchange
@@ -244,8 +244,9 @@ def compute_mo_impacts_per_side(mos_with_pre_mid: pd.DataFrame, mids: pd.DataFra
 
 def estimate_epsilon_parameters(results):
     """
-    Estimate epsilon+ and epsilon- from impact measurements (event-level).
-    Uses trimmed mean (10%) and median for robustness.
+    Summarize event-level epsilon+ and epsilon- impacts after bad-tick clipping.
+    Reports the plain mean, median, and 10% trimmed mean; the caller uses the
+    plain mean as the model input.
     """
 
     estimates = {}
@@ -287,7 +288,7 @@ def estimate_epsilon_parameters(results):
     return estimates
 
 
-def _floored_trimmed_means(results) -> tuple[float | None, float | None, dict]:
+def _floored_mean_estimates(results) -> tuple[float | None, float | None, dict]:
     """Mean impact per side, floored at 0 (C-J epsilon >= 0).
 
     The book asks for epsbar = E[eps], so the shipped figure is the plain mean
@@ -363,7 +364,7 @@ def save_epsilon_to_json(eps_plus: float, eps_minus: float, crypto: str, filenam
     per-window means -- 3-sigma-clipped and floored at zero,
     NOT trimmed. The trimmed mean is computed alongside but deliberately not
     shipped: trimming a right-skewed jump distribution understates adverse
-    selection. *_raw defaults to the primaries when not supplied, so every v4
+    selection. *_raw defaults to the primaries when not supplied, so every v5
     snapshot carries the full key set."""
     entry = build_epsilon_entry(eps_plus, eps_minus, metadata=metadata, raw_values=raw_values)
     data = load_json_object(filename)
@@ -441,7 +442,7 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
     impact_results = compute_mo_impacts_per_side(
         mos, window.mids, horizon_plus_ms, horizon_minus_ms, window_end_ms
     )
-    eps_plus_raw, eps_minus_raw, final_estimates = _floored_trimmed_means(impact_results)
+    eps_plus_raw, eps_minus_raw, final_estimates = _floored_mean_estimates(impact_results)
 
     diagnostics: dict[str, float | None] = {}
     for diag_horizon in DIAGNOSTIC_HORIZONS_MS:
@@ -452,7 +453,7 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
             diag_plus, diag_minus = eps_plus_raw, eps_minus_raw
         else:
             diag_results = compute_mo_impacts(mos, window.mids, diag_horizon, window_end_ms)
-            diag_plus, diag_minus, _ = _floored_trimmed_means(diag_results)
+            diag_plus, diag_minus, _ = _floored_mean_estimates(diag_results)
         label = (
             f"{diag_horizon // 1000}s" if diag_horizon % 1000 == 0 else f"{diag_horizon}ms"
         )
@@ -476,19 +477,20 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
             kappa_plus, kappa_minus = float(kappa_override[0]), float(kappa_override[1])
         else:
             kappa_plus, kappa_minus = load_kappa_from_json(crypto)
-        log_section(f"TOXICITY CHECK - {crypto}")
+        log_section(f"RELATIVE ADVERSE-SELECTION DIAGNOSTIC - {crypto}")
         toxicity_plus = kappa_plus * eps_plus_raw
         toxicity_minus = kappa_minus * eps_minus_raw
         print(f"  kappa+ x epsilon+ = {toxicity_plus:.4f}")
         print(f"  kappa- x epsilon- = {toxicity_minus:.4f}")
 
         kappa_epsilon_max = max(toxicity_plus, toxicity_minus)
-        if kappa_epsilon_max >= 2:
-            print("  WARNING: Market appears very toxic (kappa x epsilon >= 2)")
+        if kappa_epsilon_max >= 1.5:
+            print("  REJECTED by the configured calibration gate (kappa x epsilon >= 1.5)")
         elif kappa_epsilon_max >= 1:
-            print("  CAUTION: Market is competitive (1 <= kappa x epsilon < 2)")
+            print("  CAUTION band (1 <= kappa x epsilon < 1.5)")
         else:
-            print("  Market toxicity appears manageable (kappa x epsilon < 1)")
+            print("  Below the caution band (kappa x epsilon < 1)")
+        print("  This diagnostic omits fees, queue position, and latency; it is not a profitability test.")
     except Exception as e:
         print(f"Toxicity check skipped: {e}")
 
@@ -608,7 +610,7 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Calculate epsilon (permanent price impact) from market data')
+    parser = argparse.ArgumentParser(description='Estimate the epsilon arrival jump from market data')
     parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'CASHCAT'),
                         help='Cryptocurrency symbol (e.g., ETH) or ALL for all available in HL_data')
     parser.add_argument('--minutes', '-m', type=int, default=30,

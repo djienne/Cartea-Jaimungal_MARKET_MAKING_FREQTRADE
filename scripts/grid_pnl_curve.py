@@ -20,6 +20,7 @@ Two sources, preferred in this order:
 Usage:
     python scripts/grid_pnl_curve.py                       # every variant
     python scripts/grid_pnl_curve.py wide8 baseline        # a subset
+    python scripts/grid_pnl_curve.py --report-dir rust_live/reports/grid_live
     python scripts/grid_pnl_curve.py --out curve.png --minutes 5
     python scripts/grid_pnl_curve.py --from-fills          # force source 2
 """
@@ -70,7 +71,29 @@ def open_log(path: Path):
     return io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
 
 
-def variant_files(names: list[str] | None) -> dict[str, Path]:
+def resolve_run_dir(report_dir: Path) -> Path:
+    """Resolve a grid root to the active immutable run directory.
+
+    A run directory may also be supplied directly. The root ``grid_state.json``
+    is authoritative; newest-directory fallback keeps old archives readable.
+    """
+    report_dir = Path(report_dir)
+    if (report_dir / "equity_history.csv").is_file() or any(report_dir.glob("grid-*.jsonl*")):
+        return report_dir
+    try:
+        state = json.loads((report_dir / "grid_state.json").read_text(encoding="utf-8"))
+        candidate = report_dir / "runs" / str(state["run_id"])
+        if candidate.is_dir():
+            return candidate
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    runs = [path for path in (report_dir / "runs").glob("*") if path.is_dir()]
+    if runs:
+        return max(runs, key=lambda path: path.stat().st_mtime_ns)
+    return report_dir
+
+
+def variant_files(names: list[str] | None, grid_dir: Path = GRID_DIR) -> dict[str, Path]:
     """Newest log per variant.
 
     Two naming schemes coexist: the current stable `grid-<variant>.jsonl.zst`,
@@ -78,7 +101,7 @@ def variant_files(names: list[str] | None) -> dict[str, Path]:
     `grid-<variant>-<ms>.jsonl` from runs before compression.
     """
     found: dict[str, Path] = {}
-    for path in sorted(GRID_DIR.glob("grid-*.jsonl*")):
+    for path in sorted(Path(grid_dir).glob("grid-*.jsonl*")):
         name = path.name
         for suffix in (".jsonl.zst", ".jsonl"):
             if name.endswith(suffix):
@@ -161,23 +184,29 @@ def curves_from_history(path: Path, names: list[str] | None):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("variants", nargs="*", help="variant names (default: all)")
-    parser.add_argument("--out", default=str(GRID_DIR / "pnl_curve.png"))
+    parser.add_argument("--report-dir", default=str(GRID_DIR),
+                        help="Grid root or one immutable runs/<run-id> directory")
+    parser.add_argument("--out", default=None)
     parser.add_argument("--minutes", type=float, default=2.0, help="grid resolution (fill reconstruction only)")
     parser.add_argument("--csv", help="also write the curves as CSV")
-    parser.add_argument("--history", default=str(GRID_DIR / "equity_history.csv"))
+    parser.add_argument("--history", default=None, help="Explicit equity_history.csv override")
     parser.add_argument("--from-fills", action="store_true", help="ignore the history file")
     args = parser.parse_args()
 
-    history_path = Path(args.history)
+    report_dir = Path(args.report_dir)
+    run_dir = resolve_run_dir(report_dir)
+    history_path = Path(args.history) if args.history else run_dir / "equity_history.csv"
+    if args.out is None:
+        args.out = str(report_dir / "pnl_curve.png")
     if history_path.exists() and not args.from_fills:
         hours, mid, curves, fill_counts = curves_from_history(history_path, args.variants or None)
         print(f"source: {history_path.name} ({len(hours)} samples)")
         render(hours, mid, curves, fill_counts, args)
         return
 
-    files = variant_files(args.variants or None)
+    files = variant_files(args.variants or None, run_dir)
     if not files:
-        raise SystemExit(f"no variant logs found under {GRID_DIR}")
+        raise SystemExit(f"no variant logs found under {run_dir}")
 
     fills = {name: read_fills(path) for name, path in files.items()}
     non_empty = [f for f in fills.values() if not f.empty]

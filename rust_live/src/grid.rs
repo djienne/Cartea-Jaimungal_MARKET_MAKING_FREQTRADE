@@ -58,30 +58,29 @@ impl Drop for GridRunLock {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VariantOverrides {
-    /// `model.q_max` — inventory cap. The sweep's clearest single effect:
-    /// q=3 scored -279.11 against q=6's -585.61 on the same calibration.
+    /// `model.q_max` — inventory cap. Replay and early live runs disagreed on
+    /// whether lowering it helped, so the grid retains it as a measured axis.
     pub q_max: Option<i64>,
     /// `model.phi_kappa_t` — running inventory penalty. Higher pushes back to
     /// flat harder.
     pub phi_kappa_t: Option<f64>,
     /// `model.phi_kappa_t_max` — the ceiling that `hjb.rs` rescales φ against.
-    /// Without raising this, a `phi_kappa_t` above the base ceiling (300) is
-    /// silently clamped, so a variant asking for 1000 quietly runs 300.
+    /// Without raising this, a `phi_kappa_t` above the base ceiling (450) is
+    /// silently clamped; `phi1000` therefore raises both fields.
     pub phi_kappa_t_max: Option<f64>,
-    /// `quoting.min_half_spread_bps` — floor on quoted depth. The losing window
-    /// earned +683.89 of spread across 1,771 fills, about 0.39 per fill, which
-    /// did not cover the adverse selection it took.
+    /// `quoting.min_half_spread_bps` — floor on each quoted side's depth.
     pub min_half_spread_bps: Option<f64>,
     /// `dry_run.flatten_after_ms` — cross out inventory once a lot has been held
     /// this long, instead of waiting for an offsetting maker fill. Zero keeps the
     /// shipped hold. The replay says adverse selection grows steeply with the
     /// markout horizon while a passive offset takes a 6.5 s median, so crossing
-    /// early truncates it; breakeven lands near a 450-500 ms round trip
+    /// early truncates it; replay breakeven lands near a 450-520 ms round trip
     /// (`docs/cashcat_flatten_fast.md`). Untested against a live feed, which is
     /// what this variant is for.
     pub flatten_after_ms: Option<u64>,
-    /// `quoting.min_order_lifetime_ms` — requote cadence. The only positive rung
-    /// of the latency ladder was the 30 s-refresh one.
+    /// `quoting.min_order_lifetime_ms` — requote cadence. Its interaction with
+    /// spread width is non-monotone, so slow rows are controls rather than a
+    /// presumed improvement.
     pub min_order_lifetime_ms: Option<u64>,
     /// `quoting.reduce_only_threshold_q`; must not exceed the variant q-range.
     pub reduce_only_threshold_q: Option<f64>,
@@ -263,6 +262,8 @@ pub struct LeaderboardRow {
     pub working_orders: usize,
     pub max_drawdown_usdc: f64,
     pub scientifically_valid: bool,
+    /// False for invalid rows and for dry-run-only policies with no live
+    /// equivalent, such as `flatten_after_ms > 0`.
     pub eligible_for_promotion: bool,
 }
 
@@ -308,7 +309,7 @@ pub struct Leaderboard {
     /// different risk. A feed gap means the grid was quoting into the dark; a
     /// restart gap means it was not quoting at all.
     pub resumed_downtime_ms: u64,
-    /// Ranked by net P&L, best first.
+    /// Promotable rows first, ordered by executable-side flatten P&L.
     pub rows: Vec<LeaderboardRow>,
 }
 
@@ -394,8 +395,8 @@ impl PersistedGridState {
 
     /// Write the checkpoint, keeping the previous one as `.bak`.
     ///
-    /// Two files of a fixed size, overwritten in place — this rotation is a
-    /// constant ~54 KB at eighteen variants, not something that accumulates.
+    /// Two fixed-schema generations, overwritten in place. Their size depends
+    /// on variant count and bounded diagnostic maps, not run duration.
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -598,7 +599,7 @@ impl Leaderboard {
             );
         }
         // Printed under the table rather than per row: the reason is the same
-        // for every variant, and a reader who scrolls past 18 `[INVALID]` tags
+        // for every variant, and a reader who scrolls past a screenful of tags
         // still needs to be told what disqualified them.
         for reason in &self.feed_failures {
             let _ = writeln!(out, "\n  [FEED INVALID] {reason}");

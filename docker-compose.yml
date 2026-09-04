@@ -32,8 +32,8 @@ services:
 
     # SIGINT, because `wait_for_shutdown_signal` selects on ctrl_c()/SIGTERM and
     # SIGINT is what ctrl_c() is on Linux. 60s rather than the 30s the sibling
-    # Lighter grid uses: teardown walks every variant in turn, calling
-    # backend.shutdown() and flushing its event log, and this grid runs 18.
+    # Lighter grid uses: teardown walks every configured variant in turn,
+    # calling backend.shutdown() and flushing its event log.
     stop_signal: SIGINT
     stop_grace_period: 60s
     # unless-stopped, not always: a container the daemon stopped (a reboot,

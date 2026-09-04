@@ -22,8 +22,8 @@ README:
 
 - the **sweep** scores the whole tape currently on disk (up to 30 days), so
   consecutive archives overlap -- that overlap is the safety margin;
-- the **grid curve** is sliced to the period since the last archive, so the
-  archives concatenate into one non-overlapping timeline.
+- the **grid curve** is sliced to the period since the last archive, preserving
+  `run_started_ms` boundaries so independent runs are never spliced.
 
 Usage:
     python scripts/archive_period.py --dry-run     # what would be written
@@ -160,25 +160,42 @@ def is_due(out_dir, symbol, cadence_days, now):
 # --------------------------------------------------------------------------
 
 
-def slice_and_downsample(history, target, since_ms, minutes):
-    """Write the period's slice of the equity history, thinned to `minutes`.
+def grid_history_paths(grid_dir):
+    """Legacy root history plus every immutable run history, oldest first."""
+    grid_dir = Path(grid_dir)
+    paths = []
+    legacy = grid_dir / "equity_history.csv"
+    if legacy.is_file():
+        paths.append(legacy)
+    paths.extend(sorted((grid_dir / "runs").glob("*/equity_history.csv")))
+    return paths
 
-    Full resolution is 60 s per variant, about 95 MB/month -- far too much to
-    commit every three weeks. Thinning to 15 min and compressing keeps a
-    month-scale retrospective legible at roughly 1/200th the size. The
-    full-resolution equity file stays on local disk and is intentionally not
-    rotated; only the per-variant event logs have a rotation ceiling.
+
+def slice_and_downsample(histories, target, since_ms, minutes):
+    """Write the period's equity histories, thinned to `minutes`.
+
+    Current runs live under ``runs/<run-id>``; the legacy root file is included
+    when present. Independent ``run_started_ms`` values remain separate so a
+    reset is never spliced into a continuous-looking curve.
     """
     import pandas as pd
 
-    frame = pd.read_csv(history)
+    if isinstance(histories, (str, os.PathLike, Path)):
+        histories = [histories]
+    frames = [pd.read_csv(path) for path in histories]
+    if not frames:
+        return {"rows": 0, "rows_in_file": 0}
+    frame = pd.concat(frames, ignore_index=True).drop_duplicates()
     total = len(frame)
     frame = frame[frame["ts_ms"] >= since_ms]
     if frame.empty:
         return {"rows": 0, "rows_in_file": total}
     bucket = int(minutes * 60_000)
     frame = frame.assign(_bucket=frame["ts_ms"] // bucket)
-    thinned = frame.groupby(["variant", "_bucket"], as_index=False).last()
+    groups = ["variant", "_bucket"]
+    if "run_started_ms" in frame.columns:
+        groups.insert(0, "run_started_ms")
+    thinned = frame.groupby(groups, as_index=False).last()
     thinned = thinned.drop(columns="_bucket").sort_values("ts_ms")
     Path(target).parent.mkdir(parents=True, exist_ok=True)
     thinned.to_csv(target, index=False)
@@ -233,32 +250,51 @@ def sweep_headline(sweep_json):
         payload = json.loads(Path(sweep_json).read_text(encoding="utf-8"))
     except Exception as error:  # noqa: BLE001 - a bad artifact must not kill the archive
         return ["- sweep payload unreadable: %r" % (error,)]
+    scenario = payload.get("search_scenario")
+    if isinstance(scenario, dict):
+        scenario = "%s (%s ms latency, %s ms refresh)" % (
+            scenario.get("name", "?"),
+            scenario.get("latency_ms", "?"),
+            scenario.get("refresh_ms", "?"),
+        )
     lines = [
         "- status: `%s`" % payload.get("status"),
-        "- search scenario: `%s`" % payload.get("search_scenario"),
+        "- search scenario: `%s`" % scenario,
         "- train/held-out split at `%s`" % payload.get("split_at"),
     ]
     stage_c = payload.get("stage_c") or []
     if stage_c:
-        lines += ["", "| configuration | train P&L | held-out P&L | fills |", "| --- | ---: | ---: | ---: |"]
-        for row in stage_c[:3]:
-            lines.append(
+        try:
+            stage_lines = [
                 "| `%s` | %+.2f | **%+.2f** | %s |"
                 % (
-                    row.get("label", "?"),
-                    row.get("train_pnl", 0.0),
-                    row.get("holdout_pnl", 0.0),
-                    row.get("fills", 0),
+                    row["key"],
+                    row["train"]["pnl_usdc"],
+                    row["held_out"]["pnl_usdc"],
+                    row["held_out"]["maker_fills"],
                 )
-            )
+                for row in stage_c[:3]
+            ]
+        except (KeyError, TypeError, ValueError) as error:
+            return lines + ["", "- sweep summary schema mismatch: `%s`; read `sweep.json`" % error]
+        lines += ["", "| configuration | train P&L | held-out P&L | fills |", "| --- | ---: | ---: | ---: |"]
+        lines += stage_lines
     ladder = payload.get("latency_ladder") or []
     if ladder:
+        try:
+            ladder_lines = []
+            for row in ladder:
+                scenario = row["scenario"]
+                if isinstance(scenario, dict):
+                    scenario = scenario["name"]
+                ladder_lines.append(
+                    "| %s | %+.2f | %s |"
+                    % (scenario, row["pnl_usdc"], row["maker_fills"])
+                )
+        except (KeyError, TypeError, ValueError) as error:
+            return lines + ["", "- sweep summary schema mismatch: `%s`; read `sweep.json`" % error]
         lines += ["", "| latency scenario | P&L | fills |", "| --- | ---: | ---: |"]
-        for row in ladder:
-            lines.append(
-                "| %s | %+.2f | %s |"
-                % (row.get("scenario", "?"), row.get("pnl", 0.0), row.get("fills", 0))
-            )
+        lines += ladder_lines
     return lines
 
 
@@ -316,8 +352,8 @@ def write_readme(period_dir, symbol, facts):
         "",
         "The two windows differ on purpose. The sweep scores the whole tape on disk, so",
         "consecutive archives overlap and a skipped cycle still loses nothing; the grid",
-        "curve covers only the period since the last archive, so the archives concatenate",
-        "into one continuous timeline.",
+        "curve covers only the period since the last archive. Run boundaries remain explicit",
+        "through `run_started_ms`; archive periods do not overlap.",
         "",
         "## Replay sweep",
         "",
@@ -398,10 +434,10 @@ def archive(symbol, args, now):
         shutil.copy2(leaderboard, period_dir / "grid_leaderboard.json")
         grid_lines = leaderboard_headline(period_dir / "grid_leaderboard.json")
 
-    history = Path(args.grid_dir) / "equity_history.csv"
-    if history.exists():
+    histories = grid_history_paths(args.grid_dir)
+    if histories:
         sliced = period_dir / "grid_equity_curve.csv"
-        stats = slice_and_downsample(history, sliced, grid_since_ms, args.resolution_minutes)
+        stats = slice_and_downsample(histories, sliced, grid_since_ms, args.resolution_minutes)
         if stats["rows"]:
             run(
                 [

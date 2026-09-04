@@ -200,7 +200,7 @@ pub struct DryRunConfig {
     /// 200 ms against 29.77 at 6.6 s -- and waiting for a passive offset takes a
     /// 6.5 s median, so the position eats the whole accrual. Crossing early
     /// truncates it, and pays the half-spread plus taker fee to do so. The
-    /// replay puts breakeven near a 450-500 ms round trip; this exists to find
+    /// replay puts breakeven near a 450-520 ms round trip; this exists to find
     /// out whether that survives contact with the live feed.
     pub flatten_after_ms: u64,
     /// Cost of a flatten, kept SEPARATE from `promotion_flatten_*`.

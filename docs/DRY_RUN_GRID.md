@@ -1,5 +1,11 @@
 # Dry-run grid — several parameter sets, one feed
 
+> **Current status.** The spec contains 20 variants, including two experimental
+> taker-flatten rows. Result sections below are dated observations. Runs before
+> 2026-08-31 used superseded queue/feed handling and are hypothesis evidence,
+> not promotion evidence; since 2026-09-03 the simulator also enforces ALO and
+> keeps taker exits out of maker-fill and markout statistics.
+
 Normally run as a container, which is what survives a reboot:
 
 ```
@@ -16,8 +22,9 @@ mm-live --config rust_live/config/cashcat_dryrun_realistic.toml \
 ```
 
 Runs every variant in the grid spec against **one** shared public market feed,
-simulating each independently, and rewrites a leaderboard ranked by net P&L
-every stats interval. `--duration-seconds 0` (the default) runs until stopped,
+simulating each independently, and rewrites a leaderboard ranked by executable-
+side, fee-adjusted promotion P&L every stats interval. `--duration-seconds 0`
+(the default) runs until stopped,
 and a restart **resumes** the run rather than beginning a new one — see
 [A restart continues the run](#a-restart-continues-the-run).
 
@@ -28,9 +35,8 @@ is already shared with three collector containers and with any live session,
 which needs two. One `dry-run` process per variant would open one connection
 each and could take down data collection or block real trading.
 
-The current **18-variant** spec uses **1 connection**. Earlier 20-variant runs
-used the same single connection while both market-making collectors remained
-healthy; the count does not grow with the number of variants.
+The current **20-variant** spec uses **1 connection**; the connection count does
+not grow with the number of variants.
 
 ## What a variant may change
 
@@ -45,12 +51,13 @@ of a burst does this take*.
 
 | key | maps to | evidence |
 |---|---|---|
-| `q_max` | `model.q_max` | replay: q=3 scored −279.11 against q=6's −585.61. **Live reversed this** — see below |
-| `phi_kappa_t` | `model.phi_kappa_t` | sweep winner used 300 against a grid topping out at 1000 |
-| `min_half_spread_bps` | `quoting.min_half_spread_bps` | the losing window earned +683.89 across 1,771 fills — ~0.39/fill, under its adverse selection |
-| `min_order_lifetime_ms`, `replace_threshold_bps` | `quoting.*` | the only positive latency-ladder rung was the 30 s-refresh one |
+| `q_max` | `model.q_max` | the 162 h replay favored q=3; the first live run reversed it, so the axis remains a measured disagreement |
+| `phi_kappa_t` | `model.phi_kappa_t` | the held-out phi ladder improved 200→300 but every rung lost; `phi1000` probes rather than assumes the gradient |
+| `min_half_spread_bps` | `quoting.min_half_spread_bps` | replay and dated live runs motivate the width ladder; current corrected runs must establish whether it survives |
+| `min_order_lifetime_ms`, `replace_threshold_bps` | `quoting.*` | cadence and width interact non-monotonically; retained rows are controls, not presumed improvements |
 | `flow_guard_enabled`, `vpin_threshold`, `fast_move_threshold_bps` | `flow_guard.*` | paired guarded/unguarded variants isolate the toxic-flow guard on one feed |
-| `phi_kappa_t_max` | `model.phi_kappa_t_max` | a variant requesting φ·κ·T above the base ceiling of 300 must raise this ceiling too |
+| `phi_kappa_t_max` | `model.phi_kappa_t_max` | a variant requesting φ·κ·T above the base ceiling of 450 must raise this ceiling too |
+| `flatten_after_ms` | `dry_run.flatten_after_ms` | experimental taker exit after a lot-age deadline; not implemented by the live backend and therefore not promotable |
 
 > **`min_order_lifetime_ms` was inert in the simulator until 2026-08-24.**
 > Only the live backend honored it, so every `slow*` variant was a byte-identical
@@ -113,8 +120,9 @@ first 20 h run:
   `wide8slow30s` replaces it as a clean combined corner.
 - **The ladders were then filled out to 20 variants**, since compression and a
   shared socket make the marginal variant nearly free (still one connection;
-  `policy.compute` at p99 0.02 ms x 20 x ~50 events/s is a few percent of a
-  core). That adds `slow15s`/`slow60s` on the cadence ladder, `wide40` on the
+  the approved complete-hot-step batch-mean p99 of 134 ns leaves the policy
+  arithmetic well below 0.1% of a core at 20 x ~50 events/s). That added
+  `slow15s`/`slow60s` on the cadence ladder, `wide40` on the
   spread ladder, and a spread x cadence matrix (`wide16slow30s`,
   `wide24slow30s`, `wide8slow60s`) to show whether the two levers keep
   composing or one saturates the other.
@@ -150,18 +158,23 @@ strategy question with an account-history one.
 
 ## Reading the leaderboard
 
-`leaderboard.json` plus a printed table, ordered by **net P&L** (equity minus
-starting equity). Also recorded per variant, but *not* used for ordering: fills,
-realized vs mark-to-market split, fees, funding, inventory, working orders and
-max drawdown. Those are there because the staged sweep showed a single window
-can be the whole result, so a variant leading on total while carrying that shape
-should at least be visible.
+`leaderboard.json` plus a printed table, ordered by **promotion P&L**: residual
+inventory flattened at the executable side with a conservative one-off cost.
+Net P&L, realized/mark-to-market split, fills, fees, funding, inventory, working
+orders, and max drawdown remain visible. `scripts/show_grid_leaderboard.py`
+sorts by net P&L by default for exploratory viewing; that does not change the
+promotion order stored by the runtime.
+
+Rows with `flatten_after_ms > 0` are experiments in an exit policy the live
+backend does not implement, so they are marked ineligible for promotion even
+when their P&L is positive.
 
 ## P&L over time
 
-The leaderboard is rewritten in place, so it only ever shows the *current*
-state. `equity_history.csv` in the same directory is the time axis: one row per
-variant per `--history-seconds` (default 60; `0` disables it).
+The root leaderboard is rewritten in place, so it only ever shows the *current*
+state. The immutable run directory named by `grid_state.json.run_id` contains
+`equity_history.csv`: one row per variant per `--history-seconds` (default 60;
+`0` disables it). The plotting script resolves that active run automatically.
 
 ```
 python scripts/grid_pnl_curve.py                    # every variant
@@ -198,18 +211,19 @@ pretending about.
 a *change* in it marks a genuine boundary — a refused resume — rather than
 merely a relaunch.
 
-The checkpoint itself does not accumulate: `grid_state.json` is ~27 KB at
-eighteen variants, rewritten in place each tick, plus one `.bak` generation — a
-constant ~54 KB. The `.bak` is what makes a checkpoint torn by something outside
-the process (a full disk, power loss mid-write) cost one stats interval instead
-of the whole run; `load` falls back to it automatically.
+The checkpoint itself does not accumulate: `grid_state.json` is rewritten in
+place each tick with one `.bak` generation. Its size depends on variant count and
+diagnostic buckets (about 170 KB per generation for the current 20-row spec),
+not run duration. The `.bak` makes an interrupted write cost one stats interval
+instead of the whole run; `load` falls back to it automatically.
 
 ### The consecutive-loss breaker latches, and the grid runs it loose
 
 `risk.max_consecutive_losses` stops a variant quoting once it reaches the cap
-(`quote.rs:122`). The counter only resets on a **winning closing fill**
-(`dry_run.rs:919`), so a variant that reaches the cap stops quoting, therefore
-never fills, therefore can never reset. It is a latch, not a cooldown.
+(`CarteaJaimungalPolicy::compute`). The counter only resets on a **winning
+closing fill** (`DryRunBackend::apply_fill`), so a variant that reaches the cap
+stops quoting, therefore never fills, therefore can never reset. It is a latch,
+not a cooldown.
 
 That fired for real on 2026-09-04: `wide16slow30s` hit 25 fifty minutes into a
 9.6 h run and sat frozen for the remaining **91%** of it — 361 orders created
@@ -324,8 +338,9 @@ appended file are explicit rather than inferred from a timestamp gap.
 #### Rotation — the disk ceiling
 
 Compression fixed the *rate*; it did not bound the *total*. Once the grid began
-resuming across restarts, the append stream had no natural end, and 0.31 MB/h
-per variant is 3.9 GB/month across eighteen — forever.
+resuming across restarts, the append stream had no natural end. A pre-ALO
+46.4-hour run measured 0.31 MB/h per variant (about 4.5 GB/month at 20
+variants); the rate varies with event mix, while the cap below does not.
 
 Each log now rolls at `--log-max-mb` (64) and keeps `--log-keep` (3)
 generations, `grid-wide8.jsonl.zst` → `.1` → `.2` → `.3`, deleting what falls
@@ -334,8 +349,8 @@ off:
 | | |
 |---|---|
 | per variant | 64 MB live + 3 rolled = **256 MB** |
-| eighteen variants | **4.5 GB ceiling**, independent of how long the run lasts |
-| history retained | ~206 h per file, ~34 days total |
+| current 20 variants | **5.1 GB ceiling**, independent of how long the run lasts |
+| history retained | rate-dependent; ~34 days at the 0.31 MB/h measurement |
 
 The roll happens at a flush boundary, where the frame is already terminated, so
 a rolled generation is complete and readable rather than a truncated frame. Each
@@ -343,9 +358,9 @@ rotation logs the size rolled and that the oldest generation was deleted —
 nothing is dropped silently. `--log-max-mb 0` disables rotation and restores the
 old unbounded behaviour.
 
-`equity_history.csv` is deliberately *not* rotated. At ~129 KB/h it is 91
-MB/month, two orders of magnitude smaller, and it is the P&L curve itself — the
-artifact the run exists to produce.
+`equity_history.csv` is deliberately *not* rotated. At the current grid size it
+is roughly 0.1 GB/month, much smaller than the event logs, and it is the P&L
+curve the run exists to produce.
 
 > **Never use one-shot `decompress()` on these files.** It stops at the first
 > frame and reports success, silently returning a fraction of the data. Use
@@ -386,8 +401,9 @@ consumption before any P&L difference appears.
   `HotPathSignal` registers exactly one thread, so N variants would need N
   signals and N isolated cores. It calls the same `policy.compute` the hot path
   calls, on the event loop. Simulated latency dominates real compute by four
-  orders of magnitude (`hot_decision` p99 = 0.02 ms vs 150 ms simulated).
-  `dry-run` remains the latency-faithful path.
+  orders of magnitude (approved complete-hot-step batch-mean p99 134 ns versus
+  150 ms simulated; see `../rust_live/PERFORMANCE.md`). `dry-run` remains the
+  latency-faithful path.
 - **Not a route to real money.** Grid mode never constructs the live backend,
   never reads credentials, and never opens an account socket —
   `rust_live/tests/cli_safety.rs` asserts this holds even when handed a config with

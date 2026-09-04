@@ -41,7 +41,7 @@ from estimator_common import (  # noqa: E402
     mo_depths,
     realized_sigma2_per_sec,
 )
-from get_epsilon import _floored_trimmed_means, compute_mo_impacts  # noqa: E402
+from get_epsilon import _floored_mean_estimates, compute_mo_impacts  # noqa: E402
 from mm_core import QuoteConfig, compute_quotes, select_delta, solve_hjb  # noqa: E402
 
 WINDOW_END_MS = 200_000.0
@@ -98,7 +98,7 @@ def calibrate(unscaled: bool) -> dict:
         lambda_plus = lambda_plus_raw * intercept_plus
         lambda_minus = lambda_minus_raw * intercept_minus
     impacts = compute_mo_impacts(mos, mids, EPSILON_HORIZON_MS, WINDOW_END_MS)
-    epsilon_plus, epsilon_minus, estimates = _floored_trimmed_means(impacts)
+    epsilon_plus, epsilon_minus, estimates = _floored_mean_estimates(impacts)
     sigma2 = realized_sigma2_per_sec(mids)
     return {
         "kappa_plus": float(plus["kappa"]),

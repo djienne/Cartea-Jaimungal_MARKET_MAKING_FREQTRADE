@@ -2,7 +2,7 @@
 
 - generated: `2026-08-31T02:37:36Z`
 - tape: **326.6147 h**, 2624387 price rows, 1271090 trades (`2026-08-16T21:57:55.999000+00:00` → `2026-08-30T12:34:49.052000+00:00`)
-- selection ran on the full None h train slice
+- selection ran on the full 228.6303 h train slice
 - train/held-out split at `2026-08-26T10:35:45.136000+00:00` (0.7 train)
 - searched at scenario `good` (latency 100 ms, refresh 250 ms)
 - a row is ranked only if it took ≥ 30 maker fills

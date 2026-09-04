@@ -1,5 +1,9 @@
 # Parameter sweep — CASHCAT
 
+> **Historical artifact.** This predates estimator schema v5 and the replay flow
+> guard. Values labelled "shipped" below describe the configuration at the run
+> date; current evidence is `cashcat_sweep.md`.
+
 - generated: `2026-08-20T21:16:46Z`
 - tape: **95.2293 h**, 546818 price rows, 243653 trades (`2026-08-16T21:57:55.999000+00:00` → `2026-08-20T21:11:41.314000+00:00`)
 - train/held-out split at `2026-08-19T16:37:33.719000+00:00` (0.7 train)

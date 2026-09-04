@@ -934,7 +934,7 @@ produces a strategy that skews the wrong way and is very hard to spot.
 
 Much simpler: count them and divide by the time actually covered.
 
-\snip{scripts/get_kappa.py}{270}{278}
+\snip{scripts/get_kappa.py}{271}{279}
 \begin{lstlisting}
         data_start_ms = max(window.window_start_ms or 0.0, float(window.mids["ts_ms"].min()))
         wall_seconds = max(((window.window_end_ms or 0.0) - data_start_ms) / 1000.0, 1e-6)
@@ -1031,7 +1031,7 @@ Window          & trailing data used per fit    & 120 minutes \\
 Cadence         & re-fit interval               & 30 s \\
 Model input     & direct validated rolling-window estimate & no temporal smoothing \\
 Runtime path    & Rust calibration to in-process model bundle & \code{cj-data} $\to$ \code{cj-core} \\
-Python path     & explicit JSON artifact for analysis/replay & schema v4 \\
+Python path     & explicit JSON artifact for analysis/replay & schema v5 \\
 Max age         & calibration and source data must remain fresh & 120 s \\
 \bottomrule
 \end{tabular}
@@ -1150,7 +1150,7 @@ term is simply dropped -- a missing variance estimate must not fabricate one.
 \label{sec:phisweep}
 
 $\phi\kappa T = 10$ was the Python replay default used by this dated sweep. The
-current Rust profile uses 200 (ceiling 300), so the table below is historical
+current Rust profile uses 300 (ceiling 450), so the table below is historical
 evidence about shape, not a statement of the current configuration.
 
 Replaying the whole pipeline over one pinned 18.67-hour CASHCAT tape
@@ -1467,12 +1467,12 @@ choice:
 
 \begin{departure}{Departure from the book}
 The book liquidates whatever is left at $T$ at market and pays $\alpha q^{2}$.
-Every quote here is \textbf{post-only} --- an exchange flag meaning ``reject this
-order outright if it would execute on arrival'', which guarantees we are always
-the maker and never the taker. Taking liquidity to flatten would contradict the
-rest of the design. The terminal condition therefore acts
-through the \emph{depths} alone, and the clock restarts rather than the position
-being closed.
+Every ordinary quote is \textbf{post-only} --- an exchange flag meaning ``reject
+this order outright if it would execute on arrival''. The terminal condition
+therefore acts through the \emph{depths} alone, and the clock restarts rather
+than the position being closed. Two dry-run-grid variants separately test a
+taker exit after a lot-age deadline; that experiment is not part of the HJB or
+the live backend.
 \end{departure}
 
 \subsection{Which inventory: the problem with partial fills}
@@ -1567,7 +1567,7 @@ is about to be charged. It does the reverse, and the reason is worth
 understanding rather than filing as a bug.
 
 The pinned worked example uses $\phi\kappa T = 10$ and the terminal one
-$\alpha\kappa = 0.05$: a ratio of $200$ to $1$. The current Rust profile's 200
+$\alpha\kappa = 0.05$: a ratio of $200$ to $1$. The current Rust profile's 300
 makes the dominance stronger. The running penalty is what
 remains to be \emph{paid} over the time left, so it is largest at the start of an
 episode and vanishes at the end. It dominates the surface completely, and the
@@ -1618,7 +1618,9 @@ agreement to seven significant figures.
 \begin{departure}{Departure from the book}
 The Python field \code{hjb\_alpha\_kappa} (Rust: \code{alpha\_kappa}) was set to
 $0.05$ when only the $t=0$ slice was read, so the value carries no tuning
-evidence. It affects episodic quotes and remains unswept; treat it as untuned.
+evidence. Under the current $\phi\kappa T=300$, its effect is confined to the
+final 8.75 seconds; a later sweep found bit-identical PnL at 0.05, 0.5, and 5.0.
+It remains untuned because this regime cannot resolve it.
 \end{departure}
 
 % ===========================================================================
@@ -2091,11 +2093,11 @@ Adverse selection roughly \emph{doubles} between a 200~ms and a 5~s markout on
 this instrument. The model prices $\epsb$ at the 200~ms horizon because that is
 what \eqref{eq:1022} means, while a resting quote remains exposed to subsequent
 flow until it is filled or cancelled. That makes latency and hold policy
-scientifically relevant, but not automatically profitable: the 161.95-hour
-replay reversed the earlier latency ordering, and the 185-hour width--cadence
-matrix was non-monotone. The defensible conclusions come from measured markouts,
-independent frozen windows, and explicit scenario assumptions, not from a generic
-``faster is always better'' rule.
+scientifically relevant, but not automatically profitable: multi-day replay
+ladders have reordered across tapes, and the 185-hour width--cadence matrix was
+non-monotone. The defensible conclusions come from measured markouts, independent
+frozen windows, and explicit scenario assumptions, not from a generic ``faster
+is always better'' rule.
 \end{intuition}
 
 Not a departure, despite appearances: the \textbf{volatility term in $\phi$}.

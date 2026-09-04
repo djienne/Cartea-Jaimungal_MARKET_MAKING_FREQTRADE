@@ -12,6 +12,7 @@ A comprehensive Python suite for collecting real-time tick data from Hyperliquid
   - Best Bid/Offer (BBO) prices with timestamps
   - Trade executions with side, price, and volume
   - Order book snapshots (configurable depth, default 20 levels)
+  - Active-asset context (oracle/mark/mid, open interest, funding, premium)
 - **Parquet output** (compressed) organized by symbol and type
 - **Live statistics** showing collection rates and summaries
 - **Asynchronous data writing** to minimize performance impact
@@ -170,6 +171,7 @@ leaves margin for scheduling, file visibility, and a 30 s calibration cadence.
 * `HL_data/<SYMBOL>/prices/prices_<epoch_ms>.parquet` (BBO updates)
 * `HL_data/<SYMBOL>/trades/trades_<epoch_ms>.parquet` (trade executions)
 * `HL_data/<SYMBOL>/orderbooks/orderbooks_<epoch_ms>.parquet` (order book snapshots)
+* `HL_data/<SYMBOL>/asset_ctx/asset_ctx_<epoch_ms>.parquet` (active-asset context)
 
 ### Example (symbols: BTC, ETH, SOL)
 
@@ -211,6 +213,12 @@ HL_data/
   * `bid_price_0` … `bid_price_N`, `bid_size_0` … `bid_size_N`
   * `ask_price_0` … `ask_price_N`, `ask_size_0` … `ask_size_N`
 
+* **Asset context**:
+
+  * `timestamp` (local receive time; this channel has no exchange timestamp)
+  * `oracle_px`, `mark_px`, `mid_px`, `open_interest`, `funding`, `premium`
+  * `impact_bid_px`, `impact_ask_px`, `day_ntl_vlm`
+
 ### Benefits
 
 * **Columnar + compressed**: smaller files and faster reads for analytics.
@@ -225,10 +233,10 @@ HL_data/
 
 | Parameter         | Symbol | Description                                  | Estimation Method                                      |
 | ----------------- | ------ | -------------------------------------------- | ------------------------------------------------------ |
-| **Lambda Plus**   | λ+     | Buy MO arrival rate (MOs/sec)                | Raw per-side MO count / covered window seconds         |
-| **Lambda Minus**  | λ-     | Sell MO arrival rate (MOs/sec)               | Raw per-side MO count / covered window seconds         |
-| **Epsilon Plus**  | ε+     | Permanent mid jump from buy MOs (USDC)       | Per-MO mid change at 5 s horizon (trimmed mean, ≥0)    |
-| **Epsilon Minus** | ε-     | Permanent mid jump from sell MOs (USDC)      | Per-MO mid change at 5 s horizon (trimmed mean, ≥0)    |
+| **Lambda Plus**   | λ+     | Buy-side fill-intensity scale (1/s)          | Raw buy-MO rate × survival-fit intercept               |
+| **Lambda Minus**  | λ-     | Sell-side fill-intensity scale (1/s)         | Raw sell-MO rate × survival-fit intercept              |
+| **Epsilon Plus**  | ε+     | Arrival jump after buy MOs (USDC)            | Per-MO 200 ms mean after bad-tick clipping, floored at 0 |
+| **Epsilon Minus** | ε-     | Arrival jump after sell MOs (USDC)           | Per-MO 200 ms mean after bad-tick clipping, floored at 0 |
 | **Kappa Plus**    | κ+     | Ask side depth sensitivity (1/USDC)          | Survival fit: log P(depth ≥ δ) vs δ, mid-relative      |
 | **Kappa Minus**   | κ-     | Bid side depth sensitivity (1/USDC)          | Survival fit: log P(depth ≥ δ) vs δ, mid-relative      |
 | **Sigma²**        | σ²     | Realized mid variance (USDC²/s)              | Variance of 1 s mid increments (gap-tolerant)          |

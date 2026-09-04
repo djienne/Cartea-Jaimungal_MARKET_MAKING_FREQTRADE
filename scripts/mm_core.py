@@ -212,10 +212,10 @@ class QuoteConfig:
     # episode -- the largest tau at which alpha still changes the depth at all:
     #
     #     phi*kappa*T = 10    ->  130.75 s   (87% of the episode)
-    #     phi*kappa*T = 200   ->   12.25 s   (8.2%)
+    #     phi*kappa*T = 300   ->    8.75 s   (5.8%)
     #     phi*kappa*T = 1000  ->    3.50 s   (2.3%)
     #
-    # So at the shipped phi this value is doing almost nothing, and a sweep of
+    # So at the live profile's phi this value is doing almost nothing, and a sweep of
     # it returns bit-identical P&L. That is a statement about phi crowding it
     # out, not about alpha being unimportant in the model.
     hjb_alpha_kappa: float = 0.05
@@ -908,7 +908,10 @@ def resolve_net_inventory(
     now: datetime | None = None,
     max_peer_age_seconds: float = 30.0,
 ) -> tuple[int | None, str]:
-    """Net inventory across both legs, or None with a reason to stop quoting.
+    """Historical two-leg net inventory, or None with a reason to stop quoting.
+
+    Not used by the current Rust runtime or replay; retained with ``route_sides``
+    to reproduce the former adapter's fail-closed behavior.
 
     Fail closed rather than assuming a missing peer is flat: "flat" is a
     perfectly plausible value that would silently mis-price every quote.

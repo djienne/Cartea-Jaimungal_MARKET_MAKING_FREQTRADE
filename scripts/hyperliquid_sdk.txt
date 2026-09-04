@@ -1,3 +1,7 @@
+Historical upstream Hyperliquid Python SDK snapshot used as a protocol oracle
+during the 2026-08-21 connector audit. It is source material, not current
+project documentation or a runtime dependency; verify the official SDK before
+using any API instructions below.
 
 ### File: README.md
 # hyperliquid-python-sdk

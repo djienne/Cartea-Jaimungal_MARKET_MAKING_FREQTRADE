@@ -3,10 +3,10 @@
 > **2026-09-02 — estimator schema v5.** `lambda_±` is now the raw per-side
 > market-order rate scaled by the survival fit's intercept `A`; v4 fed the raw
 > rate to the HJB while the fitted fill probability was `A·exp(-κδ)`, so fill
-> intensity was off by `A` (1.04 / 0.99 on CASHCAT). Every result below that
-> predates this note — sweeps, replay reports, grid leaderboards, and the parity
-> figures — was produced under v4. The parity goldens were regenerated
-> (`scripts/parity_fixture.py`); the sweeps and grid have not been re-run yet.
+> intensity was off by `A` (1.04 / 0.99 on CASHCAT). The dated results below
+> remain v4 evidence. Parity goldens were regenerated and the current staged
+> sweep was later rerun under v5; see `../docs/cashcat_sweep.md` rather than
+> using this file for current replay or grid status.
 
 > **Historical record.** Entries below are dated evidence, not a current host or
 > venue-status report. Current operational guidance lives in `README.md` and
@@ -67,7 +67,8 @@ Checked on 2026-08-22 around 17:30 UTC:
   with zero unreadable shards, R-squared about 0.951/0.953, and toxicity about
   0.20/0.33. Collection is usable, but the network interruptions remain visible
   evidence rather than being hidden.
-- The latest staged Python sweep is a completed 95.23-hour pinned-tape result,
+- At this snapshot, the staged Python sweep was a completed 95.23-hour
+  pinned-tape result,
   not a continuously updating job. Its selected configuration earned +7.55 USDC
   on train but lost 10.24 USDC held out; only 5/16 six-hour windows were
   positive. The infrastructure ladder was +23.07 at 50 ms/100 ms refresh,

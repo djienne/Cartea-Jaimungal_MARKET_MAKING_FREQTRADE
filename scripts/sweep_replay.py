@@ -94,8 +94,8 @@ KAPPA_SUPPORT_LOWER = (0.0, 0.5, 0.75)
 
 # The book's running inventory penalty, as the dimensionless product the model
 # actually responds to (eq. 10.28 puts phi in the transition matrix as
-# -phi*kappa*q^2, so the raw value is meaningless across symbols). The shipped
-# setting is 10.0 and is explicitly NOT a measured optimum.
+# -phi*kappa*q^2, so the raw value is meaningless across symbols). The Python
+# replay default is 10.0 and is explicitly NOT a measured optimum.
 #
 # The upper end is set by REACHABILITY, measured rather than guessed. At the live
 # CASHCAT calibration the flat-inventory half-spread runs:
@@ -108,9 +108,9 @@ KAPPA_SUPPORT_LOWER = (0.0, 0.5, 0.75)
 # 60 bps on the ask. A grid stopping at 100 therefore could not reach the region
 # it is supposed to be searching -- it would have reported "no setting is
 # profitable" about a range that never contained the candidate.
-# Extended 2026-09-02: 200 is the shipped value, 400 fills the middle band a
-# promotion would be chosen from, and 3000 exists so the top of the grid is a
-# demonstration rather than a boundary the winner leans on.
+# Extended 2026-09-02: 300 is the current live-profile value, 200/400 bracket it,
+# and 3000 exists so the top of the grid is a demonstration rather than a
+# boundary the winner leans on.
 PHI_KAPPA_T = (3.0, 10.0, 30.0, 100.0, 200.0, 300.0, 400.0, 1000.0, 3000.0)
 
 # The terminal penalty, same normalisation.
@@ -782,7 +782,7 @@ def calibration_grid(mode: str) -> list[Calibration]:
 
 
 def parse_float_list(text: str | None, default: tuple[float, ...]) -> tuple[float, ...]:
-    """Comma-separated override for one grid axis, or the shipped default."""
+    """Comma-separated override for one grid axis, or its standard research grid."""
     if not text:
         return tuple(float(value) for value in default)
     return tuple(float(part) for part in str(text).split(",") if part.strip())
@@ -1331,7 +1331,7 @@ def parse_args() -> argparse.Namespace:
         "--phi-kappa-t-grid",
         type=lambda text: parse_float_list(text, PHI_KAPPA_T),
         default=None,
-        help="Comma-separated override for the phi*kappa*T axis (default: the shipped grid).",
+        help="Comma-separated override for the phi*kappa*T axis (default: the standard research grid).",
     )
     parser.add_argument(
         "--alpha-kappa-grid",

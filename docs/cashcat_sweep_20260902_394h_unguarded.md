@@ -1,5 +1,8 @@
 # Parameter sweep — CASHCAT
 
+> **Superseded by `cashcat_sweep.md`.** This is the immediately preceding
+> schema-v5 run without the replay flow guard, retained for comparison.
+
 > **Estimator schema v5, full search.** lambda is the raw market-order rate
 > times the survival-fit intercept. This replaces the 161.95 h v4 artifact
 > (kept as `cashcat_sweep_20260823_162h_v4.*`), whose Stage A/B selection also
@@ -14,7 +17,7 @@
 
 - generated: `2026-09-02T09:09:18Z`
 - tape: **393.7652 h**, 3308934 price rows, 1622905 trades (`2026-08-16T21:57:55.999000+00:00` → `2026-09-02T07:43:50.709000+00:00`)
-- selection ran on the full None h train slice
+- selection ran on the full 275.6356 h train slice
 - train/held-out split at `2026-08-28T09:36:04.295000+00:00` (0.7 train)
 - searched at scenario `good` (latency 100 ms, refresh 250 ms)
 - a row is ranked only if it took ≥ 30 maker fills

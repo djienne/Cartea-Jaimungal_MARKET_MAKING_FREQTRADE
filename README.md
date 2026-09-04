@@ -36,65 +36,52 @@ as deployed, and measurement says it is not.**
 **The cadence constraint is gone; the economics did not follow.** The retired
 Python loop requoted at a measured p50 of 5.5 s — three to five orders of
 magnitude slower than the venue moves — and that was the headline objection to
-this stack for most of its life. `rust_live/` removed it: the hot decision path
-measures **p99 = 0.02 ms**, against 150 ms of *simulated* latency in replay, so
-compute now sits four orders of magnitude below the network. What remains is
+this stack for most of its life. `rust_live/` removed it: the approved local
+benchmark measures a **134 ns batch-mean p99** for the complete hot step (not an
+individual-decision tail), against 150 ms of *simulated* one-way latency. Compute
+is negligible beside the network. What remains is
 network distance and the venue's own limits, and neither is what the model was
 losing to. Adverse selection was, and still is: measured, it roughly **doubles**
 between a 200 ms and a 5 s markout (ε went 1.98→3.98 bps on the ask, 3.53→6.14
 bps on the bid).
 
-**What the live grid has established.** An 18-variant dry-run grid runs against
-one shared feed (`docs/DRY_RUN_GRID.md`). Two independent day-length runs agreed
-that the 1.5/4/8 bps half-spread rungs lost while the 24/40/48/60 bps rungs were
-positive; the 16 bps rung was approximately flat in the longer run. Fill count
-ran inversely to P&L in both runs. The ordering among 40/48/60 bps reversed
-between runs, so no winning wide rung is established. A later 46.4-hour artifact
-is explicitly void after a 19.65-hour feed blackout and is not evidence.
+**What the live grid has established.** The current grid spec runs against
+one shared feed (`docs/DRY_RUN_GRID.md`). Two earlier day-length runs suggested
+a broad advantage for wider spread floors, but they predate the corrected queue,
+feed-validity, and post-only simulation and are not promotion evidence. Their
+40/48/60 bps ordering also reversed between runs. Treat the current leaderboard
+as a mutable experiment, not a ranking to copy into a live configuration.
 
-**The loss is one window, not a steady bleed.** The evidence below is a staged
-parameter sweep on a pinned **393.77 h** CASHCAT tape (3,308,934 price rows,
-1,622,905 trades, 0.7 train/held-out split) under estimator schema v5 —
-`docs/cashcat_sweep.md`. **Split the windows by slice before reading them**, because
-the aggregate hides the finding. Over the *train* slice, 45 of 46 six-hour windows
-sum to **+402.68** and the single `08-22 03:57` cascade is **−323.70** — that is
-where "the loss is one window" comes from. Over the *held-out* slice there is no
-cascade at all and it still bleeds: **−31.38** across 20 windows, 11 of them
-negative, and removing the worst still leaves **−8.70**. Per fill the sign flips,
-**+0.0118** in sample against **−0.0166** out of it. It replaces the 161.95 h v4 artifact, kept as
-`docs/cashcat_sweep_20260823_162h_v4.*`, whose winner and latency ordering both
-moved; a 95.23 h predecessor is kept as `docs/cashcat_sweep_20260820_95h.*`.
+**The latest model-parameter sweep still finds no held-out edge.** The schema-v5
+sweep uses a pinned **395.69 h** CASHCAT tape (3,342,794 price rows, 1,648,021 trades)
+and selects on the full 276.98-hour train slice (`docs/cashcat_sweep.md`). All
+nine Stage-A calibrations lose. The three train-selected finalists earn
++340.99 to +400.20 in sample and lose **13.55 to 17.80 USDC** held out: roughly
++1,100 of net spread is offset by slightly larger directional/adverse loss.
+The guard fires on the August 22 cascade in train and nowhere in the held-out
+slice, so this tape cannot score its out-of-sample benefit.
 
-> **Read `docs/cashcat_sweep.md` with two caveats, both in its own header.** The
-> Python replay models no toxic-flow guard, so the cascade window is unguarded,
-> and `alpha_kappa` is inert at every phi in Stage B. Selection ran on the full
-> train slice; the earlier v4 artifact picked its winner from ~2.8% of its
-> training data (`--search-max-price-events 25000`), a truncation whose default
-> is now 0 and which every artifact records. Since 2026-08-30 the **period archive**
-> (`docs/history/`) attempts a full-search sweep every 21 days and writes the
-> result for manual commit before the 30-day tape deletes the window — see
-> [`docs/DRY_RUN_GRID.md`](docs/DRY_RUN_GRID.md#the-period-archive--what-outlives-the-tape).
+A later policy study asks a different question (`docs/cashcat_flatten_fast.md`):
+a 60 bps floor is positive in both slices, while an aggressive exit earns less
+but ends flat instead of carrying a large residual position. The queue at those
+deep quotes is not recorded, so the live grid is testing both hypotheses and
+neither is established for live use.
 
-- **One six-hour window is the entire result.** The winner scores −205.89 USDC
-  across 27 windows, but the window at `08-22 03:57` alone is **−241.17** on
-  1,771 fills. Excluding it the same run is **+35.28 over 26 windows**. That one
-  window is 117% of the total loss and 40% of every fill taken.
-- **So the shape is fat-tailed, not marginal.** 13 of 27 windows are positive,
-  and the failure mode is a volume burst: the busiest window is the losing one,
-  and it takes more fills than the next twelve windows combined.
-- **The latency ladder inverted.** On 95 h the colocated rung was the only
-  positive one (+23.07) and the story was "latency is economically decisive".
-  On 162 h colocated is the **worst** rung: colocated (50 ms/100 ms) −418.11,
-  good (100/250) −279.11, mid (200/500) −388.59, this stack (500/1000) −398.20,
-  slow-refresh reality (500 ms/30 s) **+9.36**. Quoting faster means taking more
-  of the burst, so speed made the tail worse rather than better. Do not quote
-  the old ladder.
-- **The spread is earned; the direction gives it back.** At 100 ms the net
-  realized spread after fees is +852.51 USDC against −1,131.62 of
-  directional/adverse P&L. In the losing window alone: +683.89 spread against
-  −925.05 directional.
+The coupled latency/cadence ladder also does not isolate latency: its 50 ms /
+100 ms scenario is +29.52 held out while all four slower/longer-hold scenarios
+lose, but both variables change together. Earlier 95-hour and 162-hour ladders
+ranked these scenarios differently. The dated predecessors remain as
+`docs/cashcat_sweep_20260820_95h.*` and
+`docs/cashcat_sweep_20260823_162h_v4.*`; they are comparison points, not current
+defaults.
 
-**That one window is now guarded.** `docs/TOXIC_FLOW_GUARD.md` covers the
+`docs/cashcat_sweep.md` also records a reporting defect: its serialized guard
+counters are zero even though the guard ran; P&L and rankings are unaffected.
+The period archive (`docs/history/`) attempts a full-search sweep every 21 days
+before the 30-day tape deletes the window; see
+[`docs/DRY_RUN_GRID.md`](docs/DRY_RUN_GRID.md#the-period-archive--what-outlives-the-tape).
+
+**The cascade is now guarded.** `docs/TOXIC_FLOW_GUARD.md` covers the
 toxic-flow guard built against it — a fast mid-move breaker plus VPIN — which on
 a frozen replay of the cascade cut the loss 74% (−87.95 → −23.13, re-baselined
 in `docs/FLOW_GUARD_CANDIDATES.md`) and bounded ending inventory, while being
@@ -110,12 +97,6 @@ The practical reading: a short tape can invert this conclusion, so every sweep
 must run on the maximum tape available (`docs/DATA_COLLECTION.md` covers how the
 tape is produced and how far back it goes).
 
-- **Performance is unstable across time.** Only 5/16 held-out windows are
-  positive. The same selected configuration ranges from +7.63 to −13.55 USDC
-  over six-hour windows despite 1,135 held-out maker fills in aggregate.
-- Stage A, which held the risk knobs at the historical Python replay default
-  `hjb_phi_kappa_t = 10`, loses on **all 81 calibrations**, on every tape measured.
-
 `docs/replay_acceptance_report.*` is an older 24-minute fail-closed gate smoke
 with `ok=false`; it is retained as evidence but must not be mistaken for the
 multi-day staged sweeps.
@@ -130,27 +111,19 @@ configured WebSocket message-rate limit in that campaign.
 with the requote hold window on one frozen two-hour window. It resolves the
 **address-action cost** cleanly — `bps = 4` used about 2.2x fewer actions per fill
 than `bps = 2` — but cannot resolve latency economics at roughly 50 fills. The
-later 162-hour sweep reversed the earlier 95-hour latency ordering while also
-coupling latency to refresh cadence, so no isolated causal latency ranking is
-established.
+longer sweeps reordered the machine scenarios while coupling latency to refresh
+cadence, so no isolated causal latency ranking is established.
 
 Market data is produced by Docker containers operated from a separate compose
 project; their source lives under `scripts/`. See `docs/DATA_COLLECTION.md` for
 who owns the tape, why live/grid sessions cannot write it, and how to check it.
 
-Shorter tapes read positive out of sample — +1.18 on 24.8 h, +1.56 on 31.23 h
-(`docs/cashcat_sweep_phitail.md`), +1.37 on 44.97 h — while both the 60.32 h and
-95.23 h tapes read negative. The winning calibration also moved between tapes,
-so nothing here supports a claim of calibration stability. The later Rust
-direct-window replay independently lost 17.43 USDC over 112 fills and showed
-positive 100 ms markout turning sharply negative by 1–30 seconds.
-
 **Serious live use requires a host whose measured network latency passes the
 configured production gate.** This development machine does not. The Rust quote
 loop is already event-driven and its compute cost is negligible beside the
-network, but the replay evidence does not show that lower latency alone creates
-an edge: the longer tape made faster-refresh scenarios worse during the dominant
-flow burst. Nothing here has been shown to trade profitably in production.
+network, but the replay scenarios change latency and refresh together, so they
+do not establish that latency alone creates an edge. Nothing here has been
+shown to trade profitably in production.
 
 Use this to understand and verify the model. Treat any profit as unproven.
 
@@ -162,7 +135,7 @@ Three pieces, deliberately separate:
 
 | | what it is | where |
 |---|---|---|
-| **Trader** | Pure-Rust runtime: calibration, HJB solve, quoting, dry-run simulator, 18-variant grid, and a stateful Hyperliquid live backend | [`rust_live/`](rust_live/README.md) |
+| **Trader** | Pure-Rust runtime: calibration, HJB solve, quoting, dry-run simulator, multi-variant grid, and a stateful Hyperliquid live backend | [`rust_live/`](rust_live/README.md) |
 | **Measurement** | Event replay harness, staged train/held-out sweeps, κ/ε/λ estimators, market-viability screen | `scripts/` |
 | **Data** | Two collectors writing Parquet shards, operated from a *separate* compose project so no trading session can disturb the tape | `docs/DATA_COLLECTION.md` |
 
@@ -181,16 +154,16 @@ for a 10% fee reduction.
 ```bash
 cd rust_live
 
-cargo run --release -- --config config/cashcat.toml validate     # config + venue metadata
-cargo run --release -- --config config/cashcat.toml calibrate    # κ/λ/ε + HJB surface from Parquet
-cargo run --release -- --config config/cashcat.toml replay       # deterministic Parquet replay
+cargo run --locked --release -- --config config/cashcat.toml validate     # config + venue metadata
+cargo run --locked --release -- --config config/cashcat.toml calibrate    # κ/λ/ε + HJB surface from Parquet
+cargo run --locked --release -- --config config/cashcat.toml replay       # deterministic Parquet replay
 
 # Live public feed, simulated orders. Never reads credentials.
-cargo run --release -- --config config/cashcat_dryrun_realistic.toml dry-run
+cargo run --locked --release -- --config config/cashcat_dryrun_realistic.toml dry-run
 
 # N parameter sets against ONE shared WebSocket, ranked live.
 # Normally run as a container instead: `docker compose up -d` from the repo root.
-cargo run --release -- --config config/cashcat_dryrun_realistic.toml dry-run-grid \
+cargo run --locked --release -- --config config/cashcat_dryrun_realistic.toml dry-run-grid \
     --grid config/grid_cashcat.toml --duration-seconds 0 --out-dir reports/grid_live
 ```
 
@@ -216,7 +189,7 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │   ├── src/main.rs                        # CLI: validate/calibrate/replay/dry-run/grid/live
 │   ├── src/grid.rs                        # variant ranking, equity history
 │   ├── config/cashcat.toml                # live config (live.enabled gated)
-│   ├── config/grid_cashcat.toml           # 18 dry-run variants
+│   ├── config/grid_cashcat.toml           # dry-run variant specification
 │   └── crates/
 │       ├── cj-core/                       # HJB, quote policy, instrument math
 │       ├── cj-data/                       # Parquet calibration and replay
@@ -280,7 +253,8 @@ Half-Spread = 1/κ        + ε          + skew(Q)
 Where:
 - `κ±`: fill-depth decay rate (higher means fill probability falls faster with
   distance; interpreting it as literal book thickness is only a heuristic)
-- `ε±`: Permanent price impact from informed trading
+- `ε±`: adverse-selection jump in the model; estimated from the 200 ms arrival
+  markout
 - `h(t,q)`: Value function encoding inventory risk preference
 - `fees`: maker fee loaded from the live account; replay defaults to the
   0.015% rate measured for the CASHCAT account on 2026-08-23
@@ -314,7 +288,7 @@ both coordinates are read as such:
     `α q²`. Every quote here is post-only by construction, so the terminal
     condition acts through the depths alone — it cannot force a taker unwind.
   - At our calibration the terminal effect runs opposite to the naive
-    "flatten harder near T" picture: the shipped `φκT = 200` against `ακ = 0.05`, so the running penalty
+    "flatten harder near T" picture: the shipped `φκT = 300` against `ακ = 0.05`, so the running penalty
     — which is what remains to be paid over the time left, hence largest at `t=0`
     and gone at `T` — dominates, and the agent unwinds hardest at the *start* of
     an episode. This matches the book's running-penalty-dominated example; see
@@ -440,7 +414,7 @@ burst the profit curve read +$4,117/h.)
 
 ```bash
 python scripts/get_kappa.py            # κ± survival fit, λ± arrival rates
-python scripts/get_epsilon.py          # ε± permanent impact, 200 ms primary
+python scripts/get_epsilon.py          # ε± arrival jump, 200 ms primary
 python scripts/compute_spreads.py      # refresh κ/ε/λ, print spreads vs inventory
 ```
 

@@ -3,16 +3,16 @@
 Compute bid/ask spreads (bps from mid) using mm_core, the same assembly the replay quotes from.
 
 Inputs:
-- Refreshes κ/ε and baseline λ₀ by calling get_kappa.py and get_epsilon.py.
+- Refreshes κ/ε/λ± by calling get_kappa.py and get_epsilon.py.
 - Also runs get_lambda.py to compute unconditional trade rates into lambda_trades.json (monitoring only).
-- kappa.json, epsilon.json, lambda.json (baseline λ₀; expected in working directory or parent)
+- kappa.json, epsilon.json, lambda.json (expected in working directory or parent)
 - Mid price (via --mid) or fallback to mid_price.json if present, else 1.0
 - Inventory level q (optional, default 0)
 
 The script:
 1. Loads κ, ε, and per-side MO arrival rates λ for the symbol.
 2. Runs the HJB solver (symmetric closed-form by default, optional asymmetric-κ backward Euler) to get δ* with inventory skew.
-3. Assembles the final half-spread identically to the strategy:
+3. Assembles the final half-spread through the shared quoting arithmetic:
    delta_total = clamp(δ* × spread_multiplier + fee × mid, min/max half-spread bps).
 4. Prints bid/ask prices and spreads in bps from mid, with (floor)/(cap) markers when clamped.
 """

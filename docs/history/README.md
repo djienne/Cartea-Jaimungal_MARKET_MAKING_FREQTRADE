@@ -25,7 +25,7 @@ of a window whose raw data is gone.
 | `README.md` | tape span, headline numbers, provenance — **start here** |
 | `sweep.md` / `sweep.json` | the staged replay sweep on the tape as it stood |
 | `grid_leaderboard.json` | the live grid's ranking at that moment |
-| `grid_equity_curve.csv.zst` | the period's P&L curve, 15-min, zstd |
+| `grid_equity_curve.csv.zst` | the period's P&L histories, 15-min, zstd; `run_started_ms` keeps run boundaries |
 | `grid_pnl_curve.png` | that curve, rendered |
 
 Each period's `README.md` is generated and carries the sweep's held-out table,
@@ -49,11 +49,11 @@ python scripts/grid_pnl_curve.py --history <the decompressed csv> --out /tmp/cur
 ```
 
 The columns are the grid's own `equity_history.csv` schema, thinned to one row
-per variant per 15 minutes. Full resolution is 60 s, about 95 MB/month — too
-much to commit every three weeks, and not needed for a month-scale
-retrospective. The full-resolution file lives in
-`rust_live/reports/grid_live/equity_history.csv`; unlike event logs it is
-intentionally not rotated and grows at roughly 95 MB/month.
+per variant per 15 minutes. Full resolution is 60 s and roughly 0.1 GB/month at
+the current grid size—too much to commit every three weeks. Each scientific run
+stores its full-resolution file under
+`rust_live/reports/grid_live/runs/<run-id>/`; unlike event logs, those files are
+not rotated.
 
 ## Scope
 

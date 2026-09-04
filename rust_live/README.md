@@ -107,8 +107,9 @@ inventory, while being bit-identical on a calm control window. See
 extensions were studied and rejected or deferred in
 [`../docs/FLOW_GUARD_CANDIDATES.md`](../docs/FLOW_GUARD_CANDIDATES.md).
 
-`dry-run-grid` runs several parameter sets against **one** shared market
-feed and ranks them by net P&L. One WebSocket regardless of variant count,
+`dry-run-grid` runs several parameter sets against **one** shared market feed
+and ranks promotable rows by executable-side, fee-adjusted flatten P&L. One
+WebSocket regardless of variant count,
 because the venue allows ten per IP and that budget is shared with the
 collectors and any live session; it never records Parquet and never touches
 credentials. It runs as a container (`docker compose up -d` at the repo root)

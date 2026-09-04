@@ -891,8 +891,8 @@ and still refuses production trading on this development machine's latency.
 
 | Local implementation | Reuse assessment |
 | --- | --- |
-| `XEMM\hyperliquid-python-sdk-master` | A local official-SDK copy and the best language-independent signing/API oracle, but it is version 0.19.0. The current published line observed during this audit is 0.24.0, so refresh/pin it before generating fixtures. Do not import Python at Rust runtime. |
-| Current `scripts\hyperliquid_alo_executor.py` and `hyperliquid_risk_executor.py` | Good ALO/IOC intent, outward rounding, CLOID, response classification, cancel-after-probe, and explicit real-order guard references. They are guarded command tools using the official SDK, not persistent account WebSocket connectors. Also avoid their optional command-line private-key input in production. |
+| `XEMM\hyperliquid-python-sdk-master` | A local official-SDK copy and the best language-independent signing/API oracle, but it was version 0.19.0 while 0.24.0 was observed during this dated audit. Refresh and pin it before generating new fixtures. Do not import Python at Rust runtime. |
+| `scripts\hyperliquid_alo_executor.py` and `hyperliquid_risk_executor.py` at the audit date | Historical ALO/IOC command-tool references. They were removed with the former Freqtrade trader on 2026-08-25 and remain only at tag `freqtrade-trader-final`; the current runtime does not depend on them. |
 | `passivbot_real_run\src\exchanges\hyperliquid.py` and related Passivbot copies | Operational lifecycle evidence through CCXT Pro: `watch_orders`, REST open-order/position recovery, ALO parameters, vault handling, error retries, and minimum-notional adaptation. Useful for behavior, but CCXT hides signing/wire details and its state model should not be transplanted into the Rust engine. |
 | `DELTA_NEUTRAL\CROSS_EXCHANGE_DELTA_NEUTRAL_HL_PAC\hyperliquid_connector.py` | Small official-Python-SDK example for market IOC, leverage, position, balance, and funding. Not a maker or private-WS connector. |
 | Older Python/CCXT diagnostics and data collectors | Mostly public/read-only, delegated, or application-specific. They do not add a lower-level authenticated connector. |
@@ -905,7 +905,7 @@ and still refuses production trading on this development machine's latency.
 4. Golden vectors and correct vault/expiry encoding from the retired Rust stack.
 5. Unknown-outcome, heartbeat, and conformance cases from the newer JavaScript
    connector.
-6. CLOID/ALO/risk response semantics from this project's Python tools.
+6. Archived CLOID/ALO/risk response semantics from tag `freqtrade-trader-final`.
 7. Passivbot only as an operational comparison.
 
 ## 16. Test and release gates

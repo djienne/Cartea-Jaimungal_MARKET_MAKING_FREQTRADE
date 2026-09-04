@@ -50,9 +50,10 @@ start on login), `stop_signal: SIGINT` reaches the teardown path, and the
 `../folder_list.txt` so `start_all.bat` brings it up with the rest of the fleet.
 
 **A restart continues the run, it does not start a new one.** The grid
-checkpoints all 18 variants to `<out-dir>/grid_state.json` every stats tick, and
-on startup resumes from it: equity, inventory, fills, drawdown, markouts and the
-elapsed clock all carry forward, so a reboot costs a gap rather than the run.
+checkpoints every configured variant to `<out-dir>/grid_state.json` every stats
+tick, and on startup resumes from it: equity, inventory, fills, drawdown,
+markouts and the elapsed clock all carry forward, so a reboot costs a gap rather
+than the run.
 
 Three things bound that, and they are the point rather than an afterthought:
 
@@ -172,25 +173,22 @@ every subscribe — measured 27 prints on connect against 13 live ones, then a
 further ~30 on each reconnect. `replayed_trades_ignored` rising while
 `feed_gaps` stays flat is the system working.
 
-**Disk is now bounded, and the bound is on the event logs.** Measured over the
-46.4 h run: 0.31 MB/h per variant compressed, 5.5 MB/h across eighteen — 3.9
-GB/month, and since the grid resumes across restarts that stream had no natural
-end. `--log-max-mb` (64) and `--log-keep` (3) roll each log at 64 MB and keep
-three generations, so the ceiling is **4.5 GB total, whatever the run length**,
-covering ~34 days of history. A rotation logs what it deleted; it never drops a
-generation silently. `quote_decision` events are **99.1%** of the bytes (157k
-events / 79.7 MB against 2.9k execution events / 0.7 MB), so sampling them is
-the lever if the ceiling ever needs to come down further.
+**Disk is now bounded, and the bound is on the event logs.** A pre-ALO 46.4 h
+run measured 0.31 MB/h per variant compressed, about 4.5 GB/month for the
+current 20-row spec; the rate varies with event mix. `--log-max-mb` (64) and
+`--log-keep` (3) cap each variant at 256 MB, so the current ceiling is **5.1 GB
+total** (~34 days at that measured rate). A
+rotation logs what it deleted; it never drops a generation silently.
 
-**The checkpoint does not grow.** `grid_state.json` is ~27 KB at eighteen
-variants, overwritten in place each tick, plus one `.bak` generation — a
-constant ~54 KB, not an accumulator. The only part that grows at all is
-`fills_by_depth_bps`, one entry per 0.1 bps depth bucket ever filled at, which
-tops out in the low thousands of entries.
+**The checkpoint does not grow with run duration.** `grid_state.json` and its
+`.bak` are overwritten in place. Size depends on the configured variants and
+diagnostic buckets (about 170 KB per generation for the current spec).
 
-**`equity_history.csv` is the one thing still unbounded**, at ~129 KB/h = 91
-MB/month. Left that way deliberately: it is the P&L curve, the primary result
-artifact, and it is two orders of magnitude smaller than the logs were.
+**`equity_history.csv` is the one thing still unbounded**, roughly 0.1 GB/month
+at the current grid size. It lives under
+`<out-dir>/runs/<grid_state.run_id>/`, alongside that run's event logs; the root
+leaderboard remains only the latest pointer. This history is the primary P&L
+curve and is intentionally retained.
 
 **`equity_history.csv` is append-only across restarts** and stamps
 `run_started_ms`. Since resume landed, a restart *keeps* the original

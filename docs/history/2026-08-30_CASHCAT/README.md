@@ -13,28 +13,29 @@ these files are the only remaining record of it.
 
 The two windows differ on purpose. The sweep scores the whole tape on disk, so
 consecutive archives overlap and a skipped cycle still loses nothing; the grid
-curve covers only the period since the last archive, so the archives concatenate
-into one continuous timeline.
+curve covers only the period since the last archive. `run_started_ms` preserves
+independent run boundaries; archive periods do not overlap.
 
 ## Replay sweep
 
 - status: `ok`
-- search scenario: `{'latency_ms': 100, 'name': 'good', 'refresh_ms': 250}`
+- historical pre-schema-v5 sweep; values below are preserved evidence, not current defaults
+- search scenario: `good` (100 ms latency, 250 ms refresh)
 - train/held-out split at `2026-08-26T10:35:45.136000+00:00`
 
 | configuration | train P&L | held-out P&L | fills |
 | --- | ---: | ---: | ---: |
-| `?` | +0.00 | **+0.00** | 0 |
-| `?` | +0.00 | **+0.00** | 0 |
-| `?` | +0.00 | **+0.00** | 0 |
+| `eps200/200_klo0.75/0.75|phiKT1000_alphaK0.05_T150_q3` | -83.54 | **-99.12** | 2753 |
+| `eps200/200_klo0.75/0.75|phiKT1000_alphaK0.5_T150_q3` | -83.54 | **-99.12** | 2753 |
+| `eps200/200_klo0.75/0.75|phiKT1000_alphaK5_T150_q3` | -83.54 | **-99.12** | 2753 |
 
 | latency scenario | P&L | fills |
 | --- | ---: | ---: |
-| {'latency_ms': 50, 'name': 'colocated', 'refresh_ms': 100} | +0.00 | 0 |
-| {'latency_ms': 100, 'name': 'good', 'refresh_ms': 250} | +0.00 | 0 |
-| {'latency_ms': 200, 'name': 'mid', 'refresh_ms': 500} | +0.00 | 0 |
-| {'latency_ms': 500, 'name': 'this_stack', 'refresh_ms': 1000} | +0.00 | 0 |
-| {'latency_ms': 500, 'name': 'reality', 'refresh_ms': 30000} | +0.00 | 0 |
+| colocated | +130.74 | 3046 |
+| good | -99.12 | 2753 |
+| mid | -263.89 | 2546 |
+| this_stack | -365.01 | 2357 |
+| reality | -255.45 | 3523 |
 
 ## Dry-run grid
 
@@ -59,4 +60,3 @@ into one continuous timeline.
 | `grid_leaderboard.json` | the grid's ranking at the moment of archiving |
 | `grid_equity_curve.csv.zst` | the period's P&L curve, thinned and compressed |
 | `grid_pnl_curve.png` | that curve, rendered |
-

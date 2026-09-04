@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Joint kappa/lambda estimation from Hyperliquid market data (schema v4).
+"""Joint kappa/lambda estimation from Hyperliquid market data (schema v5).
 
 Methodology:
 - Trade prints are aggregated into market orders (same side + same exchange
@@ -160,8 +160,9 @@ def save_kappa_lambda_to_json(kappa_plus, kappa_minus, lambda_plus, lambda_minus
                               metadata: dict | None = None, raw_values: dict | None = None):
     """Persist kappa and per-side MO arrival rates (per second) to JSON files.
 
-    Primary keys hold the direct per-window estimates. *_raw aliases are retained
-    for diagnostic/backward tooling and are identical to the primaries in v4.
+    Primary keys hold the direct per-window estimates. Kappa's *_raw aliases are
+    identical to the primaries; lambda's retain the unscaled market-order rates,
+    before schema v5 multiplies by the survival-fit intercept.
     """
     kappa_entry, lambda_entry = build_kappa_lambda_entries(
         kappa_plus, kappa_minus, lambda_plus, lambda_minus,

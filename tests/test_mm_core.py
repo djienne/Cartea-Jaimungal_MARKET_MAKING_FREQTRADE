@@ -59,7 +59,7 @@ LIVE_PARAMS = {
 
 
 def _snapshot(now: datetime | None = None, **overrides):
-    """A schema-v4 direct-parameter snapshot that passes every validation gate."""
+    """A schema-v5 direct-parameter snapshot that passes every validation gate."""
     stamp = (now or datetime.now(timezone.utc)).isoformat()
     kappa = {
         "schema_version": 5,

@@ -85,7 +85,8 @@ Underneath that, epsilon is fitted from *unconditional* market-order impact
 (~5 bps) while the fills we actually get suffer 22-29 bps of adverse
 selection: a behind-touch maker is filled by sweeps, which are not average
 orders. The HJB therefore prices fills as far more benign than they are, and
-no value of phi repairs that. **Phi is the wrong lever; epsilon is the bug.**
+no value of phi repairs that. **Phi is the wrong lever; the depth-independent
+epsilon assumption is the model mismatch.**
 
 ## What was promoted
 

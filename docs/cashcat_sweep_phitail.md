@@ -1,5 +1,9 @@
 # Parameter sweep — CASHCAT
 
+> **Historical artifact.** This short pre-schema-v5 sweep is retained to show
+> tape-length sensitivity, not current parameters or expected performance. See
+> `cashcat_sweep.md` for current staged evidence.
+
 - generated: `2026-08-18T05:15:26Z`
 - tape: **31.2327 h**, 176931 price rows, 76499 trades (`2026-08-16T21:57:55.999000+00:00` → `2026-08-18T05:11:53.750000+00:00`)
 - train/held-out split at `2026-08-17T19:49:42.424000+00:00` (0.7 train)

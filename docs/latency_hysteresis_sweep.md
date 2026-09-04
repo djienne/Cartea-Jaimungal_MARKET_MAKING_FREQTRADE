@@ -4,9 +4,9 @@ Companion to `latency_hysteresis_sweep.json`. Generated 2026-08-23.
 
 > **Supersession note.** The rows remain valid for this frozen window, but the
 > 95-hour latency conclusion originally cited below did not survive the later
-> 161.95-hour tape: its ranking reversed and latency remained coupled to refresh
-> cadence. Use this artifact for address-action sensitivity, not for a causal
-> latency ranking.
+> 161.95-hour tape, and the schema-v5 395.69-hour sweep reordered the scenarios
+> again. Latency remains coupled to refresh cadence. Use this artifact for
+> address-action sensitivity, not for a causal latency ranking.
 
 Twelve deterministic replays over **one frozen CASHCAT window** — 357 shards
 copied out of the live collector tape, 174.8 min span, of which replay consumed
@@ -74,11 +74,10 @@ The only latency-shaped hint is the 100 ms markout drifting down as latency
 rises (3.68 → 3.23 → 3.37 → 2.74), which is directionally right but well inside
 the noise.
 
-**The later tapes do not isolate latency either.** The 95-hour staged sweep
-favored its fastest scenario, but the 161.95-hour extension made that same rung
-the worst and made the 30-second-refresh rung positive. Because each scenario
-changes latency and refresh together and one burst dominates the long result,
-neither sweep identifies a causal benefit from latency alone.
+**The later tapes do not isolate latency either.** The 95-hour, 161.95-hour, and
+395.69-hour staged sweeps rank the coupled machine scenarios differently.
+Because each scenario changes latency and refresh together, none identifies a
+causal benefit from latency alone.
 
 ## Recommendation
 

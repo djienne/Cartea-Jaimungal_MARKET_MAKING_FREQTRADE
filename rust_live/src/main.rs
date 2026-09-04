@@ -146,8 +146,8 @@ enum Command {
         /// Roll each variant's event log once it reaches this many MB.
         ///
         /// The logs append across restarts and the run now resumes across
-        /// them, so without a bound nothing ever ends the stream. Measured at
-        /// 0.31 MB/h per variant compressed — 3.9 GB/month across eighteen.
+        /// them, so without a bound nothing ever ends the stream. A pre-ALO
+        /// 46.4 h run measured 0.31 MB/h per variant compressed.
         /// Zero disables rotation.
         #[arg(long, default_value_t = 64)]
         log_max_mb: u64,
@@ -156,8 +156,9 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         log_keep: usize,
     },
-    /// Select the highest valid flatten-P&L row and atomically generate the
-    /// micro-live configuration. This command performs no network activity.
+    /// Select the highest valid, live-equivalent flatten-P&L row and atomically
+    /// generate the micro-live configuration. Dry-run-only exit policies are
+    /// excluded. This command performs no network activity.
     PromoteBest {
         #[arg(long)]
         grid: PathBuf,
@@ -2052,6 +2053,7 @@ impl GridVariant {
         let promotion_pnl_usdc = scientifically_valid
             .then(|| bbo.map(|value| self.backend.promotion_pnl_usdc(value)))
             .flatten();
+        let has_live_equivalent = self.config.dry_run.flatten_after_ms == 0;
         grid::LeaderboardRow {
             name: self.name.clone(),
             description: self.description.clone(),
@@ -2067,7 +2069,9 @@ impl GridVariant {
             working_orders: self.backend.working_order_count(),
             max_drawdown_usdc: self.max_drawdown_usdc,
             scientifically_valid,
-            eligible_for_promotion: scientifically_valid && promotion_pnl_usdc.is_some(),
+            eligible_for_promotion: scientifically_valid
+                && promotion_pnl_usdc.is_some()
+                && has_live_equivalent,
         }
     }
 }
@@ -2082,7 +2086,7 @@ impl GridVariant {
 /// - **No hot-path threads.** Each `HotPathSignal` can register exactly one
 ///   thread, so N variants would need N signals and N isolated cores. The grid
 ///   measures strategy economics, where the simulated latencies dominate real
-///   compute by four orders of magnitude; `dry-run` remains the
+///   compute by many orders of magnitude; `dry-run` remains the
 ///   latency-faithful path.
 /// - **Never a Parquet writer.** Not a flag: the grid must not be able to
 ///   contend with the reference collector.
@@ -2520,7 +2524,7 @@ async fn run_dry_run_grid(
                             // The whole point of a grid is that variants are
                             // independent hypotheses: one blowing up (a
                             // liquidation-buffer breach is the realistic case)
-                            // must not take the other nineteen with it, which
+                            // must not take the other variants with it, which
                             // is exactly what `?` here used to do.
                             if variant.failure.is_some() {
                                 continue;
@@ -2882,6 +2886,15 @@ fn promote_best_config(
         .rows
         .iter()
         .filter(|row| row.eligible_for_promotion)
+        // Older leaderboards may predate the eligibility flag's dry-run-only
+        // check. Re-read the spec so an experimental taker-flatten row can
+        // never be turned into a live config whose backend has no such policy.
+        .filter(|row| {
+            spec.variants
+                .iter()
+                .find(|variant| variant.name == row.name)
+                .is_some_and(|variant| variant.overrides.flatten_after_ms.unwrap_or(0) == 0)
+        })
         .reduce(|best, row| {
             if row.promotion_pnl_usdc > best.promotion_pnl_usdc {
                 row
@@ -2889,7 +2902,7 @@ fn promote_best_config(
                 best
             }
         })
-        .context("leaderboard has no valid promotable row")?;
+        .context("leaderboard has no valid live-equivalent promotable row")?;
     if winner.promotion_pnl_usdc.is_none_or(|pnl| pnl <= 0.0) {
         bail!(
             "best valid promotion P&L is {:?}; live remains disabled until a variant is profitable",
@@ -4086,12 +4099,12 @@ mod grid_health_tests {
     }
 
     #[test]
-    fn promotion_selects_plain_best_flatten_pnl_and_enables_micro_live() {
+    fn promotion_selects_best_live_equivalent_and_skips_dry_run_only_rows() {
         let directory = tempfile::tempdir().unwrap();
         let grid_path = directory.path().join("grid.toml");
         std::fs::write(
             &grid_path,
-            "[[variant]]\nname = \"baseline\"\n\n[[variant]]\nname = \"wide\"\nmin_half_spread_bps = 8.0\n",
+            "[[variant]]\nname = \"baseline\"\n\n[[variant]]\nname = \"wide\"\nmin_half_spread_bps = 8.0\n\n[[variant]]\nname = \"flatten\"\nflatten_after_ms = 1\nmin_half_spread_bps = 60.0\n",
         )
         .unwrap();
         let mut leaderboard = board(unix_ms(), 0);
@@ -4114,7 +4127,13 @@ mod grid_health_tests {
             scientifically_valid: true,
             eligible_for_promotion: true,
         };
-        leaderboard.rows = vec![row("baseline", -2.0), row("wide", 1.0)];
+        // Deliberately leave the stale-board eligibility bit true. Promotion
+        // must still reject the higher-P&L dry-run-only exit policy.
+        leaderboard.rows = vec![
+            row("baseline", -2.0),
+            row("wide", 1.0),
+            row("flatten", 10.0),
+        ];
         let leaderboard_path = directory.path().join("leaderboard.json");
         leaderboard.write_atomic(&leaderboard_path).unwrap();
         let output = directory.path().join("cashcat-active-live.toml");
@@ -4136,6 +4155,7 @@ mod grid_health_tests {
             toml::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
         assert!(selected.live.enabled);
         assert_eq!(selected.quoting.min_half_spread_bps, 8.0);
+        assert_eq!(selected.dry_run.flatten_after_ms, 0);
         assert_eq!(selected.risk.max_daily_loss_usdc, 1.0);
         let promotion: serde_json::Value =
             serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();

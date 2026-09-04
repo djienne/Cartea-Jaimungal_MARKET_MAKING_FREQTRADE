@@ -28,14 +28,14 @@ pub struct DryRunDiagnostics {
     pub unknown_queue_activations: u64,
     pub max_working_orders: usize,
     pub liquidation_breach_events: u64,
-    /// Aggressive-flatten accounting, kept apart from maker economics so the
-    /// two legs stay separable: this is what the truncation cost.
     /// Post-only orders the venue would have rejected because the market moved
     /// through their price during the latency window. The live path sends ALO
     /// and handles `badAloPxRejected`; the dry run used to rest them anyway,
     /// letting them fill through the touch at a worse price than a real venue
     /// would ever have given.
     pub post_only_rejects: u64,
+    /// Aggressive-flatten accounting, kept apart from maker economics so the
+    /// entry and exit legs stay separable: this is what truncation cost.
     pub flatten_events: u64,
     pub flatten_units: i64,
     pub flatten_cost_usdc: f64,
@@ -206,9 +206,9 @@ impl DryRunBackend {
     /// The account as it stands, for a caller that checkpoints it itself.
     ///
     /// `save_account_state` owns a whole file and one variant's identity, which
-    /// suits `dry-run`. The grid checkpoints eighteen variants plus run-level
-    /// feed counters into a single document, so it needs the parts rather than
-    /// the file.
+    /// suits `dry-run`. The grid checkpoints every configured variant plus
+    /// run-level feed counters into one document, so it needs the parts rather
+    /// than the file.
     pub const fn account_snapshot(&self) -> DryRunAccountState {
         self.account
     }
@@ -589,10 +589,9 @@ impl DryRunBackend {
     /// Cross out the oldest lot once it has been held past the deadline.
     ///
     /// Charges the same costs the replay does: the crossed half-spread (we take
-    /// the far touch) plus `promotion_flatten_slippage_bps` for walking the
-    /// book, plus the taker fee. Without a touch there is nothing to cross into,
-    /// so the lot simply waits -- inventing a price here would be the easiest
-    /// way to manufacture an edge that does not exist.
+    /// the far touch), `flatten_slippage_bps` for walking the book, and
+    /// `flatten_fee_rate`. Without a touch there is nothing to cross into, so
+    /// the lot waits rather than being priced from an invented market.
     fn flatten_stale_lots(&mut self, now_ms: u64) -> Vec<ExecutionEvent> {
         // The deadline carries the SAME round trip a quote pays: we notice the
         // position, decide, and the taker order reaches the venue one trip

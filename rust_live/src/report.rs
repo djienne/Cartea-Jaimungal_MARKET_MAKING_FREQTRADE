@@ -41,9 +41,9 @@ enum WriterMessage {
 ///
 /// The grid's logs append to a stable stem so a restart extends the same
 /// stream, and since the grid resumes across restarts that stream now has no
-/// natural end. Measured on the 46.4 h run: 0.31 MB/h per variant compressed,
-/// which is 3.9 GB/month across eighteen. Without a bound the only thing that
-/// ever stopped it was losing the run.
+/// natural end. A pre-ALO 46.4 h run measured 0.31 MB/h per variant compressed;
+/// the rate varies with event mix. Without a bound the only thing that ever
+/// stopped it was losing the run.
 ///
 /// `grid-wide8.jsonl.zst` rolls to `grid-wide8.1.jsonl.zst`, that to `.2.`, and
 /// the oldest past `keep` is deleted -- so the worst case is `(keep + 1) *

@@ -1,6 +1,6 @@
 """Shared data pipeline for the kappa/lambda/epsilon estimators.
 
-Methodology (schema v4):
+Methodology (schema v5):
 - Mid series comes from the dense BBO ``prices/`` stream (one row per side per
   update), falling back to ``orderbooks/`` top-of-book for old datasets.
 - Trades and mids are aligned on exchange timestamps (ms) when both streams
