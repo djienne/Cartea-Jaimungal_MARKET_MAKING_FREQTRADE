@@ -8,7 +8,7 @@ use mm_live::execution::{
     AccountStateProvider, DryRunBackend, ExecutionBackend, HyperliquidLiveBackend, MarketDataSource,
 };
 use mm_live::flow_guard::{FlowGuard, MidWindow, VpinTracker};
-use mm_live::hjb::{solve_asymmetric, HjbSurface};
+use mm_live::hjb::{solve_asymmetric, CjParameters, HjbSurface};
 use mm_live::hot_path::{
     flow_channel, risk_channel, spawn_hot_path, HotPathInputs, ModelBundle, RiskWriter,
 };
@@ -1900,6 +1900,8 @@ fn apply_live_execution_events(
 struct GridVariant {
     name: String,
     description: String,
+    config_fingerprint: String,
+    fixed_parameters: Option<CjParameters>,
     config: AppConfig,
     policy: CarteaJaimungalPolicy,
     surface: HjbSurface,
@@ -2052,7 +2054,8 @@ impl GridVariant {
         let promotion_pnl_usdc = scientifically_valid
             .then(|| bbo.and_then(|value| self.backend.promotion_pnl_usdc(value)))
             .flatten();
-        let has_live_equivalent = self.config.dry_run.flatten_after_ms == 0;
+        let has_live_equivalent =
+            self.config.dry_run.flatten_after_ms == 0 && self.fixed_parameters.is_none();
         grid::LeaderboardRow {
             name: self.name.clone(),
             description: self.description.clone(),
@@ -2134,9 +2137,6 @@ async fn run_dry_run_grid(
         .with_context(|| format!("cannot create grid output directory {}", out_dir.display()))?;
     let _grid_lock = grid::GridRunLock::acquire(&out_dir)?;
 
-    // Calibration is a property of the market, not of a parameter set, so it is
-    // fitted once and shared. Only the inventory unit and the HJB surface,
-    // which depend on q_max and the risk knobs, are per variant.
     let (grid_data, snapshot, _, _) = calibrate_model(config, &instrument, true)?;
     let mid = grid_data
         .mids
@@ -2155,11 +2155,11 @@ async fn run_dry_run_grid(
     let state_path = out_dir.join("grid_state.json");
     let mut variant_configs = Vec::with_capacity(spec.variants.len());
     for entry in &spec.variants {
-        let variant_config = entry.overrides.apply(config).with_context(|| {
-            format!("grid variant {:?} is not a valid configuration", entry.name)
-        })?;
-        let fingerprint = variant_config.fingerprint()?;
-        variant_configs.push((entry, variant_config, fingerprint));
+        let (variant_config, parameters, fingerprint) =
+            spec.resolve_variant(entry, config).with_context(|| {
+                format!("grid variant {:?} is not a valid configuration", entry.name)
+            })?;
+        variant_configs.push((entry, variant_config, parameters, fingerprint));
     }
     // Two variants with one fingerprint are the same strategy under two names,
     // so one of twenty slots spends the whole run re-measuring its neighbour.
@@ -2170,7 +2170,7 @@ async fn run_dry_run_grid(
     // than a wasted row.
     {
         let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
-        for (entry, _, fingerprint) in &variant_configs {
+        for (entry, _, _, fingerprint) in &variant_configs {
             if let Some(twin) = seen.insert(fingerprint.as_str(), entry.name.as_str()) {
                 warn!(
                     variant = %entry.name,
@@ -2191,7 +2191,7 @@ async fn run_dry_run_grid(
     .chain(
         variant_configs
             .iter()
-            .map(|(entry, _, fingerprint)| format!("{}={fingerprint}", entry.name)),
+            .map(|(entry, _, _, fingerprint)| format!("{}={fingerprint}", entry.name)),
     )
     .collect::<Vec<_>>()
     .join(";");
@@ -2203,7 +2203,7 @@ async fn run_dry_run_grid(
         max_resume_gap_seconds,
         &variant_configs
             .iter()
-            .map(|(entry, _, fingerprint)| (entry.name.as_str(), fingerprint.as_str()))
+            .map(|(entry, _, _, fingerprint)| (entry.name.as_str(), fingerprint.as_str()))
             .collect::<Vec<_>>(),
     );
     let run_id = resume_from.as_ref().map_or_else(
@@ -2215,7 +2215,7 @@ async fn run_dry_run_grid(
         .with_context(|| format!("cannot create immutable grid run {}", run_dir.display()))?;
 
     let mut variants = Vec::with_capacity(spec.variants.len());
-    for (entry, variant_config, _) in variant_configs {
+    for (entry, variant_config, fixed_parameters, config_fingerprint) in variant_configs {
         let policy = CarteaJaimungalPolicy::new(
             instrument.clone(),
             variant_config.quoting.clone(),
@@ -2229,11 +2229,12 @@ async fn run_dry_run_grid(
                 |persisted| Ok(persisted.inventory_unit),
             )?;
         let surface = solve_asymmetric(
-            snapshot.parameters,
+            fixed_parameters.unwrap_or(snapshot.parameters),
             &variant_config.model,
             instrument.size_from_units(inventory_unit),
             snapshot.revision,
-        )?;
+        )
+        .with_context(|| format!("grid variant {:?} HJB solve failed", entry.name))?;
         let backend = DryRunBackend::new(
             instrument.clone(),
             variant_config.dry_run.clone(),
@@ -2254,6 +2255,7 @@ async fn run_dry_run_grid(
                 "started_at_ms": started_at_ms,
                 "variant": entry.name,
                 "overrides": entry.overrides.describe(),
+                "parameters": fixed_parameters.unwrap_or(snapshot.parameters),
                 "build": mm_live::BuildInfo::current(),
             }),
         )?;
@@ -2273,6 +2275,8 @@ async fn run_dry_run_grid(
         variants.push(GridVariant {
             name: entry.name.clone(),
             description: entry.overrides.describe(),
+            config_fingerprint,
+            fixed_parameters,
             report_path: run_dir.join(format!("{}.json", entry.name)),
             peak_equity_usdc: variant_config.dry_run.starting_equity_usdc,
             config: variant_config,
@@ -2691,10 +2695,13 @@ async fn run_dry_run_grid(
             started_at_ms,
             finished_at_ms: unix_ms(),
             mode: format!("dry_run_grid:{}", variant.name),
-            config_fingerprint: variant.config.fingerprint()?,
+            config_fingerprint: variant.config_fingerprint.clone(),
             instrument: instrument.clone(),
-            calibration: Some(snapshot.clone()),
-            model: None,
+            calibration: variant.fixed_parameters.is_none().then(|| snapshot.clone()),
+            model: Some(ModelReport::from_surface(
+                &variant.surface,
+                variant.inventory_unit,
+            )),
             account: variant.backend.account_state(),
             execution: variant.backend.diagnostics().clone(),
             metrics: metrics.snapshot(),
@@ -2820,7 +2827,7 @@ fn checkpoint_grid(
         let (current_day, daily_realized_pnl_usdc) = variant.backend.daily_risk_snapshot();
         persisted.push(grid::PersistedVariant {
             name: variant.name.clone(),
-            config_fingerprint: variant.config.fingerprint()?,
+            config_fingerprint: variant.config_fingerprint.clone(),
             inventory_unit: variant.inventory_unit,
             last_bbo: variant.backend.checkpoint_bbo(),
             account: variant.backend.account_snapshot(),
@@ -2933,7 +2940,10 @@ fn promote_best_config(
             spec.variants
                 .iter()
                 .find(|variant| variant.name == row.name)
-                .is_some_and(|variant| variant.overrides.flatten_after_ms.unwrap_or(0) == 0)
+                .is_some_and(|variant| {
+                    variant.overrides.flatten_after_ms.unwrap_or(0) == 0
+                        && variant.overrides.parameter_profile.is_none()
+                })
         })
         .reduce(|best, row| {
             if row.promotion_pnl_usdc > best.promotion_pnl_usdc {
@@ -4082,6 +4092,8 @@ mod tests {
         GridVariant {
             name: "baseline".to_owned(),
             description: String::new(),
+            config_fingerprint: config.fingerprint().unwrap(),
+            fixed_parameters: None,
             policy,
             surface,
             inventory_unit,
@@ -4098,6 +4110,31 @@ mod tests {
             failure: None,
             config,
         }
+    }
+
+    #[test]
+    fn fixed_parameter_rows_are_not_live_promotable() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut variant = grid_variant(directory.path());
+        let book = Bbo {
+            bid_px: 99_900,
+            ask_px: 100_100,
+            bid_sz: 1,
+            ask_sz: 1,
+            exchange_ms: 1_000,
+            recv_ns: 1_000_000_000,
+        };
+        assert!(variant.leaderboard_row(Some(book)).eligible_for_promotion);
+        variant.fixed_parameters = Some(CjParameters {
+            lambda_plus: 1.0,
+            lambda_minus: 1.0,
+            kappa_plus: 1.0,
+            kappa_minus: 1.0,
+            epsilon_plus: 0.0,
+            epsilon_minus: 0.0,
+            sigma2_per_second: None,
+        });
+        assert!(!variant.leaderboard_row(Some(book)).eligible_for_promotion);
     }
 
     #[tokio::test]
@@ -4320,7 +4357,7 @@ mod grid_health_tests {
         let grid_path = directory.path().join("grid.toml");
         std::fs::write(
             &grid_path,
-            "[[variant]]\nname = \"baseline\"\n\n[[variant]]\nname = \"wide\"\nmin_half_spread_bps = 8.0\n\n[[variant]]\nname = \"flatten\"\nflatten_after_ms = 1\nmin_half_spread_bps = 60.0\n",
+            "[[variant]]\nname = \"baseline\"\n\n[[variant]]\nname = \"wide\"\nmin_half_spread_bps = 8.0\n\n[[variant]]\nname = \"flatten\"\nflatten_after_ms = 1\nmin_half_spread_bps = 60.0\n\n[parameter_profiles.fixed]\nlambda_plus = 1.0\nlambda_minus = 1.0\nkappa_plus = 1.0\nkappa_minus = 1.0\nepsilon_plus = 0.0\nepsilon_minus = 0.0\n\n[[variant]]\nname = \"fixed\"\nparameter_profile = \"fixed\"\n",
         )
         .unwrap();
         let mut leaderboard = board(unix_ms(), 0);
@@ -4349,6 +4386,7 @@ mod grid_health_tests {
             row("baseline", -2.0),
             row("wide", 1.0),
             row("flatten", 10.0),
+            row("fixed", 20.0),
         ];
         let leaderboard_path = directory.path().join("leaderboard.json");
         leaderboard.write_atomic(&leaderboard_path).unwrap();

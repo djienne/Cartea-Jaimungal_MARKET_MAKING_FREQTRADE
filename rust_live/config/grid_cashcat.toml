@@ -1,160 +1,49 @@
-# Live dry-run grid — parameter sets quoting one shared CASHCAT feed.
-#
-# Run with:
-#   mm-live --config config/cashcat_dryrun_realistic.toml dry-run-grid \
-#           --grid config/grid_cashcat.toml
-#
-# Every variant inherits that base config and changes only the fields below, so
-# latency, fees, funding and capital are identical across the grid and the
-# comparison is like-for-like. One WebSocket serves all of them: the venue
-# allows ten per IP and that budget is shared with the collector containers and
-# any live session (docs/DATA_COLLECTION.md).
-#
-# WHY THESE LEVERS. The staged replay (docs/cashcat_sweep.md) localises the loss
-# to one six-hour burst IN THE TRAIN SLICE: 45 of 46 windows there sum to
-# +402.68 against -323.70 for `08-22 03:57` alone (1,473 fills). The held-out
-# slice has no cascade and still loses -31.38 over 20 windows, so these levers
-# probe the burst and not the steady bleed. Its coupled latency/refresh scenarios (v5, and the
-# 161.95 h v4 figures the rows below were written from) were:
-#
-#     colocated   50 ms /   100 ms refresh    -28.99   (v4 -418.11)
-#     good       100 ms /   250 ms refresh   -102.07   (v4 -279.11)
-#     mid        200 ms /   500 ms refresh   -122.76   (v4 -388.59)
-#
-# Note the v5 ladder is monotone in latency while the v4 one was not, so the
-# "colocation is worse" reading the rows below inherited no longer holds.
-# The v4 figures follow for continuity:
-#
-#     colocated   50 ms /   100 ms refresh   -418.11
-#     good       100 ms /   250 ms refresh   -279.11
-#     mid        200 ms /   500 ms refresh   -388.59
-#     this_stack 500 ms /  1000 ms refresh   -398.20
-#     reality    500 ms / 30000 ms refresh     +9.36   <-- the only one
-#
-# That historical replay motivated testing cadence, but later live grid runs
-# made the slow variants the worst rows and the post-fix 185 h replay showed
-# cadence interacts non-monotonically with width. The surviving cadence rows
-# are controls, not assumed improvements.
-#
-# An earlier 20 h live grid added two findings of its own:
-#
-#   * min_half_spread_bps is strictly monotone and had not turned: baseline
-#     (1.5 bps) -34.06, wide4 -26.99, wide8 -20.00, with max_half_spread_bps
-#     allowing 80. So the ladder continues to 16 and 24 rather than stopping
-#     while the gradient still points up.
-#   * q_max REVERSED the replay. Replay had q3 (-279) beating q6 (-585); live
-#     has baseline q6 -34.06, q3 -78.36, q2 -141.25 (drawdown 145, ~49% of
-#     equity). Smaller q_max means a larger per-bucket notional, so the
-#     "tighter" cap quotes coarser and bigger. q2 is retired; q3 stays only to
-#     keep watching the disagreement.
+[parameter_profiles.sweep_a]
+lambda_plus = 0.13093969644502362
+lambda_minus = 0.12410705511275547
+kappa_plus = 4415.761061299301
+kappa_minus = 4211.776465690159
+epsilon_plus = 0.00004793876572179116
+epsilon_minus = 0.00006620270077793468
 
-# Control. No overrides: this is literally the shipped configuration, so it
-# stays honest as the baseline rather than being a separately maintained copy.
+[parameter_profiles.sweep_b]
+lambda_plus = 0.13093969644502362
+lambda_minus = 0.12410705511275547
+kappa_plus = 4415.761061299301
+kappa_minus = 4211.776465690159
+epsilon_plus = 0.00005732650960447385
+epsilon_minus = 0.000053760370697263874
+
 [[variant]]
 name = "baseline"
-
-# --- single-lever variants: each isolates one mechanism ---
 
 [[variant]]
 name = "q3"
 q_max = 3
-reduce_only_threshold_q = 2.0
+reduce_only_threshold_q = 2
 
-[[variant]]
-name = "wide4"
-min_half_spread_bps = 4.0
-
-[[variant]]
-name = "wide8"
-min_half_spread_bps = 8.0
-
-# hjb.rs rescales phi so phi*kappa*T never exceeds phi_kappa_t_max, so without
-# raising the ceiling this variant asks for 1000 and silently runs 300 (1.5x
-# baseline's 200, not 5x). Raising both is what makes the name honest.
 [[variant]]
 name = "phi1000"
-phi_kappa_t = 1000.0
-phi_kappa_t_max = 1000.0
+phi_kappa_t = 1000
+phi_kappa_t_max = 1000
 
-# Slow requoting: hold a quote far longer and widen the hold window to match.
 [[variant]]
 name = "slow5s"
 min_order_lifetime_ms = 5000
-replace_threshold_bps = 8.0
+replace_threshold_bps = 8
 
-# Continue the spread ladder. Live results were still improving at 8 bps with
-# no turning point, so stopping there would have been assuming an answer. If a
-# rung simply stops trading, that shows up as near-zero fills, not as a win.
-[[variant]]
-name = "wide16"
-min_half_spread_bps = 16.0
-
-[[variant]]
-name = "wide24"
-min_half_spread_bps = 24.0
-
-# --- combined corner ---
-# RETIRED HYPOTHESIS. `wide8slow30s` looked like the likeliest profitable
-# configuration while min_order_lifetime_ms was inert in the simulator. Once
-# the lever was fixed, the 185 h replay showed 8 bps + 30 s breaches the
-# liquidation buffer and aborts (spread_ladder_185h.md), so the corner is
-# actively ruinous rather than promising.
-#
-# The cadence lever turns out to be NON-MONOTONE in width: slowing helps at
-# 24 bps (-79.49 -> -65.81), breaches at 8, and destroys the only profitable
-# rung at 40 (+21.02 -> -151.74). So the surviving combined corner is the
-# middle one, and it is the only spread x cadence pair with replay support.
-
-# --- toxic-flow guard A/B ---
-# The whole point of the guard is the one losing window, and a live grid is the
-# only way to see what it costs in normal conditions.
-#
-# There used to be a `guarded` row here setting `flow_guard_enabled = true`.
-# That is already the shipped default, so it shared `baseline`'s config
-# fingerprint exactly (cbff25b99fb7141f) and spent every run re-measuring its
-# neighbour -- one slot in twenty producing nothing. Confirmed live on
-# 2026-09-04: over 15 h it matched `baseline` to four decimal places on P&L,
-# fills and orders created. The A/B is `baseline` vs `unguarded`, and always
-# was; `baseline` IS the guarded arm. The grid now warns at startup when two
-# variants share a fingerprint, so this cannot come back silently.
 [[variant]]
 name = "unguarded"
 flow_guard_enabled = false
 
-# --- cadence ladder ---
-# Retained as a negative/control axis after completed runs showed slow cadence
-# underperforming the baseline; see docs/DRY_RUN_GRID.md.
 [[variant]]
 name = "slow15s"
 min_order_lifetime_ms = 15000
 
-
-# --- spread ladder, further out ---
-# max_half_spread_bps allows 80. If a rung simply stops trading that is a real
-# answer, visible as near-zero fills.
 [[variant]]
 name = "wide40"
-min_half_spread_bps = 40.0
+min_half_spread_bps = 40
 
-# --- spread x cadence matrix ---
-# The 8 bps / 30 s corner was retired after a liquidation-buffer breach. These
-# remaining middle-width pairs measure the non-monotone interaction rather than
-# assuming cadence and width compose.
-[[variant]]
-name = "wide16slow30s"
-min_half_spread_bps = 16.0
-min_order_lifetime_ms = 30000
-
-[[variant]]
-name = "wide24slow30s"
-min_half_spread_bps = 24.0
-min_order_lifetime_ms = 30000
-
-
-# --- q_max upward ---
-# Added after downward tests worsened (q6 -34.06, q3 -78.36, q2 -141.25).
-# A larger cap means a finer per-bucket notional, so quotes are smaller and more
-# granular. Treat q9/q12 as tests of that mechanism, not as presumed winners.
 [[variant]]
 name = "q9"
 q_max = 9
@@ -163,76 +52,96 @@ q_max = 9
 name = "q12"
 q_max = 12
 
-
-# --- outer spread rungs ---
-# The 185 h replay's best post-fix rungs were 60 bps (+33.11) and 40 bps
-# (+21.02). Two later day-length live-grid runs kept 40/48/60 positive but
-# reversed their ordering; no winning outer rung is established. Measured on
-# the 3.01 h grid tape, per *quoted side*
-# (not the bid/ask average -- CJ skews hard under inventory, and the floor
-# binds on the inside side): 40 bps binds on 45.9% of sides, 48 on 74.9%, 60 on
-# 94.9%. So wide60 is close to a constant-60 quoter and wide48 fills the gap
-# where the floor goes from occasional to dominant.
-#
-# The replay's spread60 ended short 2,440 units (130% of equity) because its
-# prospective inventory cap did not bind. Here q_max = 6 does bind, but completed
-# runs still ended with material directional inventory; see docs/DRY_RUN_GRID.md.
-[[variant]]
-name = "wide48"
-min_half_spread_bps = 48.0
-
 [[variant]]
 name = "wide60"
-min_half_spread_bps = 60.0
+min_half_spread_bps = 60
 
-# --- exit policy ---
-# Everything above varies how we QUOTE. These vary how we EXIT, which the grid
-# has never tested. The replay's case (docs/cashcat_flatten_fast.md): adverse
-# selection grows steeply with the markout horizon -- 12.84 bps at 200 ms
-# against 29.77 at 6.6 s -- while waiting for an offsetting maker fill takes a
-# 6.5 s median, so the position eats the whole accrual. Crossing out early
-# truncates it and pays the half-spread plus taker fee to do so.
-#
-# READ THESE AGAINST wide60/wide48, NOT baseline. The replay says a plain wide
-# quoter earns more than the flatten but carries ~9,700 units near the q_max
-# ceiling for a 42 min median hold, while the flatten ends flat with 0.3 s
-# holds. Two hypotheses, two risk profiles; the P&L column alone hides that.
-#
-# THE DEADLINE CARRIES THE ROUND TRIP. The backend adds decision +
-# acknowledgement latency (150 + 150 here) to whatever is configured, because a
-# taker order reaches the venue one trip after we decide to send it. So the
-# EFFECTIVE exit ages are 301 ms and 550 ms, chosen to bracket the replay's
-# predicted 450-520 ms breakeven from both sides rather than to sit on one side
-# of it. If the replay is right, flatten300 is positive and flatten550 is not.
-#
-# The names are the EFFECTIVE age, not the configured one, because that is what
-# the row means and the leaderboard is read by someone who did not write this
-# file. `flatten_after_ms` is the configured half; the backend adds the round
-# trip on top.
 [[variant]]
 name = "flatten300"
 flatten_after_ms = 1
-min_half_spread_bps = 60.0
+min_half_spread_bps = 60
 
 [[variant]]
 name = "flatten550"
 flatten_after_ms = 250
-min_half_spread_bps = 60.0
+min_half_spread_bps = 60
 
-# The flatten rows are the only market-neutral P&L on the board -- they hold no
-# inventory, so their result is spread capture net of adverse selection rather
-# than a directional bet, which is what every wide row's P&L actually is. They
-# are also the most sample-starved: at 60 bps `flatten300` took 5.4 fills/h
-# against `baseline`'s 98, so 500 fills is 91 hours away and the
-# 300-vs-550 ordering cannot reach significance in any reasonable run.
-#
-# Width is the lever that controls fill rate, so this row holds the flatten
-# policy at the winning setting and moves only the floor: 40 bps, the rung the
-# replay found profitable on the wide ladder. It asks the one question the
-# other two cannot -- does the flatten edge survive at a width that actually
-# gets hit, or was it only ever an artefact of quoting so wide that the few
-# fills were unrepresentative?
 [[variant]]
 name = "flatten300w40"
 flatten_after_ms = 1
-min_half_spread_bps = 40.0
+min_half_spread_bps = 40
+
+[[variant]]
+name = "sweep1"
+parameter_profile = "sweep_a"
+q_max = 3
+reduce_only_threshold_q = 3
+phi_kappa_t = 3000
+phi_kappa_t_max = 3000
+horizon_seconds = 150
+flow_guard_enabled = true
+
+[[variant]]
+name = "sweep2"
+parameter_profile = "sweep_a"
+q_max = 3
+reduce_only_threshold_q = 3
+phi_kappa_t = 3000
+phi_kappa_t_max = 3000
+horizon_seconds = 300
+flow_guard_enabled = true
+
+[[variant]]
+name = "sweep3"
+parameter_profile = "sweep_b"
+q_max = 6
+reduce_only_threshold_q = 6
+phi_kappa_t = 3000
+phi_kappa_t_max = 3000
+horizon_seconds = 150
+flow_guard_enabled = true
+
+[[variant]]
+name = "sweep1_unguarded"
+parameter_profile = "sweep_a"
+q_max = 3
+reduce_only_threshold_q = 3
+phi_kappa_t = 3000
+phi_kappa_t_max = 3000
+horizon_seconds = 150
+flow_guard_enabled = false
+
+[[variant]]
+name = "sweep1_wide60"
+parameter_profile = "sweep_a"
+q_max = 3
+reduce_only_threshold_q = 3
+phi_kappa_t = 3000
+phi_kappa_t_max = 3000
+horizon_seconds = 150
+flow_guard_enabled = true
+min_half_spread_bps = 60
+
+[[variant]]
+name = "sweep1_flat300"
+parameter_profile = "sweep_a"
+q_max = 3
+reduce_only_threshold_q = 3
+phi_kappa_t = 3000
+phi_kappa_t_max = 3000
+horizon_seconds = 150
+flow_guard_enabled = true
+min_half_spread_bps = 60
+flatten_after_ms = 1
+
+[[variant]]
+name = "sweep1_flat550"
+parameter_profile = "sweep_a"
+q_max = 3
+reduce_only_threshold_q = 3
+phi_kappa_t = 3000
+phi_kappa_t_max = 3000
+horizon_seconds = 150
+flow_guard_enabled = true
+min_half_spread_bps = 60
+flatten_after_ms = 250

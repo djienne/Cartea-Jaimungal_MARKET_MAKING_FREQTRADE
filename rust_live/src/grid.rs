@@ -5,8 +5,9 @@
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use mm_live::config::{AppConfig, FeedHealth};
+use mm_live::hjb::CjParameters;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -49,6 +50,8 @@ pub struct VariantOverrides {
     /// `model.q_max` — inventory cap. Replay and early live runs disagreed on
     /// whether lowering it helped, so the grid retains it as a measured axis.
     pub q_max: Option<i64>,
+    pub horizon_seconds: Option<f64>,
+    pub parameter_profile: Option<String>,
     /// `model.phi_kappa_t` — running inventory penalty. Higher pushes back to
     /// flat harder.
     pub phi_kappa_t: Option<f64>,
@@ -92,6 +95,9 @@ impl VariantOverrides {
         if let Some(value) = self.q_max {
             config.model.q_max = value;
         }
+        if let Some(value) = self.horizon_seconds {
+            config.model.horizon_seconds = value;
+        }
         if let Some(value) = self.phi_kappa_t {
             config.model.phi_kappa_t = value;
         }
@@ -131,6 +137,12 @@ impl VariantOverrides {
         let mut parts = Vec::new();
         if let Some(value) = self.q_max {
             parts.push(format!("q_max={value}"));
+        }
+        if let Some(value) = self.horizon_seconds {
+            parts.push(format!("T={value}s"));
+        }
+        if let Some(value) = &self.parameter_profile {
+            parts.push(format!("parameters={value}"));
         }
         if let Some(value) = self.phi_kappa_t {
             parts.push(format!("phiKT={value}"));
@@ -181,11 +193,39 @@ pub struct VariantSpec {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GridSpec {
+    #[serde(default)]
+    pub parameter_profiles: BTreeMap<String, CjParameters>,
     #[serde(rename = "variant")]
     pub variants: Vec<VariantSpec>,
 }
 
 impl GridSpec {
+    pub fn resolve_variant(
+        &self,
+        entry: &VariantSpec,
+        base: &AppConfig,
+    ) -> Result<(AppConfig, Option<CjParameters>, String)> {
+        let config = entry.overrides.apply(base)?;
+        let parameters = entry
+            .overrides
+            .parameter_profile
+            .as_ref()
+            .map(|name| {
+                self.parameter_profiles
+                    .get(name)
+                    .copied()
+                    .with_context(|| format!("unknown parameter profile {name:?}"))
+            })
+            .transpose()?;
+        let mut fingerprint = config.fingerprint()?;
+        if let Some(parameters) = parameters {
+            parameters.validate()?;
+            fingerprint.push_str(";parameters=");
+            fingerprint.push_str(&serde_json::to_string(&parameters)?);
+        }
+        Ok((config, parameters, fingerprint))
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read grid spec {}", path.display()))?;
@@ -199,8 +239,21 @@ impl GridSpec {
         if self.variants.is_empty() {
             bail!("grid spec defines no variants");
         }
+        for (name, parameters) in &self.parameter_profiles {
+            parameters
+                .validate()
+                .with_context(|| format!("invalid parameter profile {name:?}"))?;
+        }
         let mut seen = BTreeSet::new();
         for variant in &self.variants {
+            if let Some(profile) = &variant.overrides.parameter_profile {
+                if !self.parameter_profiles.contains_key(profile) {
+                    bail!(
+                        "grid variant {:?} references unknown parameter profile {profile:?}",
+                        variant.name
+                    );
+                }
+            }
             if variant.name.trim().is_empty() {
                 bail!("grid variant names must be non-empty");
             }
@@ -676,6 +729,101 @@ mod tests {
     fn base() -> AppConfig {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat.toml");
         AppConfig::load(&path).expect("cashcat.toml must load")
+    }
+
+    #[test]
+    fn shipped_finalists_match_saved_sweep_models_without_expanding_the_grid() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let spec = GridSpec::load(&root.join("config/grid_cashcat.toml")).unwrap();
+        let config = AppConfig::load(&root.join("config/cashcat_dryrun_realistic.toml")).unwrap();
+        let sweep: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("../docs/cashcat_sweep_causal_20260904.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(spec.variants.len(), 20);
+        let fingerprints: BTreeSet<_> = spec
+            .variants
+            .iter()
+            .map(|entry| spec.resolve_variant(entry, &config).unwrap().2)
+            .collect();
+        assert_eq!(fingerprints.len(), 20);
+        for (index, expected) in sweep["stage_c"].as_array().unwrap().iter().enumerate() {
+            let name = format!("sweep{}", index + 1);
+            let entry = spec
+                .variants
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap();
+            let (applied, parameters, _) = spec.resolve_variant(entry, &config).unwrap();
+            let expected_parameters = &expected["params"];
+            let actual = parameters.unwrap();
+            for (key, value) in [
+                ("lambda+", actual.lambda_plus),
+                ("lambda-", actual.lambda_minus),
+                ("kappa+", actual.kappa_plus),
+                ("kappa-", actual.kappa_minus),
+                ("epsilon+", actual.epsilon_plus),
+                ("epsilon-", actual.epsilon_minus),
+            ] {
+                let expected_value = expected_parameters[key].as_f64().unwrap();
+                assert!(
+                    (value - expected_value).abs() <= 2.0 * f64::EPSILON * expected_value.abs(),
+                    "{name}: {key}"
+                );
+            }
+            assert!(actual.sigma2_per_second.is_none());
+            let surface = mm_live::hjb::solve_asymmetric(actual, &applied.model, 306.0, 1)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(surface.max_final_residual <= applied.model.newton_tolerance);
+            assert_eq!(
+                applied.model.q_max,
+                expected["risk"]["q_max"].as_i64().unwrap()
+            );
+            assert_eq!(
+                applied.model.horizon_seconds,
+                expected["risk"]["horizon_seconds"].as_f64().unwrap()
+            );
+            assert_eq!(
+                applied.model.phi_kappa_t,
+                expected["risk"]["phi_kappa_t"].as_f64().unwrap()
+            );
+            assert_eq!(applied.model.phi_kappa_t_max, applied.model.phi_kappa_t);
+            assert_eq!(
+                applied.model.alpha_kappa,
+                expected["risk"]["alpha_kappa"].as_f64().unwrap()
+            );
+            assert_eq!(
+                applied.flow_guard.enabled,
+                expected["risk"]["flow_guard"].as_bool().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_parameters_participate_in_resume_identity_and_must_validate() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut spec = GridSpec::load(&root.join("config/grid_cashcat.toml")).unwrap();
+        let entry = spec
+            .variants
+            .iter()
+            .find(|entry| entry.name == "sweep1")
+            .unwrap()
+            .clone();
+        let before = spec.resolve_variant(&entry, &base()).unwrap().2;
+        spec.parameter_profiles
+            .get_mut("sweep_a")
+            .unwrap()
+            .epsilon_plus += 0.000_001;
+        assert_ne!(before, spec.resolve_variant(&entry, &base()).unwrap().2);
+        spec.parameter_profiles
+            .get_mut("sweep_a")
+            .unwrap()
+            .kappa_plus = 0.0;
+        assert!(spec.validate().is_err());
+        assert!(spec.resolve_variant(&entry, &base()).is_err());
+        spec.parameter_profiles.remove("sweep_a");
+        assert!(spec.validate().is_err());
+        assert!(spec.resolve_variant(&entry, &base()).is_err());
     }
 
     fn healthy_feed() -> FeedHealth {

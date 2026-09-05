@@ -31,6 +31,8 @@ DEFAULT_GRID = REPO / "rust_live" / "config" / "grid_cashcat.toml"
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 OVERRIDE_LABELS = {
     "q_max": "q_max",
+    "horizon_seconds": "T_s",
+    "parameter_profile": "params",
     "phi_kappa_t": "phiKT",
     "phi_kappa_t_max": "phiKTmax",
     "min_half_spread_bps": "halfspread_bps",

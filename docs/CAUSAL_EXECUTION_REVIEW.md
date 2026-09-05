@@ -77,18 +77,20 @@ selection, inventory revaluation and funding.
 
 ## Validation
 
-- 390 Python tests and 275 Rust workspace/all-target/all-feature tests pass;
+- 390 Python tests and 278 Rust workspace/all-target/all-feature tests pass;
   Clippy with warnings denied, formatting and whitespace checks pass.
 - Causality/accounting regressions cover activation, partial volume, funding,
   terminal invalidation, checkpoint rejection, costed gap exits and damaged logs.
   HJB/calibration checks remain; historical P&L is not a reference answer.
-- The paper grid `run-1788566042942` completes 30 minutes before and after a
+- The execution-validation grid `run-1788566042942` completes 30 minutes before and after a
   graceful restart, retaining all 20 valid accounts with no event loss. All 44
   prior-run artifacts remain unchanged. Reconstructing 5,112 logged fills gives
   exact inventory and a maximum cash residual of 6.99e-12 USDC across all 20 rows.
 - An additional 30-minute observation verifies the fresh-book guard with all
-  20 accounts valid and no event loss. No real-money service, collector or
-  strategy configuration is changed.
+  20 accounts valid and no event loss. The current paper roster includes the
+  three saved sweep models and targeted combinations under common dry-run
+  conditions, as described in `DRY_RUN_GRID.md`. No real-money service or
+  collector is changed.
 
 Detailed search tables and machine-readable scores are in
 `cashcat_sweep_causal_20260904.md` and `cashcat_sweep_causal_20260904.json`.

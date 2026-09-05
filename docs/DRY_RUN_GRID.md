@@ -38,24 +38,48 @@ python scripts/grid_pnl_curve.py
 
 `rust_live/config/grid_cashcat.toml` defines the variants;
 `rust_live/config/cashcat_dryrun_realistic.toml` supplies their common settings.
-The current grid varies inventory range, inventory penalty, spread floor,
-requote lifetime, flow guard and experimental lot-age exits. Duplicate effective
-configurations warn at startup. Raise `phi_kappa_t_max` when requesting a
-`phi_kappa_t` above the base ceiling.
+The 20 slots contain 13 controls, the three training-ranked sweep finalists,
+and four targeted combinations of the first finalist:
+
+| Row | Model / change |
+|---|---|
+| `sweep1` | Saved fit A, phi*kappa*T=3000, T=150 s, q max=3 |
+| `sweep2` | Saved fit A, phi*kappa*T=3000, T=300 s, q max=3 |
+| `sweep3` | Saved fit B, phi*kappa*T=3000, T=150 s, q max=6 |
+| `sweep1_unguarded` | First finalist without the flow guard |
+| `sweep1_wide60` | First finalist with a 60 bps half-spread floor |
+| `sweep1_flat300` | Same 60 bps floor with the 301 ms exit target |
+| `sweep1_flat550` | Same 60 bps floor with the 550 ms exit target |
+
+The two `parameter_profiles` store the six fitted CJ parameters from
+`cashcat_sweep_causal_20260904.json`, not a new fit with similar settings.
+They participate in checkpoint identity and appear in each startup log.
+Controls use the shared recent-data fit, calculated once at grid startup.
+Duplicate effective configurations warn; raise `phi_kappa_t_max` with
+`phi_kappa_t` when exceeding the base ceiling.
 
 Common assumptions are 297.88 USDC starting capital, 1.5 bps maker fees,
 0.0000125/hour funding, and 150 ms each for decision, acknowledgement and
-cancellation. A 2.35 multiplier applies to every twentieth simulated latency
-sample. These configured assumptions are not continuously measured execution
-capabilities. The model uses visible queue information with no uncalibrated
+cancellation. A 2.35 multiplier applies during one exchange-time second in
+every 20-second cycle. These configured assumptions are not continuously
+measured execution capabilities. The model uses visible queue information with no uncalibrated
 time decay; finite market-depth data cannot reconstruct a venue's order queue.
 
-The three `flatten*` rows test an exit policy unavailable in the live backend.
-A deadline includes configured lot age plus decision/acknowledgement latency:
-`flatten300` and `flatten300w40` target 301 ms; `flatten550` targets 550 ms,
-before event discretization. These rows are ineligible for
-promotion regardless of P&L. Width/cadence and guarded/unguarded rows are
-comparisons, not presumed improvements.
+All rows retain common paper execution settings, capital-derived order sizing,
+risk gates and the current-data VPIN volume scale. The finalists therefore test
+the saved models prospectively under the same paper conditions as the controls;
+they do not reproduce the Python sweep's fixed sizing or execution assumptions.
+The paper Newton budget is 100 updates: finalist three needs 57, with the
+residual tolerance unchanged at 1e-8. Halving the 0.25 s HJB step changes depths
+by less than 1e-8 USDC/base unit with at least 5 s remaining in the sampled
+checks, but by up to 1e-4 near the terminal boundary; late-episode discretization remains a limitation.
+
+Lot-age exits and fixed parameter profiles are not supported by live promotion.
+Rows using either remain paper-only and ineligible regardless of P&L. Exit
+deadlines include lot age plus decision/acknowledgement latency: `flatten300`,
+`flatten300w40` and `sweep1_flat300` target 301 ms; `flatten550` and
+`sweep1_flat550` target 550 ms, before event discretization. Combinations are
+controlled comparisons, not presumed improvements.
 
 ## Accounting and validity
 
@@ -132,7 +156,10 @@ an interrupted old frame. The plotter reads retained files oldest-first and warn
 on decode failure, without letting an old damaged generation hide the new one.
 Rotation limits retained history by both volume and restart count; it does not
 guarantee a fixed number of days. Flush-boundary rotation can overshoot the size
-threshold. `--log-max-mb 0` allows unbounded append with interrupted-frame risk.
+threshold. With 20 rows, the default current-plus-three-generation log budget
+is about 5 GiB, unchanged by this roster. Old run directories and unrotated
+history are additional; this is not a hard total-disk ceiling.
+`--log-max-mb 0` allows unbounded append with interrupted-frame risk.
 
 Use a streaming zstd reader across frames, not one-shot decompression. The
 `--from-fills` plotting fallback reconstructs cash and inventory from retained
