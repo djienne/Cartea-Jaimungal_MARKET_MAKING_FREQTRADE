@@ -319,6 +319,12 @@ impl JsonlEventLogger {
     ) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
         let path = directory.join(format!("{stem}.{}", format.extension()));
+        if format == LogFormat::Zstd
+            && rotation.enabled()
+            && path.metadata().is_ok_and(|meta| meta.len() > 0)
+        {
+            rotate_log_files(&path, rotation.keep)?;
+        }
         let sink = open_sink(&path, format)?;
         let (sender, receiver) = mpsc::sync_channel(EVENT_LOG_QUEUE_CAPACITY);
         let flush_every = match format {
@@ -614,6 +620,37 @@ mod tests {
             Some(end) => text[..=end].to_owned(),
             None => String::new(),
         }
+    }
+
+    #[test]
+    fn restarting_a_bounded_log_keeps_an_interrupted_frame_separate() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("grid-test.jsonl.zst");
+        let mut encoder = zstd::Encoder::new(Vec::new(), 3).unwrap();
+        encoder.write_all(b"an unfinished event").unwrap();
+        encoder.flush().unwrap();
+        let interrupted = encoder.get_ref().clone();
+        std::fs::write(&path, &interrupted).unwrap();
+        {
+            let logger = JsonlEventLogger::create_with_rotation(
+                directory.path(),
+                "grid-test",
+                LogBackpressure::RefuseWhenFull,
+                LogFormat::Zstd,
+                LogRotation {
+                    max_bytes: 1_000_000,
+                    keep: 2,
+                },
+            )
+            .unwrap();
+            logger.log("restarted", Some(2_000), &42).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(directory.path().join("grid-test.jsonl.zst.1")).unwrap(),
+            interrupted
+        );
+        let row: serde_json::Value = serde_json::from_str(decode_zstd(&path).trim()).unwrap();
+        assert_eq!(row["payload"], 42);
     }
 
     #[test]

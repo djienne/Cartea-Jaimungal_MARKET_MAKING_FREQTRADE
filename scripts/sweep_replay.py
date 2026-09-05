@@ -67,10 +67,12 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from flow_guard import bucket_volume_from_totals
 from param_utils import PARAM_SCHEMA_VERSION  # noqa: E402
 from replay_market_maker import (  # noqa: E402
     ReplayConfig,
     ReplayTape,
+    ReplayMetrics,
     load_tape,
     run_replay,
 )
@@ -729,6 +731,8 @@ def score(
         "pnl_usdc": float(metrics.get("equity_usdc", 0.0)) - float(metrics.get("starting_equity_usdc", 0.0)),
         "net_realized_spread_usdc": float(metrics.get("realized_spread_usdc", 0.0)) - float(metrics.get("fees_usdc", 0.0)),
         "maker_fills": fills,
+        "liquidation_breach_events": int(metrics.get("liquidation_breach_events", 0)),
+        "min_liquidation_buffer_usdc": metrics.get("min_liquidation_buffer_usdc"),
         "taker_fills": int(metrics.get("taker_fills", 0)),
         "fills_bid": int(by_side.get("bid", 0)),
         "fills_ask": int(by_side.get("ask", 0)),
@@ -838,6 +842,8 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
         max_price_events=args.max_price_events,
         hjb_time_mode="episodic",
         event_clock="exchange",
+        queue_decay_per_second=0.0,
+        queue_model="book_level",
     )
 
     print(f"[tape] loading {args.symbol} from {args.data_dir} ...", flush=True)
@@ -857,6 +863,9 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
     split_at = (start + (end - start) * float(args.train_fraction)).floor("ms")
     train = slice_tape(tape, start, split_at)
     held_out = slice_tape(tape, split_at, end + timedelta(seconds=1))
+    base = dataclasses.replace(base, flow_guard_vpin_bucket_volume=bucket_volume_from_totals(
+        float(train.trades["size"].clip(lower=0).sum()),
+        (split_at - start).total_seconds() * 1_000.0, base.flow_guard_vpin_buckets_per_day))
     print(
         f"[split] train {tape_identity(train)['hours']} h -> held-out "
         f"{tape_identity(held_out)['hours']} h at {split_at.isoformat()}",
@@ -990,6 +999,10 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
     if not survivors:
         return {
             "status": "no_usable_calibration",
+            "execution_model": ReplayMetrics().execution_model,
+            "queue_decay_per_second": base.queue_decay_per_second,
+            "queue_model": base.queue_model,
+            "flow_guard_vpin_bucket_volume": base.flow_guard_vpin_bucket_volume,
             "tape": identity,
             "split_at": split_at.isoformat(),
             "search_scenario": dataclasses.asdict(search),
@@ -1100,6 +1113,10 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "status": "ok",
+        "execution_model": ReplayMetrics().execution_model,
+        "queue_decay_per_second": base.queue_decay_per_second,
+        "queue_model": base.queue_model,
+        "flow_guard_vpin_bucket_volume": base.flow_guard_vpin_bucket_volume,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "symbol": args.symbol,
         "tape": identity,
@@ -1132,7 +1149,7 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _row(values: Iterable[Any]) -> str:
-    return "| " + " | ".join(str(value) for value in values) + " |"
+    return "| " + " | ".join(str(value).replace("|", "\\|") for value in values) + " |"
 
 
 def to_markdown(payload: dict[str, Any]) -> str:
@@ -1142,6 +1159,8 @@ def to_markdown(payload: dict[str, Any]) -> str:
         f"# Parameter sweep — {payload.get('symbol', '?')}",
         "",
         f"- generated: `{payload.get('generated_at')}`",
+        f"- execution model: `{payload.get('execution_model', 'legacy')}`; "
+        f"queue decay per second: `{payload.get('queue_decay_per_second', 'unspecified')}`",
         f"- tape: **{tape.get('hours')} h**, {tape.get('price_rows')} price rows, "
         f"{tape.get('trade_rows')} trades (`{tape.get('start')}` → `{tape.get('end')}`)",
         (
@@ -1166,7 +1185,7 @@ def to_markdown(payload: dict[str, Any]) -> str:
             else ""
         ),
         "- the toxic-flow guard is an axis: `guard` on rows is the shipped guard, "
-        "`off` reproduces every sweep before 2026-09-02",
+        "`off` disables that guard without changing the execution model",
         "",
         "Calibration is fitted on the train slice only and applied unchanged to the",
         "held-out slice. Epsilon horizons stop at 1 s because epsilon is the arrival",
@@ -1201,7 +1220,7 @@ def to_markdown(payload: dict[str, Any]) -> str:
     stage_b = payload.get("stage_b_top", [])
     if stage_b:
         lines += [
-            "## Stage B — the book's risk preference (top 15 on train)",
+            "## Stage B — risk settings (top 15 on train)",
             "",
             _row(["calibration", "risk", "guard", "P&L", "net spread", "directional", "fills (bid/ask)", "fills/day"]),
             _row(["---", "---", "---", "---:", "---:", "---:", "---:", "---:"]),
@@ -1228,6 +1247,9 @@ def to_markdown(payload: dict[str, Any]) -> str:
         lines += [
             "## Stage C — held-out",
             "",
+            "Window counts span the whole tape, including training. Each window resets",
+            "the account; these are retrospective regime checks, not independent holdouts.",
+            "",
             _row(["configuration", "train P&L", "held-out P&L", "net spread", "directional", "fills", "windows +", "worst"]),
             _row(["---", "---:", "---:", "---:", "---:", "---:", "---:", "---:"]),
         ]
@@ -1246,34 +1268,16 @@ def to_markdown(payload: dict[str, Any]) -> str:
             ]))
         lines.append("")
 
-        # The per-window detail for the leader, because "which regime paid" is the
-        # question the aggregate cannot answer.
-        leader = stage_c[0]
-        if leader.get("windows"):
-            lines += [
-                f"### Leader per {leader.get('window_hours')} h window — `{leader.get('key')}`",
-                "",
-                _row(["window", "P&L", "net spread", "directional", "fills (bid/ask)"]),
-                _row(["---", "---:", "---:", "---:", "---:"]),
-            ]
-            for entry in leader["windows"]:
-                lines.append(_row([
-                    entry.get("window"),
-                    f"{entry.get('pnl_usdc', 0.0):+.2f}",
-                    f"{entry.get('net_realized_spread_usdc', 0.0):+.2f}",
-                    f"{entry.get('directional_usdc', 0.0):+.2f}",
-                    f"{entry.get('maker_fills', 0)} ({entry.get('fills_bid', 0)}/{entry.get('fills_ask', 0)})",
-                ]))
-            lines.append("")
+        lines += ["Per-window scores are retained in the companion JSON.", ""]
 
     ladder = payload.get("latency_ladder", [])
     if ladder:
         lines += [
             "## Latency ladder — winner, held-out slice",
             "",
-            "Latency and requote cadence move together: resting exposure is",
-            "`max(0, refresh − latency) + cancel`, so cutting latency at a fixed refresh",
-            "lengthens the time a quote sits. Each row is a plausible machine.",
+            "Latency and requote cadence change together. Actual resting exposure depends",
+            "on the event schedule, activation, cancellation and partial fills; these are",
+            "assumed scenarios, not measured host execution capabilities.",
             "",
             _row(["scenario", "latency", "refresh", "P&L", "net spread", "directional", "fills"]),
             _row(["---", "---:", "---:", "---:", "---:", "---:", "---:"]),
@@ -1294,10 +1298,13 @@ def to_markdown(payload: dict[str, Any]) -> str:
     lines += [
         "## How to read the columns",
         "",
-        "**net spread** is what market making earns: realized spread minus fees.",
-        "**directional** is P&L minus that — a bet on where the mid went, which the",
-        "tape decides and the model does not. A row whose P&L is mostly directional has",
-        "not demonstrated market making, however good the total looks.",
+        "**net spread** is filled quantity times distance from the decision-time mid,",
+        "minus fees. Despite the legacy JSON name, it is quoted spread capture, not",
+        "post-fill realized spread or proof of profit. **directional** is the residual",
+        "P&L, including adverse selection, inventory revaluation and funding.",
+        "Ranking eligibility tests fill counts only, not solvency or promotion readiness.",
+        "Replay keeps accounting after maintenance breaches; inspect the JSON breach",
+        "counts and minimum liquidation buffers before interpreting a return.",
         "",
     ]
     return "\n".join(lines)

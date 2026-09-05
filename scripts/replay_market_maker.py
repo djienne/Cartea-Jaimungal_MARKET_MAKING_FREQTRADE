@@ -34,6 +34,7 @@ Four things a reader of any artifact this harness produces has to know:
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import math
 from collections import deque
@@ -162,6 +163,7 @@ class ReplayConfig:
     flow_guard_fast_move_window_ms: float = FlowGuardConfig.fast_move_window_ms
     flow_guard_fast_move_threshold_bps: float = FlowGuardConfig.fast_move_threshold_bps
     flow_guard_vpin_buckets_per_day: int = FlowGuardConfig.vpin_buckets_per_day
+    flow_guard_vpin_bucket_volume: float | None = None
     flow_guard_vpin_window_buckets: int = FlowGuardConfig.vpin_window_buckets
     flow_guard_vpin_threshold: float = FlowGuardConfig.vpin_threshold
     flow_guard_cooldown_ms: float = FlowGuardConfig.cooldown_ms
@@ -199,7 +201,26 @@ class ReplayConfig:
 
 
 @dataclass
+class _ReplayOrder:
+    side: str
+    price: float
+    remaining: float
+    active_ns: int
+    cancel_ns: int
+    decision_ns: int
+    decision_index: int
+    mid: float
+    depth_key: str
+    calibration_key: str
+    queue: float | None = None
+    initial_queue: float = 0.0
+    queue_time_ns: int = 0
+    calibration_checked: bool = False
+
+
+@dataclass
 class ReplayMetrics:
+    execution_model: str = "causal-v2"
     input_files: dict[str, int] = field(default_factory=dict)
     input_rows: dict[str, int] = field(default_factory=dict)
     data_start: str | None = None
@@ -448,6 +469,7 @@ class ReplayMetrics:
             "final_mid": self.final_mid,
             "mark_to_market_pnl_usdc": self.mark_to_market_pnl_usdc,
             "funding_usdc": self.funding_usdc,
+            "execution_model": self.execution_model,
             "starting_equity_usdc": self.starting_equity_usdc,
             "equity_usdc": self.equity_usdc,
             "min_equity_usdc": self.min_equity_usdc,
@@ -1246,12 +1268,10 @@ def holding_time_percentile(samples: list[tuple[float, float]], quantile: float)
 
 
 def trade_flow_arrays(trades: pd.DataFrame) -> tuple[list[bool], list[str]]:
-    """(is_buy, trade_id) for the VPIN feed.
+    """Normalized aggressor flags and IDs for matching and VPIN.
 
-    The fill simulator matches on price alone and never needed the aggressor
-    side; VPIN is an order-flow imbalance and cannot be computed without it.
-    A missing side column reads as sell so an absent column cannot manufacture
-    a one-sided imbalance.
+    Legacy synthetic tapes without a side column use price-only matching.
+    Recorded tapes carry the normalized buy/sell side.
     """
     if "side" in trades.columns:
         is_buy = (trades["side"].astype(str).str.lower() == "buy").tolist()
@@ -1636,7 +1656,7 @@ def queue_ahead_from_book(
 
     ``cumulative`` selects which of two quantities is returned, and the choice
     MATTERS because it has to pair with how the queue is consumed.
-    ``scan_for_matching_trade`` decrements only on prints at our price or beyond
+    The causal trade loop decrements only on prints at our price or beyond
     (``candidate_price >= price`` for an ask). The volume that clears the better
     levels arrives as prints BELOW our price and never decrements anything.
 
@@ -1671,125 +1691,6 @@ def is_joining_best(side: str, price: float, best_bid: float, best_ask: float) -
         return abs(float(price) - float(best_bid)) <= max(1e-9, abs(float(best_bid)) * 1e-9)
     return abs(float(price) - float(best_ask)) <= max(1e-9, abs(float(best_ask)) * 1e-9)
 
-
-def scan_for_matching_trade(
-    side: str,
-    price: float,
-    positions: Iterable[int] | Sequence[int],
-    *,
-    trade_ts_ns: np.ndarray | None,
-    trade_price: np.ndarray,
-    trade_size: np.ndarray,
-    trade_size_falsy: np.ndarray,
-    used: np.ndarray | None,
-    queue_ahead: float,
-    queue_decay_per_second: float = 0.0,
-    active_at_ns: int | None = None,
-) -> tuple[int, float]:
-    """Walk a window of trades and return (position of the fill, queue decayed).
-
-    The single implementation of the fill rule.
-    :func:`matching_trade_with_queue_decay` is the DataFrame adapter over it and
-    ``run_replay`` calls it straight, because the frame the adapter would build
-    is the frame this rewrite exists to stop building.
-
-    The arithmetic is deliberately the same statements the row-wise version ran,
-    including the ``min``/``max`` calls: ``min(remaining, decay)`` and
-    ``max(0.0, size)`` propagate NaN differently from the comparison rewrites
-    they invite, and a NaN size is reachable from a real feed.
-
-    ``positions`` gives the window IN EVENT ORDER; ``used`` is the consumed-trade
-    mask, applied here so the caller never has to build a filtered copy.
-    Returns -1 for no fill.
-    """
-    remaining_queue = max(0.0, float(queue_ahead))
-    initial_queue = remaining_queue
-    decay_rate = max(0.0, float(queue_decay_per_second))
-    queue_decay_base = 0.0
-    last_ns = active_at_ns
-    has_ts = trade_ts_ns is not None
-    # A side that is neither bid nor ask crosses nothing, as before.
-    mode = 0 if side == "bid" else (1 if side == "ask" else 2)
-    for position in positions:
-        if used is not None and used[position]:
-            continue
-        trade_ns = int(trade_ts_ns[position]) if has_ts else None
-        if last_ns is None and trade_ns is not None:
-            last_ns = trade_ns
-        if decay_rate > 0 and last_ns is not None and trade_ns is not None and remaining_queue > 0:
-            elapsed_seconds = max(0.0, total_seconds_from_ns(trade_ns - last_ns))
-            decay = min(remaining_queue, initial_queue * decay_rate * elapsed_seconds)
-            remaining_queue -= decay
-            queue_decay_base += decay
-            last_ns = trade_ns
-
-        candidate_price = trade_price[position]
-        if not math.isfinite(candidate_price):
-            continue
-        if mode == 0:
-            crosses = candidate_price <= price
-        elif mode == 1:
-            crosses = candidate_price >= price
-        else:
-            crosses = False
-        if not crosses:
-            continue
-        candidate_size = 0.0 if trade_size_falsy[position] else float(trade_size[position])
-        if remaining_queue > 0:
-            remaining_queue -= max(0.0, candidate_size)
-            if remaining_queue >= 0:
-                continue
-        return int(position), queue_decay_base
-    return -1, queue_decay_base
-
-
-def matching_trade_with_queue_decay(
-    side: str,
-    price: float,
-    window: pd.DataFrame,
-    queue_ahead: float,
-    *,
-    queue_decay_per_second: float = 0.0,
-    active_at: pd.Timestamp | None = None,
-) -> tuple[pd.Series | None, float]:
-    """DataFrame adapter over :func:`scan_for_matching_trade`."""
-    trade_price, trade_size, trade_size_falsy = trade_event_arrays(window)
-    position, queue_decay_base = scan_for_matching_trade(
-        side,
-        price,
-        range(len(window)),
-        trade_ts_ns=timestamps_as_ns(window, coerce=True),
-        trade_price=trade_price,
-        trade_size=trade_size,
-        trade_size_falsy=trade_size_falsy,
-        used=None,
-        queue_ahead=queue_ahead,
-        queue_decay_per_second=queue_decay_per_second,
-        active_at_ns=timestamp_as_ns(active_at),
-    )
-    if position < 0:
-        return None, queue_decay_base
-    return window.iloc[position], queue_decay_base
-
-
-def matching_trade(
-    side: str,
-    price: float,
-    window: pd.DataFrame,
-    queue_ahead: float,
-    *,
-    queue_decay_per_second: float = 0.0,
-    active_at: pd.Timestamp | None = None,
-) -> pd.Series | None:
-    trade, _queue_decay_base = matching_trade_with_queue_decay(
-        side,
-        price,
-        window,
-        queue_ahead,
-        queue_decay_per_second=queue_decay_per_second,
-        active_at=active_at,
-    )
-    return trade
 
 
 def run_replay(
@@ -1830,9 +1731,9 @@ def run_replay(
     if prices.empty:
         return metrics
 
-    prices = prices.reset_index(drop=True)
-    trades = trades.reset_index(drop=True)
-    orderbooks = orderbooks.reset_index(drop=True)
+    prices = prices.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    trades = trades.sort_values("timestamp", kind="stable").reset_index(drop=True) if not trades.empty else trades
+    orderbooks = orderbooks.sort_values("timestamp", kind="stable").reset_index(drop=True) if not orderbooks.empty else orderbooks
     if config.max_price_events is not None and config.max_price_events > 0 and len(prices) > config.max_price_events:
         start_ts = prices.iloc[-config.max_price_events]["timestamp"]
         prices = prices[prices["timestamp"] >= start_ts].reset_index(drop=True)
@@ -1909,7 +1810,6 @@ def run_replay(
     price_mid_arr, price_best_bid_arr, price_best_ask_arr = price_event_arrays(
         prices, config.mid_fallback
     )
-    price_count = len(prices)
     # tolist() once, then index Python lists in the loop. ndarray element access
     # boxes a numpy scalar every time, which then has to be unboxed again by the
     # float()/int() the metrics need; the list holds the identical values as
@@ -1923,19 +1823,11 @@ def run_replay(
     trade_ts_ns = timestamps_as_ns(trades)
     if not trades_empty and trade_ts_ns is None:
         raise TypeError("replay needs a datetime 'timestamp' column on the trade stream")
-    trade_price_arr, trade_size_arr, trade_size_falsy_arr = trade_event_arrays(trades)
+    trade_price_arr, trade_size_arr, _ = trade_event_arrays(trades)
     trade_ts = None if trade_ts_ns is None else trade_ts_ns.tolist()
     trade_price = trade_price_arr.tolist()
     trade_size = trade_size_arr.tolist()
-    trade_size_falsy = trade_size_falsy_arr.tolist()
     trade_is_buy, trade_ids = trade_flow_arrays(trades)
-    trade_ts_series = trades["timestamp"] if "timestamp" in trades.columns else None
-    # A boolean mask instead of the set of consumed row labels, and the window
-    # instead of a filtered copy of it: the old pair cost an isin() over a fresh
-    # DataFrame per quote, which was a quarter of the whole run.
-    trade_used = [False] * len(trades)
-    trades_sorted = is_monotonic_ns(trade_ts_ns)
-
     book_ts_ns = timestamps_as_ns(orderbooks)
     if not orderbooks.empty and "timestamp" in orderbooks.columns and book_ts_ns is None:
         raise TypeError("replay needs a datetime 'timestamp' column on the orderbook stream")
@@ -1974,7 +1866,6 @@ def run_replay(
     refresh_ns = quote_refresh_interval_ms * _NS_PER_MS
     cancel_ns = int(config.cancel_latency_ms) * _NS_PER_MS
     episode_min_elapsed = horizon * float(config.episode_min_elapsed_fraction)
-    consumed_trade_events = 0
 
     # ---- toxic-flow guard -------------------------------------------------
     # Sized from this tape's own traded volume, exactly as vpin_bucket_units
@@ -1996,7 +1887,11 @@ def run_replay(
     metrics.flow_guard_enabled = guard_config.enabled
     flow_guard = FlowGuard(guard_config)
     mid_window = MidWindow(guard_config.fast_move_window_ms)
-    if trades_empty or trade_ts is None:
+    if config.flow_guard_vpin_bucket_volume is not None:
+        guard_bucket_volume = float(config.flow_guard_vpin_bucket_volume)
+        if not math.isfinite(guard_bucket_volume) or guard_bucket_volume <= 0:
+            raise ValueError("flow_guard_vpin_bucket_volume must be finite and positive")
+    elif trades_empty or trade_ts is None:
         guard_bucket_volume = 1.0
     else:
         guard_bucket_volume = bucket_volume_from_totals(
@@ -2006,9 +1901,6 @@ def run_replay(
         )
     metrics.flow_guard_vpin_bucket_volume = guard_bucket_volume
     vpin_tracker = VpinTracker(guard_bucket_volume, guard_config.vpin_window_buckets)
-    # Read-only cursor over the SAME trade arrays the fill simulator uses. It
-    # never touches `trade_used`, so feeding the guard cannot consume a fill.
-    guard_trade_cursor = 0
     guard_vpin: float | None = None
 
     flatten_slippage_bps = float(config.flatten_slippage_bps)
@@ -2021,328 +1913,238 @@ def run_replay(
     # Open exposure, FIFO. Entries are (ts_ns, signed_base): positive is long.
     open_lots: deque[tuple[int, float]] = deque()
 
-    for row_idx in range(price_count):
-        row_ts_ns = price_ts[row_idx]
-        mid = price_mid_list[row_idx]
-        metrics.final_mid = mid
+    orders: list[_ReplayOrder] = []
+    mid: float | None = None
+    best_bid = best_ask = None
+    previous_event_ns: int | None = None
+    known_aggressors = "side" in trades.columns
 
-        # inventory_to_q IS round(inventory_to_q_exact(...)) on the same config,
-        # so the exact value is computed once and rounded rather than twice.
+    def maker_fill(order: _ReplayOrder, fill_size: float, fill_ns: int) -> None:
+        side, price, mid = order.side, order.price, order.mid
+        depth_key = order.depth_key
+        notional = fill_size * price
+        fee = notional * maker_fee
+        gross_spread = abs(mid - price) * fill_size
+        side_pnl = gross_spread - fee
+        metrics.maker_fills += 1
+        metrics.fees_usdc += fee
+        if side == "bid":
+            metrics.inventory_base += fill_size
+            metrics.cash_usdc -= notional + fee
+            metrics.pnl_by_side["bid"] += side_pnl
+        else:
+            metrics.inventory_base -= fill_size
+            metrics.cash_usdc += notional - fee
+            metrics.pnl_by_side["ask"] += side_pnl
+        metrics.realized_spread_usdc += gross_spread
+        match_holding_time(
+            open_lots,
+            fill_ns,
+            fill_size if side == "bid" else -fill_size,
+            metrics,
+        )
+        if order.remaining == order_amount:
+            metrics.fills_by_depth[depth_key] = metrics.fills_by_depth.get(depth_key, 0) + 1
+        metrics.fills_by_side[side] = metrics.fills_by_side.get(side, 0) + 1
+        metrics.fill_depth_bps_sum_by_side[side] = metrics.fill_depth_bps_sum_by_side.get(
+            side, 0.0
+        ) + quote_depth_bps(mid, price)
+        fill_ts = pd.Timestamp(fill_ns, tz="UTC")
+        fill_ts_ns = fill_ns
+        for horizon_ms in MARKOUT_HORIZONS_MS:
+            future = future_mid_from_arrays(price_ts_ns, price_mid_arr, fill_ts_ns, horizon_ms)
+            if future is None:
+                continue
+            markout = markout_value(side, price, future)
+            side_markouts = metrics.markout_usdc_by_side[side]
+            side_counts = metrics.markout_fills_by_side[side]
+            side_markouts[horizon_ms] = side_markouts.get(horizon_ms, 0.0) + markout * fill_size
+            side_counts[horizon_ms] = side_counts.get(horizon_ms, 0) + 1
+            metrics.markout_samples.append({
+                "fill_ts": fill_ts.isoformat(),
+                "side": side,
+                "horizon_ms": horizon_ms,
+                "fill_price": price,
+                "future_mid": future,
+                "markout_usdc_per_base": markout,
+                "markout_usdc": markout * fill_size,
+            })
+
+
+    streams = (
+        ((stamp, 0, index) for index, stamp in enumerate(trade_ts or [])),
+        ((int(stamp), 1, index) for index, stamp in enumerate(book_ts_ns if book_ts_ns is not None else [])),
+        ((stamp, 2, index) for index, stamp in enumerate(price_ts)),
+    )
+    for now_ns, kind, event_index in heapq.merge(*streams):
+        if previous_event_ns is not None and mid is not None and funding_rate_per_hour:
+            hours = (now_ns - previous_event_ns) / (3600 * _NS_PER_SECOND)
+            funding = -metrics.inventory_base * mid * funding_rate_per_hour * hours
+            metrics.funding_usdc += funding
+            metrics.cash_usdc += funding
+        previous_event_ns = now_ns
+        for order in orders:
+            if order.remaining <= 0 or now_ns >= order.cancel_ns:
+                continue
+            if order.queue is None and order.active_ns <= now_ns:
+                boundary = "right" if order.active_ns == order.decision_ns else "left"
+                arrival_index = (order.decision_index if order.active_ns == order.decision_ns
+                                 else int(price_ts_ns.searchsorted(order.active_ns, side="left")) - 1)
+                arrival_bid = price_best_bid_list[arrival_index]
+                arrival_ask = price_best_ask_list[arrival_index]
+                accepted, _ = post_only_check(order.side, order.price, arrival_bid, arrival_ask)
+                if not accepted:
+                    metrics.post_only_rejects += 1
+                    order.remaining = 0.0
+                    continue
+                order.queue = 0.0
+                if book_ts_ns is not None:
+                    book_index = int(book_ts_ns.searchsorted(order.active_ns, side=boundary)) - 1
+                    if book_index >= 0:
+                        depth = book_bid_depth if order.side == "bid" else book_ask_depth
+                        if queue_model_uses_book and depth is not None:
+                            order.queue = queue_ahead_from_book(*depth, book_index, order.side, order.price, cumulative=queue_model_is_cumulative)
+                        elif is_joining_best(order.side, order.price, arrival_bid, arrival_ask):
+                            sizes = book_bid_size if order.side == "bid" else book_ask_size
+                            order.queue = max(0.0, float(sizes[book_index]))
+                order.initial_queue = order.queue
+                order.queue_time_ns = order.active_ns
+        expired = [order for order in orders if now_ns >= order.cancel_ns and order.remaining > 0]
+        metrics.stale_quote_cancels += len(expired)
+        orders = [order for order in orders if order.remaining > 0 and now_ns < order.cancel_ns]
+
+        if kind == 0:
+            candidate_price, remaining = trade_price[event_index], trade_size[event_index]
+            if not math.isfinite(candidate_price) or not math.isfinite(remaining) or remaining <= 0:
+                continue
+            if guard_config.enabled:
+                guard_vpin = vpin_tracker.observe(trade_is_buy[event_index], remaining, trade_ids[event_index])
+            consumed = False
+            eligible = sorted(orders, key=lambda order: (-order.price if order.side == "bid" else order.price, order.active_ns))
+            for order in eligible:
+                if remaining <= 0:
+                    break
+                if order.queue is None or order.active_ns > now_ns:
+                    continue
+                if known_aggressors and ((order.side == "ask") != trade_is_buy[event_index]):
+                    continue
+                crosses = candidate_price <= order.price if order.side == "bid" else candidate_price >= order.price
+                if not crosses:
+                    continue
+                beyond = candidate_price < order.price if order.side == "bid" else candidate_price > order.price
+                if beyond and not queue_model_is_cumulative:
+                    order.queue = 0.0
+                decay = min(order.queue, order.initial_queue * max(0.0, queue_decay_per_second) * (now_ns - order.queue_time_ns) / _NS_PER_SECOND)
+                order.queue -= decay
+                order.queue_time_ns = now_ns
+                metrics.queue_decay_base += decay
+                queue_consumed = min(order.queue, remaining)
+                order.queue -= queue_consumed
+                remaining -= queue_consumed
+                room = max(0.0, metrics.inventory_base - short_floor) if order.side == "ask" else math.inf
+                fill_size = round_amount_down(min(remaining, order.remaining, room), config.amount_step_size)
+                if fill_size <= 0:
+                    continue
+                if not order.calibration_checked:
+                    allowed, _ = calibrated_fill_allowed(metrics.fill_calibration, metrics.calibration_attempts_by_key, metrics.calibration_fills_by_key, side=order.side, depth_key=order.calibration_key)
+                    order.calibration_checked = True
+                    if not allowed:
+                        metrics.calibration_rejected_fills += 1
+                        consumed = True
+                        order.remaining = 0.0
+                        remaining -= fill_size
+                        continue
+                maker_fill(order, fill_size, now_ns)
+                order.remaining -= fill_size
+                remaining -= fill_size
+                consumed = True
+            metrics.consumed_trade_events += int(consumed)
+            if mid is not None:
+                update_margin_metrics(metrics, config, mid)
+            continue
+        if kind == 1:
+            continue
+
+        row_idx = event_index
+        mid = price_mid_list[row_idx]
+        best_bid = price_best_bid_list[row_idx]
+        best_ask = price_best_ask_list[row_idx]
+        metrics.final_mid = mid
+        if flatten_after_ns is not None:
+            while open_lots and now_ns - open_lots[0][0] >= flatten_after_ns + latency_ns:
+                _, lot = open_lots[0]
+                touch = best_bid if lot > 0 else best_ask
+                if touch is None or not math.isfinite(touch) or touch <= 0:
+                    break
+                exit_price = touch * (1.0 - math.copysign(flatten_slippage_bps / 10_000.0, lot))
+                exit_side = "bid" if lot > 0 else "ask"
+                exit_price = round_price_for_side(exit_side, exit_price, config.price_tick_size)
+                size = abs(lot)
+                fee = size * exit_price * taker_fee
+                metrics.cash_usdc += lot * exit_price - fee
+                metrics.inventory_base -= lot
+                metrics.fees_usdc += fee
+                metrics.taker_fills += 1
+                metrics.flatten_events += 1
+                metrics.flatten_base += size
+                metrics.flatten_cost_usdc += abs(mid - exit_price) * size + fee
+                match_holding_time(open_lots, now_ns, -lot, metrics)
         q_exact = mm_core.inventory_to_q_exact(metrics.inventory_base, inventory_config)
         q = int(round(q_exact))
         metrics.q_residual_abs_sum += abs(q_exact - q)
         metrics.q_residual_samples += 1
-
-        # Episode clock on SIMULATED time. Rolls at T, or early once flat and
-        # far enough in that a single round trip cannot pin it at t=0.
-        tau: float | None = None
+        tau = None
         if episodic:
             if episode_start_ns is None:
-                episode_start_ns = row_ts_ns
+                episode_start_ns = now_ns
                 metrics.episodes += 1
-            elapsed = max(0.0, total_seconds_from_ns(row_ts_ns - episode_start_ns))
-            if elapsed >= horizon or (
-                config.episode_reset_on_flat and q == 0 and elapsed >= episode_min_elapsed
-            ):
-                episode_start_ns = row_ts_ns
+            elapsed = (now_ns - episode_start_ns) / _NS_PER_SECOND
+            if elapsed >= horizon or (config.episode_reset_on_flat and q == 0 and elapsed >= episode_min_elapsed):
+                episode_start_ns = now_ns
                 metrics.episodes += 1
                 elapsed = 0.0
             tau = max(0.0, horizon - elapsed)
-
-        if q == q_min:
-            metrics.time_at_q_boundary["q_min"] += 1
-        if q == q_max:
-            metrics.time_at_q_boundary["q_max"] += 1
+        metrics.time_at_q_boundary["q_min"] += int(q == q_min)
+        metrics.time_at_q_boundary["q_max"] += int(q == q_max)
         metrics.inventory_histogram[q] = metrics.inventory_histogram.get(q, 0) + 1
-
-        if funding_rate_per_hour and row_idx > 0:
-            elapsed_hours = max(
-                0.0, total_seconds_from_ns(row_ts_ns - price_ts[row_idx - 1]) / 3600.0
-            )
-            funding = -metrics.inventory_base * mid * float(funding_rate_per_hour) * elapsed_hours
-            metrics.funding_usdc += funding
-            metrics.cash_usdc += funding
-
-        # Feed the guard on every price event, before the refresh gate: the
-        # breaker window and VPIN are properties of the market, not of our
-        # quoting cadence, so they must see the whole stream.
+        guard_tripped = False
         if guard_config.enabled:
-            if not trades_empty and trade_ts is not None:
-                while guard_trade_cursor < len(trade_ts) and trade_ts[guard_trade_cursor] <= row_ts_ns:
-                    if not trade_size_falsy[guard_trade_cursor]:
-                        guard_vpin = vpin_tracker.observe(
-                            trade_is_buy[guard_trade_cursor],
-                            trade_size[guard_trade_cursor],
-                            trade_ids[guard_trade_cursor],
-                        )
-                    guard_trade_cursor += 1
-            guard_move_bps = mid_window.observe(row_ts_ns / _NS_PER_MS, mid)
-            guard_tripped = flow_guard.evaluate(row_ts_ns / _NS_PER_MS, guard_move_bps, guard_vpin)
-        else:
-            guard_tripped = False
-
-        # Aggressive flatten, before the refresh gate: the exit deadline belongs
-        # to the position, not to the quoting cadence, so it must be checked on
-        # every event rather than once per refresh.
-        if flatten_after_ns is not None and open_lots:
-            oldest_ts, oldest_size = open_lots[0]
-            # The deadline carries the SAME latency the quoting path pays: we
-            # notice the position, decide, and the taker order reaches the venue
-            # one round trip later. Executing at the deadline price instead
-            # would be reading a book we could not have traded on.
-            if row_ts_ns - oldest_ts >= flatten_after_ns + latency_ns:
-                touch_bid = price_best_bid_list[row_idx]
-                touch_ask = price_best_ask_list[row_idx]
-                # Cross to go flat: sell a long into the bid, buy a short from
-                # the ask. Without a touch there is nothing to cross into, so
-                # the lot simply waits -- refusing to invent a price is the
-                # difference between measuring this policy and flattering it.
-                exit_price = touch_bid if oldest_size > 0.0 else touch_ask
-                if exit_price is not None and math.isfinite(exit_price) and exit_price > 0.0:
-                    # Walk the book: a sell lands below the bid, a buy above the ask.
-                    slip = exit_price * (flatten_slippage_bps / 10_000.0)
-                    exit_price = exit_price - slip if oldest_size > 0.0 else exit_price + slip
-                    size = abs(oldest_size)
-                    notional = size * exit_price
-                    fee = notional * taker_fee
-                    if oldest_size > 0.0:
-                        metrics.inventory_base -= size
-                        metrics.cash_usdc += notional - fee
-                    else:
-                        metrics.inventory_base += size
-                        metrics.cash_usdc -= notional + fee
-                    metrics.taker_fills += 1
-                    metrics.fees_usdc += fee
-                    metrics.flatten_events += 1
-                    metrics.flatten_base += size
-                    # What the truncation cost: the half-spread crossed plus the
-                    # taker fee. Recorded so the two legs stay separable.
-                    metrics.flatten_cost_usdc += abs(mid - exit_price) * size + fee
-                    match_holding_time(
-                        open_lots, row_ts_ns, -oldest_size, metrics
-                    )
-                    # Inventory just moved, and `q` was computed at the top of
-                    # this row. Leaving it stale makes compute_quotes price the
-                    # UNWINDING branch -- the 1.5 bps floor on the side that
-                    # would flatten a position we no longer hold -- and that
-                    # quote fills, opening a fresh position 1.5 bps from mid
-                    # that is crossed out one deadline later. Measured on a 34 h
-                    # slice: 40 of 164 non-flat decisions were stale, a real
-                    # P&L drag rather than a source of the result, but wrong.
-                    q_exact = mm_core.inventory_to_q_exact(
-                        metrics.inventory_base, inventory_config
-                    )
-                    q = int(round(q_exact))
-
-        if next_quote_decision_ns is not None and row_ts_ns < next_quote_decision_ns:
-            update_margin_metrics(metrics, config, mid)
+            move = mid_window.observe(now_ns / _NS_PER_MS, mid)
+            guard_tripped = flow_guard.evaluate(now_ns / _NS_PER_MS, move, guard_vpin)
+        if guard_tripped:
+            for order in orders:
+                order.cancel_ns = min(order.cancel_ns, now_ns + cancel_ns)
+        update_margin_metrics(metrics, config, mid)
+        if next_quote_decision_ns is not None and now_ns < next_quote_decision_ns:
             continue
-
-        # Only a quote decision reads the touch, so it is not unpacked above the
-        # early continue -- most events on a fast tape never get here.
-        best_bid = price_best_bid_list[row_idx]
-        best_ask = price_best_ask_list[row_idx]
         metrics.quote_decision_events += 1
-        bid, ask, _ = compute_quotes(
-            mid,
-            q,
-            params,
-            q_max,
-            hjb_cache,
-            maker_fee=maker_fee,
-            spread_multiplier=config.spread_multiplier,
+        bid, ask, _ = compute_quotes(mid, q, params, q_max, hjb_cache,
+            maker_fee=maker_fee, spread_multiplier=config.spread_multiplier,
             min_half_spread_bps=config.min_half_spread_bps,
             max_half_spread_bps=config.max_half_spread_bps,
-            tau_remaining=tau,
-            q_exact=q_exact,
-            quote_config=quote_config,
-        )
+            tau_remaining=tau, q_exact=q_exact, quote_config=quote_config)
         if guard_tripped:
-            # The analogue of the live path publishing
-            # DesiredQuotes::empty(QuoteReason::ToxicFlow, ..): both sides go
-            # dark, which also cancels anything resting.
             bid = ask = None
             metrics.flow_guard_withheld_decisions += 1
-        inventory_at_decision = metrics.inventory_base
-        active_at_ns = row_ts_ns + latency_ns
-        refresh_due_ns = row_ts_ns + refresh_ns
-        stale_at_ns = max(active_at_ns, refresh_due_ns) + cancel_ns
-        next_quote_decision_ns = refresh_due_ns
-        # The window the old code cut with a full-frame boolean mask and a take,
-        # once per side. On sorted timestamps -- which is every tape the loader
-        # produces -- it is a contiguous range, so two binary searches give the
-        # same rows without materialising anything. The mask is kept for the
-        # unsorted case a monkeypatched loader can still hand over, where a
-        # range would be wrong rather than merely slower.
-        window_positions: Any = ()
-        if not trades_empty:
-            if trades_sorted:
-                window_positions = range(
-                    int(trade_ts_ns.searchsorted(active_at_ns, side="left")),
-                    int(trade_ts_ns.searchsorted(stale_at_ns, side="right")),
-                )
-            else:
-                window_positions = np.nonzero(
-                    (trade_ts_ns >= active_at_ns) & (trade_ts_ns <= stale_at_ns)
-                )[0]
-
+        active_ns = now_ns + latency_ns
+        next_quote_decision_ns = now_ns + refresh_ns
+        stale_ns = max(active_ns, next_quote_decision_ns) + cancel_ns
         for side, raw_price in (("bid", bid), ("ask", ask)):
-            if raw_price is None:
+            if raw_price is None or (long_only and side == "ask" and metrics.inventory_base <= 0):
                 continue
-            # A long-only agent cannot sell what it does not hold. A two-sided
-            # agent can, down to its short bound -- the HJB already returns an
-            # infinite depth at that bound, so no extra gate is needed there.
-            if long_only and side == "ask" and inventory_at_decision <= 0:
-                continue
-            price = (
-                float(raw_price)
-                if price_tick is None
-                else round_price_to_tick(side, raw_price, price_tick)
-            )
-            if abs(float(price) - float(raw_price)) > 1e-12:
-                metrics.price_rounding_adjustments += 1
+            price = float(raw_price) if price_tick is None else round_price_to_tick(side, raw_price, price_tick)
+            metrics.price_rounding_adjustments += int(abs(price - float(raw_price)) > 1e-12)
             if not order_amount_ok:
                 metrics.amount_rounding_rejects += 1
                 continue
             metrics.quote_attempts += 1
             depth_key = quote_depth_key(side, mid, price)
-            calibration_key = (
-                quote_depth_bucket_key(side, mid, price, calibration_bucket_bps)
-                if calibration_bucket_bps is not None
-                else depth_key
-            )
+            calibration_key = quote_depth_bucket_key(side, mid, price, calibration_bucket_bps) if calibration_bucket_bps is not None else depth_key
             if calibration_applied:
-                cal_key, _cal_probability = calibration_probability_key(
-                    metrics.fill_calibration, side, calibration_key
-                )
-                metrics.calibration_attempts_by_key[cal_key] = metrics.calibration_attempts_by_key.get(cal_key, 0) + 1
+                key, _ = calibration_probability_key(metrics.fill_calibration, side, calibration_key)
+                metrics.calibration_attempts_by_key[key] = metrics.calibration_attempts_by_key.get(key, 0) + 1
             metrics.quote_attempts_by_depth[depth_key] = metrics.quote_attempts_by_depth.get(depth_key, 0) + 1
-            ok, _reason = post_only_check(side, price, best_bid, best_ask)
-            if not ok:
-                metrics.post_only_rejects += 1
-                continue
-
-            if trades_empty:
-                metrics.stale_quote_cancels += 1
-                continue
-
-            queue_ahead = 0.0
-            if book_ts_ns is not None:
-                book_idx = int(book_ts_ns.searchsorted(active_at_ns, side="right")) - 1
-                if book_idx >= 0:
-                    depth = book_bid_depth if side == "bid" else book_ask_depth
-                    if queue_model_uses_book and depth is not None:
-                        # Everything resting at our level or better. Uses the
-                        # most recent snapshot, which is up to ~5.4 s old: queue
-                        # DEPTH is slowly varying, unlike a directional signal,
-                        # so a stale snapshot is a far weaker assumption here
-                        # than pretending the queue is empty.
-                        queue_ahead = queue_ahead_from_book(
-                            depth[0], depth[1], book_idx, side, price,
-                            cumulative=queue_model_is_cumulative,
-                        )
-                    elif is_joining_best(side, price, best_bid, best_ask):
-                        sizes = book_bid_size if side == "bid" else book_ask_size
-                        queue_ahead = float(sizes[book_idx])
-            fill_index, queue_decay_base = scan_for_matching_trade(
-                side,
-                price,
-                window_positions,
-                trade_ts_ns=trade_ts,
-                trade_price=trade_price,
-                trade_size=trade_size,
-                trade_size_falsy=trade_size_falsy,
-                used=trade_used,
-                queue_ahead=queue_ahead,
-                queue_decay_per_second=queue_decay_per_second,
-                active_at_ns=active_at_ns,
-            )
-            metrics.queue_decay_base += queue_decay_base
-
-            if fill_index < 0:
-                metrics.stale_quote_cancels += 1
-                continue
-
-            fill_trade_size = (
-                order_amount if trade_size_falsy[fill_index] else trade_size[fill_index]
-            )
-            if side == "ask":
-                # Selling is bounded by how much further the short bound allows,
-                # which is the whole inventory for a long-only agent (q_min=0)
-                # and inventory-minus-the-floor for a two-sided one.
-                room_to_sell = max(0.0, metrics.inventory_base - short_floor)
-                fill_size = min(fill_trade_size, order_amount, room_to_sell)
-            else:
-                fill_size = min(fill_trade_size, order_amount)
-            if fill_size <= 0:
-                continue
-
-            calibrated_allowed, _calibrated_key = calibrated_fill_allowed(
-                metrics.fill_calibration,
-                metrics.calibration_attempts_by_key,
-                metrics.calibration_fills_by_key,
-                side=side,
-                depth_key=calibration_key,
-            )
-            trade_used[fill_index] = True
-            consumed_trade_events += 1
-            metrics.consumed_trade_events = consumed_trade_events
-            if not calibrated_allowed:
-                metrics.calibration_rejected_fills += 1
-                metrics.stale_quote_cancels += 1
-                continue
-            notional = fill_size * price
-            fee = notional * maker_fee
-            gross_spread = abs(mid - price) * fill_size
-            side_pnl = gross_spread - fee
-            metrics.maker_fills += 1
-            metrics.fees_usdc += fee
-            if side == "bid":
-                metrics.inventory_base += fill_size
-                metrics.cash_usdc -= notional + fee
-                metrics.pnl_by_side["bid"] += side_pnl
-            else:
-                metrics.inventory_base -= fill_size
-                metrics.cash_usdc += notional - fee
-                metrics.pnl_by_side["ask"] += side_pnl
-            metrics.realized_spread_usdc += gross_spread
-            match_holding_time(
-                open_lots,
-                trade_ts[fill_index],
-                fill_size if side == "bid" else -fill_size,
-                metrics,
-            )
-            metrics.fills_by_depth[depth_key] = metrics.fills_by_depth.get(depth_key, 0) + 1
-            metrics.fills_by_side[side] = metrics.fills_by_side.get(side, 0) + 1
-            metrics.fill_depth_bps_sum_by_side[side] = metrics.fill_depth_bps_sum_by_side.get(
-                side, 0.0
-            ) + quote_depth_bps(mid, price)
-            fill_ts = trade_ts_series.iloc[fill_index]
-            fill_ts_ns = trade_ts[fill_index]
-            for horizon_ms in MARKOUT_HORIZONS_MS:
-                future = future_mid_from_arrays(price_ts_ns, price_mid_arr, fill_ts_ns, horizon_ms)
-                if future is None:
-                    continue
-                markout = markout_value(side, price, future)
-                # Aggregated per side as well as sampled, because the sample list
-                # is only usable by a reader who re-groups it, and the question a
-                # sweep asks -- which side is paying, and does it stay paid at
-                # 30 s -- has to be answerable straight from to_dict().
-                side_markouts = metrics.markout_usdc_by_side[side]
-                side_counts = metrics.markout_fills_by_side[side]
-                side_markouts[horizon_ms] = side_markouts.get(horizon_ms, 0.0) + markout * fill_size
-                side_counts[horizon_ms] = side_counts.get(horizon_ms, 0) + 1
-                metrics.markout_samples.append({
-                    "fill_ts": fill_ts.isoformat(),
-                    "side": side,
-                    "horizon_ms": horizon_ms,
-                    "fill_price": price,
-                    "future_mid": future,
-                    "markout_usdc_per_base": markout,
-                    "markout_usdc": markout * fill_size,
-                })
-
-        update_margin_metrics(metrics, config, mid)
+            orders.append(_ReplayOrder(side, price, order_amount, active_ns, stale_ns, now_ns, row_idx, mid, depth_key, calibration_key))
 
     metrics.holding_time_base_unmatched = float(sum(abs(size) for _, size in open_lots))
     metrics.flow_guard_trips = flow_guard.trips

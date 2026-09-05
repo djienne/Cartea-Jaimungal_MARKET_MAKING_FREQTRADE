@@ -5,7 +5,7 @@ use crate::types::{
     AggressorSide, Bbo, BookSnapshot, DesiredQuotes, DryRunAccountState, ExecutionEvent, Fill,
     MarketEvent, OrderIntent, Side,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -122,6 +122,7 @@ pub struct DryRunBackend {
     orders: Vec<VirtualOrder>,
     pending_markouts: Vec<PendingMarkout>,
     latest_bbo: Option<Bbo>,
+    bbo_is_restored: bool,
     latest_book: Option<BookSnapshot>,
     next_order_id: u64,
     last_mark_ms: Option<u64>,
@@ -186,6 +187,7 @@ impl DryRunBackend {
             orders: Vec::new(),
             pending_markouts: Vec::new(),
             latest_bbo: None,
+            bbo_is_restored: false,
             latest_book: None,
             next_order_id: 1,
             last_mark_ms: None,
@@ -266,55 +268,6 @@ impl DryRunBackend {
         Ok(())
     }
 
-    /// Close a position carried across a long restart gap at the last price
-    /// the run actually observed, returning the P&L that became realized.
-    ///
-    /// `restore_from_snapshot` deliberately carries inventory, which is right
-    /// for a brief interruption: the position is marked a few seconds later at
-    /// a price the run all but saw. Across a long gap it is wrong, and wrong in
-    /// the direction that flatters. The first mark of the new session prices
-    /// the carried position at a level whose whole path was unobserved, so the
-    /// move lands in `mark_to_market_pnl_usdc` as though the strategy had
-    /// earned it -- the mechanism that made the 46.4 h leaderboard of
-    /// 2026-08-27 report a 13.2% rally as profit.
-    ///
-    /// Closing at the checkpoint's own mark is the honest resolution. Equity is
-    /// unchanged across the call, because the position's market value simply
-    /// moves into cash: the P&L curve stays continuous and no gain or loss is
-    /// invented. What goes away is the exposure, so nothing that happens during
-    /// the unobserved window can be attributed to a decision the strategy made
-    /// before it.
-    ///
-    /// Returns `None` when the variant was already flat, so the caller can
-    /// report how many positions this actually touched.
-    pub fn flatten_carried_position(&mut self) -> Option<f64> {
-        if self.account.inventory_units == 0 {
-            return None;
-        }
-        // `mark_account` maintains `equity = cash + inventory_base * mid`, so
-        // the difference is the position's value at the last observed mid --
-        // recovered without needing that price to have been checkpointed.
-        let market_value_usdc = self.account.equity_usdc - self.account.cash_usdc;
-        let inventory_base = self
-            .instrument
-            .size_from_units(self.account.inventory_units);
-        let closed_pnl_usdc = market_value_usdc - inventory_base * self.account.average_entry_px;
-
-        self.account.realized_pnl_usdc += closed_pnl_usdc;
-        self.daily_realized_pnl_usdc += closed_pnl_usdc;
-        self.account.cash_usdc = self.account.equity_usdc;
-        self.account.inventory_units = 0;
-        self.account.average_entry_px = 0.0;
-        self.account.position_notional_usdc = 0.0;
-        self.account.margin_used_usdc = 0.0;
-        self.account.maintenance_margin_usdc = 0.0;
-        self.account.liquidation_buffer_usdc = self.account.equity_usdc;
-        // The seeded carry lot describes a position that no longer exists.
-        self.open_lots.clear();
-        self.inventory_at_last_quote_action = 0;
-        Some(closed_pnl_usdc)
-    }
-
     pub const fn daily_realized_pnl_usdc(&self) -> f64 {
         self.daily_realized_pnl_usdc
     }
@@ -323,28 +276,77 @@ impl DryRunBackend {
         (self.current_day, self.daily_realized_pnl_usdc)
     }
 
-    /// P&L after immediately closing residual inventory at the executable side
-    /// of the current book, including taker fee and configured adverse slippage.
-    pub fn promotion_pnl_usdc(&self, bbo: Bbo) -> f64 {
-        let inventory = self.account.inventory_units;
-        if inventory == 0 {
-            return self.account.cash_usdc - self.starting_equity_usdc;
+    /// The last observed book used to mark this account, not a fresh quote source.
+    pub const fn checkpoint_bbo(&self) -> Option<Bbo> {
+        self.latest_bbo
+    }
+
+    pub fn restore_checkpoint_bbo(&mut self, bbo: Option<Bbo>) {
+        self.latest_bbo = bbo;
+        self.bbo_is_restored = bbo.is_some();
+    }
+
+    /// Close at the last observed touch with the same cost as promotion valuation.
+    pub fn flatten_carried_position(&mut self) -> Result<Option<f64>> {
+        if self.account.inventory_units == 0 || !self.scientifically_valid() {
+            return Ok(None);
         }
-        let quantity = self.instrument.size_from_units(inventory.abs());
+        let bbo = self
+            .latest_bbo
+            .context("missing checkpoint book for carried inventory")?;
+        let (px, fee_usdc) = self.promotion_exit(bbo)?;
+        let previous_realized = self.account.realized_pnl_usdc;
+        let fill = Fill {
+            side: if self.account.inventory_units > 0 {
+                Side::Sell
+            } else {
+                Side::Buy
+            },
+            px,
+            qty_units: self.account.inventory_units.abs(),
+            fee_usdc,
+            exchange_ms: bbo.exchange_ms,
+            virtual_order_id: 0,
+            maker: false,
+        };
+        self.latest_bbo = Some(bbo);
+        self.apply_fill(fill);
+        self.open_lots.clear();
+        self.inventory_at_last_quote_action = 0;
+        Ok(Some(self.account.realized_pnl_usdc - previous_realized))
+    }
+
+    fn promotion_exit(&self, bbo: Bbo) -> Result<(i64, f64)> {
+        if !bbo.is_valid() {
+            bail!("cannot value an exit without a valid checkpoint book");
+        }
+        let inventory = self.account.inventory_units;
         let slippage = self.config.promotion_flatten_slippage_bps / 10_000.0;
-        let execution_price = if inventory > 0 {
+        let price = if inventory > 0 {
             self.instrument.price_from_units(bbo.bid_px) * (1.0 - slippage)
         } else {
             self.instrument.price_from_units(bbo.ask_px) * (1.0 + slippage)
         };
-        let notional = quantity * execution_price;
-        let fee = notional * self.config.promotion_flatten_fee_rate;
-        let flattened_cash = if inventory > 0 {
-            self.account.cash_usdc + notional - fee
-        } else {
-            self.account.cash_usdc - notional - fee
-        };
-        flattened_cash - self.starting_equity_usdc
+        let px = self.instrument.price_to_units(price)?;
+        let notional =
+            self.instrument.size_from_units(inventory.abs()) * self.instrument.price_from_units(px);
+        Ok((px, notional * self.config.promotion_flatten_fee_rate))
+    }
+
+    pub fn promotion_pnl_usdc(&self, bbo: Bbo) -> Option<f64> {
+        if self.account.inventory_units == 0 {
+            return Some(self.account.cash_usdc - self.starting_equity_usdc);
+        }
+        let (px, fee) = self.promotion_exit(bbo).ok()?;
+        Some(
+            self.account.cash_usdc
+                + self
+                    .instrument
+                    .size_from_units(self.account.inventory_units)
+                    * self.instrument.price_from_units(px)
+                - fee
+                - self.starting_equity_usdc,
+        )
     }
 
     pub fn working_order_count(&self) -> usize {
@@ -570,6 +572,9 @@ impl DryRunBackend {
     }
 
     fn process_event(&mut self, event: &MarketEvent) -> Vec<ExecutionEvent> {
+        if !self.scientifically_valid() {
+            return Vec::new();
+        }
         let now_ms = event_exchange_ms(event);
         self.flush_deferred(now_ms);
         self.roll_day(now_ms);
@@ -578,6 +583,7 @@ impl DryRunBackend {
         let mut output = Vec::new();
         match event {
             MarketEvent::Bbo(bbo) => {
+                self.bbo_is_restored = false;
                 self.accrue_funding(*bbo);
                 self.resolve_markouts(*bbo);
                 self.latest_bbo = Some(*bbo);
@@ -602,7 +608,9 @@ impl DryRunBackend {
         }
         // After the event, not before: a lot opened by this very trade must be
         // allowed to age before it can be crossed out.
-        output.extend(self.flatten_stale_lots(now_ms));
+        if self.scientifically_valid() {
+            output.extend(self.flatten_stale_lots(now_ms));
+        }
         output
     }
 
@@ -651,7 +659,7 @@ impl DryRunBackend {
         // Disabled is a property of the CONFIGURED deadline, not the computed
         // one: adding the round trip makes the latter non-zero even when the
         // policy is off.
-        if self.config.flatten_after_ms == 0 {
+        if self.config.flatten_after_ms == 0 || self.bbo_is_restored {
             return events;
         }
         let deadline_ms = self
@@ -663,6 +671,9 @@ impl DryRunBackend {
             return events;
         };
         while let Some(&(opened_ms, lot)) = self.open_lots.front() {
+            if !self.scientifically_valid() {
+                break;
+            }
             if lot == 0 {
                 self.open_lots.pop_front();
                 continue;
@@ -795,6 +806,7 @@ impl DryRunBackend {
             .enumerate()
             .filter(|(_, order)| {
                 order.activated
+                    && order.active_ms <= trade.exchange_ms
                     // A print STRICTLY BEYOND our price means the venue consumed
                     // everything resting at our price and kept going, so we were
                     // filled whatever our queue position was. Requiring
@@ -1071,6 +1083,7 @@ impl DryRunBackend {
 #[async_trait]
 impl ExecutionBackend for DryRunBackend {
     async fn reconcile(&mut self, desired: DesiredQuotes, now_ms: u64) -> Result<()> {
+        let now_ms = now_ms.max(self.last_quote_action_ms);
         if !self.diagnostics.scientifically_valid
             && (desired.bid.is_some() || desired.ask.is_some())
         {
@@ -1204,6 +1217,109 @@ mod tests {
             q_rounded: 0,
             tau_remaining: 150.0,
         }
+    }
+
+    #[tokio::test]
+    async fn a_losing_maker_fill_cannot_trigger_a_profitable_exit_after_invalidation() {
+        let mut backend = flatten_backend(1_000);
+        backend.config.decision_latency_ms = 0;
+        backend.config.acknowledgement_latency_ms = 0;
+        backend.config.cancel_latency_ms = 200;
+        backend.quoting.min_order_lifetime_ms = 0;
+        backend.quoting.maker_fee_rate = 0.0;
+        backend.risk.max_consecutive_losses = 1;
+        let mut account = backend.account;
+        account.cash_usdc = 800.0;
+        account.inventory_units = 2;
+        account.average_entry_px = 100.0;
+        backend
+            .restore_from_snapshot(account, DryRunDiagnostics::default(), 1, None, 0.0)
+            .unwrap();
+        let book = Bbo {
+            bid_px: 9_700,
+            ask_px: 9_900,
+            bid_sz: 0,
+            ask_sz: 0,
+            exchange_ms: 50,
+            recv_ns: 0,
+        };
+        backend
+            .on_market_event(&MarketEvent::Bbo(book))
+            .await
+            .unwrap();
+        let mut quotes = bid_quotes();
+        quotes.bid = None;
+        quotes.ask = Some(OrderIntent {
+            side: Side::Sell,
+            px: 9_900,
+            qty_units: 1,
+            post_only: true,
+            reduce_only: true,
+        });
+        backend.reconcile(quotes, 50).await.unwrap();
+        backend
+            .on_market_event(&MarketEvent::Bbo(Bbo {
+                exchange_ms: 100,
+                ..book
+            }))
+            .await
+            .unwrap();
+        backend
+            .on_market_event(&MarketEvent::Bbo(Bbo {
+                bid_px: 10_100,
+                ask_px: 10_300,
+                exchange_ms: 900,
+                ..book
+            }))
+            .await
+            .unwrap();
+        let mut cancel = quotes;
+        cancel.ask = None;
+        backend.reconcile(cancel, 950).await.unwrap();
+        let trade = MarketEvent::Trade(TradePrint {
+            aggressor: AggressorSide::Buy,
+            px: 9_900,
+            qty_units: 1,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+            trade_id: 1,
+        });
+        let events = backend.on_market_event(&trade).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(!backend.scientifically_valid());
+        assert_eq!(backend.account.inventory_units, 1);
+        assert_eq!(backend.account.consecutive_losses, 1);
+        assert_eq!(backend.diagnostics.flatten_events, 0);
+        let frozen = serde_json::to_value(backend.account).unwrap();
+        assert!(backend.on_market_event(&trade).await.unwrap().is_empty());
+        assert_eq!(serde_json::to_value(backend.account).unwrap(), frozen);
+    }
+
+    #[tokio::test]
+    async fn an_activated_order_cannot_fill_an_older_print() {
+        let mut backend = flatten_backend(0);
+        backend.config.decision_latency_ms = 100;
+        backend.config.acknowledgement_latency_ms = 0;
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            ask_px: 10_002,
+            bid_sz: 0,
+            ask_sz: 0,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        backend.reconcile(bid_quotes(), 1_000).await.unwrap();
+        backend.activate_orders(1_200);
+        let trade = MarketEvent::Trade(TradePrint {
+            aggressor: AggressorSide::Sell,
+            px: 9_999,
+            qty_units: 10,
+            exchange_ms: 1_050,
+            recv_ns: 0,
+            trade_id: 1,
+        });
+        assert!(backend.on_market_event(&trade).await.unwrap().is_empty());
+        assert_eq!(backend.account.inventory_units, 0);
     }
 
     #[tokio::test]
@@ -1435,48 +1551,101 @@ mod tests {
         assert!(backend.open_lots.is_empty());
     }
 
-    #[tokio::test]
-    async fn a_gap_flatten_moves_the_position_into_cash_without_moving_equity() {
-        // The whole point: closing at the checkpoint's own mark invents no P&L.
-        // If equity moved here, the resume would be manufacturing exactly the
-        // unearned gain the carry window exists to prevent.
-        let mut backend = flatten_backend(250);
-        let mut account = backend.account;
-        account.inventory_units = 40;
-        account.average_entry_px = 1.00;
-        account.cash_usdc = 100.0;
-        // 40 units marked above the entry: an unrealized gain of 20.
-        account.equity_usdc = 160.0;
-        account.realized_pnl_usdc = 5.0;
-        backend
-            .restore_from_snapshot(account, DryRunDiagnostics::default(), 10, None, 0.0)
-            .unwrap();
-
-        let equity_before = backend.account.equity_usdc;
-        let position_value = backend.account.equity_usdc - backend.account.cash_usdc;
-        let cost_basis = backend
-            .instrument
-            .size_from_units(backend.account.inventory_units)
-            * backend.account.average_entry_px;
-
-        let closed = backend.flatten_carried_position().unwrap();
-
-        assert!((closed - (position_value - cost_basis)).abs() < 1e-9);
-        assert!((backend.account.equity_usdc - equity_before).abs() < 1e-9);
-        assert!((backend.account.cash_usdc - equity_before).abs() < 1e-9);
-        assert!((backend.account.realized_pnl_usdc - (5.0 + closed)).abs() < 1e-9);
-        assert_eq!(backend.account.inventory_units, 0);
-        assert_eq!(backend.account.position_notional_usdc, 0.0);
-        // The seeded carry lot describes a position that no longer exists;
-        // leaving it would have the flatten policy cross out thin air.
-        assert!(backend.open_lots.is_empty());
+    #[test]
+    fn gap_flatten_charges_the_promotion_exit_for_longs_and_shorts() {
+        for inventory in [40, -40] {
+            let mut backend = flatten_backend(250);
+            backend.config.promotion_flatten_fee_rate = 0.001;
+            backend.config.promotion_flatten_slippage_bps = 2.5;
+            let book = Bbo {
+                bid_px: 149,
+                bid_sz: 50,
+                ask_px: 151,
+                ask_sz: 50,
+                exchange_ms: 1_000,
+                recv_ns: 0,
+            };
+            let mut account = backend.account;
+            account.inventory_units = inventory;
+            account.average_entry_px = 1.0;
+            account.cash_usdc = 1_000.0 - inventory as f64;
+            account.equity_usdc = account.cash_usdc + inventory as f64 * 1.5;
+            backend
+                .restore_from_snapshot(account, DryRunDiagnostics::default(), 10, None, 0.0)
+                .unwrap();
+            backend.restore_checkpoint_bbo(Some(book));
+            let expected_equity =
+                backend.config.starting_equity_usdc + backend.promotion_pnl_usdc(book).unwrap();
+            let equity_before = backend.account.equity_usdc;
+            let closed = backend.flatten_carried_position().unwrap().unwrap();
+            assert!((backend.account.equity_usdc - expected_equity).abs() < 1e-9);
+            assert!(backend.account.equity_usdc < equity_before);
+            assert_eq!(backend.account.cash_usdc, backend.account.equity_usdc);
+            assert_eq!(backend.account.realized_pnl_usdc, closed);
+            assert_eq!(backend.daily_realized_pnl_usdc, closed);
+            assert!(backend.account.fees_usdc > 0.0);
+            assert_eq!(backend.account.inventory_units, 0);
+            assert_eq!(backend.account.position_notional_usdc, 0.0);
+            assert!(backend.open_lots.is_empty());
+        }
     }
 
     #[tokio::test]
-    async fn a_gap_flatten_on_a_flat_variant_reports_nothing() {
-        let mut backend = flatten_backend(250);
+    async fn restored_lots_wait_for_a_fresh_book_before_exiting() {
+        let mut backend = flatten_backend(1);
+        backend.config.flatten_slippage_bps = 0.0;
+        backend.config.flatten_fee_rate = 0.0;
+        let mut account = backend.account;
+        account.cash_usdc = 0.0;
+        account.inventory_units = 10;
+        account.average_entry_px = 100.0;
+        backend
+            .restore_from_snapshot(account, DryRunDiagnostics::default(), 10, None, 0.0)
+            .unwrap();
+        backend.restore_checkpoint_bbo(Some(Bbo {
+            bid_px: 10_000,
+            ask_px: 10_002,
+            bid_sz: 50,
+            ask_sz: 50,
+            exchange_ms: 500,
+            recv_ns: 0,
+        }));
+        let trade = MarketEvent::Trade(TradePrint {
+            aggressor: AggressorSide::Sell,
+            px: 9_000,
+            qty_units: 10,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+            trade_id: 1,
+        });
+        assert!(backend.on_market_event(&trade).await.unwrap().is_empty());
+        assert_eq!(backend.account.inventory_units, 10);
+        let events = backend
+            .on_market_event(&MarketEvent::Bbo(Bbo {
+                bid_px: 9_000,
+                ask_px: 9_002,
+                bid_sz: 50,
+                ask_sz: 50,
+                exchange_ms: 1_001,
+                recv_ns: 0,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
         assert_eq!(backend.account.inventory_units, 0);
-        assert!(backend.flatten_carried_position().is_none());
+        assert_eq!(backend.account.cash_usdc, 900.0);
+    }
+
+    #[test]
+    fn gap_flatten_requires_a_book_and_preserves_terminal_accounts() {
+        let mut backend = flatten_backend(250);
+        assert!(backend.flatten_carried_position().unwrap().is_none());
+        backend.account.inventory_units = 10;
+        assert!(backend.flatten_carried_position().is_err());
+        backend.diagnostics.scientifically_valid = false;
+        let before = serde_json::to_value(backend.account).unwrap();
+        assert!(backend.flatten_carried_position().unwrap().is_none());
+        assert_eq!(serde_json::to_value(backend.account).unwrap(), before);
     }
 
     #[tokio::test]

@@ -1,18 +1,6 @@
-//! Live dry-run grid: several parameter sets quoting one shared market feed.
-//!
-//! Running N parameter sets as N `dry-run` processes would open N market
-//! `WebSocket`s against a venue limit of ten simultaneous connections per IP —
-//! a budget already shared with the three data-collector containers and with
-//! any live session (which needs two). Exhausting it would take down data
-//! collection, so the grid runs in one process behind one connection instead.
-//!
-//! What a variant may change is deliberately narrow: the four levers the
-//! staged sweep implicated in the one burst window that produced the loss in
-//! its TRAIN slice (`docs/cashcat_sweep.md`; 45 of 46 train windows sum to
-//! +402.68 against -323.70 for the cascade alone). The held-out slice has no
-//! cascade and still bleeds, so these levers address the burst only. Everything else — latency, fees,
-//! funding, capital — is held identical across variants so the comparison
-//! stays like-for-like.
+//! Independent paper accounts sharing one public market feed.
+//! Variant overrides isolate policy choices while latency, fees, funding and
+//! capital remain common controls.
 
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
@@ -70,13 +58,8 @@ pub struct VariantOverrides {
     pub phi_kappa_t_max: Option<f64>,
     /// `quoting.min_half_spread_bps` — floor on each quoted side's depth.
     pub min_half_spread_bps: Option<f64>,
-    /// `dry_run.flatten_after_ms` — cross out inventory once a lot has been held
-    /// this long, instead of waiting for an offsetting maker fill. Zero keeps the
-    /// shipped hold. The replay says adverse selection grows steeply with the
-    /// markout horizon while a passive offset takes a 6.5 s median, so crossing
-    /// early truncates it; replay breakeven lands near a 450-520 ms round trip
-    /// (`docs/cashcat_flatten_fast.md`). Untested against a live feed, which is
-    /// what this variant is for.
+    /// Lot-age exit deadline before decision/acknowledgement latency.
+    /// Zero disables this paper-only policy; see `docs/CAUSAL_EXECUTION_REVIEW.md`.
     pub flatten_after_ms: Option<u64>,
     /// `quoting.min_order_lifetime_ms` — requote cadence. Its interaction with
     /// spread width is non-monotone, so slow rows are controls rather than a
@@ -323,6 +306,7 @@ pub struct PersistedVariant {
     /// P&L curve.
     pub config_fingerprint: String,
     pub inventory_unit: i64,
+    pub last_bbo: Option<mm_live::types::Bbo>,
     pub account: mm_live::types::DryRunAccountState,
     pub diagnostics: mm_live::execution::DryRunDiagnostics,
     pub fills: u64,
@@ -366,7 +350,7 @@ pub struct PersistedGridState {
 }
 
 impl PersistedGridState {
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 3;
 
     /// Read a checkpoint, falling back to the previous generation.
     ///
@@ -386,8 +370,75 @@ impl PersistedGridState {
 
     fn read_one(path: &Path) -> Option<Self> {
         let bytes = std::fs::read(path).ok()?;
-        let state: Self = serde_json::from_slice(&bytes).ok()?;
-        (state.schema_version == Self::SCHEMA_VERSION).then_some(state)
+        let state: Self = match serde_json::from_slice(&bytes) {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "checkpoint is unreadable; trying backup or starting fresh");
+                return None;
+            }
+        };
+        if state.schema_version != Self::SCHEMA_VERSION {
+            tracing::warn!(
+                schema_version = state.schema_version,
+                "checkpoint execution schema changed; starting fresh"
+            );
+            return None;
+        }
+        Some(state)
+    }
+
+    pub fn validate_variants(&self, expected: &[(&str, &str)]) -> Result<()> {
+        if self.variants.len() != expected.len()
+            || self
+                .variants
+                .iter()
+                .map(|entry| &entry.name)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != expected.len()
+            || self.started_at_ms > self.checkpoint_ms
+            || self
+                .run_id
+                .strip_prefix("run-")
+                .and_then(|suffix| suffix.parse::<u64>().ok())
+                .is_none()
+        {
+            bail!("checkpoint has an incompatible variant set or run ID");
+        }
+        for (name, fingerprint) in expected {
+            let entry = self
+                .variants
+                .iter()
+                .find(|entry| entry.name == *name)
+                .with_context(|| format!("checkpoint has no variant {name:?}"))?;
+            let account = entry.account;
+            if entry.config_fingerprint != *fingerprint
+                || entry.inventory_unit <= 0
+                || ![
+                    account.cash_usdc,
+                    account.equity_usdc,
+                    account.average_entry_px,
+                    account.realized_pnl_usdc,
+                    account.fees_usdc,
+                    account.funding_usdc,
+                    account.mark_to_market_pnl_usdc,
+                    account.position_notional_usdc,
+                    account.margin_used_usdc,
+                    account.maintenance_margin_usdc,
+                    account.liquidation_buffer_usdc,
+                    entry.daily_realized_pnl_usdc,
+                    entry.peak_equity_usdc,
+                    entry.max_drawdown_usdc,
+                ]
+                .iter()
+                .all(|value| value.is_finite())
+                || entry.last_bbo.is_some_and(|book| !book.is_valid())
+                || (account.inventory_units != 0 && entry.last_bbo.is_none())
+            {
+                bail!("checkpoint variant {name:?} has incompatible or invalid state");
+            }
+        }
+        Ok(())
     }
 
     fn backup_path(path: &Path) -> std::path::PathBuf {
@@ -851,6 +902,67 @@ mod tests {
             replayed_trades_ignored: 30,
             variants: Vec::new(),
         }
+    }
+
+    #[test]
+    fn every_variant_must_validate_before_resume() {
+        let mut state = checkpoint();
+        let expected = [("wide8", "abc")];
+        assert!(state.validate_variants(&expected).is_err());
+        state.variants.push(PersistedVariant {
+            name: "wide8".to_owned(),
+            config_fingerprint: "abc".to_owned(),
+            inventory_unit: 10,
+            last_bbo: None,
+            account: mm_live::types::DryRunAccountState::default(),
+            diagnostics: mm_live::execution::DryRunDiagnostics::default(),
+            fills: 0,
+            peak_equity_usdc: 1_000.0,
+            max_drawdown_usdc: 0.0,
+            failure: None,
+            current_day: None,
+            daily_realized_pnl_usdc: 0.0,
+        });
+        assert!(state.validate_variants(&expected).is_ok());
+        assert!(state.validate_variants(&[("wide8", "retuned")]).is_err());
+        state.variants[0].inventory_unit = 0;
+        assert!(state.validate_variants(&expected).is_err());
+        state.variants[0].inventory_unit = 10;
+        state.variants[0].account.inventory_units = 1;
+        assert!(state.validate_variants(&expected).is_err());
+        state.variants[0].account.inventory_units = 0;
+        state.variants.push(state.variants[0].clone());
+        assert!(state
+            .validate_variants(&[("wide8", "abc"), ("wide8", "abc")])
+            .is_err());
+    }
+
+    #[test]
+    fn missing_feed_health_never_becomes_a_clean_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("grid_state.json");
+        let mut state = checkpoint();
+        state.feed_health.event_loss = true;
+        state.write_atomic(&path).unwrap();
+        state.write_atomic(&path).unwrap();
+        let mut incomplete = serde_json::to_value(&state).unwrap();
+        incomplete["feed_health"]
+            .as_object_mut()
+            .unwrap()
+            .remove("event_loss");
+        std::fs::write(&path, serde_json::to_vec(&incomplete).unwrap()).unwrap();
+        assert!(
+            PersistedGridState::load(&path)
+                .unwrap()
+                .feed_health
+                .event_loss
+        );
+        std::fs::write(
+            PersistedGridState::backup_path(&path),
+            serde_json::to_vec(&incomplete).unwrap(),
+        )
+        .unwrap();
+        assert!(PersistedGridState::load(&path).is_none());
     }
 
     #[test]

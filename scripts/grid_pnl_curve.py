@@ -32,6 +32,7 @@ import glob
 import json
 import re
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -59,7 +60,7 @@ def open_log(path: Path):
     `stream_reader` reads across frames, and tolerates the final frame being
     mid-write while the grid is still running.
     """
-    if path.suffix != ".zst":
+    if ".zst" not in path.suffixes:
         return open(path, encoding="utf-8")
     import io
 
@@ -93,49 +94,49 @@ def resolve_run_dir(report_dir: Path) -> Path:
     return report_dir
 
 
-def variant_files(names: list[str] | None, grid_dir: Path = GRID_DIR) -> dict[str, Path]:
-    """Newest log per variant.
-
-    Two naming schemes coexist: the current stable `grid-<variant>.jsonl.zst`,
-    which appends across restarts, and the historical timestamped
-    `grid-<variant>-<ms>.jsonl` from runs before compression.
-    """
-    found: dict[str, Path] = {}
-    for path in sorted(Path(grid_dir).glob("grid-*.jsonl*")):
-        name = path.name
-        for suffix in (".jsonl.zst", ".jsonl"):
-            if name.endswith(suffix):
-                stem = name[: -len(suffix)]
-                break
-        else:
+def variant_files(names: list[str] | None, grid_dir: Path = GRID_DIR) -> dict[str, list[Path]]:
+    """Retained generations, oldest first, from the newest log family per variant."""
+    families: dict[str, dict[str, list[tuple[int, Path]]]] = {}
+    for path in Path(grid_dir).glob("grid-*.jsonl*"):
+        match = re.fullmatch(r"grid-(.+)(\.jsonl(?:\.zst)?)(?:\.(\d+))?", path.name)
+        if match is None:
             continue
-        # Strip the legacy trailing -<13-digit ms> if present.
-        variant = re.sub(r"-\d{13}$", "", stem[len("grid-") :])
+        stem, suffix, generation = match.groups()
+        variant = re.sub(r"-\d{13}$", "", stem)
         if names and variant not in names:
             continue
-        if variant not in found or path.stat().st_mtime > found[variant].stat().st_mtime:
-            found[variant] = path
+        families.setdefault(variant, {}).setdefault(stem + suffix, []).append((int(generation or 0), path))
+    found = {}
+    for variant, candidates in families.items():
+        family = max(candidates.values(), key=lambda items: max(path.stat().st_mtime_ns for _, path in items))
+        found[variant] = [path for _, path in sorted(family, reverse=True)]
     return found
 
 
-def read_fills(path: Path) -> pd.DataFrame:
+def read_fills(paths: Path | list[Path]) -> pd.DataFrame:
     """Fill stream for one variant. Only fill lines are parsed; the last line
     can be a partial write because the grid is still running."""
+    import zstandard
+
     rows = []
-    with open_log(path) as handle:
-        for line in handle:
-            if '"kind":"fill"' not in line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # torn final line
-            payload = record["payload"]
-            when = record.get("exchange_ms") or payload.get("exchange_ms")
-            if when is None:
-                continue
-            signed = payload["qty_units"] if payload["side"].lower() == "buy" else -payload["qty_units"]
-            rows.append((float(when), float(signed), float(payload["px"]) / PX_SCALE, float(payload["fee_usdc"])))
+    for path in ([paths] if isinstance(paths, Path) else paths):
+        try:
+            with open_log(path) as handle:
+                for line in handle:
+                    if '"kind":"fill"' not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # torn final line
+                    payload = record["payload"]
+                    when = record.get("exchange_ms") or payload.get("exchange_ms")
+                    if when is None:
+                        continue
+                    signed = payload["qty_units"] if payload["side"].lower() == "buy" else -payload["qty_units"]
+                    rows.append((float(when), float(signed), float(payload["px"]) / PX_SCALE, float(payload["fee_usdc"])))
+        except (OSError, zstandard.ZstdError) as error:
+            warnings.warn(f"Incomplete event log {path}: {error}", RuntimeWarning)
     return pd.DataFrame(rows, columns=["ts_ms", "signed_qty", "px", "fee"])
 
 

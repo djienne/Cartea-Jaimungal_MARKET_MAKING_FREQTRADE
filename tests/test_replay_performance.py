@@ -1,27 +1,6 @@
-"""The replay's hot loop was rewritten for speed. These tests say it still scores
-the same tape the same way, to the last bit.
+"""Causal replay determinism and independently checked column transformations.
 
-WHY A WHOLE FILE FOR THIS. ``run_replay`` used to read every field through
-pandas scalar access and took about 1.8 ms per price event, which made one pass
-over a day of data ~5 minutes and a 300-point sweep unaffordable. The rewrite
-hoists the columns into numpy arrays and cuts the trade window with a binary
-search instead of a full-frame boolean mask. That is a 30-40x speedup and
-exactly the kind of change that can move a fill by one without anyone noticing
--- and a backtest that quietly changes its fills invalidates every number the
-project has published while still looking healthy.
-
-So the guarantee is BIT identity, not approximate agreement:
-
-- ``test_reference_grid_is_bit_identical`` replays a pinned synthetic tape at 41
-  configurations spanning both latency extremes, both requote intervals, a
-  clamping and a non-clamping phi, the two-sided and long-only inventory
-  domains, both time modes, and the funding / calibration-throttle / asymmetric
-  solve / sigma2 / amount-step / raw-phi branches. Every float is compared by
-  repr, so a last-bit difference fails.
-- The reference was recorded from the PRE-optimisation replay (git 85bb564) and
-  must not be regenerated from the current one; see tests/replay_reference_matrix.py.
-- The rest pin each hoisted column view against the row-wise function it
-  replaced, since those are where a rewrite would go wrong quietly.
+The archived pre-causal P&L reference is historical, not an acceptance target.
 """
 from __future__ import annotations
 
@@ -50,11 +29,9 @@ from replay_market_maker import (  # noqa: E402
     future_mid,
     future_mid_from_arrays,
     is_monotonic_ns,
-    matching_trade_with_queue_decay,
     mid_from_price_row,
     price_event_arrays,
     run_replay,
-    scan_for_matching_trade,
     timestamps_as_ns,
     total_seconds_from_ns,
     trade_event_arrays,
@@ -117,57 +94,34 @@ def test_reference_was_recorded_before_the_rewrite(reference_payload):
     assert len(reference_payload["results"]) == len(reference_configs())
 
 
-def test_reference_grid_is_bit_identical(reference_payload, pinned_tape):
-    expected_all = reference_payload["results"]
-    differences: list[str] = []
+def test_configuration_grid_is_deterministic_and_conserves_equity(pinned_tape):
+    fills = []
     for name, kwargs in reference_configs():
-        assert name in expected_all, f"{name} missing from the recorded reference"
-        actual = run_replay(ReplayConfig(**kwargs), dict(REFERENCE_PARAMS), tape=pinned_tape).to_dict()
-        flat_actual: dict = {}
-        flat_expected: dict = {}
-        _flatten(name, actual, flat_actual)
-        _flatten(name, expected_all[name], flat_expected)
-        # Iterate the RECORDED keys, not the union. The reference is frozen by
-        # construction (test_reference_was_recorded_before_the_rewrite), so it
-        # can only ever be missing keys the exporter has since gained, and a
-        # purely additive key with no recorded counterpart is observability
-        # rather than drift -- the toxic-flow guard counters added five of them
-        # in 2026-09 without moving a single recorded number. A key the
-        # reference HAS and the exporter no longer produces still fails here,
-        # reading as `-> now '<absent>'`, so a rename or a removal is caught.
-        for key in sorted(flat_expected):
-            if flat_actual.get(key, "<absent>") != flat_expected[key]:
-                differences.append(
-                    f"{key}: reference {flat_expected[key]!r} "
-                    f"-> now {flat_actual.get(key, '<absent>')!r}"
-                )
-    assert not differences, "replay output moved:\n" + "\n".join(differences[:40])
+        config = ReplayConfig(**kwargs)
+        metrics = run_replay(config, dict(REFERENCE_PARAMS), tape=pinned_tape)
+        repeated = run_replay(config, dict(REFERENCE_PARAMS), tape=pinned_tape)
+        assert metrics.to_dict() == repeated.to_dict(), name
+        assert metrics.equity_usdc == pytest.approx(
+            config.starting_equity_usdc + metrics.cash_usdc + metrics.inventory_base * metrics.final_mid
+        ), name
+        assert math.isfinite(metrics.equity_usdc), name
+        assert metrics.consumed_trade_events <= len(pinned_tape.trades), name
+        assert metrics.fees_usdc >= 0.0, name
+        fills.append(metrics.maker_fills)
+    assert sum(fills) > 0
 
 
-def test_grid_actually_exercises_the_fill_path(reference_payload):
-    """A grid that never fills would pass the identity check and prove nothing."""
-    fills = [row["maker_fills"] for row in reference_payload["results"].values()]
-    assert min(fills) > 0
-    assert sum(fills) > 1_000
-
-
-def test_unsorted_trade_window_agrees_with_the_binary_search(monkeypatch, pinned_tape):
-    """The two window paths must select the same rows.
-
-    Sorted timestamps take a searchsorted range; anything else falls back to the
-    boolean mask the original always used. Forcing the fallback on a sorted tape
-    is the direct test that they agree -- if they did not, a monkeypatched
-    loader in some other test would silently score a different tape.
-    """
+def test_unsorted_input_is_replayed_chronologically(pinned_tape):
     config = ReplayConfig(**dict(reference_configs())["lat500_ref100_phi10_twosided6_episodic"])
-    fast = run_replay(config, dict(REFERENCE_PARAMS), tape=pinned_tape).to_dict()
-    monkeypatch.setattr(replay_market_maker, "is_monotonic_ns", lambda _values: False)
-    slow = run_replay(config, dict(REFERENCE_PARAMS), tape=pinned_tape).to_dict()
-    flat_fast: dict = {}
-    flat_slow: dict = {}
-    _flatten("run", fast, flat_fast)
-    _flatten("run", slow, flat_slow)
-    assert flat_fast == flat_slow
+    shuffled = ReplayTape(
+        prices=pinned_tape.prices.sample(frac=1, random_state=11),
+        trades=pinned_tape.trades.sample(frac=1, random_state=12),
+        orderbooks=pinned_tape.orderbooks.sample(frac=1, random_state=13),
+        input_files=pinned_tape.input_files,
+    )
+    assert run_replay(config, dict(REFERENCE_PARAMS), tape=shuffled).to_dict() == run_replay(
+        config, dict(REFERENCE_PARAMS), tape=pinned_tape
+    ).to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -381,125 +335,6 @@ def test_is_monotonic_ns():
 # ---------------------------------------------------------------------------
 # The fill rule, against a transcription of the loop it replaced
 # ---------------------------------------------------------------------------
-
-
-def _row_wise_matching_trade(side, price, window, queue_ahead, queue_decay_per_second, active_at):
-    """The pre-rewrite ``matching_trade_with_queue_decay``, copied verbatim.
-
-    Kept here rather than imported so this stays a comparison against the OLD
-    code even after the old code is gone.
-    """
-    remaining_queue = max(0.0, float(queue_ahead))
-    initial_queue = remaining_queue
-    decay_rate = max(0.0, float(queue_decay_per_second))
-    queue_decay_base = 0.0
-    last_ts = pd.Timestamp(active_at) if active_at is not None else None
-    for _, trade in window.iterrows():
-        trade_ts = trade.get("timestamp", None)
-        if last_ts is None and trade_ts is not None:
-            last_ts = pd.Timestamp(trade_ts)
-        if decay_rate > 0 and last_ts is not None and trade_ts is not None and remaining_queue > 0:
-            elapsed_seconds = max(0.0, (pd.Timestamp(trade_ts) - last_ts).total_seconds())
-            decay = min(remaining_queue, initial_queue * decay_rate * elapsed_seconds)
-            remaining_queue -= decay
-            queue_decay_base += decay
-            last_ts = pd.Timestamp(trade_ts)
-
-        trade_price = float(trade.get("price", np.nan))
-        if not np.isfinite(trade_price):
-            continue
-        crosses = (side == "bid" and trade_price <= price) or (side == "ask" and trade_price >= price)
-        if not crosses:
-            continue
-        trade_size = float(trade.get("size", 0.0) or 0.0)
-        if remaining_queue > 0:
-            remaining_queue -= max(0.0, trade_size)
-            if remaining_queue >= 0:
-                continue
-        return trade, queue_decay_base
-    return None, queue_decay_base
-
-
-def _random_window(rng, rows):
-    ts0 = pd.Timestamp("2026-05-25T10:00:00Z").value
-    offsets = np.sort(rng.integers(0, 5_000_000_000, size=rows))
-    sizes = rng.choice([0.0, 0.25, 0.5, 1.0, np.nan], size=rows, p=[0.15, 0.25, 0.25, 0.25, 0.10])
-    prices = rng.choice([99.0, 100.0, 101.0, np.nan], size=rows, p=[0.3, 0.3, 0.3, 0.1])
-    return pd.DataFrame(
-        {
-            "timestamp": pd.to_datetime(ts0 + offsets, utc=True),
-            "price": prices,
-            "size": sizes,
-            "side": ["buy" if value else "sell" for value in rng.integers(0, 2, size=rows)],
-        }
-    )
-
-
-def test_scan_matches_the_row_wise_fill_rule_over_random_windows():
-    rng = np.random.default_rng(4242)
-    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
-    for trial in range(200):
-        window = _random_window(rng, int(rng.integers(0, 12)))
-        side = "bid" if trial % 2 else "ask"
-        price = float(rng.choice([99.0, 100.0, 100.5, 101.0]))
-        queue_ahead = float(rng.choice([0.0, 0.4, 1.2, np.nan]))
-        decay = float(rng.choice([0.0, 0.05, 1.0]))
-        active_at = ts0 if trial % 3 else None
-
-        expected_trade, expected_decay = _row_wise_matching_trade(
-            side, price, window, queue_ahead, decay, active_at
-        )
-        actual_trade, actual_decay = matching_trade_with_queue_decay(
-            side,
-            price,
-            window,
-            queue_ahead,
-            queue_decay_per_second=decay,
-            active_at=active_at,
-        )
-        assert repr(actual_decay) == repr(expected_decay), trial
-        assert (expected_trade is None) == (actual_trade is None), trial
-        if expected_trade is not None:
-            assert actual_trade.name == expected_trade.name, trial
-
-
-def test_scan_skips_consumed_trades_without_filtering_the_frame():
-    """The used-trade mask must remove rows the old code removed with isin()."""
-    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
-    window = pd.DataFrame(
-        {
-            "timestamp": [ts0, ts0 + pd.Timedelta(milliseconds=1), ts0 + pd.Timedelta(milliseconds=2)],
-            "price": [100.0, 100.0, 100.0],
-            "size": [1.0, 1.0, 1.0],
-        }
-    )
-    price_arr, size_arr, falsy = trade_event_arrays(window)
-    ts_ns = timestamps_as_ns(window)
-    used = [True, False, False]
-    index, _decay = scan_for_matching_trade(
-        "bid",
-        100.0,
-        range(3),
-        trade_ts_ns=ts_ns,
-        trade_price=price_arr,
-        trade_size=size_arr,
-        trade_size_falsy=falsy,
-        used=used,
-        queue_ahead=0.0,
-    )
-    assert index == 1
-    expected, _ = _row_wise_matching_trade("bid", 100.0, window.iloc[1:], 0.0, 0.0, None)
-    assert expected.name == 1
-
-
-def test_scan_treats_an_unknown_side_as_crossing_nothing():
-    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
-    window = pd.DataFrame({"timestamp": [ts0], "price": [100.0], "size": [1.0]})
-    trade, decay = matching_trade_with_queue_decay("sideways", 100.0, window, 0.0)
-    assert trade is None and decay == 0.0
-
-
-# ---------------------------------------------------------------------------
 # The sweep's tape pinning
 # ---------------------------------------------------------------------------
 
@@ -656,4 +491,4 @@ def test_empty_streams_still_replay():
         tape=tape,
     ).to_dict()
     assert metrics["maker_fills"] == 0
-    assert metrics["stale_quote_cancels"] > 0
+    assert metrics["stale_quote_cancels"] == 0

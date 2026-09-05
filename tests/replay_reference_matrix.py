@@ -1,16 +1,9 @@
-"""The tape and the configuration grid the replay's bit-identity check runs on.
+"""Synthetic tape and parameter coverage for replay regressions.
 
-Kept out of the test module so the SAME definitions can be replayed against an
-older copy of ``replay_market_maker`` to regenerate the reference. If this file
-and the reference JSON were ever regenerated together from the current code the
-check would be circular and worthless, so:
-
-    tests/data/replay_reference_metrics.json.gz WAS RECORDED FROM THE PRE-OPTIMISATION
-    REPLAY (git 85bb564, 2026-08-17) AND MUST NOT BE REGENERATED FROM THE CURRENT
-    ONE.
-
-If a change genuinely has to move a number, the honest move is to say which
-number and why in the commit, not to refresh the file and let the diff vanish.
+The archived metrics were recorded from the pre-optimization, pre-causal replay
+(git 85bb564). They remain historical evidence and must not be regenerated from
+the corrected engine. Current tests check determinism and accounting invariants
+over this configuration matrix, not equality to those old P&L values.
 """
 from __future__ import annotations
 

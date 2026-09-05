@@ -20,8 +20,6 @@ from replay_market_maker import (  # noqa: E402
     compute_quotes,
     first_level_size,
     inventory_q,
-    matching_trade,
-    matching_trade_with_queue_decay,
     normalize_price_bbo,
     normalize_timestamp_column,
     post_only_check,
@@ -194,46 +192,6 @@ def test_replay_applies_latency_and_records_markouts(monkeypatch):
     assert toxicity_snapshot["toxicity_plus"] == 0.0
 
 
-def test_matching_trade_waits_for_queue_ahead_volume():
-    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
-    trades = pd.DataFrame(
-        [
-            {"timestamp": ts0, "price": 100.0, "size": 0.4},
-            {"timestamp": ts0 + pd.Timedelta(milliseconds=1), "price": 100.0, "size": 0.4},
-            {"timestamp": ts0 + pd.Timedelta(milliseconds=2), "price": 100.0, "size": 0.4},
-        ]
-    )
-
-    fill = matching_trade("bid", 100.0, trades, queue_ahead=0.8)
-
-    assert fill is not None
-    assert fill["timestamp"] == trades.iloc[2]["timestamp"]
-
-
-def test_matching_trade_applies_conservative_queue_decay():
-    ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
-    trades = pd.DataFrame(
-        [
-            {"timestamp": ts0 + pd.Timedelta(milliseconds=500), "price": 100.0, "size": 0.6},
-        ]
-    )
-
-    no_decay = matching_trade("bid", 100.0, trades, queue_ahead=1.0, active_at=ts0)
-    fill, queue_decay = matching_trade_with_queue_decay(
-        "bid",
-        100.0,
-        trades,
-        queue_ahead=1.0,
-        queue_decay_per_second=1.0,
-        active_at=ts0,
-    )
-
-    assert no_decay is None
-    assert fill is not None
-    assert fill["timestamp"] == trades.iloc[0]["timestamp"]
-    assert queue_decay == 0.5
-
-
 def test_replay_records_queue_decay_metric(monkeypatch):
     ts0 = pd.Timestamp("2026-05-25T10:00:00Z")
     prices = pd.DataFrame(
@@ -390,7 +348,7 @@ def test_replay_consumes_trade_events_once_across_overlapping_windows(monkeypatc
     assert metrics.quote_attempts == 2
     assert metrics.maker_fills == 1
     assert metrics.consumed_trade_events == 1
-    assert metrics.stale_quote_cancels == 1
+    assert metrics.stale_quote_cancels == 0
 
 
 def test_replay_applies_usable_fill_calibration_conservatively(monkeypatch, tmp_path):
@@ -572,7 +530,7 @@ def test_replay_tracks_margin_equity_and_liquidation_buffer(monkeypatch):
     )
     trades = pd.DataFrame(
         [
-            {"timestamp": ts0, "price": 100.0, "size": 0.01},
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=1), "price": 100.0, "size": 0.01},
         ]
     )
     monkeypatch.setattr(
@@ -631,7 +589,7 @@ def test_replay_counts_maintenance_margin_breaches(monkeypatch):
             {"timestamp": ts0 + pd.Timedelta(seconds=1), "bid": 100.0, "ask": 101.0},
         ]
     )
-    trades = pd.DataFrame([{"timestamp": ts0, "price": 100.0, "size": 0.01}])
+    trades = pd.DataFrame([{"timestamp": ts0 + pd.Timedelta(milliseconds=1), "price": 100.0, "size": 0.01}])
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
@@ -682,7 +640,7 @@ def test_replay_reports_fill_ratio_by_depth_as_ratio(monkeypatch):
     )
     trades = pd.DataFrame(
         [
-            {"timestamp": ts0, "price": 100.0, "size": 0.01},
+            {"timestamp": ts0 + pd.Timedelta(milliseconds=1), "price": 100.0, "size": 0.01},
         ]
     )
     monkeypatch.setattr(
@@ -1049,3 +1007,101 @@ def test_cumulative_is_never_smaller_than_own_level():
                 prices, cum, 0, side, price, cumulative=True
             )
             assert 0.0 <= own <= whole
+
+
+def causal_replay(monkeypatch, price_rows, trade_rows, book_rows=(), **overrides):
+    start = pd.Timestamp("2026-09-01T00:00:00Z")
+    def frame(rows, columns):
+        result = pd.DataFrame(rows, columns=["timestamp", *columns])
+        result["timestamp"] = start + pd.to_timedelta(result["timestamp"], unit="ms")
+        return result
+    tape = replay_market_maker.ReplayTape(
+        prices=frame(price_rows, ["bid", "ask"]),
+        trades=frame(trade_rows, ["price", "size", "side"]),
+        orderbooks=frame(book_rows, ["bid_size_0", "ask_size_0"]),
+        input_files={"prices": 0, "trades": 0, "orderbooks": 0},
+    )
+    observations = []
+    def quotes(mid, q, *_args, **kwargs):
+        observations.append((mid, q, kwargs["q_exact"]))
+        return 99.0, None, {}
+    monkeypatch.setattr(replay_market_maker, "compute_quotes", quotes)
+    config = dict(symbol="X", data_dir=Path("."), mid_fallback=100.0,
+        inventory_unit_base=10.0, amount_step_size=1.0, q_min=-3, q_max=3,
+        decision_latency_ms=100, order_ack_latency_ms=0, cancel_latency_ms=1_000,
+        quote_refresh_interval_ms=1_000, queue_decay_per_second=0.0, maker_fee=0.0)
+    config.update(overrides)
+    params = {"kappa+": 2.0, "kappa-": 2.0, "lambda+": 0.1, "lambda-": 0.1,
+              "epsilon+": 0.0, "epsilon-": 0.0}
+    return run_replay(ReplayConfig(**config), params, tape=tape), observations
+
+
+def test_future_print_cannot_change_earlier_inventory_decisions(monkeypatch):
+    prices = [(stamp, 99.0, 101.0) for stamp in range(0, 601, 100)]
+    _, decisions = causal_replay(monkeypatch, prices, [(450, 99.0, 1.0, "sell")],
+                                quote_refresh_interval_ms=100)
+    _, changed = causal_replay(monkeypatch, prices, [(450, 99.0, 7.0, "sell")],
+                              quote_refresh_interval_ms=100)
+    assert decisions[:5] == changed[:5]
+    assert all(q_exact == 0 for _, _, q_exact in decisions[:5])
+    assert decisions[5][2] == pytest.approx(0.1)
+    assert changed[5][2] == pytest.approx(0.7)
+
+
+def test_fixed_vpin_scale_does_not_use_scored_future_volume(monkeypatch):
+    prices = [(0, 99.0, 101.0), (500, 99.0, 101.0)]
+    for volume in [1.0, 1_000_000.0]:
+        metrics, _ = causal_replay(monkeypatch, prices, [(400, 99.0, volume, "sell")],
+                                  flow_guard_vpin_bucket_volume=10.0)
+        assert metrics.flow_guard_vpin_bucket_volume == 10.0
+
+
+def test_queue_consumes_only_print_volume_and_keeps_partial_orders(monkeypatch):
+    metrics, _ = causal_replay(monkeypatch, [(0, 99.0, 101.0), (500, 99.0, 101.0)],
+        [(150, 99.0, 10.0, "sell"), (200, 99.0, 2.0, "sell")], [(0, 9.0, 9.0)])
+    assert metrics.maker_fills == 2
+    assert metrics.inventory_base == 3.0
+    assert metrics.cash_usdc == -297.0
+    assert metrics.mark_to_market_pnl_usdc == 3.0
+    assert metrics.consumed_trade_events == 2
+    assert sum(metrics.fills_by_depth.values()) == 1
+
+
+@pytest.mark.parametrize("trade_ms,side,expected", [(0, "sell", 0), (50, "sell", 0),
+    (100, "sell", 1), (150, "buy", 0)])
+def test_prints_require_an_active_order_and_correct_aggressor(monkeypatch, trade_ms, side, expected):
+    metrics, _ = causal_replay(monkeypatch, [(0, 99.0, 101.0), (500, 99.0, 101.0)],
+                              [(trade_ms, 99.0, 1.0, side)])
+    assert metrics.maker_fills == expected
+
+
+def test_post_only_is_checked_when_order_arrives(monkeypatch):
+    metrics, _ = causal_replay(monkeypatch,
+        [(0, 99.0, 101.0), (50, 97.0, 98.0), (500, 97.0, 98.0)],
+        [(150, 97.0, 10.0, "sell")])
+    assert metrics.post_only_rejects == 1
+    assert metrics.maker_fills == 0
+
+
+def test_zero_latency_activation_does_not_read_a_later_tied_book(monkeypatch):
+    metrics, _ = causal_replay(monkeypatch,
+        [(0, 99.0, 101.0), (0, 97.0, 98.0), (500, 97.0, 98.0)],
+        [(1, 97.0, 1.0, "sell")], decision_latency_ms=0)
+    assert metrics.post_only_rejects == 0
+    assert metrics.maker_fills == 1
+
+
+def test_one_print_cannot_be_reused_by_overlapping_quotes(monkeypatch):
+    metrics, _ = causal_replay(monkeypatch,
+        [(0, 99.0, 101.0), (100, 99.0, 101.0), (200, 99.0, 101.0), (500, 99.0, 101.0)],
+        [(250, 98.0, 15.0, "sell")], quote_refresh_interval_ms=100)
+    assert metrics.inventory_base == 15.0
+    assert metrics.maker_fills == 2
+    assert metrics.consumed_trade_events == 1
+
+
+def test_funding_is_charged_only_after_inventory_exists(monkeypatch):
+    metrics, _ = causal_replay(monkeypatch, [(0, 99.0, 101.0), (3_600_000, 99.0, 101.0)],
+        [(1_800_000, 99.0, 10.0, "sell")], quote_refresh_interval_ms=4_000_000,
+        funding_rate_per_hour=0.01)
+    assert metrics.funding_usdc == pytest.approx(-5.0)

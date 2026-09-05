@@ -16,6 +16,21 @@ if str(SCRIPTS) not in sys.path:
 
 import archive_period  # noqa: E402
 import grid_pnl_curve  # noqa: E402
+import sweep_replay  # noqa: E402
+
+
+def test_sweep_markdown_discloses_execution_and_scoring_limits():
+    text = sweep_replay.to_markdown({
+        "status": "ok",
+        "stage_c": [{"key": "calibration|risk", "held_out": {}, "train": {}}],
+        "latency_ladder": [{"scenario": {}}],
+    })
+    assert r"calibration\|risk" in text
+    assert "including training" in text
+    assert "quoted spread capture" in text
+    assert "not measured host execution capabilities" in text
+    assert "not solvency or promotion readiness" in text
+    assert "max(0, refresh" not in text
 
 
 def test_sweep_headline_reads_the_current_nested_schema(tmp_path):
@@ -86,3 +101,26 @@ def test_plotter_resolves_the_active_run_from_grid_state(tmp_path):
     )
     assert grid_pnl_curve.resolve_run_dir(root) == active
     assert grid_pnl_curve.resolve_run_dir(active) == active
+
+
+def test_plotter_reads_rotated_compressed_fills_even_after_damage(tmp_path):
+    import pytest
+    import zstandard
+
+    def write(generation, stamp):
+        row = {"kind": "fill", "exchange_ms": stamp, "payload": {
+            "side": "buy", "qty_units": 1, "px": 100000, "fee_usdc": 0.01}}
+        path = tmp_path / ("grid-baseline.jsonl.zst" + generation)
+        path.write_bytes(zstandard.ZstdCompressor().compress((json.dumps(row, separators=(",", ":")) + "\n").encode()))
+        return path
+
+    oldest = write(".2", 1_000)
+    damaged = tmp_path / "grid-baseline.jsonl.zst.1"
+    damaged.write_bytes(b"broken compressed frame")
+    current = write("", 3_000)
+    files = grid_pnl_curve.variant_files(["baseline"], tmp_path)
+    assert files == {"baseline": [oldest, damaged, current]}
+    with pytest.warns(RuntimeWarning, match="Incomplete event log"):
+        fills = grid_pnl_curve.read_fills(files["baseline"])
+    assert fills["ts_ms"].tolist() == [1_000, 3_000]
+    assert fills["signed_qty"].sum() == 2
