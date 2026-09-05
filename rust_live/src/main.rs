@@ -4245,19 +4245,20 @@ mod tests {
 
     #[test]
     #[ignore = "numerical study: run with --release --all-features --ignored --nocapture"]
-    fn finalist_executable_quotes_converge_under_timestep_refinement() {
+    fn paper_candidate_executable_quotes_converge_under_timestep_refinement() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let config = AppConfig::load(&root.join("config/cashcat_dryrun_realistic.toml")).unwrap();
         let spec = grid::GridSpec::load(&root.join("config/grid_cashcat.toml")).unwrap();
         let instrument = cashcat();
-        let mut recommended = f64::INFINITY;
-        for name in ["sweep1", "sweep2", "sweep3"] {
+        let mut max_horizon = 0.0_f64;
+        for name in ["sweep1", "sweep2", "sweep3", "contender_flat300"] {
             let entry = spec
                 .variants
                 .iter()
                 .find(|entry| entry.name == name)
                 .unwrap();
             let (applied, parameters, _) = spec.resolve_variant(entry, &config).unwrap();
+            max_horizon = max_horizon.max(applied.model.horizon_seconds);
             let policy = CarteaJaimungalPolicy::new(
                 instrument.clone(),
                 applied.quoting.clone(),
@@ -4313,7 +4314,7 @@ mod tests {
                 }
                 resolutions.push((model.max_dt_seconds, quotes));
             }
-            let mut accepted = None;
+            let mut configured_difference = None;
             for window in resolutions.windows(3) {
                 let mut max_ticks = 0.0_f64;
                 for finer in &window[1..] {
@@ -4332,16 +4333,18 @@ mod tests {
                     "{name}: dt={} max_quote_difference_ticks={max_ticks}",
                     window[0].0
                 );
-                if max_ticks <= 1.0 && accepted.is_none() {
-                    accepted = Some(window[0].0);
+                if window[0].0 == config.model.max_dt_seconds {
+                    configured_difference = Some(max_ticks);
                 }
             }
-            recommended = recommended
-                .min(accepted.expect("no tested timestep meets the executable-quote tolerance"));
+            assert!(
+                configured_difference.expect("configured timestep must be tested") <= 1.0,
+                "{name}: configured timestep fails executable-quote convergence"
+            );
         }
-        println!("recommended_max_dt_seconds={recommended}");
-        assert!(config.model.max_dt_seconds <= recommended);
-        assert!(config.model.max_steps >= (300.0 / config.model.max_dt_seconds).ceil() as usize);
+        assert!(
+            config.model.max_steps >= (max_horizon / config.model.max_dt_seconds).ceil() as usize
+        );
     }
 
     #[tokio::test]

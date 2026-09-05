@@ -1,6 +1,6 @@
 # Dry-run grid
 
-The grid compares 20 independent paper accounts on one public market feed.
+The grid compares 22 independent paper accounts on one public market feed.
 It does not construct a live backend, read trading credentials, open an account
 socket or write collector Parquet. It is not a latency benchmark or permission
 to trade. Scientific results and limitations are in `CAUSAL_EXECUTION_REVIEW.md`;
@@ -58,21 +58,26 @@ not evidence that historical venue fills would match paper fills.
 
 `rust_live/config/grid_cashcat.toml` defines the variants;
 `rust_live/config/cashcat_dryrun_realistic.toml` supplies their common settings.
-The 20 slots contain 13 controls, the three training-ranked sweep finalists,
-and four targeted combinations of the first finalist:
+The 22 slots contain 13 recent-fit controls, three training-ranked sweep
+finalists, four targeted combinations and two fixed-fit flatten contenders:
 
 | Row | Model / change |
 |---|---|
 | `sweep1` | Saved fit A, phi*kappa*T=3000, T=150 s, q max=3 |
-| `sweep2` | Saved fit A, phi*kappa*T=3000, T=300 s, q max=3 |
-| `sweep3` | Saved fit B, phi*kappa*T=3000, T=150 s, q max=6 |
+| `sweep2` | Saved fit B, phi*kappa*T=3000, T=150 s, q max=6 |
+| `sweep3` | Saved fit C, phi*kappa*T=3000, T=150 s, q max=6 |
 | `sweep1_unguarded` | First finalist without the flow guard |
 | `sweep1_wide60` | First finalist with a 60 bps half-spread floor |
 | `sweep1_flat300` | Same 60 bps floor with the 301 ms exit target |
 | `sweep1_flat550` | Same 60 bps floor with the 550 ms exit target |
+| `contender_flat300` | Saved control fit, phi*kappa*T=300, q max=6, 60 bps floor, 301 ms exit target |
+| `contender_flat550` | Same fixed control fit and 60 bps floor, 550 ms exit target |
 
-The two `parameter_profiles` store the six fitted CJ parameters from
-`cashcat_sweep_causal_20260904.json`, not a new fit with similar settings.
+The four `parameter_profiles` store the six fitted CJ parameters from
+`cashcat_sweep.json`, not a new fit with similar settings. Finalist A/B/C
+arrival-jump horizons are 1000/1000, 1000/500 and 500/1000 ms; all use the
+upper-quartile depth support. The contenders use the 200/200 ms, full-support
+training fit, rather than the recent-data fit of `flatten300` and `flatten550`.
 They participate in checkpoint identity and appear in each startup log.
 Controls use the shared recent-data fit, calculated once at grid startup.
 Duplicate effective configurations warn; raise `phi_kappa_t_max` with
@@ -89,11 +94,12 @@ All rows retain common paper execution settings, capital-derived order sizing,
 risk gates and the current-data VPIN volume scale. The finalists therefore test
 the saved models prospectively under the same paper conditions as the controls;
 they do not reproduce the Python sweep's fixed sizing or execution assumptions.
-The internal HJB timestep is 1/512 s, with a 153,600-step ceiling for the 300 s
-horizon. Across the three finalists, half-inventory states, prices 0.05--0.30
-USDC and sampled times including the final five seconds, executable quotes
-change by at most one venue price increment under both further halvings.
-Newton still uses a 1e-8 residual tolerance and a 100-update budget. These
+The internal HJB timestep is 1/512 s; each current 150 s candidate uses 76,800
+steps within the 153,600-step ceiling. Across the three finalists and shared
+contender quote model, half-inventory states, prices 0.05--0.30 USDC and sampled
+times including the final five seconds, executable quotes change by at most
+one venue price increment under both further halvings.
+Newton uses a 1e-10 residual tolerance and a 100-update budget. These
 numerical settings do not change event-driven quoting or simulated latency.
 
 Lot-age exits and fixed parameter profiles are not supported by live promotion.
@@ -209,8 +215,8 @@ an interrupted old frame. The plotter reads retained files oldest-first and warn
 on decode failure, without letting an old damaged generation hide the new one.
 Rotation limits retained history by both volume and restart count; it does not
 guarantee a fixed number of days. Flush-boundary rotation can overshoot the size
-threshold. With 20 rows, the default current-plus-three-generation log budget
-is about 5 GiB, unchanged by this roster. Old run directories and unrotated
+threshold. With 22 rows, the default current-plus-three-generation log budget
+is about 5.5 GiB. Old run directories and unrotated
 history are additional; this is not a hard total-disk ceiling.
 `--log-max-mb 0` allows unbounded append with interrupted-frame risk.
 

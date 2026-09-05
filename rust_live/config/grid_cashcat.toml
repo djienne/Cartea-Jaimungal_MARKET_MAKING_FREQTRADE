@@ -1,18 +1,34 @@
 [parameter_profiles.sweep_a]
-lambda_plus = 0.13093969644502362
-lambda_minus = 0.12410705511275547
-kappa_plus = 4415.761061299301
-kappa_minus = 4211.776465690159
-epsilon_plus = 0.00004793876572179116
-epsilon_minus = 0.00006620270077793468
+epsilon_plus = 0.00005736939755660366
+epsilon_minus = 0.00006613041142407194
+kappa_plus = 4437.202794669829
+kappa_minus = 4231.1446742310345
+lambda_plus = 0.13060605554650404
+lambda_minus = 0.12346209353839518
 
 [parameter_profiles.sweep_b]
-lambda_plus = 0.13093969644502362
-lambda_minus = 0.12410705511275547
-kappa_plus = 4415.761061299301
-kappa_minus = 4211.776465690159
-epsilon_plus = 0.00005732650960447385
-epsilon_minus = 0.000053760370697263874
+epsilon_plus = 0.00005736939755660366
+epsilon_minus = 0.00005374413466618068
+kappa_plus = 4437.202794669829
+kappa_minus = 4231.1446742310345
+lambda_plus = 0.13060605554650404
+lambda_minus = 0.12346209353839518
+
+[parameter_profiles.sweep_c]
+epsilon_plus = 0.00004769852234588795
+epsilon_minus = 0.00006613041142407194
+kappa_plus = 4437.202794669829
+kappa_minus = 4231.1446742310345
+lambda_plus = 0.13060605554650404
+lambda_minus = 0.12346209353839518
+
+[parameter_profiles.contender]
+epsilon_plus = 0.0000352506017364394
+epsilon_minus = 0.00003914523150061164
+kappa_plus = 5671.43158883059
+kappa_minus = 5237.387590763152
+lambda_plus = 0.21520179710458748
+lambda_minus = 0.18798632366685436
 
 [[variant]]
 name = "baseline"
@@ -83,17 +99,17 @@ flow_guard_enabled = true
 
 [[variant]]
 name = "sweep2"
-parameter_profile = "sweep_a"
-q_max = 3
-reduce_only_threshold_q = 3
+parameter_profile = "sweep_b"
+q_max = 6
+reduce_only_threshold_q = 6
 phi_kappa_t = 3000
 phi_kappa_t_max = 3000
-horizon_seconds = 300
+horizon_seconds = 150
 flow_guard_enabled = true
 
 [[variant]]
 name = "sweep3"
-parameter_profile = "sweep_b"
+parameter_profile = "sweep_c"
 q_max = 6
 reduce_only_threshold_q = 6
 phi_kappa_t = 3000
@@ -143,5 +159,17 @@ phi_kappa_t = 3000
 phi_kappa_t_max = 3000
 horizon_seconds = 150
 flow_guard_enabled = true
+min_half_spread_bps = 60
+flatten_after_ms = 250
+
+[[variant]]
+name = "contender_flat300"
+parameter_profile = "contender"
+min_half_spread_bps = 60
+flatten_after_ms = 1
+
+[[variant]]
+name = "contender_flat550"
+parameter_profile = "contender"
 min_half_spread_bps = 60
 flatten_after_ms = 250

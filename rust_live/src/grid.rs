@@ -790,23 +790,33 @@ mod tests {
     }
 
     #[test]
-    fn shipped_finalists_match_saved_sweep_models_without_expanding_the_grid() {
+    fn shipped_paper_candidates_match_saved_models_without_duplicate_rows() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let spec = GridSpec::load(&root.join("config/grid_cashcat.toml")).unwrap();
         let config = AppConfig::load(&root.join("config/cashcat_dryrun_realistic.toml")).unwrap();
         let sweep: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(root.join("../docs/cashcat_sweep_causal_20260904.json")).unwrap(),
+            &std::fs::read(root.join("../docs/cashcat_sweep.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(spec.variants.len(), 20);
+        assert_eq!(spec.variants.len(), 22);
         let fingerprints: BTreeSet<_> = spec
             .variants
             .iter()
             .map(|entry| spec.resolve_variant(entry, &config).unwrap().2)
             .collect();
-        assert_eq!(fingerprints.len(), 20);
-        for (index, expected) in sweep["stage_c"].as_array().unwrap().iter().enumerate() {
-            let name = format!("sweep{}", index + 1);
+        assert_eq!(fingerprints.len(), 22);
+        let finalists = sweep["stage_c"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (format!("sweep{}", index + 1), entry));
+        let contenders = sweep["paper_contenders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry["name"].as_str().unwrap().to_owned(), entry));
+        for (name, expected) in finalists.chain(contenders) {
             let entry = spec
                 .variants
                 .iter()
@@ -845,7 +855,12 @@ mod tests {
                 applied.model.phi_kappa_t,
                 expected["risk"]["phi_kappa_t"].as_f64().unwrap()
             );
-            assert_eq!(applied.model.phi_kappa_t_max, applied.model.phi_kappa_t);
+            assert_eq!(
+                applied.model.phi_kappa_t_max,
+                expected["risk"]["phi_kappa_t_max"]
+                    .as_f64()
+                    .unwrap_or(applied.model.phi_kappa_t)
+            );
             assert_eq!(
                 applied.model.alpha_kappa,
                 expected["risk"]["alpha_kappa"].as_f64().unwrap()
@@ -853,6 +868,50 @@ mod tests {
             assert_eq!(
                 applied.flow_guard.enabled,
                 expected["risk"]["flow_guard"].as_bool().unwrap()
+            );
+            if let Some(spread) = expected["risk"]["min_half_spread_bps"].as_f64() {
+                assert_eq!(applied.quoting.min_half_spread_bps, spread);
+            }
+            if let Some(deadline) = expected["risk"]["flatten_after_ms"].as_u64() {
+                assert_eq!(entry.overrides.flatten_after_ms, Some(deadline));
+            }
+        }
+        let first = spec
+            .variants
+            .iter()
+            .find(|entry| entry.name == "sweep1")
+            .unwrap();
+        let guarded = spec
+            .resolve_variant(first, &config)
+            .unwrap()
+            .0
+            .flow_guard
+            .enabled;
+        let guard_row = if guarded {
+            "sweep1_unguarded"
+        } else {
+            "sweep1_guarded"
+        };
+        for (name, spread, deadline, guard) in [
+            (guard_row, None, None, !guarded),
+            ("sweep1_wide60", Some(60.0), None, guarded),
+            ("sweep1_flat300", Some(60.0), Some(1), guarded),
+            ("sweep1_flat550", Some(60.0), Some(250), guarded),
+        ] {
+            let mut expected = first.clone();
+            expected.name = name.into();
+            expected.overrides.flow_guard_enabled = Some(guard);
+            expected.overrides.min_half_spread_bps = spread;
+            expected.overrides.flatten_after_ms = deadline;
+            let actual = spec
+                .variants
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap();
+            assert_eq!(
+                spec.resolve_variant(actual, &config).unwrap().2,
+                spec.resolve_variant(&expected, &config).unwrap().2,
+                "{name}"
             );
         }
     }

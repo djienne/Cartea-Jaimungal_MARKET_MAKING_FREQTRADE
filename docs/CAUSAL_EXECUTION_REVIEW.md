@@ -2,135 +2,123 @@
 
 ## Conclusion
 
-Neither the historical search nor the paper-matched replay establishes a tradable
-edge. All three train-selected finalists lose on the Python search's scored
-suffix. On a common six-hour Rust replay, exit-adjusted P&L ranges from -1.21 to
-+0.49 USDC with only 22-30 fills per account. These are different experiments,
-not interchangeable return estimates. No strategy is promoted.
+The full staged search finds no profitable fill-qualified training candidate.
+The three selected fits lose on the scored Python suffix and in the matched
+Rust paper model. Positive simulated returns come from short lot-age exits,
+not from the unmodified finalists. These are hypotheses for prospective paper
+observation, not a demonstrated tradable edge or permission for live trading.
 
-## Historical search (Python causal-v2)
+## Dataset and search
 
-### Method
+The frozen tape spans August 16, 2026, 21:57:55.999 through September 5, 2026,
+11:09:36.518 UTC: 469.1946 hours, 4,196,666 price rows and 2,179,254 deduplicated
+trades. All 17,615 copied Parquet files pass validation. The split is August 30,
+2026, 14:24:06.362 UTC: 328.4362 training hours and 140.7581 scored hours. This is
+reused research data, not an untouched holdout. Collection continues separately.
 
-The frozen tape contains 457.4267 hours, 4,083,323 price rows and 2,127,998 trades
-from 2026-08-16 21:57:55.999 to 2026-09-04 23:23:32.030 UTC. Its 20,891 Parquet
-files were copied at 2026-09-04 23:23:42 UTC. The chronological 70/30 split is
-2026-08-30 06:09:51.220 UTC: 320.1983 training hours and 137.2273 scored hours.
-This is reused historical research data, **not an untouched holdout**.
+The full calibration grid crosses 200/500/1000 ms arrival-jump horizons and
+0/0.5/0.75 lower depth quantiles independently on both sides: 81 fitted models.
+The three surviving calibrations each score 108 risk settings, for 324 Stage B
+runs: nine phi*kappa*T values, three horizons, two inventory bounds and the
+on/off flow guard. Alpha*kappa stays at 0.05. No price-event cap or shortened
+training tape is used. This is the complete configured staged sweep, not an
+exhaustive crossing of every calibration with every risk setting.
 
-Calibration and VPIN volume scale use training data only. Matching processes
-trades, books and decisions chronologically, with activation-time post-only
-checks, queue depletion and partial fills without reusing trade volume. The
-primary queue model uses visible same-price-level size with zero time decay.
-Finite book depth, missing order-level queue information and incomplete venue/
-initial-margin constraints remain model limitations.
+Python causal-v2 uses 1,000 USDC initial equity, 2,092 base units/order, leverage
+one, 1.5/4.5 bps maker/taker fees and the search scenario's 100 ms activation and
+250 ms refresh. It is a shortlisting experiment, not the paper execution model.
 
-The staged search fits 81 calibrations, tests 324 risk combinations across three
-survivors on the full training slice, and scores three finalists, five execution
-scenarios and six-hour windows. It is a staged search, not an exhaustive joint
-Cartesian search. Up to four workers were used; all stages completed successfully.
-All 81 default-risk Stage-A paths breach maintenance, so their continued replay
-rankings are diagnostic shortlists, not executable strategy returns.
+| Finalist | Arrival horizons (+/- ms) | q max | Training P&L | Scored P&L | Positive six-hour windows |
+|---|---|---:|---:|---:|---:|
+| `sweep1` | 1000/1000 | 3 | -186.44 | -505.81 | 29/77 |
+| `sweep2` | 1000/500 | 6 | -187.28 | -516.26 | 32/77 |
+| `sweep3` | 500/1000 | 6 | -192.09 | -583.68 | 30/77 |
 
-### Results
+All three use phi*kappa*T=3000, alpha*kappa=0.05, T=150 s and the flow guard.
+The regime check scores 79 chronological windows across the whole tape,
+including training; 77 contain fills. These are not independent replications.
 
-All P&L is marked in USDC from 1,000 USDC initial equity. Finalists are ordered
-by training P&L, not selected again on the scored suffix.
+All 81 Stage A reference accounts breach maintenance, so their continued
+accounting paths are not executable returns. The selected Stage B rows and
+three scored suffixes do not breach maintenance. Fill-count eligibility alone
+is not solvency. The first finalist loses in all five latency/refresh scenarios;
+the 500/30000 ms scenario loses 1,711.68 USDC and breaches maintenance. Changing
+both timing variables does not isolate latency.
 
-| Calibration epsilon + / - (ms) | phi*kappa*T | T (s) | q max | Train P&L | Scored P&L | Maker fills |
-|---|---:|---:|---:|---:|---:|---:|
-| 500/1000 | 3000 | 150 | 3 | -179.95 | -583.11 | 9,209 |
-| 500/1000 | 3000 | 300 | 3 | -203.68 | -753.39 | 10,596 |
-| 1000/500 | 3000 | 150 | 6 | -204.10 | -520.97 | 9,372 |
+## Paper-model comparison
 
-All three use lower fit quantiles 0.75/0.75, alpha*kappa=0.05 and the flow guard.
-None breaches maintenance in the scored suffix. The leader has 30 positive
-windows among 75 with fills; these reset-account windows span the whole tape,
-including training, and are retrospective regime checks rather than independent
-holdouts. Its worst window is -75.63 USDC.
+Rust causal-v4 scores August 30, 2026, 14:24:06.362 through September 5, 2026,
+11:09:28.590 UTC, the last common complete BBO/trade endpoint. The preceding
+training prefix sets capital-derived order sizes and VPIN scale; model fits
+remain fixed. Accounts start flat with 297.88 USDC and cold guards. Replay and
+grid share the paper step, latency tail, fees, funding and terminal risk gates.
+Their common settings are defined once in `DRY_RUN_GRID.md`.
 
-For that same leader, the paired latency/refresh scenarios produce -485.51
-(50/100 ms), -583.11 (100/250), -627.75 (200/500), -848.95 (500/1000) and
--1,683.57 USDC (500/30000). The last scenario breaches maintenance; its return
-is not executable. Changing both timing variables does not isolate latency.
+The unmodified finalists lose 147.78, 81.91 and 79.82 USDC respectively over the
+full suffix. The positive, fully scored, flat-ending variants are:
 
-### Fixed controls
+| Row | Marked and exit-adjusted P&L | Maker fills | Lot-age exits |
+|---|---:|---:|---:|
+| `sweep1_flat300` | +190.70 | 718 | 718 |
+| `sweep1_flat550` | +117.60 | 718 | 718 |
+| `contender_flat300` | +96.61 | 942 | 942 |
+| `contender_flat550` | +44.99 | 946 | 946 |
 
-Controls use 2,092 base units/order, phi*kappa*T=300 (ceiling 450), alpha*kappa=0.05,
-T=150 s, q in [-6,6], 300 ms activation, 100 ms refresh and 150 ms cancellation.
-Maker/taker fees are 1.5/4.5 bps, funding is 0.0000125/hour, and aggressive-exit
-slippage is 2.5 bps. These fixed controls differ from adaptive Rust grid sizing.
+The contenders freeze the full-support 200/200 ms training fit. Their recent-fit
+counterparts remain separate controls. Both pairs lose substantial P&L when the
+exit target moves from 301 to 550 ms. The choice of these controls follows
+inspection of reused data; prospective observation is required. Guarded and
+unguarded first-finalist replays are identical on this suffix, not evidence
+that protection during a cascade is unnecessary.
 
-| Control | Scored P&L | Maker fills | Taker fills | Below maintenance |
-|---|---:|---:|---:|---|
-| baseline / unguarded | -2,649.65 | 21,900 | 0 | yes |
-| wide40 | -669.36 | 3,765 | 0 | yes |
-| wide60 | +1,008.38 | 1,401 | 0 | no |
-| flatten300 | +191.93 | 1,987 | 1,971 | no |
-| flatten550 | -267.11 | 1,987 | 1,943 | no |
+Widening alone is not a winner: the fixed-control wide60 replay stops at 69.49%
+of the suffix and the first-finalist wide60 combination at 51.25%, both on the
+liquidation-buffer gate. Their terminal losses are not full-period returns.
+Python's fixed-control wide60 gain of 870.04 USDC includes 12,493 open base units
+and does not transfer to the paper model. Python's flatten300/550 controls return
++226.62/-256.49 USDC under different sizing and execution assumptions.
 
-The guard never triggers on the scored suffix, so the identical A/B result says
-nothing about protection during a cascade. Wide60 ends with 8,722 base units:
-its gain is not liquidated cash. Moving the flatten target from 301 to 550 ms reverses
-the P&L sign. Replay continues accounting after maintenance breaches; fill-count
-eligibility is not solvency or promotion eligibility. Reported `net spread` is
-quote distance from the decision-time mid, weighted by filled quantity and net
-of fees, not post-fill realized spread. Its P&L residual includes adverse
-selection, inventory revaluation and funding.
+Queue position is only inferred from finite visible depth; venue order priority,
+market impact and aggressive exit liquidity are not known. Quote distance from
+the decision-time mid, net of fees, is not realized post-fill spread. Its P&L
+residual includes adverse selection, inventory revaluation and funding. Positive
+paper-model returns are therefore neither executable guarantees nor validation
+against real fills.
 
-## Paper-execution comparison (Rust causal-v3)
+## Numerical and accounting checks
 
-The three saved models score the same frozen tape from September 4, 2026,
-17:23:32.030 to 23:23:32.030 UTC. The preceding two hours set order sizes and
-VPIN volume scale; model parameters remain the saved training fits. Rust replay
-and grid use the same paper step, 297.88 USDC initial equity and common
-latency/fees/risk settings. Scoring starts flat with cold guards. This window
-is reused research data, not an independent holdout or a rerun of the full search.
+The shipped HJB timestep is 1/512 s and Newton residual tolerance is 1e-10.
+For the three finalists and shared contender quote model, executable quotes at
+five prices (0.05--0.30), half-unit inventory states and sampled times including
+the last five seconds differ by at most one venue increment against both further
+halvings. This is sampled convergence, not an error bound for arbitrary fits.
+The check tests the configured timestep directly: at tolerance 1e-8, the
+contender differed by four increments despite passing a coarser comparison.
+Tighter Newton solves remove that non-monotone discrepancy without a solver
+rewrite. All paper results here are rerun at the shipped tolerance.
 
-| Row | Marked P&L | Exit-adjusted P&L | Maker fills | End inventory (base units) |
-|---|---:|---:|---:|---:|
-| sweep1 | -1.1980 | -1.2112 | 25 | -15 |
-| sweep2 | +0.0301 | -0.1103 | 30 | 160 |
-| sweep3 | +0.5000 | +0.4878 | 22 | 14 |
+All terminal accounts are finite. Cash plus signed inventory valued at the last
+logged BBO reproduces reported equity within 5.69e-14 USDC. Exit-adjusted P&L
+uses the executable side, 25 bps slippage and 3.5 bps fees; this is a valuation,
+not an executed liquidation. Bounded logs do not retain every historical fill.
+A native/container duplicate replay matches account equity, inventory and fill
+count; final replays use the native release build on the same frozen inputs.
 
-All accounts remain valid through all 62,417 scored events. Exit adjustment uses
-the final executable side, 25 bps slippage and 3.5 bps fee; it is a valuation,
-not an executed liquidation. Reconstruction from the 77 logged fills recovers
-exact inventory/fees and cash within 4.10e-12 USDC, including recorded funding.
-Missing queue size is unknown, not zero: at-price fills await visible depth,
-while strictly-through prints may fill. Incomplete L2/order-level data remain
-limitations; Python and Rust also retain different cadence and latency-tail
-assumptions, so matching their P&L is not a validation target.
+285 Rust tests, the separately run release-mode convergence study, 392 Python
+tests, Clippy, formatting and whitespace checks pass. The TeX check confirms
+12 source snippets and 55 recomputed numbers; no mathematical exposition change
+is needed. These checks support numerical/accounting consistency, not an edge.
 
-The release-mode HJB study compares executable, venue-rounded quotes against
-both successive timestep refinements. For the three saved fits, five prices
-from 0.05 to 0.30, half-unit inventory states and sampled times concentrated near
-expiry, 1/512 second is the coarsest common timestep within one price increment
-of both finer checks. The 300-second profile needs 153,600 steps. This is a
-sampled numerical-convergence result, not an error bound for arbitrary fits.
-It changes neither quote cadence nor simulated latency.
+## Artifacts and paper roster
 
-## Validation
+`cashcat_sweep.json` and `cashcat_sweep.md` are the canonical complete search
+and paper-comparison records. The 22-row paper roster contains the three exact
+finalist fits, four targeted first-finalist combinations, two fixed-fit flatten
+contenders and 13 recent-fit controls. Fixed-fit and lot-age-exit rows remain
+ineligible for live promotion. Roster changes start a separate paper run rather
+than rewriting prior accounts; operation and log bounds stay in `DRY_RUN_GRID.md`.
 
-- 392 Python tests and 281 Rust workspace/all-target/all-feature tests pass,
-  plus the separately invoked release-mode numerical study. Clippy with warnings
-  denied, formatting and source whitespace checks pass.
-- Causality/accounting regressions cover activation, partial volume, funding,
-  terminal invalidation, checkpoint rejection, costed gap exits and damaged logs.
-  HJB/calibration checks remain; historical P&L is not a reference answer.
-- The restart/accounting experiment (`run-1788566042942`) retains 20 valid
-  accounts with no event loss across a graceful restart and fresh-book checks.
-  All 44 prior-run artifacts remain unchanged; 5,112 logged fills reconstruct
-  inventory exactly and cash within 6.99e-12 USDC. This supports execution
-  accounting, not strategy profitability.
-- The 20-row paper roster includes all three saved models and four targeted
-  combinations; operational assumptions are defined in `DRY_RUN_GRID.md`.
-  No real-money service or collector is changed.
-
-Detailed search tables and machine-readable scores are in
-`cashcat_sweep_causal_20260904.md` and `cashcat_sweep_causal_20260904.json`.
-Operational behavior is documented once in `DRY_RUN_GRID.md`. Frozen inputs,
-control settings/results and rollout samples are local research artifacts under
-`rust_live/reports/causal-study-20260904/`. The six-hour replay, numerical study
-and accounting checks are under `rust_live/reports/replay-parity-20260905/`.
-These are local research artifacts, not application source.
+Frozen inputs, invocation, control comparisons, numerical studies and bounded
+replay logs are local research artifacts under
+`rust_live/reports/full-sweep-20260905/`, not application source. No collector
+or real-money service is changed.

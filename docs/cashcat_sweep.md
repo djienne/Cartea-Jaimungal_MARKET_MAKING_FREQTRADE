@@ -1,31 +1,13 @@
 # Parameter sweep — CASHCAT
 
-- generated: `2026-09-02T11:05:59Z`
-- tape: **395.6884 h**, 3342794 price rows, 1648021 trades (`2026-08-16T21:57:55.999000+00:00` → `2026-09-02T09:39:14.361000+00:00`)
-- selection ran on the full 276.9819 h train slice
-- train/held-out split at `2026-08-28T10:56:50.852000+00:00` (0.7 train)
+- generated: `2026-09-05T14:45:01Z`
+- execution model: `causal-v3`; queue decay per second: `0.0`
+- tape: **469.1946 h**, 4196666 price rows, 2179254 trades (`2026-08-16T21:57:55.999000+00:00` → `2026-09-05T11:09:36.518000+00:00`)
+- selection ran on the full 328.4362 h train slice
+- train/held-out split at `2026-08-30T14:24:06.362000+00:00` (0.7 train)
 - searched at scenario `good` (latency 100 ms, refresh 250 ms)
 - a row is ranked only if it took ≥ 30 maker fills and ≥ 3.0/day
-- the toxic-flow guard is an axis: `guard` on rows is the shipped guard, `off` reproduces every sweep before 2026-09-02
-
-> **The `flow_guard_trips` / `withheld` numbers in this file are all zero and
-> are WRONG.** `ReplayMetrics.to_dict` enumerates its keys by hand and was not
-> given the guard counters, so `score()` read its `.get(..., 0)` default for
-> every row. Fixed on 2026-09-02 (`scripts/replay_market_maker.py`), after this
-> artifact was written; the P&L, fills and rankings are unaffected, because the
-> guard itself ran — only its counters were dropped on the way out. Re-measured
-> directly from the same tapes:
->
-> | statistic | train (277 h) | held-out (118.7 h) |
-> | --- | ---: | ---: |
-> | max 5 s mid move | **4716 bps** at `08-22 05:12` | 474.8 bps |
-> | price samples ≥ 800 bps | 631 | **0** |
-> | max VPIN | 0.5961 | 0.3316 |
-> | share ≥ 0.40 | 1.5% | **0.0** |
->
-> So the guard fires on the 08-22 cascade and on nothing else in 395 h. On the
-> held-out slice it is provably inert and `guard`/`noguard` rows are identical,
-> which is why the guard axis cannot be scored out of sample on this tape.
+- the toxic-flow guard is an axis: `guard` on rows is the shipped guard, `off` disables that guard without changing the execution model
 
 Calibration is fitted on the train slice only and applied unchanged to the
 held-out slice. Epsilon horizons stop at 1 s because epsilon is the arrival
@@ -35,132 +17,117 @@ jump (eq. 10.22), not a markout.
 
 | calibration | P&L | net spread | fills (bid/ask) | depth bid/ask bps | P&L bid/ask |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `eps1000/1000_klo0.75/0.75` | -895.13 | +8468.61 | 31613 (15693/15920) | 19.8 / 18.1 | +4429.98 / +4038.63 |
-| `eps500/500_klo0.75/0.75` | -1015.63 | +8574.67 | 33156 (16472/16684) | 19.4 / 17.5 | +4479.01 / +4095.66 |
-| `eps200/200_klo0.75/0.75` | -1082.77 | +8684.07 | 35325 (17506/17819) | 18.9 / 17.0 | +4563.43 / +4120.64 |
-| `eps1000/1000_klo0.5/0.5` | -1326.43 | +9120.25 | 39661 (19623/20038) | 18.3 / 16.4 | +4810.34 / +4309.90 |
-| `eps500/500_klo0.5/0.5` | -1478.46 | +9277.82 | 41921 (20661/21260) | 17.8 / 15.9 | +4921.94 / +4355.88 |
-| `eps200/200_klo0.5/0.5` | -1607.99 | +9376.93 | 44715 (22034/22681) | 17.1 / 15.3 | +4977.03 / +4399.90 |
-| `eps1000/1000_klo0/0` | -1644.41 | +9572.14 | 46225 (22900/23325) | 16.9 / 15.4 | +5040.02 / +4532.11 |
-| `eps500/500_klo0/0` | -1857.98 | +9617.99 | 48800 (24076/24724) | 16.4 / 14.8 | +5084.82 / +4533.17 |
-| `eps200/200_klo0/0` | -2018.24 | +9753.72 | 52241 (25854/26387) | 15.8 / 14.3 | +5135.92 / +4617.80 |
+| `eps1000/1000_klo0.75/0.75` | -4462.47 | +15717.95 | 80414 (39971/40443) | 17.0 / 15.6 | +8281.76 / +7436.19 |
+| `eps500/1000_klo0.75/0.75` | -4558.31 | +15790.54 | 82142 (40841/41301) | 16.8 / 15.5 | +8321.14 / +7469.40 |
+| `eps1000/500_klo0.75/0.75` | -4593.79 | +15751.54 | 82360 (40824/41536) | 16.8 / 15.3 | +8356.21 / +7395.33 |
+| `eps500/500_klo0.75/0.75` | -4694.74 | +15812.36 | 83961 (41707/42254) | 16.6 / 15.2 | +8369.43 / +7442.94 |
+| `eps200/1000_klo0.75/0.75` | -4703.83 | +15878.88 | 84312 (41916/42396) | 16.7 / 15.3 | +8385.49 / +7493.39 |
+| `eps1000/200_klo0.75/0.75` | -4781.94 | +15862.83 | 84875 (42118/42757) | 16.6 / 15.0 | +8396.26 / +7466.57 |
+| `eps500/200_klo0.75/0.75` | -4793.94 | +15953.46 | 86797 (43064/43733) | 16.3 / 14.9 | +8451.51 / +7501.96 |
+| `eps200/500_klo0.75/0.75` | -4822.29 | +15963.69 | 86416 (42902/43514) | 16.4 / 15.0 | +8433.30 / +7530.39 |
+| `eps1000/1000_klo0.75/0.5` | -5062.57 | +16350.53 | 88662 (44173/44489) | 16.2 / 15.3 | +8542.71 / +7807.82 |
+| `eps200/200_klo0.75/0.75` | -5066.08 | +16075.54 | 89152 (44278/44874) | 16.1 / 14.7 | +8509.11 / +7566.43 |
+| `eps1000/1000_klo0.5/0.75` | -5090.24 | +16391.42 | 89606 (44323/45283) | 16.6 / 14.7 | +8766.89 / +7624.53 |
+| `eps500/1000_klo0.5/0.75` | -5154.23 | +16470.94 | 91537 (45286/46251) | 16.4 / 14.6 | +8808.29 / +7662.65 |
+| `eps1000/500_klo0.75/0.5` | -5161.55 | +16373.25 | 90934 (45325/45609) | 15.9 / 15.0 | +8566.63 / +7806.62 |
+| `eps500/1000_klo0.75/0.5` | -5166.76 | +16441.75 | 90848 (45333/45515) | 16.0 / 15.1 | +8577.49 / +7864.27 |
+| `eps1000/500_klo0.5/0.75` | -5203.02 | +16546.67 | 92423 (45724/46699) | 16.4 / 14.5 | +8856.26 / +7690.41 |
 
-## Stage B — the book's risk preference (top 15 on train)
+## Stage B — risk settings (top 15 on train)
 
 | calibration | risk | guard | P&L | net spread | directional | fills (bid/ask) | fills/day |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `eps1000/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=3 | on (0 trips) | +400.20 | +2840.22 | -2440.02 | 4901 (2447/2454) | 424.7 |
-| `eps1000/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=6 | on (0 trips) | +352.45 | +2823.94 | -2471.49 | 4868 (2437/2431) | 421.8 |
-| `eps500/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=3 | on (0 trips) | +340.99 | +2843.98 | -2502.98 | 4975 (2508/2467) | 431.1 |
-| `eps500/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=6 | on (0 trips) | +328.68 | +2787.82 | -2459.15 | 4904 (2477/2427) | 425.0 |
-| `eps200/200_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=3 | on (0 trips) | +319.27 | +2617.56 | -2298.28 | 4511 (2254/2257) | 390.9 |
-| `eps200/200_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=6 | on (0 trips) | +307.20 | +2625.98 | -2318.77 | 4502 (2262/2240) | 390.1 |
-| `eps1000/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=3 | on (0 trips) | +298.66 | +2568.42 | -2269.76 | 4330 (2164/2166) | 375.2 |
-| `eps1000/1000_klo0.75/0.75` | φκT=1000.0 ακ=0.05 T=150.0 q=3 | on (0 trips) | +296.46 | +2981.27 | -2684.80 | 5386 (2679/2707) | 466.7 |
-| `eps1000/1000_klo0.75/0.75` | φκT=1000.0 ακ=0.05 T=150.0 q=6 | on (0 trips) | +286.83 | +3043.25 | -2756.43 | 5428 (2693/2735) | 470.4 |
-| `eps500/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=600.0 q=3 | on (0 trips) | +273.00 | +3201.08 | -2928.08 | 5943 (2918/3025) | 515.0 |
-| `eps500/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=6 | on (0 trips) | +272.33 | +2506.41 | -2234.08 | 4319 (2200/2119) | 374.3 |
-| `eps200/200_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=3 | on (0 trips) | +270.05 | +2866.51 | -2596.47 | 5165 (2564/2601) | 447.6 |
-| `eps500/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=3 | on (0 trips) | +267.37 | +2625.79 | -2358.42 | 4459 (2262/2197) | 386.4 |
-| `eps200/200_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=6 | on (0 trips) | +265.19 | +2899.80 | -2634.61 | 5170 (2608/2562) | 448.0 |
-| `eps1000/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=6 | on (0 trips) | +264.16 | +2613.03 | -2348.87 | 4375 (2215/2160) | 379.1 |
+| `eps1000/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=3 | on (1 trip) | -186.44 | +4978.67 | -5165.12 | 13073 (6608/6465) | 955.3 |
+| `eps1000/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=6 | on (1 trip) | -187.28 | +5166.63 | -5353.91 | 13510 (6779/6731) | 987.3 |
+| `eps500/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=6 | on (1 trip) | -192.09 | +5103.51 | -5295.60 | 13437 (6737/6700) | 981.9 |
+| `eps500/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=3 | on (1 trip) | -212.05 | +5004.36 | -5216.40 | 13192 (6599/6593) | 964.0 |
+| `eps1000/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=6 | on (1 trip) | -261.66 | +5101.87 | -5363.52 | 13464 (6773/6691) | 983.9 |
+| `eps1000/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=150.0 q=3 | on (1 trip) | -267.83 | +5007.13 | -5274.96 | 13316 (6615/6701) | 973.1 |
+| `eps1000/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=3 | on (1 trip) | -277.60 | +5339.46 | -5617.06 | 14516 (7348/7168) | 1060.8 |
+| `eps500/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=3 | on (1 trip) | -292.05 | +5512.81 | -5804.86 | 15294 (7683/7611) | 1117.6 |
+| `eps500/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=6 | on (1 trip) | -298.43 | +5453.30 | -5751.73 | 14866 (7438/7428) | 1086.4 |
+| `eps1000/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=3 | on (1 trip) | -322.79 | +5435.62 | -5758.41 | 15000 (7520/7480) | 1096.2 |
+| `eps1000/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=6 | on (1 trip) | -375.08 | +5583.36 | -5958.43 | 15505 (7835/7670) | 1133.1 |
+| `eps1000/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=300.0 q=6 | on (1 trip) | -397.40 | +5466.12 | -5863.52 | 14948 (7504/7444) | 1092.4 |
+| `eps1000/500_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=600.0 q=3 | on (1 trip) | -404.95 | +6257.43 | -6662.38 | 18561 (9269/9292) | 1356.4 |
+| `eps500/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=600.0 q=6 | on (1 trip) | -425.44 | +6345.72 | -6771.16 | 18664 (9299/9365) | 1363.9 |
+| `eps500/1000_klo0.75/0.75` | φκT=3000.0 ακ=0.05 T=600.0 q=3 | on (1 trip) | -427.38 | +6178.02 | -6605.40 | 18223 (9147/9076) | 1331.7 |
 
 ## Stage C — held-out
 
+Window counts span the whole tape, including training. Each window resets
+the account; these are retrospective regime checks, not independent holdouts.
+
 | configuration | train P&L | held-out P&L | net spread | directional | fills | windows + | worst |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `eps1000/1000_klo0.75/0.75|phiKT3000_alphaK0.05_T300_q3_guard` | +400.20 | **-17.80** | +1104.22 | -1122.02 | 1825 | 39/64 | -59.38 |
-| `eps1000/1000_klo0.75/0.75|phiKT3000_alphaK0.05_T300_q6_guard` | +352.45 | **-15.46** | +1110.56 | -1126.02 | 1837 | 39/64 | -59.32 |
-| `eps500/500_klo0.75/0.75|phiKT3000_alphaK0.05_T300_q3_guard` | +340.99 | **-13.55** | +1097.42 | -1110.97 | 1806 | 38/64 | -60.95 |
+| `eps1000/1000_klo0.75/0.75\|phiKT3000_alphaK0.05_T150_q3_guard` | -186.44 | **-505.81** | +3530.61 | -4036.42 | 9067 | 29/77 | -96.51 |
+| `eps1000/500_klo0.75/0.75\|phiKT3000_alphaK0.05_T150_q6_guard` | -187.28 | **-516.26** | +3568.80 | -4085.07 | 9430 | 32/77 | -89.72 |
+| `eps500/1000_klo0.75/0.75\|phiKT3000_alphaK0.05_T150_q6_guard` | -192.09 | **-583.68** | +3581.46 | -4165.14 | 9562 | 30/77 | -98.00 |
 
-### Leader per 6.0 h window — `eps1000/1000_klo0.75/0.75|phiKT3000_alphaK0.05_T300_q3_guard`
-
-| window | P&L | net spread | directional | fills (bid/ask) |
-| --- | ---: | ---: | ---: | ---: |
-| 08-16 21:57 | +9.11 | +39.89 | -30.78 | 79 (39/40) |
-| 08-17 03:57 | -1.33 | +2.09 | -3.42 | 6 (3/3) |
-| 08-17 09:57 | -0.96 | +8.83 | -9.79 | 18 (11/7) |
-| 08-17 15:57 | -0.55 | +53.98 | -54.53 | 113 (55/58) |
-| 08-17 21:57 | +0.00 | +0.00 | +0.00 | 0 (0/0) |
-| 08-18 03:57 | +1.34 | +1.09 | +0.25 | 3 (1/2) |
-| 08-18 09:57 | +5.81 | +3.29 | +2.52 | 6 (3/3) |
-| 08-18 15:57 | +3.50 | +24.69 | -21.19 | 54 (22/32) |
-| 08-18 21:57 | -8.04 | +25.24 | -33.29 | 73 (32/41) |
-| 08-19 03:57 | -0.72 | +2.02 | -2.74 | 3 (2/1) |
-| 08-19 09:57 | +10.33 | +15.33 | -5.00 | 30 (16/14) |
-| 08-19 15:57 | +12.98 | +29.04 | -16.06 | 77 (30/47) |
-| 08-19 21:57 | +4.46 | +14.52 | -10.07 | 35 (11/24) |
-| 08-20 03:57 | -2.36 | +11.14 | -13.51 | 27 (11/16) |
-| 08-20 09:57 | +9.33 | +25.78 | -16.45 | 52 (21/31) |
-| 08-20 15:57 | -8.33 | +15.72 | -24.05 | 32 (19/13) |
-| 08-20 21:57 | -0.02 | +1.87 | -1.89 | 5 (2/3) |
-| 08-21 03:57 | -2.79 | +4.04 | -6.84 | 12 (4/8) |
-| 08-21 09:57 | +18.09 | +78.63 | -60.54 | 133 (61/72) |
-| 08-21 15:57 | -3.55 | +9.07 | -12.62 | 18 (11/7) |
-| 08-21 21:57 | +3.36 | +14.90 | -11.54 | 41 (16/25) |
-| 08-22 03:57 | -59.38 | +25.37 | -84.75 | 62 (34/28) |
-| 08-22 09:57 | -1.56 | +7.64 | -9.20 | 18 (7/11) |
-| 08-22 15:57 | +6.65 | +25.82 | -19.17 | 45 (23/22) |
-| 08-22 21:57 | +1.47 | +3.21 | -1.75 | 6 (4/2) |
-| 08-23 03:57 | +0.00 | +0.00 | +0.00 | 0 (0/0) |
-| 08-23 09:57 | +4.95 | +11.04 | -6.09 | 25 (14/11) |
-| 08-23 15:57 | +20.61 | +116.07 | -95.46 | 196 (108/88) |
-| 08-23 21:57 | +24.25 | +106.61 | -82.36 | 211 (109/102) |
-| 08-24 03:57 | +3.38 | +13.48 | -10.11 | 24 (7/17) |
-| 08-24 09:57 | +25.03 | +133.51 | -108.49 | 257 (128/129) |
-| 08-24 15:57 | +114.07 | +429.96 | -315.89 | 701 (365/336) |
-| 08-24 21:57 | +31.63 | +274.13 | -242.50 | 475 (253/222) |
-| 08-25 03:57 | +31.44 | +120.05 | -88.60 | 180 (96/84) |
-| 08-25 09:57 | +17.52 | +111.86 | -94.34 | 177 (83/94) |
-| 08-25 15:57 | +16.99 | +125.01 | -108.02 | 196 (96/100) |
-| 08-25 21:57 | +29.04 | +54.49 | -25.46 | 100 (53/47) |
-| 08-26 03:57 | +1.81 | +28.80 | -26.99 | 50 (30/20) |
-| 08-26 09:57 | -8.32 | +50.32 | -58.64 | 81 (34/47) |
-| 08-26 15:57 | +46.40 | +192.39 | -145.99 | 292 (159/133) |
-| 08-26 21:57 | +4.03 | +252.35 | -248.31 | 388 (213/175) |
-| 08-27 03:57 | -23.57 | +55.14 | -78.71 | 101 (47/54) |
-| 08-27 09:57 | +13.54 | +68.06 | -54.52 | 110 (59/51) |
-| 08-27 15:57 | -14.10 | +65.70 | -79.80 | 89 (44/45) |
-| 08-27 21:57 | +3.59 | +98.12 | -94.53 | 144 (68/76) |
-| 08-28 03:57 | -31.10 | +32.99 | -64.09 | 59 (15/44) |
-| 08-28 09:57 | +3.36 | +28.66 | -25.30 | 54 (22/32) |
-| 08-28 15:57 | +3.99 | +51.09 | -47.10 | 83 (42/41) |
-| 08-28 21:57 | -1.40 | +9.55 | -10.95 | 15 (10/5) |
-| 08-29 03:57 | -3.38 | +4.89 | -8.27 | 9 (5/4) |
-| 08-29 09:57 | +1.97 | +19.98 | -18.02 | 34 (18/16) |
-| 08-29 15:57 | -3.23 | +33.59 | -36.82 | 48 (28/20) |
-| 08-29 21:57 | +6.13 | +71.10 | -64.98 | 124 (66/58) |
-| 08-30 03:57 | -8.43 | +13.41 | -21.84 | 18 (8/10) |
-| 08-30 09:57 | -3.86 | +20.38 | -24.24 | 32 (12/20) |
-| 08-30 15:57 | +6.78 | +44.51 | -37.73 | 74 (33/41) |
-| 08-30 21:57 | -21.44 | +113.18 | -134.62 | 178 (70/108) |
-| 08-31 03:57 | -0.29 | +19.34 | -19.63 | 32 (21/11) |
-| 08-31 09:57 | -4.32 | +29.88 | -34.20 | 42 (21/21) |
-| 08-31 15:57 | +0.53 | +23.08 | -22.54 | 32 (16/16) |
-| 08-31 21:57 | +14.47 | +120.98 | -106.51 | 202 (82/120) |
-| 09-01 03:57 | +7.69 | +28.84 | -21.15 | 49 (20/29) |
-| 09-01 09:57 | +4.26 | +21.21 | -16.95 | 25 (14/11) |
-| 09-01 15:57 | +6.18 | +77.32 | -71.15 | 120 (48/72) |
-| 09-01 21:57 | -13.14 | +110.59 | -123.73 | 176 (74/102) |
-| 09-02 03:57 | +29.81 | +243.62 | -213.82 | 443 (172/271) |
+Per-window scores are retained in the companion JSON.
 
 ## Latency ladder — winner, held-out slice
 
-Latency and requote cadence move together: resting exposure is
-`max(0, refresh − latency) + cancel`, so cutting latency at a fixed refresh
-lengthens the time a quote sits. Each row is a plausible machine.
+Latency and requote cadence change together. Actual resting exposure depends
+on the event schedule, activation, cancellation and partial fills; these are
+assumed scenarios, not measured host execution capabilities.
 
 | scenario | latency | refresh | P&L | net spread | directional | fills |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| colocated | 50 ms | 100 ms | +29.52 | +1211.29 | -1181.77 | 1994 |
-| good | 100 ms | 250 ms | -17.80 | +1104.22 | -1122.02 | 1825 |
-| mid | 200 ms | 500 ms | -169.49 | +995.81 | -1165.31 | 1653 |
-| this_stack | 500 ms | 1000 ms | -162.49 | +921.95 | -1084.44 | 1566 |
-| reality | 500 ms | 30000 ms | -252.99 | +1676.79 | -1929.78 | 3043 |
+| colocated | 50 ms | 100 ms | -524.74 | +3852.07 | -4376.81 | 10987 |
+| good | 100 ms | 250 ms | -505.81 | +3530.61 | -4036.42 | 9067 |
+| mid | 200 ms | 500 ms | -677.50 | +3349.41 | -4026.91 | 8476 |
+| this_stack | 500 ms | 1000 ms | -914.38 | +2920.11 | -3834.49 | 7755 |
+| reality | 500 ms | 30000 ms | -1711.68 | +6143.20 | -7854.89 | 19470 |
 
 ## How to read the columns
 
-**net spread** is what market making earns: realized spread minus fees.
-**directional** is P&L minus that — a bet on where the mid went, which the
-tape decides and the model does not. A row whose P&L is mostly directional has
-not demonstrated market making, however good the total looks.
+**net spread** is filled quantity times distance from the decision-time mid,
+minus fees. Despite the legacy JSON name, it is quoted spread capture, not
+post-fill realized spread or proof of profit. **directional** is the residual
+P&L, including adverse selection, inventory revaluation and funding.
+Ranking eligibility tests fill counts only, not solvency or promotion readiness.
+Replay keeps accounting after maintenance breaches; inspect the JSON breach
+counts and minimum liquidation buffers before interpreting a return.
+
+## Paper-only contenders
+
+These additional controls use the saved 200/200 ms, full-support training fit.
+Their separate Rust causal-v4 replay uses 297.88 USDC, capital-derived sizing,
+150 ms decision/acknowledgement/cancellation delays, the configured latency tail,
+fees, funding and terminal risk gates. These are not the Python search returns.
+
+| Paper row | Marked P&L (USDC) | Maker fills | Lot-age exits | Final inventory |
+|---|---:|---:|---:|---:|
+| `contender_flat300` | 96.61 | 942 | 942 | 0 |
+| `contender_flat550` | 44.99 | 946 | 946 | 0 |
+
+Both finish the full scored suffix without a risk stop. Their selection follows
+inspection of reused research data, so the gains require prospective paper
+validation. Neither fixed-fit nor lot-age-exit rows can be promoted live.
+The paper roster and execution interpretation are maintained in
+`DRY_RUN_GRID.md` and `CAUSAL_EXECUTION_REVIEW.md`.
+
+## Converged paper-model comparison
+
+All rows use the common full scored window and the paper assumptions above,
+with HJB timestep 1/512 s and Newton residual tolerance 1e-10. The fixed-fit
+`control_wide60` is an offline rejection diagnostic; the paper roster retains
+its separate recent-fit `wide60` control. Returns below are in USDC.
+
+| Row | Marked P&L | Exit-adjusted P&L | Maker fills | Lot exits | Scored fraction | Valid |
+|---|---:|---:|---:|---:|---:|---|
+| `sweep1` | -147.78 | -147.79 | 3281 | 0 | 100.00% | yes |
+| `sweep2` | -81.91 | -81.92 | 2498 | 0 | 100.00% | yes |
+| `sweep3` | -79.82 | -79.87 | 2463 | 0 | 100.00% | yes |
+| `sweep1_unguarded` | -147.78 | -147.79 | 3281 | 0 | 100.00% | yes |
+| `sweep1_wide60` | -178.40 | -179.58 | 268 | 0 | 51.25% | risk stop |
+| `sweep1_flat300` | 190.70 | 190.70 | 718 | 718 | 100.00% | yes |
+| `sweep1_flat550` | 117.60 | 117.60 | 718 | 718 | 100.00% | yes |
+| `contender_flat300` | 96.61 | 96.61 | 942 | 942 | 100.00% | yes |
+| `contender_flat550` | 44.99 | 44.99 | 946 | 946 | 100.00% | yes |
+| `control_wide60` | -168.21 | -170.47 | 470 | 0 | 69.49% | risk stop |
+
+Risk-stopped rows do not cover the whole suffix and cannot be ranked as
+full-period returns. Exit adjustment values remaining inventory at the executable
+side with configured exit costs; it is not an executed liquidation.
