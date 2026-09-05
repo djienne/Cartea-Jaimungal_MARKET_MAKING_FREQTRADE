@@ -11,6 +11,7 @@ pub struct Metrics {
     pub invalid_messages: AtomicU64,
     pub dropped_causal_events: AtomicU64,
     pub reconnects: AtomicU64,
+    pub feed_connected_at_ns: AtomicU64,
     pub application_pings_sent: AtomicU64,
     pub application_pongs_received: AtomicU64,
     pub protocol_pings_received: AtomicU64,

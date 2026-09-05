@@ -126,9 +126,40 @@ fills, and cancellation latency leaves orders exposed until cancellation arrives
   freezes, reports invalidity and cannot continue lot exits or reconciliation.
 - The daily-loss gate is non-latching. Its daily accounting survives resume.
 - A variant error invalidates that variant without aborting the other accounts.
-  Invalid rows have no promotion P&L and are ineligible for promotion.
+  Execution-invalid rows have no promotion P&L; all scientifically invalid rows
+  are ineligible for promotion.
 
-## A restart continues the run
+## Outages and restarts
+
+Missing, stale or disconnected BBO data pauses quoting and withdraws local paper
+orders, including deferred replacements. The last mark and account/risk history
+are retained; pending markouts spanning the gap are discarded. Trading resumes
+on a fresh post-reconnect BBO without resetting cash, inventory or loss limits.
+Paper withdrawal is a simulation boundary, not a claim that venue orders were
+cancelled during an unobserved interval.
+
+Startup metadata requests, connections and writes have timeouts; missing BBO
+updates trigger resubscription
+even if heartbeat frames still arrive. Recovery retries with bounded backoff.
+An unexpectedly terminated feed task fails the process visibly so Docker can
+restart it. Pause/resume and terminal execution-risk stops are logged explicitly;
+a recoverable data pause never releases a terminal risk halt.
+
+Scientific validity is separate from availability. A gap exceeding the research
+limits continues to disqualify that run even after quoting resumes. The health
+command reports both, plus working orders and valid-row count; it does not restart
+a functioning trader merely to erase an unfavorable validity flag. The
+leaderboard's `quote_pause_reason` identifies a current data pause.
+
+On Windows, Docker Desktop must start at sign-in and its Windows Startup entry
+must be enabled. The paper container's `restart: unless-stopped` policy recovers
+process exits and daemon restarts; a deliberate stop remains stopped.
+**Docker Desktop recovery requires Windows sign-in**: a reboot left at the login
+screen is not an unattended trading host.
+Do not enable automatic login or disable Windows updates as a workaround; use an
+always-on host if recovery before login is required.
+
+### Checkpoint recovery
 
 Schema-3 checkpoints contain every variant's accounting, diagnostics, daily risk
 and last observed BBO. Startup validates the complete variant set and execution/

@@ -31,6 +31,7 @@ pub async fn discover_instrument(
 ) -> Result<InstrumentSpec> {
     let response = reqwest::Client::new()
         .post(network.info_url())
+        .timeout(std::time::Duration::from_secs(15))
         .json(&serde_json::json!({"type": "meta"}))
         .send()
         .await

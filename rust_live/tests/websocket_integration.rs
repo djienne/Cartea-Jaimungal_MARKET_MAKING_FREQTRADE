@@ -78,6 +78,7 @@ async fn public_adapter_parses_mock_cashcat_stream_without_loss() {
         idle_timeout: std::time::Duration::from_secs(45),
         connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
+        max_bbo_lag_ms: 5_000,
     }));
     let first = tokio::time::timeout(std::time::Duration::from_secs(2), events.pop())
         .await
@@ -157,6 +158,7 @@ async fn causal_ring_saturation_invalidates_the_session() {
         idle_timeout: std::time::Duration::from_secs(45),
         connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
+        max_bbo_lag_ms: 5_000,
     }));
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while metrics.snapshot().dropped_causal_events == 0 {
@@ -265,6 +267,7 @@ async fn application_ping_and_protocol_pong_are_exercised() {
         idle_timeout: std::time::Duration::from_millis(200),
         connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
+        max_bbo_lag_ms: 5_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), heartbeat_rx)
         .await
@@ -293,11 +296,23 @@ async fn application_ping_and_protocol_pong_are_exercised() {
 }
 
 #[tokio::test]
-async fn idle_socket_reconnects_resubscribes_and_invalidates_evidence() {
+async fn http_errors_and_heartbeat_only_sockets_recover_without_event_loss() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let now_ms = mm_live::types::unix_ms();
     let server = tokio::spawn(async move {
+        let (unavailable, _) = listener.accept().await.unwrap();
+        let _ = tokio_tungstenite::accept_hdr_async(
+            unavailable,
+            |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+             _: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                    .status(502)
+                    .body(Some("unavailable".to_owned()))
+                    .unwrap())
+            },
+        )
+        .await;
         let (first_stream, _) = listener.accept().await.unwrap();
         let mut first = accept_async(first_stream).await.unwrap();
         for _ in 0..3 {
@@ -306,7 +321,16 @@ async fn idle_socket_reconnects_resubscribes_and_invalidates_evidence() {
                 Message::Text(_)
             ));
         }
-        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        for _ in 0..12 {
+            if first
+                .send(Message::Text(r#"{"channel":"pong"}"#.into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         drop(first);
 
         let (second_stream, _) = listener.accept().await.unwrap();
@@ -343,12 +367,14 @@ async fn idle_socket_reconnects_resubscribes_and_invalidates_evidence() {
         idle_timeout: std::time::Duration::from_millis(80),
         connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
+        max_bbo_lag_ms: 5_000,
     }));
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.pop())
         .await
         .unwrap();
     assert!(matches!(event, MarketEvent::Bbo(_)));
-    assert!(metrics.snapshot().reconnects >= 1);
+    assert!(metrics.snapshot().reconnects >= 2);
+    assert!(metrics.snapshot().application_pongs_received >= 1);
     assert!(metrics.snapshot().ws_idle_timeouts >= 1);
     // An idle socket that reconnects is a *measured gap*, not event loss: the
     // run is incomplete by a knowable amount and stays judgeable. Only a
@@ -424,6 +450,7 @@ async fn initial_trade_snapshot_ignores_old_rows_in_any_order() {
         idle_timeout: std::time::Duration::from_secs(45),
         connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
+        max_bbo_lag_ms: 5_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), sent_rx)
         .await
@@ -535,6 +562,7 @@ async fn replayed_trades_on_a_later_frame_are_ignored_not_fatal() {
         idle_timeout: std::time::Duration::from_secs(45),
         connect_timeout: std::time::Duration::from_secs(10),
         max_trade_lag_ms: 2_000,
+        max_bbo_lag_ms: 5_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), sent_rx)
         .await
@@ -641,6 +669,7 @@ async fn replay_inside_the_skew_grace_is_published_not_fatal() {
         connect_timeout: std::time::Duration::from_secs(10),
         // Deliberately tighter than the trade's age, so the pre-fix path bails.
         max_trade_lag_ms: 1_000,
+        max_bbo_lag_ms: 5_000,
     }));
     tokio::time::timeout(std::time::Duration::from_millis(500), sent_rx)
         .await

@@ -268,6 +268,16 @@ impl DryRunBackend {
         Ok(())
     }
 
+    pub fn pause_market_data(&mut self) {
+        self.diagnostics.virtual_orders_canceled += self.orders.len() as u64;
+        self.orders.clear();
+        self.deferred_desired = None;
+        self.latest_book = None;
+        self.bbo_is_restored = true;
+        self.pending_markouts.clear();
+        self.last_quote_action_ms = 0;
+    }
+
     pub const fn daily_realized_pnl_usdc(&self) -> f64 {
         self.daily_realized_pnl_usdc
     }
@@ -1111,6 +1121,7 @@ impl ExecutionBackend for DryRunBackend {
     }
 
     async fn shutdown(&mut self, now_ms: u64) -> Result<()> {
+        self.deferred_desired = None;
         for order in &mut self.orders {
             order.cancel_effective_ms = Some(now_ms);
         }
@@ -1217,6 +1228,28 @@ mod tests {
             q_rounded: 0,
             tau_remaining: 150.0,
         }
+    }
+
+    #[tokio::test]
+    async fn pause_and_shutdown_discard_deferred_quotes_without_resetting_risk() {
+        let mut backend = backend_with_zero_latency();
+        backend.reconcile(bid_quotes(), 1_000).await.unwrap();
+        backend.deferred_desired = Some(bid_quotes());
+        backend.account.consecutive_losses = 3;
+        backend.daily_realized_pnl_usdc = -0.5;
+        backend.pause_market_data();
+        assert_eq!(backend.working_order_count(), 0);
+        assert!(backend.deferred_desired.is_none());
+        assert!(backend.bbo_is_restored);
+        assert!(backend.latest_book.is_none());
+        assert!(backend.scientifically_valid());
+        assert_eq!(backend.account.consecutive_losses, 3);
+        assert_eq!(backend.daily_realized_pnl_usdc, -0.5);
+        backend.deferred_desired = Some(bid_quotes());
+        backend.shutdown(2_000).await.unwrap();
+        assert!(backend.deferred_desired.is_none());
+        backend.flush_deferred(3_000);
+        assert_eq!(backend.working_order_count(), 0);
     }
 
     #[test]

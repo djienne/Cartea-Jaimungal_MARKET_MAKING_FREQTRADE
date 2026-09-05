@@ -6,11 +6,67 @@ use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use mm_live::config::{AppConfig, FeedHealth};
 use mm_live::hjb::CjParameters;
+use mm_live::types::{Bbo, MarketEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+
+#[derive(Default)]
+pub struct PaperMarketState {
+    pub bbo: Option<Bbo>,
+    pub pause_reason: Option<&'static str>,
+    connected_ns: u64,
+    ready_after_ns: u64,
+}
+
+impl PaperMarketState {
+    pub fn observe(
+        &mut self,
+        event: Option<&MarketEvent>,
+        now_ns: u64,
+        now_ms: u64,
+        connected_ns: u64,
+        disconnected: bool,
+        max_age_ms: u64,
+    ) -> bool {
+        let was_paused = self.pause_reason.is_some();
+        let connection_changed = connected_ns != self.connected_ns;
+        self.connected_ns = connected_ns;
+        if connection_changed {
+            self.bbo = None;
+            self.ready_after_ns = connected_ns;
+        }
+        if disconnected {
+            self.bbo = None;
+            self.ready_after_ns = now_ns;
+        }
+        if let Some(MarketEvent::Bbo(bbo)) = event {
+            if !disconnected
+                && bbo.is_valid()
+                && bbo.recv_ns >= self.ready_after_ns
+                && now_ms.saturating_sub(bbo.exchange_ms) <= max_age_ms
+            {
+                self.bbo = Some(*bbo);
+            }
+        }
+        if self.bbo.is_some_and(|bbo| {
+            now_ns.saturating_sub(bbo.recv_ns) > max_age_ms.saturating_mul(1_000_000)
+        }) {
+            self.bbo = None;
+            self.ready_after_ns = now_ns;
+        }
+        self.pause_reason = if disconnected {
+            Some("public feed disconnected; retrying")
+        } else if self.bbo.is_none() {
+            Some("waiting for a fresh BBO")
+        } else {
+            None
+        };
+        connection_changed || (!was_paused && self.pause_reason.is_some())
+    }
+}
 
 pub struct GridRunLock {
     file: std::fs::File,
@@ -332,6 +388,8 @@ pub struct Leaderboard {
     /// this one -- a liveness check alone passes happily through a blackout,
     /// since the process stays healthy and keeps rewriting this very file.
     pub feed_down_for_ms: u64,
+    #[serde(default)]
+    pub quote_pause_reason: Option<String>,
     /// How many times this run has been resumed from a checkpoint.
     ///
     /// Non-zero means the numbers below span more than one process lifetime.
@@ -917,6 +975,7 @@ mod tests {
             feed_health: healthy_feed(),
             feed_failures: Vec::new(),
             feed_down_for_ms: 0,
+            quote_pause_reason: None,
             resumes: 0,
             resumed_downtime_ms: 0,
             rows: vec![row("a", -1.0), row("b", 2.0), row("c", 0.5)],
@@ -925,6 +984,91 @@ mod tests {
         board.sort_by_promotion_pnl();
         let order: Vec<&str> = board.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(order, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn market_pause_requires_post_reconnect_fresh_data() {
+        let mut market = PaperMarketState::default();
+        let mut book = Bbo {
+            bid_px: 99,
+            ask_px: 101,
+            bid_sz: 1,
+            ask_sz: 1,
+            exchange_ms: 1_000,
+            recv_ns: 1_000_000,
+        };
+        assert!(market.observe(None, 0, 1_000, 0, false, 5_000));
+        assert!(market.pause_reason.is_some());
+        market.observe(
+            Some(&MarketEvent::Bbo(book)),
+            1_000_000,
+            1_000,
+            0,
+            false,
+            5_000,
+        );
+        assert!(market.pause_reason.is_none());
+        assert!(market.observe(None, 2_000_000, 1_001, 0, true, 5_000));
+        assert!(market.bbo.is_none());
+        market.observe(
+            Some(&MarketEvent::Bbo(book)),
+            3_000_000,
+            1_002,
+            3_000_000,
+            false,
+            5_000,
+        );
+        assert!(market.bbo.is_none());
+        book.recv_ns = 3_000_000;
+        book.exchange_ms = 1_002;
+        market.observe(
+            Some(&MarketEvent::Bbo(book)),
+            3_000_000,
+            1_002,
+            3_000_000,
+            false,
+            5_000,
+        );
+        assert!(market.pause_reason.is_none());
+        assert!(market.observe(None, 6_000_000_000, 7_000, 3_000_000, false, 5_000));
+        assert!(market.bbo.is_none());
+        book.recv_ns = 6_100_000_000;
+        market.observe(
+            Some(&MarketEvent::Bbo(book)),
+            6_100_000_000,
+            7_001,
+            3_000_000,
+            false,
+            5_000,
+        );
+        assert!(
+            market.bbo.is_none(),
+            "fresh delivery of an old quote must not resume trading"
+        );
+        book.exchange_ms = 7_001;
+        market.observe(
+            Some(&MarketEvent::Bbo(book)),
+            6_100_000_000,
+            7_001,
+            3_000_000,
+            false,
+            5_000,
+        );
+        assert!(market.pause_reason.is_none());
+        book.recv_ns = 7_000_000_000;
+        book.exchange_ms = 8_000;
+        market.observe(
+            Some(&MarketEvent::Bbo(book)),
+            book.recv_ns + 1,
+            8_000,
+            book.recv_ns,
+            false,
+            5_000,
+        );
+        assert!(
+            market.pause_reason.is_none(),
+            "the first fresh BBO must recover even if a short gap happened between timer ticks"
+        );
     }
 
     fn board_at(now_ms: u64, pnl: f64) -> Leaderboard {
@@ -936,6 +1080,7 @@ mod tests {
             feed_health: healthy_feed(),
             feed_failures: Vec::new(),
             feed_down_for_ms: 0,
+            quote_pause_reason: None,
             resumes: 0,
             resumed_downtime_ms: 0,
             rows: vec![LeaderboardRow {

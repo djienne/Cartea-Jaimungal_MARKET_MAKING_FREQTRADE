@@ -77,10 +77,7 @@ enum Command {
     /// Reads `leaderboard.json` only — no config, no runtime, no network — so it
     /// is cheap enough to run every minute and cannot perturb the run it checks.
     ///
-    /// It asks two questions, and the second is the one that matters. Liveness
-    /// alone would have passed for all 19.65 h of the 2026-08-26 blackout: the
-    /// process was healthy and the leaderboard was being rewritten every five
-    /// seconds; it was the market feed that was gone.
+    /// Reports quote readiness and scientific validity separately from liveness.
     GridHealth {
         #[arg(long, default_value = "reports/grid_live/leaderboard.json")]
         leaderboard: PathBuf,
@@ -89,7 +86,7 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         max_age_seconds: u64,
         /// How long the public feed may be down before the container is called
-        /// unhealthy. Catches a live process quoting into the dark.
+        /// unhealthy, allowing the supervisor to recover a stuck connection.
         #[arg(long, default_value_t = 180)]
         max_feed_down_seconds: u64,
     },
@@ -1386,6 +1383,7 @@ async fn run_live(
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
         connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
         max_trade_lag_ms: config.runtime.max_trade_lag_ms,
+        max_bbo_lag_ms: config.runtime.market_stale_ms,
     }));
     let inventory_units = Arc::new(AtomicI64::new(account.inventory_units));
     let (risk_writer, risk_state) = risk_channel();
@@ -1969,6 +1967,9 @@ async fn step_paper_variant(
             .filter(|event| matches!(event, ExecutionEvent::Fill(fill) if fill.maker))
             .count() as u64,
     );
+    if !variant.backend.scientifically_valid() {
+        warn!(variant = %variant.name, reason = ?variant.backend.diagnostics().invalid_reason, "paper variant halted by execution risk; manual review required");
+    }
     let reason = if execution_events.is_empty() {
         QuoteReason::Market
     } else {
@@ -1981,6 +1982,46 @@ async fn step_paper_variant(
             .map(Some);
     }
     Ok(None)
+}
+
+fn observe_grid_market(
+    variants: &mut [PaperVariant],
+    market: &mut grid::PaperMarketState,
+    event: Option<&MarketEvent>,
+    now_ns: u64,
+    metrics: &Metrics,
+    max_age_ms: u64,
+) -> Result<()> {
+    let previous = market.pause_reason;
+    let withdraw = market.observe(
+        event,
+        now_ns,
+        unix_ms(),
+        metrics.feed_connected_at_ns.load(Ordering::Acquire),
+        metrics.feed_disconnected_since_ms.load(Ordering::Relaxed) != 0,
+        max_age_ms,
+    );
+    if withdraw {
+        for variant in variants
+            .iter_mut()
+            .filter(|variant| variant.backend.scientifically_valid())
+        {
+            variant.backend.pause_market_data();
+            variant.logger.log(
+                "market_data_paused",
+                None,
+                &market.pause_reason.unwrap_or("connection changed"),
+            )?;
+        }
+    }
+    if previous != market.pause_reason {
+        if let Some(reason) = market.pause_reason {
+            warn!(reason, "paper quoting paused; recovery remains active");
+        } else {
+            info!("fresh BBO received; paper quoting resumed without resetting accounts");
+        }
+    }
+    Ok(())
 }
 
 impl PaperVariant {
@@ -2206,7 +2247,7 @@ async fn run_dry_run_grid(
     // a parameter-schema change would splice two parameterisations into one
     // P&L curve and keep an inventory unit sized under the old one.
     let grid_fingerprint = std::iter::once(format!(
-        "execution=causal-v3;estimator=v{}:{}",
+        "execution=causal-v4;estimator=v{}:{}",
         mm_live::calibration::PARAMETER_SCHEMA_VERSION,
         mm_live::calibration::ESTIMATOR_SEMANTICS
     ))
@@ -2408,7 +2449,7 @@ async fn run_dry_run_grid(
         false,
     ));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let market_task = tokio::spawn(run_market_stream(MarketStreamArgs {
+    let mut market_task = tokio::spawn(run_market_stream(MarketStreamArgs {
         ws_url: config.runtime.network.ws_url().to_owned(),
         instrument: instrument.clone(),
         latest_bbo: latest_bbo_writer,
@@ -2423,6 +2464,7 @@ async fn run_dry_run_grid(
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
         connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
         max_trade_lag_ms: config.runtime.max_trade_lag_ms,
+        max_bbo_lag_ms: config.runtime.market_stale_ms,
     }));
 
     // VPIN is a property of the market, not of a parameter set, so one tracker
@@ -2453,18 +2495,6 @@ async fn run_dry_run_grid(
         config.runtime.stats_interval_ms.max(1_000),
     ));
     stats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Feed health is the grid's own evidence, not a nicety: a run that reports
-    // zero feed gaps is indistinguishable from one whose socket simply never
-    // reconnected unless the suppressed-backfill counter is visible beside it.
-    // Logged on change so a quiet feed costs one line per ten minutes.
-    //
-    // "On change" used to mean only the three closed-gap counters, none of
-    // which move while a gap is *open*. On 2026-08-26 the feed was down for
-    // 19.65 h and this line printed 117 identical copies of
-    // `reconnects=28 feed_gaps=27 feed_downtime_ms=282835` -- a healthy-looking
-    // heartbeat throughout a total blackout. Whether the feed is down is now
-    // part of the change key, so entering an outage logs at once rather than up
-    // to ten minutes later, and the floor tightens to a minute while it lasts.
     let mut last_feed_counters = (0_u64, 0_u64, 0_u64, false);
     let mut last_feed_log_ms = 0_u64;
     let deadline = (duration_seconds > 0)
@@ -2472,7 +2502,7 @@ async fn run_dry_run_grid(
     let shutdown_signal = wait_for_shutdown_signal();
     tokio::pin!(shutdown_signal);
     let mut last_event_exchange_ms = 0_u64;
-    let mut processed_bbo = None;
+    let mut market = grid::PaperMarketState::default();
 
     let loop_result: Result<()> = async {
         loop {
@@ -2489,7 +2519,11 @@ async fn run_dry_run_grid(
                         std::future::pending::<()>().await;
                     }
                 } => break,
+                result = &mut market_task => {
+                    bail!("public market task exited unexpectedly: {result:?}");
+                }
                 _ = stats.tick() => {
+                    observe_grid_market(&mut variants, &mut market, None, clock.now_ns(), &metrics, config.runtime.market_stale_ms)?;
                     let feed = metrics.snapshot();
                     let now_ms = unix_ms();
                     let feed_down_for_ms = feed.feed_down_for_ms(now_ms);
@@ -2500,8 +2534,6 @@ async fn run_dry_run_grid(
                         feed.historical_trade_prints_ignored,
                         feed_is_down,
                     );
-                    // A minute is already too long to be blind; ten is how the
-                    // last blackout stayed invisible.
                     let floor_ms = if feed_is_down { 60_000 } else { 600_000 };
                     if counters != last_feed_counters
                         || now_ms.saturating_sub(last_feed_log_ms) >= floor_ms
@@ -2543,6 +2575,7 @@ async fn run_dry_run_grid(
                         resumes,
                         resumed_downtime_ms,
                         latest_bbo.load(),
+                        market.pause_reason,
                     )?;
                     board.write_atomic(&leaderboard_path)?;
                     // Checkpoint on the same tick as the leaderboard, so the
@@ -2581,6 +2614,7 @@ async fn run_dry_run_grid(
                     let mut pending = Some(event);
                     let mut drained = 0_u32;
                     while let Some(event) = pending.take() {
+                        observe_grid_market(&mut variants, &mut market, Some(&event), clock.now_ns(), &metrics, config.runtime.market_stale_ms)?;
                         if let MarketEvent::Trade(print) = &event {
                             vpin_value = vpin.observe(print);
                         }
@@ -2588,22 +2622,9 @@ async fn run_dry_run_grid(
                         if event_time != 0 {
                             last_event_exchange_ms = last_event_exchange_ms.max(event_time);
                         }
-                        if let MarketEvent::Bbo(bbo) = &event {
-                            processed_bbo = Some(*bbo);
-                        }
-                        let bbo = processed_bbo;
+                        let bbo = market.bbo;
                         for variant in &mut variants {
-                            // A variant that has already failed is left alone.
-                            // The whole point of a grid is that variants are
-                            // independent hypotheses: one blowing up (a
-                            // liquidation-buffer breach is the realistic case)
-                            // must not take the other variants with it, which
-                            // is exactly what `?` here used to do. An
-                            // invalidated one is left alone too: its backend
-                            // refuses non-empty quotes, and a latched loss
-                            // counter can still reset on a taker exit, so
-                            // stepping it would turn the halt into an error.
-                            if variant.failure.is_some() || !variant.backend.scientifically_valid() {
+                            if bbo.is_none() || variant.failure.is_some() || !variant.backend.scientifically_valid() {
                                 continue;
                             }
                             let stepped = step_paper_variant(
@@ -2662,6 +2683,7 @@ async fn run_dry_run_grid(
         resumes,
         resumed_downtime_ms,
         latest_bbo.load(),
+        market.pause_reason,
     )?;
     board.write_atomic(&leaderboard_path)?;
     // Final checkpoint, so a deliberate stop-and-restart resumes from the run's
@@ -2921,8 +2943,28 @@ fn grid_health_verdict(
             board.feed_down_for_ms / 1_000
         ));
     }
+    let feed_status = if board.feed_down_for_ms > 0 {
+        format!("feed down {} s; retrying", board.feed_down_for_ms / 1_000)
+    } else {
+        "feed connected".to_owned()
+    };
+    let quote_status = board
+        .quote_pause_reason
+        .as_deref()
+        .unwrap_or("data ready; policy/risk gates apply");
+    let valid_rows = board
+        .rows
+        .iter()
+        .filter(|row| row.scientifically_valid)
+        .count();
+    let working_orders: usize = board.rows.iter().map(|row| row.working_orders).sum();
+    let evidence = if board.feed_failures.is_empty() {
+        String::new()
+    } else {
+        format!("; evidence INVALID: {}", board.feed_failures.join("; "))
+    };
     Ok(format!(
-        "grid healthy: leaderboard {} s old, feed up, {} variants, {} s elapsed",
+        "grid responsive: leaderboard {} s old; {feed_status}; {quote_status}; {working_orders} working orders; {valid_rows}/{} scientifically valid; {} s elapsed{evidence}",
         age_ms / 1_000,
         board.rows.len(),
         board.elapsed_seconds
@@ -3079,13 +3121,11 @@ fn write_grid_leaderboard(
     resumes: u32,
     resumed_downtime_ms: u64,
     latest_bbo: Option<Bbo>,
+    quote_pause_reason: Option<&str>,
 ) -> Result<grid::Leaderboard> {
     let now = unix_ms();
     let feed = metrics.snapshot();
     let feed_down_for_ms = feed.feed_down_for_ms(now);
-    // An open gap counts against the run while it is still open. Otherwise a
-    // grid that is blind *right now* reports itself healthy until the socket
-    // happens to come back, which is the state the last run spent 19.65 h in.
     let feed_health = mm_live::config::FeedHealth::new(
         feed.feed_gaps,
         feed.feed_downtime_ms.saturating_add(feed_down_for_ms),
@@ -3104,6 +3144,7 @@ fn write_grid_leaderboard(
         feed_health,
         feed_failures,
         feed_down_for_ms,
+        quote_pause_reason: quote_pause_reason.map(str::to_owned),
         resumes,
         resumed_downtime_ms,
         rows: variants
@@ -3586,6 +3627,7 @@ async fn run_public_dry_run(
         idle_timeout: Duration::from_millis(config.runtime.ws_idle_timeout_ms),
         connect_timeout: Duration::from_millis(config.runtime.ws_connect_timeout_ms),
         max_trade_lag_ms: config.runtime.max_trade_lag_ms,
+        max_bbo_lag_ms: config.runtime.market_stale_ms,
     }));
     let mut backend = DryRunBackend::new(
         instrument.clone(),
@@ -4302,6 +4344,95 @@ mod tests {
         assert!(config.model.max_steps >= (300.0 / config.model.max_dt_seconds).ceil() as usize);
     }
 
+    #[tokio::test]
+    async fn paper_data_pause_withdraws_orders_and_resumes_without_resetting_risk() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut variants = vec![grid_variant(directory.path())];
+        let mut account = variants[0].backend.account_state();
+        account.consecutive_losses = 2;
+        variants[0]
+            .backend
+            .restore_from_snapshot(
+                account,
+                mm_live::execution::DryRunDiagnostics::default(),
+                1_000,
+                Some(unix_ms() / 86_400_000),
+                -0.125,
+            )
+            .unwrap();
+        let mut market = grid::PaperMarketState::default();
+        let metrics = Metrics::default();
+        let mut book = Bbo {
+            bid_px: 99_900,
+            ask_px: 100_100,
+            bid_sz: 1,
+            ask_sz: 1,
+            exchange_ms: unix_ms(),
+            recv_ns: 1_000_000,
+        };
+        observe_grid_market(
+            &mut variants,
+            &mut market,
+            Some(&MarketEvent::Bbo(book)),
+            book.recv_ns,
+            &metrics,
+            5_000,
+        )
+        .unwrap();
+        step_paper_variant(
+            &mut variants[0],
+            &MarketEvent::Bbo(book),
+            book.exchange_ms,
+            market.bbo,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(variants[0].backend.working_order_count() > 0);
+        let before = variants[0].backend.account_state();
+        metrics
+            .feed_disconnected_since_ms
+            .store(unix_ms(), Ordering::Relaxed);
+        metrics.reconnects.store(1, Ordering::Relaxed);
+        observe_grid_market(&mut variants, &mut market, None, 2_000_000, &metrics, 5_000).unwrap();
+        assert_eq!(variants[0].backend.working_order_count(), 0);
+        assert!(market.bbo.is_none());
+        let paused = variants[0].backend.account_state();
+        assert_eq!(paused.cash_usdc, before.cash_usdc);
+        assert_eq!(paused.inventory_units, before.inventory_units);
+        assert_eq!(paused.consecutive_losses, 2);
+        assert_eq!(variants[0].backend.daily_realized_pnl_usdc(), -0.125);
+        metrics
+            .feed_disconnected_since_ms
+            .store(0, Ordering::Relaxed);
+        book.recv_ns = 3_000_000;
+        metrics
+            .feed_connected_at_ns
+            .store(book.recv_ns, Ordering::Release);
+        book.exchange_ms = unix_ms();
+        observe_grid_market(
+            &mut variants,
+            &mut market,
+            Some(&MarketEvent::Bbo(book)),
+            book.recv_ns,
+            &metrics,
+            5_000,
+        )
+        .unwrap();
+        step_paper_variant(
+            &mut variants[0],
+            &MarketEvent::Bbo(book),
+            book.exchange_ms,
+            market.bbo,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(variants[0].backend.working_order_count() > 0);
+        assert!(variants[0].backend.scientifically_valid());
+        assert_eq!(variants[0].backend.daily_realized_pnl_usdc(), -0.125);
+    }
+
     #[test]
     fn fixed_parameter_rows_are_not_live_promotable() {
         let directory = tempfile::tempdir().unwrap();
@@ -4590,6 +4721,7 @@ mod grid_health_tests {
             ),
             feed_failures: Vec::new(),
             feed_down_for_ms,
+            quote_pause_reason: None,
             resumes: 0,
             resumed_downtime_ms: 0,
             rows: Vec::new(),
@@ -4610,15 +4742,30 @@ mod grid_health_tests {
     }
 
     #[test]
+    fn health_reports_recovery_and_invalid_evidence_without_a_restart_loop() {
+        let mut snapshot = board(unix_ms(), 70_000);
+        snapshot.quote_pause_reason = Some("public feed disconnected; retrying".to_owned());
+        snapshot.feed_failures = vec!["gap exceeded the scientific limit".to_owned()];
+        let (_directory, path) = write(&snapshot);
+        let verdict = grid_health_verdict(&path, 120, 180).unwrap();
+        assert!(verdict.contains("feed down 70 s; retrying"));
+        assert!(verdict.contains("evidence INVALID"));
+        assert!(!verdict.contains("feed up"));
+        snapshot.feed_down_for_ms = 0;
+        snapshot.quote_pause_reason = None;
+        snapshot.write_atomic(&path).unwrap();
+        let verdict = grid_health_verdict(&path, 120, 180).unwrap();
+        assert!(verdict.contains("data ready"));
+        assert!(verdict.contains("evidence INVALID"));
+    }
+
+    #[test]
     fn a_stale_leaderboard_means_the_grid_is_hung_or_gone() {
         let (_dir, path) = write(&board(unix_ms().saturating_sub(600_000), 0));
         let reason = grid_health_verdict(&path, 120, 180).unwrap_err();
         assert!(reason.contains("hung or gone"), "{reason}");
     }
 
-    /// The 2026-08-26 case, and the reason this check is not liveness alone:
-    /// the process was healthy and rewriting the leaderboard every five seconds
-    /// through 19.65 h of having no market data at all.
     #[test]
     fn a_fresh_leaderboard_is_still_unhealthy_when_the_feed_is_down() {
         let (_dir, path) = write(&board(unix_ms(), 19 * 3_600 * 1_000));

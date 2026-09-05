@@ -37,6 +37,7 @@ pub struct MarketStreamArgs {
     /// while this is "is a new trade so late the feed is broken". They have no
     /// reason to share a value.
     pub max_trade_lag_ms: u64,
+    pub max_bbo_lag_ms: u64,
     /// How long a single connect attempt may take before it counts as failed.
     ///
     /// Without this the reconnect loop below is only as reliable as the host's
@@ -62,7 +63,6 @@ fn mark_disconnected(args: &MarketStreamArgs, disconnected_at_ms: &mut Option<u6
 
 pub async fn run_market_stream(mut args: MarketStreamArgs) {
     let mut backoff_ms = 250_u64;
-    let mut connected_once = false;
     // When the stream went away, so the gap can be measured on the way back in.
     // A gap is missing data and must be recorded, but it is not the same thing
     // as event loss: a run that reconnected in three seconds is incomplete by a
@@ -82,27 +82,27 @@ pub async fn run_market_stream(mut args: MarketStreamArgs) {
         let attempt = tokio::time::timeout(args.connect_timeout, connect_async(&args.ws_url)).await;
         match attempt {
             Ok(Ok((socket, _))) => {
-                if connected_once {
-                    if let Some(since) = disconnected_at_ms.take() {
-                        let gap_ms = crate::types::unix_ms().saturating_sub(since);
-                        args.metrics.feed_gaps.fetch_add(1, Ordering::Relaxed);
-                        args.metrics
-                            .feed_downtime_ms
-                            .fetch_add(gap_ms, Ordering::Relaxed);
-                        args.metrics
-                            .feed_longest_gap_ms
-                            .fetch_max(gap_ms, Ordering::Relaxed);
-                        info!(
-                            gap_ms,
-                            symbol = %args.instrument.symbol,
-                            "public market feed gap closed"
-                        );
-                    }
+                args.metrics
+                    .feed_connected_at_ns
+                    .store(args.clock.now_ns(), Ordering::Release);
+                if let Some(since) = disconnected_at_ms.take() {
+                    let gap_ms = crate::types::unix_ms().saturating_sub(since);
+                    args.metrics.feed_gaps.fetch_add(1, Ordering::Relaxed);
+                    args.metrics
+                        .feed_downtime_ms
+                        .fetch_add(gap_ms, Ordering::Relaxed);
+                    args.metrics
+                        .feed_longest_gap_ms
+                        .fetch_max(gap_ms, Ordering::Relaxed);
+                    info!(
+                        gap_ms,
+                        symbol = %args.instrument.symbol,
+                        "public market feed gap closed"
+                    );
                 }
                 args.metrics
                     .feed_disconnected_since_ms
                     .store(0, Ordering::Relaxed);
-                connected_once = true;
                 backoff_ms = 250;
                 info!(symbol = %args.instrument.symbol, "public market WebSocket connected");
                 match run_connected(&mut args, socket).await {
@@ -147,26 +147,27 @@ where
     let connected_at_ms = crate::types::unix_ms();
     let (mut write, mut read) = socket.split();
     for subscription_type in ["bbo", "trades", "l2Book"] {
-        write
-            .send(Message::Text(
+        tokio::time::timeout(
+            args.connect_timeout,
+            write.send(Message::Text(
                 json!({
                     "method": "subscribe",
                     "subscription": {"type": subscription_type, "coin": args.instrument.symbol}
                 })
                 .to_string()
                 .into(),
-            ))
-            .await?;
+            )),
+        )
+        .await??;
     }
     let mut ping = tokio::time::interval(args.ping_interval);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_inbound = tokio::time::Instant::now();
+    let mut last_bbo_update = tokio::time::Instant::now();
     let mut pending_application_ping_ns = None;
     loop {
         tokio::select! {
             incoming = read.next() => {
                 let Some(incoming) = incoming else { bail!("market stream ended") };
-                last_inbound = tokio::time::Instant::now();
                 match incoming? {
                     Message::Text(text) => {
                         args.metrics.market_messages.fetch_add(1, Ordering::Relaxed);
@@ -194,7 +195,10 @@ where
                                     .fetch_add(1, Ordering::Relaxed);
                             }
                             super::wire::PublicFrame::Bbo(bbo) => {
-                                if bbo.is_valid() {
+                                if bbo.is_valid()
+                                    && crate::types::unix_ms().saturating_sub(bbo.exchange_ms) <= args.max_bbo_lag_ms
+                                {
+                                    last_bbo_update = tokio::time::Instant::now();
                                     args.latest_bbo.store(bbo);
                                     push_causal(args, MarketEvent::Bbo(bbo))?;
                                     args.metrics.bbo_updates.fetch_add(1, Ordering::Relaxed);
@@ -287,7 +291,7 @@ where
                         }
                     }
                     Message::Ping(payload) => {
-                        write.send(Message::Pong(payload)).await?;
+                        tokio::time::timeout(args.connect_timeout, write.send(Message::Pong(payload))).await??;
                         args.metrics
                             .protocol_pings_received
                             .fetch_add(1, Ordering::Relaxed);
@@ -298,20 +302,20 @@ where
             }
             _ = ping.tick() => {
                 pending_application_ping_ns = Some(args.clock.now_ns());
-                write.send(Message::Text(json!({"method":"ping"}).to_string().into())).await?;
+                tokio::time::timeout(args.connect_timeout, write.send(Message::Text(json!({"method":"ping"}).to_string().into()))).await??;
                 args.metrics
                     .application_pings_sent
                     .fetch_add(1, Ordering::Relaxed);
             }
-            () = tokio::time::sleep_until(last_inbound + args.idle_timeout) => {
+            () = tokio::time::sleep_until(last_bbo_update + args.idle_timeout) => {
                 args.metrics
                     .ws_idle_timeouts
                     .fetch_add(1, Ordering::Relaxed);
-                bail!("no inbound public WebSocket frame before idle timeout");
+                bail!("no public BBO before idle timeout");
             }
             changed = args.shutdown.changed() => {
                 if changed.is_err() || *args.shutdown.borrow() {
-                    let _ = write.send(Message::Close(None)).await;
+                    let _ = tokio::time::timeout(args.connect_timeout, write.send(Message::Close(None))).await;
                     return Ok(());
                 }
             }
