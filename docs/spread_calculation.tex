@@ -4,10 +4,9 @@
 % Build:   latexmk -pdf spread_calculation.tex
 % Verify:  python ../scripts/verify_spread_doc.py
 %
-% Every listing below is tagged with a "% SNIPPET: path:start-end" marker and
-% every number with a "% CHECK: name = value" marker. verify_spread_doc.py
-% re-reads the source lines and re-runs the pricing code, so this document
-% cannot drift away from the program it describes without failing a check.
+% Tagged listings (% SNIPPET) and worked-example numbers (% CHECK) are checked
+% against source and recomputed prices by verify_spread_doc.py. Untagged prose,
+% model assumptions and empirical claims still require scientific review.
 % ---------------------------------------------------------------------------
 \documentclass[11pt,a4paper]{article}
 
@@ -241,7 +240,7 @@ bad luck, and it must be priced in.
 
 \subsection{The concrete setting}
 
-Everything in this document is calibrated on \textbf{CASHCAT}, a low-priced token
+The worked example uses a pinned historical fit for \textbf{CASHCAT}, a low-priced token
 traded on \textbf{Hyperliquid}, a crypto derivatives exchange. The instrument is a
 \emph{perpetual future}: a contract that tracks the token's price, can be held
 long or short, can be traded with leverage, and --- unlike a normal future ---
@@ -1028,18 +1027,23 @@ every quote in response to a \emph{data} problem.
 \textbf{Stage} & \textbf{What} & \textbf{Value} \\
 \midrule
 Window          & trailing data used per fit    & 120 minutes \\
-Cadence         & re-fit interval               & 30 s \\
+Cadence         & public dry/live re-fit interval & 30 s \\
 Model input     & direct validated rolling-window estimate & no temporal smoothing \\
 Runtime path    & Rust calibration to in-process model bundle & \code{cj-data} $\to$ \code{cj-core} \\
 Python path     & explicit JSON artifact for analysis/replay & schema v5 \\
 Max age         & calibration and source data must remain fresh & 120 s \\
 \bottomrule
 \end{tabular}
-\caption{The current runtime cadence and data boundary. Python JSON snapshots are
-analysis artifacts; the Rust trader calibrates directly from Parquet.}
+\caption{The public dry/live calibration path. The paper grid fits its controls
+once at startup and uses saved parameters for fixed-fit candidates.}
 \end{table}
 
-A cycle that fails its own quality checks is rejected, so one bad window cannot
+Offline Rust replay fits only the training prefix and scores later events.
+Its VPIN volume scale and initial order size also use training data only;
+scored observations cannot set those inputs. Saved parameter profiles are used
+without refitting, and replay does not update the active calibration cache.
+
+A public dry/live cycle that fails its own quality checks is rejected, so one bad window cannot
 replace a still-fresh valid model. Calibration validates schema/status,
 source-data freshness, $\kappa>0$, $\lambda\ge0$, $\epsb\ge0$, fit quality
 ($R^2 \ge 0.30$, $\ge 6$ fit points, $\ge 50$ impact events), and a
@@ -1049,8 +1053,8 @@ If no fresh valid model remains, quoting fails closed.
 \begin{intuition}
 The toxicity number $\kappa\epsb$ is dimensionless: adverse-selection cost
 measured in units of the model's natural depth $1/\kappa$. Inside the idealised
-HJB, at flat inventory and before fees or clamps, the optimal depth is
-$1/\kappa + \epsb$, so the fitted fill rate there is
+HJB, when the marginal inventory-value term vanishes and before fees or clamps,
+the optimal depth is $1/\kappa + \epsb$, so the fitted fill rate there is
 \[
   \lambda\,e^{-\kappa(1/\kappa + \epsb)}
   \;=\; \underbrace{\lambda e^{-1}}_{\text{cost of quoting at the optimum}}
@@ -1146,93 +1150,26 @@ asset, and $\gamma = 0.05$. The volatility channel is the code's realisation of
 \eqref{eq:phigamma}: risk aversion times variance. If $\sigma^2$ is missing the
 term is simply dropped -- a missing variance estimate must not fabricate one.
 
-\subsection{Choosing the number: what a sweep of \texorpdfstring{$\phi\kappa T$}{phi kappa T} actually shows}
+\subsection{Choosing the inventory penalty}
 \label{sec:phisweep}
 
-$\phi\kappa T = 10$ was the Python replay default used by this dated sweep. The
-current Rust profile uses 300 (ceiling 450), so the table below is historical
-evidence about shape, not a statement of the current configuration.
+The dimensionless products $\phi\kappa T$ and $\alpha\kappa$ specify the
+inventory preferences; neither the governing equation nor a historical default
+identifies an economically optimal value. Increasing the running penalty can
+reduce trading as well as inventory exposure. A lower total loss alone therefore
+does not demonstrate better fills or a better risk--return trade-off.
 
-Replaying the whole pipeline over one pinned 18.67-hour CASHCAT tape
-(115{,}364 book updates, 46{,}072 trades), varying only $\phi\kappa T$ and
-deliberately running well past the configured ceiling of 50:
+The paper grid retains a recent-fit control at $\phi\kappa T=300$ and three
+training-ranked, fixed-fit candidates at $3000$, with their actual horizons and
+inventory limits. Their search results and execution assumptions are documented
+once in \nolinkurl{docs/CAUSAL_EXECUTION_REVIEW.md}. Those candidates lost money
+on the scored historical suffix; being a finalist is not evidence of an edge.
 
-\begin{table}[htbp]
-\centering\small
-\begin{tabular}{@{}rrrrr@{}}
-\toprule
-$\phi\kappa T$ & PnL (USDC) & maker fills & USDC per fill & \\
-\midrule
-  0.05 & $-114.61$ & 1928 & $-0.059$ & \\
-  0.20 & $-133.22$ & 1959 & $-0.068$ & \\
-  1.00 & $-135.94$ & 1867 & $-0.073$ & worst \\
-  3.00 & $-119.40$ & 1686 & $-0.071$ & \\
- 10.00 & $-95.95$  & 1405 & $-0.068$ & \textbf{historical default} \\
- 20.00 & $-63.58$  & 1121 & $-0.057$ & \\
- 50.00 & $-65.09$  &  784 & $-0.083$ & ceiling \\
-100.00 & $-57.75$  &  614 & $-0.094$ & \\
-200.00 & $-47.14$  &  427 & $-0.110$ & \\
-400.00 & $-24.83$  &  338 & $-0.073$ & best tested \\
-\bottomrule
-\end{tabular}
-\caption{Running-penalty sweep, one pinned tape, quote attempts held at
-$\approx 60{,}800$ throughout. The best setting tested is the largest one tested.}
-\label{tab:phisweep}
-\end{table}
-
-\begin{figure}[htbp]
-\centering
-\begin{tikzpicture}
-\begin{semilogxaxis}[
-  width=12cm, height=5.4cm,
-  xlabel={$\phi\kappa T$ (dimensionless, log scale)},
-  ylabel={PnL (USDC)},
-  grid=major, grid style={gray!20},
-  xmin=0.03, xmax=600, ymin=-150, ymax=-10,
-  legend style={draw=none, fill=none, at={(0.03,0.95)}, anchor=north west, font=\small},
-]
-\addplot[NavyLink, very thick, mark=*, mark size=1.6] coordinates {
-  (0.05,-114.607) (0.2,-133.224) (1.0,-135.936) (3.0,-119.395)
-  (10.0,-95.950) (20.0,-63.581) (50.0,-65.087) (100.0,-57.750)
-  (200.0,-47.140) (400.0,-24.825)};
-\addlegendentry{measured PnL}
-\addplot[BoxDeparture, dashed, thick] coordinates {(10,-150) (10,-10)};
-\node[BoxDeparture, anchor=south west, font=\scriptsize, rotate=90]
-  at (axis cs:10.7,-148) {historical default};
-\addplot[BoxTrap, dotted, thick] coordinates {(50,-150) (50,-10)};
-\node[BoxTrap, anchor=south west, font=\scriptsize, rotate=90]
-  at (axis cs:54,-148) {config ceiling};
-\end{semilogxaxis}
-\end{tikzpicture}
-\caption{The same data. Past $\phi\kappa T \approx 1$ the loss shrinks
-steadily --- with one reversal, $20 \to 50$, well inside the run-to-run noise
-of a single tape --- and never turns back up within a factor of 400.}
-\label{fig:phisweep}
-\end{figure}
-
-\begin{trap}{Easy to get backwards}
-The configuration comment in \code{mm\_core.py} records an earlier sweep on a
-9.8-hour tape that found ``an inverted U with the optimum at 10--20''. On this
-longer tape \textbf{there is no inverted U and no interior optimum}. The loss
-shrinks monotonically as the inventory penalty rises, right out to
-$\phi\kappa T = 400$ --- eight times the configured ceiling --- where it is the
-smallest of the whole sweep.
-
-The honest reading is uncomfortable and worth stating plainly. Look at the
-fills column of Table~\ref{tab:phisweep}: 1959 down to 338. Look at USDC per fill: it sits between $-0.06$
-and $-0.11$ across a factor of 8000 in the parameter. \textbf{Each fill costs
-roughly the same no matter how the model is tuned; all $\phi$ does is change how
-many fills you take.} Total loss therefore tracks fill count, not cleverness, and
-``turning $\phi$ up'' is not finding a better trade-off --- it is trading less.
-The limit of that logic is not quoting at all.
-
-Two consequences. First, do not read $\phi\kappa T = 10$ as a measured optimum;
-it is a middling point on a monotone curve, and the evidence originally cited for
-it did not replicate. Second, this sweep is not really measuring the inventory
-penalty at all --- it is evidence that on this instrument and tape, at this
-simulated latency, the marginal maker fill has negative expected value. No
-tested setting of $\phi$ fixes that result.
-\end{trap}
+Compare fills, marked and executable-exit P\&L, inventory, fees, funding and
+risk stops on the same subsequent data. Net P\&L divided by fill count also
+contains inventory revaluation and financing; it is not an estimator of a
+single fill's expected return. An unreplicated tape supplies no measured
+run-to-run uncertainty or universal ordering of risk settings.
 
 \subsection{Building \texorpdfstring{$\mathbf{A}$}{A}}
 
@@ -1286,10 +1223,11 @@ fills our ask and takes $q \to q-1$. That is exactly
 \paragraph{Closed form, when $\kappa^{+} = \kappa^{-}$.} Diagonalise
 $\mathbf{A} = V\Lambda V^{-1}$ and (10.29) evaluates in one shot for
 every $t$ at once. The implementation carries one wrinkle worth understanding:
-computing $e^{\mathbf{A}T}$ directly overflows once an eigenvalue times $T$ grows past
-about $709$ in magnitude, returning silent NaNs. Factoring
-$e^{\theta} = e^{\theta-m}e^{m}$ with $m = \max_j\theta_j$ and adding $m$ back
-after the logarithm is algebraically exact and cannot overflow.
+large positive eigenvalue--time products overflow the exponential, while large
+negative products underflow. Factoring $e^{\theta}=e^{\theta-m}e^m$ with
+$m=\max_j\theta_j$ and adding $m$ back after the logarithm prevents positive
+exponent overflow. It does not eliminate cancellation or guarantee accurate
+tiny components.
 
 \paragraph{Backward Euler, when $\kappa^{+} \ne \kappa^{-}$.} With different
 $\kappa$s the log substitution no longer linearises the problem, so
@@ -1309,7 +1247,12 @@ where $s^{\pm}$ is each side's derivative of its $\sup$ value with respect to
 that difference. So each Newton step is a banded solve rather than a dense one.
 The current Rust runtime and Python reference both use this asymmetric
 backward-Euler method; the symmetric closed form is an independent limiting-case
-check in the Python test suite.
+check in the Python test suite. Each accepted implicit step must satisfy the
+HJB residual tolerance; exhausting Newton's budget is a failure, not a usable
+surface. This nonlinear convergence is separate from time-discretisation
+accuracy. The fixed paper models are checked under successive timestep
+halvings, including near expiry and after venue rounding, rather than against
+past P\&L or merely finite solver output.
 
 \begin{intuition}
 Why is the derivative free? At the optimum, $\text{value} =
@@ -1616,11 +1559,11 @@ $9.8783627\times10^{-5} + 2.5034909\times10^{-5}
 agreement to seven significant figures.
 
 \begin{departure}{Departure from the book}
-The Python field \code{hjb\_alpha\_kappa} (Rust: \code{alpha\_kappa}) was set to
-$0.05$ when only the $t=0$ slice was read, so the value carries no tuning
-evidence. Under the current $\phi\kappa T=300$, its effect is confined to the
-final 8.75 seconds; a later sweep found bit-identical PnL at 0.05, 0.5, and 5.0.
-It remains untuned because this regime cannot resolve it.
+The Python field \code{hjb\_alpha\_kappa} (Rust: \code{alpha\_kappa}) is
+$0.05$ in the worked example and paper profiles, not a demonstrated optimum.
+Its influence is concentrated near expiry in this example; that boundary layer
+depends on the fitted intensities, inventory penalty and horizon. Sensitivity
+must be checked with converged time steps before drawing a tuning conclusion.
 \end{departure}
 
 % ===========================================================================
@@ -1876,9 +1819,9 @@ $q_{\text{residual}}$ & $q_{\text{exact}} - q$ & $0.4$ \\
 \end{tabular}
 \end{center}
 
-That residual of $0.4$ units is roughly $1010$ CASHCAT of live exposure that the
-integer grid cannot represent. It is logged on every quote, and a run whose mean
-$|q_{\text{residual}}|$ exceeds $0.35$ fails the dry-run quality gate.
+The residual locates the position between discrete HJB states. The runtime
+interpolates both depth curves at $q_{\text{exact}}$; this fractional position
+is not, by itself, an account-invalidity condition.
 
 \subsection{Step 3 --- where the depth comes from}
 
@@ -2077,27 +2020,28 @@ glossed.
   \item \textbf{Leverage, margin, and perpetual funding} do not appear in the
     control. Runtime risk checks enforce the first two and accounting charges the
     third, but none changes the HJB depths.
-  \item \textbf{Parameters are re-estimated every 30 seconds} and the problem
-    re-solved. The agent therefore follows a \emph{sequence} of solutions to
-    slightly different problems, not one solution to a fixed problem.
+  \item \textbf{Public dry/live parameters are re-estimated every 30 seconds.}
+    That path follows a sequence of fitted problems. Grid controls instead use
+    one startup fit; fixed-fit grid candidates and offline scoring retain their
+    selected parameters.
   \item \textbf{Quoting is event-driven and discrete, not continuous.} Venue
     acknowledgement/cancel latency, minimum order lifetime, and requote
     hysteresis determine how long a target remains exposed. The Rust quote
     computation is much faster than those effects, but it cannot remove them.
   \item \textbf{Queueing, fill participation, risk gates, and the toxic-flow
     guard} are empirical/runtime mechanisms outside the book's control problem.
+    Replay treats absent size at the quoted level as unknown, not an empty queue:
+    an at-price print waits for recorded depth; a strictly-through print may fill.
+    Rust replay and grid share the paper execution step, but missing order-level
+    data still prevent either from establishing venue fill probabilities.
 \end{enumerate}
 
 \begin{intuition}
-Adverse selection roughly \emph{doubles} between a 200~ms and a 5~s markout on
-this instrument. The model prices $\epsb$ at the 200~ms horizon because that is
-what \eqref{eq:1022} means, while a resting quote remains exposed to subsequent
-flow until it is filled or cancelled. That makes latency and hold policy
-scientifically relevant, but not automatically profitable: multi-day replay
-ladders have reordered across tapes, and the 185-hour width--cadence matrix was
-non-monotone. The defensible conclusions come from measured markouts, independent
-frozen windows, and explicit scenario assumptions, not from a generic ``faster
-is always better'' rule.
+The markout horizon used to fit $\epsb$ need not match a resting quote's exposure
+until fill or cancellation. Latency and hold policy therefore matter, but their
+P\&L effect must be measured rather than inferred from the HJB. Compare measured
+markouts and explicit execution scenarios on independently selected windows;
+there is no generic ``faster is always better'' rule.
 \end{intuition}
 
 Not a departure, despite appearances: the \textbf{volatility term in $\phi$}.

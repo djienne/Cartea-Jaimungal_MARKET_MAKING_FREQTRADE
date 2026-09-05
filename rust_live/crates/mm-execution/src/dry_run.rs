@@ -1159,8 +1159,8 @@ fn visible_queue(
         }
     }
     bbo.and_then(|bbo| match intent.side {
-        Side::Buy if intent.px == bbo.bid_px => Some(bbo.bid_sz.max(0) as f64),
-        Side::Sell if intent.px == bbo.ask_px => Some(bbo.ask_sz.max(0) as f64),
+        Side::Buy if intent.px == bbo.bid_px && bbo.bid_sz > 0 => Some(bbo.bid_sz as f64),
+        Side::Sell if intent.px == bbo.ask_px && bbo.ask_sz > 0 => Some(bbo.ask_sz as f64),
         _ => None,
     })
 }
@@ -1219,6 +1219,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn missing_bbo_size_is_unknown_but_an_explicit_zero_level_is_known() {
+        let intent = bid_quotes().bid.unwrap();
+        let bbo = Bbo {
+            bid_px: intent.px,
+            ask_px: intent.px + 10,
+            bid_sz: 0,
+            ask_sz: 0,
+            exchange_ms: 1,
+            recv_ns: 1,
+        };
+        assert_eq!(visible_queue(Some(bbo), None, intent), None);
+        assert_eq!(
+            visible_queue(Some(Bbo { bid_sz: 5, ..bbo }), None, intent),
+            Some(5.0)
+        );
+        let book = BookSnapshot {
+            bids: vec![crate::types::BookLevel {
+                px: intent.px,
+                qty_units: 0,
+            }],
+            asks: Vec::new(),
+            exchange_ms: 1,
+            recv_ns: 1,
+        };
+        assert_eq!(visible_queue(Some(bbo), Some(&book), intent), Some(0.0));
+    }
+
     #[tokio::test]
     async fn a_losing_maker_fill_cannot_trigger_a_profitable_exit_after_invalidation() {
         let mut backend = flatten_backend(1_000);
@@ -1238,8 +1266,8 @@ mod tests {
         let book = Bbo {
             bid_px: 9_700,
             ask_px: 9_900,
-            bid_sz: 0,
-            ask_sz: 0,
+            bid_sz: 1,
+            ask_sz: 1,
             exchange_ms: 50,
             recv_ns: 0,
         };
@@ -1279,7 +1307,7 @@ mod tests {
         let trade = MarketEvent::Trade(TradePrint {
             aggressor: AggressorSide::Buy,
             px: 9_900,
-            qty_units: 1,
+            qty_units: 2,
             exchange_ms: 1_000,
             recv_ns: 0,
             trade_id: 1,

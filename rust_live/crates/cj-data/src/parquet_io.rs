@@ -87,6 +87,37 @@ pub struct MarketDataSet {
     pub orderbook_shards: ShardStats,
 }
 
+impl MarketDataSet {
+    pub fn split_for_replay(&self, train_fraction: f64) -> Result<(Self, Self)> {
+        if !train_fraction.is_finite()
+            || !(0.0..1.0).contains(&train_fraction)
+            || train_fraction == 0.0
+        {
+            bail!("replay train fraction must be strictly between zero and one");
+        }
+        let cutoff =
+            self.window_start_ms + train_fraction * (self.window_end_ms - self.window_start_ms);
+        let mut training = self.clone();
+        let mut scoring = self.clone();
+        training.mids.retain(|row| row.ts_ms < cutoff);
+        training.trades.retain(|row| row.ts_ms < cutoff);
+        training.books.retain(|row| row.ts_ms < cutoff);
+        training.window_end_ms = cutoff;
+        scoring.mids.retain(|row| row.ts_ms >= cutoff);
+        scoring.trades.retain(|row| row.ts_ms >= cutoff);
+        scoring.books.retain(|row| row.ts_ms >= cutoff);
+        scoring.window_start_ms = cutoff;
+        if training.mids.is_empty()
+            || training.trades.is_empty()
+            || scoring.mids.is_empty()
+            || scoring.trades.is_empty()
+        {
+            bail!("replay requires prices and trades in both training and scoring partitions");
+        }
+        Ok((training, scoring))
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RawPrice {
     local_ms: f64,

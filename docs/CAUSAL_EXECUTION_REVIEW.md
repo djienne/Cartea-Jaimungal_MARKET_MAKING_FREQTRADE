@@ -2,12 +2,15 @@
 
 ## Conclusion
 
-The causal-v2 replay does not establish a tradable edge. All three train-selected
-finalists lose on the scored suffix, and the selected configuration loses in all
-five latency/cadence scenarios. Positive wide-quote and fast-flatten controls are
-sensitive to inventory exposure and exit timing. No strategy is promoted.
+Neither the historical search nor the paper-matched replay establishes a tradable
+edge. All three train-selected finalists lose on the Python search's scored
+suffix. On a common six-hour Rust replay, exit-adjusted P&L ranges from -1.21 to
++0.49 USDC with only 22-30 fills per account. These are different experiments,
+not interchangeable return estimates. No strategy is promoted.
 
-## Method
+## Historical search (Python causal-v2)
+
+### Method
 
 The frozen tape contains 457.4267 hours, 4,083,323 price rows and 2,127,998 trades
 from 2026-08-16 21:57:55.999 to 2026-09-04 23:23:32.030 UTC. Its 20,891 Parquet
@@ -29,7 +32,7 @@ Cartesian search. Up to four workers were used; all stages completed successfull
 All 81 default-risk Stage-A paths breach maintenance, so their continued replay
 rankings are diagnostic shortlists, not executable strategy returns.
 
-## Results
+### Results
 
 All P&L is marked in USDC from 1,000 USDC initial equity. Finalists are ordered
 by training P&L, not selected again on the scored suffix.
@@ -75,25 +78,59 @@ quote distance from the decision-time mid, weighted by filled quantity and net
 of fees, not post-fill realized spread. Its P&L residual includes adverse
 selection, inventory revaluation and funding.
 
+## Paper-execution comparison (Rust causal-v3)
+
+The three saved models score the same frozen tape from September 4, 2026,
+17:23:32.030 to 23:23:32.030 UTC. The preceding two hours set order sizes and
+VPIN volume scale; model parameters remain the saved training fits. Rust replay
+and grid use the same paper step, 297.88 USDC initial equity and common
+latency/fees/risk settings. Scoring starts flat with cold guards. This window
+is reused research data, not an independent holdout or a rerun of the full search.
+
+| Row | Marked P&L | Exit-adjusted P&L | Maker fills | End inventory (base units) |
+|---|---:|---:|---:|---:|
+| sweep1 | -1.1980 | -1.2112 | 25 | -15 |
+| sweep2 | +0.0301 | -0.1103 | 30 | 160 |
+| sweep3 | +0.5000 | +0.4878 | 22 | 14 |
+
+All accounts remain valid through all 62,417 scored events. Exit adjustment uses
+the final executable side, 25 bps slippage and 3.5 bps fee; it is a valuation,
+not an executed liquidation. Reconstruction from the 77 logged fills recovers
+exact inventory/fees and cash within 4.10e-12 USDC, including recorded funding.
+Missing queue size is unknown, not zero: at-price fills await visible depth,
+while strictly-through prints may fill. Incomplete L2/order-level data remain
+limitations; Python and Rust also retain different cadence and latency-tail
+assumptions, so matching their P&L is not a validation target.
+
+The release-mode HJB study compares executable, venue-rounded quotes against
+both successive timestep refinements. For the three saved fits, five prices
+from 0.05 to 0.30, half-unit inventory states and sampled times concentrated near
+expiry, 1/512 second is the coarsest common timestep within one price increment
+of both finer checks. The 300-second profile needs 153,600 steps. This is a
+sampled numerical-convergence result, not an error bound for arbitrary fits.
+It changes neither quote cadence nor simulated latency.
+
 ## Validation
 
-- 390 Python tests and 278 Rust workspace/all-target/all-feature tests pass;
-  Clippy with warnings denied, formatting and whitespace checks pass.
+- 392 Python tests and 281 Rust workspace/all-target/all-feature tests pass,
+  plus the separately invoked release-mode numerical study. Clippy with warnings
+  denied, formatting and source whitespace checks pass.
 - Causality/accounting regressions cover activation, partial volume, funding,
   terminal invalidation, checkpoint rejection, costed gap exits and damaged logs.
   HJB/calibration checks remain; historical P&L is not a reference answer.
-- The execution-validation grid `run-1788566042942` completes 30 minutes before and after a
-  graceful restart, retaining all 20 valid accounts with no event loss. All 44
-  prior-run artifacts remain unchanged. Reconstructing 5,112 logged fills gives
-  exact inventory and a maximum cash residual of 6.99e-12 USDC across all 20 rows.
-- An additional 30-minute observation verifies the fresh-book guard with all
-  20 accounts valid and no event loss. The current paper roster includes the
-  three saved sweep models and targeted combinations under common dry-run
-  conditions, as described in `DRY_RUN_GRID.md`. No real-money service or
-  collector is changed.
+- The restart/accounting experiment (`run-1788566042942`) retains 20 valid
+  accounts with no event loss across a graceful restart and fresh-book checks.
+  All 44 prior-run artifacts remain unchanged; 5,112 logged fills reconstruct
+  inventory exactly and cash within 6.99e-12 USDC. This supports execution
+  accounting, not strategy profitability.
+- The 20-row paper roster includes all three saved models and four targeted
+  combinations; operational assumptions are defined in `DRY_RUN_GRID.md`.
+  No real-money service or collector is changed.
 
 Detailed search tables and machine-readable scores are in
 `cashcat_sweep_causal_20260904.md` and `cashcat_sweep_causal_20260904.json`.
 Operational behavior is documented once in `DRY_RUN_GRID.md`. Frozen inputs,
 control settings/results and rollout samples are local research artifacts under
-`rust_live/reports/causal-study-20260904/`, not application source.
+`rust_live/reports/causal-study-20260904/`. The six-hour replay, numerical study
+and accounting checks are under `rust_live/reports/replay-parity-20260905/`.
+These are local research artifacts, not application source.

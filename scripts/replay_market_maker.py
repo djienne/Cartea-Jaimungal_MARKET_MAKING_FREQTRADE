@@ -213,6 +213,7 @@ class _ReplayOrder:
     depth_key: str
     calibration_key: str
     queue: float | None = None
+    queue_known: bool = False
     initial_queue: float = 0.0
     queue_time_ns: int = 0
     calibration_checked: bool = False
@@ -220,7 +221,7 @@ class _ReplayOrder:
 
 @dataclass
 class ReplayMetrics:
-    execution_model: str = "causal-v2"
+    execution_model: str = "causal-v3"
     input_files: dict[str, int] = field(default_factory=dict)
     input_rows: dict[str, int] = field(default_factory=dict)
     data_start: str | None = None
@@ -1648,25 +1649,12 @@ def queue_ahead_from_book(
     price: float,
     *,
     cumulative: bool = False,
-) -> float:
-    """Resting size a sweep must clear before reaching our quote at ``price``.
+) -> float | None:
+    """Return visible size at the exact quote level, or None when it is unknown.
 
-    Assumes we joined the BACK of the queue at our own level, which is right for
-    a quote re-placed every few hundred ms: it has no aged priority to claim.
-
-    ``cumulative`` selects which of two quantities is returned, and the choice
-    MATTERS because it has to pair with how the queue is consumed.
-    The causal trade loop decrements only on prints at our price or beyond
-    (``candidate_price >= price`` for an ask). The volume that clears the better
-    levels arrives as prints BELOW our price and never decrements anything.
-
-    So ``cumulative=False`` -- our own level only -- is the CORRECT pairing: a
-    sweep that reaches us has already cleared the better levels by definition,
-    and what stands between us and the fill is the size queued at our own price.
-    ``cumulative=True`` charges the whole at-or-better ladder against prints that
-    can only ever be a fraction of it, over-penalising by ~19x at 60 bps on this
-    tape. It is kept because a result that survives it is robust to anything a
-    real queue could do.
+    Ordinary matching consumes the queue at our level only. The cumulative
+    stress model also charges the recorded better levels. Neither model
+    substitutes a neighboring level or treats missing depth as an empty queue.
     """
     levels = price_matrix[book_idx]
     if side == "ask":
@@ -1675,9 +1663,8 @@ def queue_ahead_from_book(
     else:
         # Bid prices descend, so search the negated ladder to keep it ascending.
         index = int(np.searchsorted(-levels, -float(price), side="right")) - 1
-    if index < 0:
-        return 0.0
-    index = min(index, cum_sizes.shape[1] - 1)
+    if index < 0 or not math.isclose(float(levels[index]), float(price), rel_tol=1e-12):
+        return None
     if cumulative:
         value = float(cum_sizes[book_idx, index])
     else:
@@ -1987,7 +1974,6 @@ def run_replay(
             if order.remaining <= 0 or now_ns >= order.cancel_ns:
                 continue
             if order.queue is None and order.active_ns <= now_ns:
-                boundary = "right" if order.active_ns == order.decision_ns else "left"
                 arrival_index = (order.decision_index if order.active_ns == order.decision_ns
                                  else int(price_ts_ns.searchsorted(order.active_ns, side="left")) - 1)
                 arrival_bid = price_best_bid_list[arrival_index]
@@ -1998,17 +1984,24 @@ def run_replay(
                     order.remaining = 0.0
                     continue
                 order.queue = 0.0
-                if book_ts_ns is not None:
-                    book_index = int(book_ts_ns.searchsorted(order.active_ns, side=boundary)) - 1
-                    if book_index >= 0:
-                        depth = book_bid_depth if order.side == "bid" else book_ask_depth
-                        if queue_model_uses_book and depth is not None:
-                            order.queue = queue_ahead_from_book(*depth, book_index, order.side, order.price, cumulative=queue_model_is_cumulative)
-                        elif is_joining_best(order.side, order.price, arrival_bid, arrival_ask):
-                            sizes = book_bid_size if order.side == "bid" else book_ask_size
-                            order.queue = max(0.0, float(sizes[book_index]))
-                order.initial_queue = order.queue
                 order.queue_time_ns = order.active_ns
+            if order.queue is not None and not order.queue_known and book_ts_ns is not None:
+                boundary = "left" if kind == 0 else "right"
+                book_index = int(book_ts_ns.searchsorted(now_ns, side=boundary)) - 1
+                if book_index >= 0:
+                    depth = book_bid_depth if order.side == "bid" else book_ask_depth
+                    visible = None
+                    if queue_model_uses_book and depth is not None:
+                        visible = queue_ahead_from_book(*depth, book_index, order.side, order.price, cumulative=queue_model_is_cumulative)
+                    elif depth is not None:
+                        levels, sizes = depth
+                        if math.isclose(float(levels[book_index, 0]), order.price, rel_tol=1e-12):
+                            visible = float(sizes[book_index, 0])
+                    if visible is not None:
+                        order.queue = visible
+                        order.queue_known = True
+                        order.initial_queue = visible
+                        order.queue_time_ns = max(order.active_ns, int(book_ts_ns[book_index]))
         expired = [order for order in orders if now_ns >= order.cancel_ns and order.remaining > 0]
         metrics.stale_quote_cancels += len(expired)
         orders = [order for order in orders if order.remaining > 0 and now_ns < order.cancel_ns]
@@ -2032,6 +2025,8 @@ def run_replay(
                 if not crosses:
                     continue
                 beyond = candidate_price < order.price if order.side == "bid" else candidate_price > order.price
+                if not order.queue_known and not beyond:
+                    continue
                 if beyond and not queue_model_is_cumulative:
                     order.queue = 0.0
                 decay = min(order.queue, order.initial_queue * max(0.0, queue_decay_per_second) * (now_ns - order.queue_time_ns) / _NS_PER_SECOND)

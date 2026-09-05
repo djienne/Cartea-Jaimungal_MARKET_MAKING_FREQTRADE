@@ -34,6 +34,26 @@ python scripts/show_grid_leaderboard.py --markdown
 python scripts/grid_pnl_curve.py
 ```
 
+## Offline comparison
+
+The same Rust paper step can score one existing grid row:
+
+```sh
+mm-live --config path/to/replay.toml replay --train-fraction 0.25 \
+  --grid rust_live/config/grid_cashcat.toml --variant sweep1 --report sweep1.json
+```
+
+Set the replay config's `storage.data_dir` to a frozen tape and
+`calibration.window_minutes = 480` for two training hours and six scored hours,
+with `storage.retention_minutes` at least 510 to satisfy config validation.
+Use separate report paths for `sweep1`, `sweep2` and `sweep3`. Calibration (unless
+a saved profile is selected), VPIN volume scale and order sizing use only the
+training prefix; replay neither loads nor updates the calibration cache. Scoring
+starts flat with cold flow guards and no orders, and stops on terminal risk
+invalidation. Reports identify both windows, the consumed time source, fitted
+parameters and the last scored event. This is a controlled model comparison,
+not evidence that historical venue fills would match paper fills.
+
 ## Experimental controls
 
 `rust_live/config/grid_cashcat.toml` defines the variants;
@@ -69,10 +89,12 @@ All rows retain common paper execution settings, capital-derived order sizing,
 risk gates and the current-data VPIN volume scale. The finalists therefore test
 the saved models prospectively under the same paper conditions as the controls;
 they do not reproduce the Python sweep's fixed sizing or execution assumptions.
-The paper Newton budget is 100 updates: finalist three needs 57, with the
-residual tolerance unchanged at 1e-8. Halving the 0.25 s HJB step changes depths
-by less than 1e-8 USDC/base unit with at least 5 s remaining in the sampled
-checks, but by up to 1e-4 near the terminal boundary; late-episode discretization remains a limitation.
+The internal HJB timestep is 1/512 s, with a 153,600-step ceiling for the 300 s
+horizon. Across the three finalists, half-inventory states, prices 0.05--0.30
+USDC and sampled times including the final five seconds, executable quotes
+change by at most one venue price increment under both further halvings.
+Newton still uses a 1e-8 residual tolerance and a 100-update budget. These
+numerical settings do not change event-driven quoting or simulated latency.
 
 Lot-age exits and fixed parameter profiles are not supported by live promotion.
 Rows using either remain paper-only and ineligible regardless of P&L. Exit

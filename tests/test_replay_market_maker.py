@@ -32,6 +32,10 @@ from replay_market_maker import (  # noqa: E402
 )
 
 
+def visible_empty_books(prices):
+    return prices[["timestamp", "bid", "ask"]].rename(columns={"bid": "bid_price_0", "ask": "ask_price_0"}).assign(bid_size_0=0.0, ask_size_0=0.0)
+
+
 def test_post_only_check_rejects_crossing_quotes():
     assert post_only_check("bid", 101.0, 99.0, 101.0) == (False, "bid_crosses_ask")
     assert post_only_check("ask", 99.0, 99.0, 101.0) == (False, "ask_crosses_bid")
@@ -147,7 +151,7 @@ def test_replay_applies_latency_and_records_markouts(monkeypatch):
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
-        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+        lambda _config: (prices, trades, visible_empty_books(prices), {"prices": 0, "trades": 0, "orderbooks": 0}),
     )
 
     params = {
@@ -207,7 +211,7 @@ def test_replay_records_queue_decay_metric(monkeypatch):
     )
     orderbooks = pd.DataFrame(
         [
-            {"timestamp": ts0, "bid_size_0": 1.0, "ask_size_0": 1.0},
+            {"timestamp": ts0, "bid_price_0": 100.0, "ask_price_0": 101.0, "bid_size_0": 1.0, "ask_size_0": 1.0},
         ]
     )
     monkeypatch.setattr(
@@ -260,7 +264,7 @@ def test_replay_keeps_final_quote_active_for_refresh_interval(monkeypatch):
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
-        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+        lambda _config: (prices, trades, visible_empty_books(prices), {"prices": 0, "trades": 0, "orderbooks": 0}),
     )
     monkeypatch.setattr(
         replay_market_maker,
@@ -313,7 +317,7 @@ def test_replay_consumes_trade_events_once_across_overlapping_windows(monkeypatc
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
-        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+        lambda _config: (prices, trades, visible_empty_books(prices), {"prices": 0, "trades": 0, "orderbooks": 0}),
     )
     monkeypatch.setattr(
         replay_market_maker,
@@ -368,7 +372,7 @@ def test_replay_applies_usable_fill_calibration_conservatively(monkeypatch, tmp_
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
-        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+        lambda _config: (prices, trades, visible_empty_books(prices), {"prices": 0, "trades": 0, "orderbooks": 0}),
     )
     monkeypatch.setattr(
         replay_market_maker,
@@ -438,7 +442,7 @@ def test_replay_uses_rounded_price_and_amount_for_fills(monkeypatch):
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
-        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+        lambda _config: (prices, trades, visible_empty_books(prices), {"prices": 0, "trades": 0, "orderbooks": 0}),
     )
     monkeypatch.setattr(
         replay_market_maker,
@@ -536,7 +540,7 @@ def test_replay_tracks_margin_equity_and_liquidation_buffer(monkeypatch):
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
-        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+        lambda _config: (prices, trades, visible_empty_books(prices), {"prices": 0, "trades": 0, "orderbooks": 0}),
     )
     monkeypatch.setattr(
         replay_market_maker,
@@ -593,7 +597,7 @@ def test_replay_counts_maintenance_margin_breaches(monkeypatch):
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
-        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+        lambda _config: (prices, trades, visible_empty_books(prices), {"prices": 0, "trades": 0, "orderbooks": 0}),
     )
     monkeypatch.setattr(
         replay_market_maker,
@@ -646,7 +650,7 @@ def test_replay_reports_fill_ratio_by_depth_as_ratio(monkeypatch):
     monkeypatch.setattr(
         replay_market_maker,
         "load_symbol_data",
-        lambda _config: (prices, trades, pd.DataFrame(), {"prices": 0, "trades": 0, "orderbooks": 0}),
+        lambda _config: (prices, trades, visible_empty_books(prices), {"prices": 0, "trades": 0, "orderbooks": 0}),
     )
     monkeypatch.setattr(
         replay_market_maker,
@@ -972,8 +976,8 @@ def test_queue_ahead_defaults_to_our_own_level_only():
     q = replay_market_maker.queue_ahead_from_book
     assert q(prices, cum, 0, "ask", 100.0) == 5.0
     assert q(prices, cum, 0, "ask", 101.0) == 7.0
-    assert q(prices, cum, 0, "ask", 102.5) == 11.0
-    assert q(prices, cum, 0, "ask", 99.5) == 0.0
+    assert q(prices, cum, 0, "ask", 102.5) is None
+    assert q(prices, cum, 0, "ask", 99.5) is None
 
 
 def test_cumulative_queue_charges_the_whole_ladder():
@@ -984,7 +988,7 @@ def test_cumulative_queue_charges_the_whole_ladder():
     prices, cum = replay_market_maker.book_depth_arrays(_depth_frame(), "ask")
     q = replay_market_maker.queue_ahead_from_book
     assert q(prices, cum, 0, "ask", 101.0, cumulative=True) == 12.0
-    assert q(prices, cum, 0, "ask", 102.5, cumulative=True) == 23.0
+    assert q(prices, cum, 0, "ask", 102.5, cumulative=True) is None
 
 
 def test_queue_ahead_handles_the_descending_bid_ladder():
@@ -993,7 +997,7 @@ def test_queue_ahead_handles_the_descending_bid_ladder():
     assert q(prices, cum, 0, "bid", 99.0) == 3.0
     assert q(prices, cum, 0, "bid", 98.0) == 4.0
     assert q(prices, cum, 0, "bid", 98.0, cumulative=True) == 7.0
-    assert q(prices, cum, 0, "bid", 99.5) == 0.0
+    assert q(prices, cum, 0, "bid", 99.5) is None
 
 
 def test_cumulative_is_never_smaller_than_own_level():
@@ -1006,10 +1010,13 @@ def test_cumulative_is_never_smaller_than_own_level():
             whole = replay_market_maker.queue_ahead_from_book(
                 prices, cum, 0, side, price, cumulative=True
             )
-            assert 0.0 <= own <= whole
+            if own is None:
+                assert whole is None
+            else:
+                assert 0.0 <= own <= whole
 
 
-def causal_replay(monkeypatch, price_rows, trade_rows, book_rows=(), **overrides):
+def causal_replay(monkeypatch, price_rows, trade_rows, book_rows=((0, 0.0, 0.0),), **overrides):
     start = pd.Timestamp("2026-09-01T00:00:00Z")
     def frame(rows, columns):
         result = pd.DataFrame(rows, columns=["timestamp", *columns])
@@ -1018,7 +1025,7 @@ def causal_replay(monkeypatch, price_rows, trade_rows, book_rows=(), **overrides
     tape = replay_market_maker.ReplayTape(
         prices=frame(price_rows, ["bid", "ask"]),
         trades=frame(trade_rows, ["price", "size", "side"]),
-        orderbooks=frame(book_rows, ["bid_size_0", "ask_size_0"]),
+        orderbooks=frame(book_rows, ["bid_size_0", "ask_size_0"]).assign(bid_price_0=99.0, ask_price_0=101.0),
         input_files={"prices": 0, "trades": 0, "orderbooks": 0},
     )
     observations = []
@@ -1034,6 +1041,27 @@ def causal_replay(monkeypatch, price_rows, trade_rows, book_rows=(), **overrides
     params = {"kappa+": 2.0, "kappa-": 2.0, "lambda+": 0.1, "lambda-": 0.1,
               "epsilon+": 0.0, "epsilon-": 0.0}
     return run_replay(ReplayConfig(**config), params, tape=tape), observations
+
+
+def test_unknown_queue_waits_for_visibility_but_allows_through_prints(monkeypatch):
+    prices = [(0, 99.0, 101.0), (500, 99.0, 101.0)]
+    unknown, _ = causal_replay(monkeypatch, prices, [(150, 99.0, 20.0, "sell")], book_rows=())
+    through, _ = causal_replay(monkeypatch, prices, [(150, 98.0, 2.0, "sell")], book_rows=())
+    visible, _ = causal_replay(monkeypatch, prices,
+        [(150, 99.0, 20.0, "sell"), (200, 99.0, 20.0, "sell"), (250, 99.0, 5.0, "sell")],
+        book_rows=[(200, 3.0, 3.0)])
+    assert unknown.maker_fills == 0
+    assert through.inventory_base == 2.0
+    assert visible.inventory_base == 2.0
+    assert visible.maker_fills == 1
+    assert visible.post_only_rejects == 0
+
+
+def test_exact_zero_queue_is_known_and_missing_neighbor_is_not():
+    prices = np.array([[100.0, 101.0]])
+    cumulative = np.array([[0.0, 5.0]])
+    assert replay_market_maker.queue_ahead_from_book(prices, cumulative, 0, "ask", 100.0) == 0.0
+    assert replay_market_maker.queue_ahead_from_book(prices, cumulative, 0, "ask", 100.5) is None
 
 
 def test_future_print_cannot_change_earlier_inventory_decisions(monkeypatch):

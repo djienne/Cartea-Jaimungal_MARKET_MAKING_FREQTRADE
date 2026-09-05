@@ -166,6 +166,19 @@ impl EventSink {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ReplayInputs {
+    pub variant: Option<String>,
+    pub time_source: crate::parquet_io::TimeSource,
+    pub scored_until_ms: Option<u64>,
+    pub training_start_ms: f64,
+    pub training_end_ms: f64,
+    pub scoring_start_ms: f64,
+    pub scoring_end_ms: f64,
+    pub parameters: crate::hjb::CjParameters,
+    pub vpin_bucket_units: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionReport {
     pub schema_version: u32,
     pub build: crate::BuildInfo,
@@ -176,6 +189,8 @@ pub struct SessionReport {
     pub config_fingerprint: String,
     pub instrument: InstrumentSpec,
     pub calibration: Option<CalibrationSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay: Option<ReplayInputs>,
     pub model: Option<ModelReport>,
     pub account: DryRunAccountState,
     pub execution: DryRunDiagnostics,

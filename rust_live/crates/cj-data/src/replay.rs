@@ -128,6 +128,57 @@ mod tests {
     use super::*;
     use crate::parquet_io::{MidRecord, ShardStats, TimeSource, TradeRecord};
 
+    #[test]
+    fn replay_partition_excludes_cutoff_and_future_observations_from_training() {
+        let mut data = MarketDataSet {
+            symbol: "SYN".to_owned(),
+            time_source: TimeSource::Exchange,
+            mids: [0.0, 499.0, 500.0, 1_000.0]
+                .into_iter()
+                .map(|ts_ms| MidRecord {
+                    ts_ms,
+                    bid: 99.0,
+                    ask: 101.0,
+                    mid: 100.0,
+                })
+                .collect(),
+            trades: [0.0, 499.0, 500.0, 1_000.0]
+                .into_iter()
+                .map(|ts_ms| TradeRecord {
+                    ts_ms,
+                    side: "buy".to_owned(),
+                    price: 101.0,
+                    size: 2.0,
+                    trade_id: None,
+                })
+                .collect(),
+            books: Vec::new(),
+            window_start_ms: 0.0,
+            window_end_ms: 1_000.0,
+            duplicate_trade_ids_dropped: 0,
+            price_shards: ShardStats::default(),
+            trade_shards: ShardStats::default(),
+            orderbook_shards: ShardStats::default(),
+        };
+        let (training, scoring) = data.split_for_replay(0.5).unwrap();
+        assert_eq!(training.mids.len(), 2);
+        assert_eq!(scoring.mids[0].ts_ms, 500.0);
+        for row in &mut data.mids[2..] {
+            row.mid *= 100.0;
+        }
+        for row in &mut data.trades[2..] {
+            row.size *= 1_000.0;
+        }
+        let (unchanged, _) = data.split_for_replay(0.5).unwrap();
+        assert_eq!(training.mids, unchanged.mids);
+        assert_eq!(training.trades, unchanged.trades);
+        for fraction in [0.0, 1.0, -1.0, f64::NAN] {
+            assert!(data.split_for_replay(fraction).is_err());
+        }
+        data.trades.retain(|row| row.ts_ms >= 500.0);
+        assert!(data.split_for_replay(0.5).is_err());
+    }
+
     #[tokio::test]
     async fn identical_dataset_produces_identical_event_sequence() {
         let data = MarketDataSet {
