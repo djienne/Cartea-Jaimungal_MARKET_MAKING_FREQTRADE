@@ -197,6 +197,8 @@ pub struct LiveConfig {
     pub deadman_refresh_ms: u64,
     pub max_maker_fee_rate: f64,
     pub flatten_on_stop: bool,
+    /// Maximum continuously non-flat holding time; zero disables timed exits.
+    pub flatten_after_ms: u64,
     pub emergency_flatten_max_slippage_bps: f64,
     pub max_rest_weight_per_minute: u64,
     pub max_ws_messages_per_minute: u64,
@@ -248,6 +250,7 @@ impl Default for LiveConfig {
             deadman_refresh_ms: 10_000,
             max_maker_fee_rate: 0.0002,
             flatten_on_stop: false,
+            flatten_after_ms: 0,
             emergency_flatten_max_slippage_bps: 250.0,
             max_rest_weight_per_minute: 1_000,
             max_ws_messages_per_minute: 1_600,

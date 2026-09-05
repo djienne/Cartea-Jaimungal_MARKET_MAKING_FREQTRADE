@@ -15,6 +15,42 @@ use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 #[tokio::test]
+async fn a_full_event_queue_does_not_block_disconnect_shutdown() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (start, started) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        acknowledge_subscriptions(&mut socket, false).await;
+        started.await.unwrap();
+        for _ in 0..100 {
+            if socket
+                .send(Message::Text(
+                    r#"{"channel":"openOrders","data":{}}"#.into(),
+                ))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let fixture = Fixture::new(format!("ws://{address}"));
+    fixture.wait_ready().await;
+    start.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fixture.handle.healthy() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.stop().await;
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn websocket_action_response_is_correlated_and_persisted() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

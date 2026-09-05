@@ -291,11 +291,8 @@ pub struct SessionSpawnArgs {
     pub shutdown: watch::Receiver<bool>,
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
-    /// Deadline for one connect attempt. `connect_async` has none of its own,
-    /// so without this a wedged network stack hangs the loop below instead of
-    /// failing it -- see the note in `market.rs`, where that cost 19.65 h. It
-    /// matters most here: this is the socket that carries order actions, and a
-    /// hang leaves resting orders unmanageable rather than merely unobserved.
+    /// Deadline for connection establishment and subscription/heartbeat/close writes.
+    /// Action writes use `LiveConfig::action_timeout_ms` instead.
     pub connect_timeout: Duration,
 }
 
@@ -396,14 +393,15 @@ async fn run_session(
                         }
                         Ok(())
                     });
-                    let _ = args
-                        .events
-                        .send(SessionEvent::Disconnected {
+                    let _ = deliver_event(
+                        &args.events,
+                        &healthy,
+                        SessionEvent::Disconnected {
                             generation,
                             received_ns: args.clock.now_ns(),
                             reason: reason.clone(),
-                        })
-                        .await;
+                        },
+                    );
                     warn!(%error, generation, "Hyperliquid live session interrupted");
                 } else {
                     return;
@@ -498,9 +496,12 @@ where
         &args.instrument.symbol,
     ) {
         rate.consume(false)?;
-        write
-            .send(Message::Text(subscription_request(&subscription).into()))
-            .await?;
+        tokio::time::timeout(
+            args.connect_timeout,
+            write.send(Message::Text(subscription_request(&subscription).into())),
+        )
+        .await
+        .context("live WebSocket subscription write timed out")??;
     }
     deliver_event(
         &args.events,
@@ -692,7 +693,11 @@ where
                             )?;
                         }
                     }
-                    Message::Ping(payload) => write.send(Message::Pong(payload)).await?,
+                    Message::Ping(payload) => {
+                        tokio::time::timeout(args.connect_timeout, write.send(Message::Pong(payload)))
+                            .await
+                            .context("live WebSocket pong write timed out")??;
+                    }
                     Message::Close(frame) => bail!("server closed live WebSocket: {frame:?}"),
                     _ => {}
                 }
@@ -819,7 +824,14 @@ where
                     "id": id,
                     "request": {"type": "action", "payload": envelope},
                 });
-                if let Err(error) = write.send(Message::Text(request.to_string().into())).await {
+                let write_result = tokio::time::timeout(
+                    Duration::from_millis(args.config.action_timeout_ms),
+                    write.send(Message::Text(request.to_string().into())),
+                )
+                .await
+                .context("live WebSocket action write timed out")
+                .and_then(|result| result.map_err(anyhow::Error::from));
+                if let Err(error) = write_result {
                     if let Some(entry) = inflight.entries.remove(&id) {
                         mark_unknown(&args.state, &entry.cloids, &error.to_string())?;
                         let outcome = ActionOutcome::Unknown {
@@ -835,7 +847,7 @@ where
                             let _ = response.send(Ok(outcome));
                         }
                     }
-                    return Err(error.into());
+                    return Err(error);
                 }
                 let written_ns = args.clock.now_ns();
                 args.latency.record(
@@ -861,7 +873,9 @@ where
                 match rate.consume(true) {
                     Ok(()) => {
                         pending_ping_ns = Some(args.clock.now_ns());
-                        write.send(Message::Text(application_ping().into())).await?;
+                        tokio::time::timeout(args.connect_timeout, write.send(Message::Text(application_ping().into())))
+                            .await
+                            .context("live WebSocket ping write timed out")??;
                     }
                     Err(error) => {
                         warn!(%error, "skipping application ping: WebSocket message budget exhausted");
@@ -940,7 +954,7 @@ where
             }
             changed = args.shutdown.changed() => {
                 if changed.is_err() || *args.shutdown.borrow() {
-                    let _ = write.send(Message::Close(None)).await;
+                    let _ = tokio::time::timeout(args.connect_timeout, write.send(Message::Close(None))).await;
                     for (_, entry) in inflight.entries.drain() {
                         mark_unknown(&args.state, &entry.cloids, "session shutdown with action in flight")?;
                         let outcome = ActionOutcome::Unknown {
@@ -1412,6 +1426,179 @@ fn retry_after_ms(sent: Option<&SentWebSocketMessage>, now: tokio::time::Instant
 mod tests {
     use super::*;
     use crate::hyperliquid::live_state::SessionIntent;
+
+    #[tokio::test]
+    async fn stalled_subscription_write_times_out() {
+        assert_stalled_write(false).await;
+    }
+
+    #[tokio::test]
+    async fn stalled_action_write_returns_unknown() {
+        assert_stalled_write(true).await;
+    }
+
+    async fn assert_stalled_write(after_ready: bool) {
+        use crate::config::LatencyConfig;
+        use crate::hyperliquid::signing::{make_cloid, TimeInForce};
+        use crate::types::Side;
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+
+        let directory = tempfile::tempdir().unwrap();
+        let credential_path = directory.path().join("test.env");
+        std::fs::write(
+            &credential_path,
+            "exchange=hyperliquid\nwallet_address=0x1111111111111111111111111111111111111111\nprivate_key=0x0000000000000000000000000000000000000000000000000000000000000001\nis_vault=true\n",
+        )
+        .unwrap();
+        let credentials = Arc::new(HyperliquidCredentials::load(&credential_path).unwrap());
+        let state = Arc::new(
+            LiveStateStore::open(
+                &directory.path().join("state.redb"),
+                "CASHCAT",
+                credentials.account(),
+                &credentials.agent_address(),
+                "config",
+                "meta",
+                SessionIntent::Quote {
+                    venue_is_flat: true,
+                },
+            )
+            .unwrap(),
+        );
+        let (events, mut event_rx) = mpsc::channel(64);
+        let (_shutdown, shutdown) = watch::channel(false);
+        let mut args = SessionSpawnArgs {
+            network: Network::Testnet,
+            ws_url: String::new(),
+            instrument: InstrumentSpec {
+                symbol: "CASHCAT".to_owned(),
+                dex: String::new(),
+                asset_id: 231,
+                sz_decimals: 0,
+                max_price_decimals: 6,
+                max_significant_figures: 5,
+                max_leverage: 3.0,
+                minimum_notional: 10.0,
+                margin_table_id: 3,
+                only_isolated: true,
+                margin_mode: "strictIsolated".to_owned(),
+                is_delisted: false,
+                metadata_fingerprint: "meta".to_owned(),
+            },
+            credentials,
+            state: state.clone(),
+            config: LiveConfig {
+                action_timeout_ms: 50,
+                ..LiveConfig::default()
+            },
+            clock: Arc::new(ProcessClock::default()),
+            latency: Arc::new(LatencyMonitor::new(
+                "CASHCAT",
+                1,
+                &LatencyConfig::default(),
+                false,
+            )),
+            events,
+            shutdown,
+            ping_interval: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(30),
+            connect_timeout: Duration::from_millis(100),
+        };
+        let (client, server) = tokio::io::duplex(if after_ready { 4096 } else { 1 });
+        let socket = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let (commands, mut command_rx) = mpsc::channel(2);
+        let (_priority, mut priority_rx) = mpsc::channel(2);
+        let mut task = tokio::spawn(async move {
+            let mut nonce = DurableNonceManager::new(args.state.clone()).unwrap();
+            let mut rate = WebSocketRateLimiter::new(240, 0.25);
+            run_connected(
+                &mut args,
+                &mut command_rx,
+                &mut priority_rx,
+                &mut nonce,
+                &mut rate,
+                &AtomicBool::new(false),
+                &AtomicBool::new(false),
+                socket,
+                1,
+            )
+            .await
+        });
+        let (response, received) = oneshot::channel();
+        if after_ready {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                for _ in 0..ACCOUNT_SUBSCRIPTION_COUNT {
+                    let Message::Text(text) = server.next().await.unwrap().unwrap() else {
+                        panic!("expected a subscription");
+                    };
+                    let request: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    server
+                        .send(Message::Text(
+                            json!({
+                                "channel": "subscriptionResponse",
+                                "data": request["subscription"],
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+                for channel in REQUIRED_INITIAL_SNAPSHOT_CHANNELS {
+                    server
+                        .send(Message::Text(
+                            json!({"channel": channel, "data": {}}).to_string().into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+                while !matches!(event_rx.recv().await.unwrap(), SessionEvent::Ready { .. }) {}
+            })
+            .await
+            .unwrap();
+            commands
+                .send(SessionCommand {
+                    action: SessionAction::Orders {
+                        quote_seq: 1,
+                        requests: (0..64)
+                            .map(|sequence| LiveOrderRequest {
+                                side: Side::Buy,
+                                px_units: 110_000,
+                                qty_units: 100,
+                                reduce_only: false,
+                                time_in_force: TimeInForce::Alo,
+                                cloid: make_cloid(1, 1, Side::Buy, sequence),
+                            })
+                            .collect(),
+                    },
+                    response: Some(response),
+                    enqueued_ns: 0,
+                })
+                .await
+                .unwrap();
+        }
+        let result = tokio::time::timeout(Duration::from_secs(1), &mut task).await;
+        if result.is_err() {
+            task.abort();
+            let _ = task.await;
+            panic!("stalled WebSocket write never reached its deadline");
+        }
+        let error = result.unwrap().unwrap().unwrap_err();
+        assert!(error.to_string().contains("write timed out"), "{error:#}");
+        if after_ready {
+            assert!(matches!(
+                received.await.unwrap().unwrap(),
+                ActionOutcome::Unknown { .. }
+            ));
+            let persisted = state.load_required().unwrap();
+            assert_eq!(persisted.orders.len(), 64);
+            assert!(persisted
+                .orders
+                .values()
+                .all(|order| order.status == LiveOrderStatus::UnknownOutcome));
+        }
+    }
 
     #[test]
     fn stale_quotes_are_refused_but_safety_commands_are_never_aged_out() {

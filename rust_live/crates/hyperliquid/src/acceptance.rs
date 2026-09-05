@@ -76,7 +76,7 @@ pub async fn run(
                 AcceptancePhase::Verify => verify(&mut backend).await?,
                 AcceptancePhase::Leverage => {
                     backend.ensure_configured_leverage().await?;
-                    serde_json::json!({"isolated_leverage_verified": 2})
+                    serde_json::json!({"isolated_leverage_verified": config.quoting.leverage})
                 }
                 AcceptancePhase::TwoSided => two_sided(&mut backend).await?,
                 AcceptancePhase::CrossingAlo => crossing_alo(&mut backend).await?,

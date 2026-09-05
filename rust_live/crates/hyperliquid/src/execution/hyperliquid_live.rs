@@ -262,6 +262,8 @@ pub struct HyperliquidLiveBackend {
     q_max: i64,
     latency: Arc<LatencyMonitor>,
     last_fill_received_ns: Option<u64>,
+    inventory_flatten_deadline_ms: Option<u64>,
+    next_flatten_attempt_ms: u64,
     allow_untracked_position: bool,
     reconcile_requested: bool,
     /// Exchange-time watermark up to which `account.inventory_units` already
@@ -440,6 +442,8 @@ impl HyperliquidLiveBackend {
             q_max: config.model.q_max,
             latency,
             last_fill_received_ns: None,
+            inventory_flatten_deadline_ms: None,
+            next_flatten_attempt_ms: 0,
             allow_untracked_position,
             reconcile_requested: false,
             // Exchange time, never local: 0 accepts every admitted fill. The
@@ -463,6 +467,7 @@ impl HyperliquidLiveBackend {
             session_readiness: SessionReadiness::Ready,
         };
         backend.initialize_campaign()?;
+        backend.observe_inventory_for_timed_exit(unix_ms());
         Ok(LiveBootstrap {
             backend,
             session_events: event_rx,
@@ -602,6 +607,7 @@ impl HyperliquidLiveBackend {
             "session_healthy": self.session.healthy(),
             "persistence_healthy": self.state.persistence_healthy(),
             "inventory_units": self.account.inventory_units,
+            "inventory_flatten_deadline_ms": self.inventory_flatten_deadline_ms,
             "open_orders": self.account.open_orders.len(),
             "address_requests_used": self.diagnostics.address_requests_used,
             "address_requests_cap": self.diagnostics.address_requests_cap,
@@ -653,8 +659,10 @@ impl HyperliquidLiveBackend {
         }
         let mut quoting = self.quoting.clone();
         quoting.available_capital_usdc = if self.live.mode == LiveMode::AcceptanceTest {
+            // Match execution's minimum target; a separate 2% cushion can
+            // fall below the venue minimum after integer-lot rounding.
             let minimum_sized_capital = self.instrument.minimum_notional
-                * 1.02
+                * self.live.min_order_notional_multiplier
                 * self.quoting.leverage.recip()
                 * self.quoting.target_capital_utilisation.recip()
                 * self.q_max as f64;
@@ -934,15 +942,18 @@ impl HyperliquidLiveBackend {
                         let clearinghouse = parse_clearinghouse_message(data)?;
                         self.account
                             .apply_clearinghouse(&clearinghouse, &self.instrument)?;
+                        self.observe_inventory_for_timed_exit(unix_ms());
                         self.pending_events.push(ExecutionEvent::AccountReconciled {
                             inventory_units: self.account.inventory_units,
                             equity_usdc: self.account.account_value_usdc,
                         });
                     } else {
                         // The stream shape has no exchange timestamp. Once a
-                        // fill established an exchange-time watermark, applying
+                        // fill or REST snapshot established a watermark, applying
                         // an unwatermarked snapshot could roll inventory back.
-                        self.reconcile_requested = true;
+                        // Keep the fill stream authoritative until the regular
+                        // REST reconciliation. Requesting REST for each account
+                        // update exhausts its budget even on an idle account.
                     }
                 }
                 AccountChannel::OpenOrders => {
@@ -1071,6 +1082,32 @@ impl HyperliquidLiveBackend {
 
     pub async fn maintenance(&mut self, now_ms: u64) -> Result<Vec<ExecutionEvent>> {
         self.watch_session_readiness(now_ms);
+        if self.timed_flatten_due(now_ms) && now_ms >= self.next_flatten_attempt_ms {
+            tracing::info!(
+                inventory_units = self.account.inventory_units,
+                "timed inventory close due"
+            );
+            self.deferred_desired = None;
+            // Safety actions bypass the ordinary placement cooldown. Verify
+            // cancellations before closing, so resting quotes cannot reopen us.
+            let result = async {
+                self.cancel_all_bot_orders().await?;
+                self.market_close().await
+            }
+            .await;
+            self.reconcile_requested = true;
+            self.diagnostics.operationally_healthy = false;
+            if let Err(error) = result {
+                self.next_flatten_attempt_ms = unix_ms().saturating_add(RATE_LIMIT_COOLDOWN_MS);
+                self.degrade("timed inventory close failed", &error);
+            }
+            // Publish the safety snapshot immediately; ordinary reconciliation
+            // will recover the close fills, fees and terminal order states.
+            self.pending_events.push(ExecutionEvent::AccountReconciled {
+                inventory_units: self.account.inventory_units,
+                equity_usdc: self.account.account_value_usdc,
+            });
+        }
         if !self.state.persistence_healthy() {
             self.diagnostics.operationally_healthy = false;
             self.diagnostics.invalid_reason =
@@ -1115,6 +1152,23 @@ impl HyperliquidLiveBackend {
             }
         }
         Ok(std::mem::take(&mut self.pending_events))
+    }
+
+    fn observe_inventory_for_timed_exit(&mut self, now_ms: u64) {
+        if self.account.inventory_units == 0 || self.live.flatten_after_ms == 0 {
+            self.inventory_flatten_deadline_ms = None;
+            self.next_flatten_attempt_ms = 0;
+        } else {
+            // Partial reductions, additions and reconciliations do not buy
+            // more holding time. Only an authoritative flat observation resets it.
+            self.inventory_flatten_deadline_ms
+                .get_or_insert_with(|| now_ms.saturating_add(self.live.flatten_after_ms));
+        }
+    }
+
+    fn timed_flatten_due(&self, now_ms: u64) -> bool {
+        self.inventory_flatten_deadline_ms
+            .is_some_and(|deadline| now_ms >= deadline)
     }
 
     /// Name a session that has stayed not-ready past the grace period. The
@@ -1309,6 +1363,12 @@ impl HyperliquidLiveBackend {
                 parse_fixed(&position.position.szi, self.instrument.sz_decimals)
             })?;
         self.account.inventory_units = inventory;
+        // Fills queued while a close awaited REST must not replay an older
+        // startPosition over the confirmed post-close position.
+        self.last_inventory_update_exchange_ms = self
+            .last_inventory_update_exchange_ms
+            .max(clearinghouse.time);
+        self.observe_inventory_for_timed_exit(unix_ms());
         self.account.open_orders = open_orders;
         self.last_reconcile_ms = unix_ms();
         self.startup_reconciliation = StartupReconciliation::Complete;
@@ -1407,6 +1467,7 @@ impl HyperliquidLiveBackend {
             self.last_inventory_update_exchange_ms = ws_watermark_ms.max(snapshot_watermark_ms);
         }
         self.account.realized_pnl_usdc = view.cumulative_realized_pnl_usdc;
+        self.observe_inventory_for_timed_exit(unix_ms());
         self.account.fees_usdc = view.cumulative_fees_usdc;
         self.account.funding_usdc = view.cumulative_funding_usdc;
         // Build recovered orders before entering `update`: it has no rollback,
@@ -1768,6 +1829,7 @@ impl HyperliquidLiveBackend {
             if adjust_inventory && fill.time >= self.last_inventory_update_exchange_ms {
                 self.account.inventory_units = inventory_after_fill(start_units, side, qty_units);
                 self.last_inventory_update_exchange_ms = fill.time;
+                self.observe_inventory_for_timed_exit(unix_ms());
             }
             self.diagnostics.fills += 1;
             if fill.crossed {
@@ -2270,10 +2332,16 @@ fn live_directional_notional_cap(
 
 #[async_trait]
 impl ExecutionBackend for HyperliquidLiveBackend {
-    async fn reconcile(&mut self, desired: DesiredQuotes, now_ms: u64) -> Result<()> {
+    async fn reconcile(&mut self, mut desired: DesiredQuotes, now_ms: u64) -> Result<()> {
+        let timed_exit = self.timed_flatten_due(now_ms);
+        if timed_exit {
+            desired.bid = None;
+            desired.ask = None;
+        }
         let inventory_changed = self.account.inventory_units != self.inventory_at_last_quote_action;
         let replacement_may_wait = desired.reason.replacement_may_wait(inventory_changed);
-        if replacement_may_wait
+        if !timed_exit
+            && replacement_may_wait
             && self.last_quote_action_ms != 0
             && now_ms.saturating_sub(self.last_quote_action_ms) < self.quoting.min_order_lifetime_ms
         {
@@ -2957,6 +3025,8 @@ mod tests {
             q_max: 6,
             latency,
             last_fill_received_ns: None,
+            inventory_flatten_deadline_ms: None,
+            next_flatten_attempt_ms: 0,
             allow_untracked_position: false,
             reconcile_requested: false,
             last_inventory_update_exchange_ms: 0,
@@ -3190,6 +3260,69 @@ mod tests {
             .unwrap();
         assert_eq!(backend.diagnostics.cancels_submitted, 1);
         assert_eq!(backend.diagnostics.orders_submitted, 0);
+    }
+
+    #[test]
+    fn timed_exit_arms_from_live_fills_and_only_flat_resets_it() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        assert_eq!(backend.live.flatten_after_ms, 0);
+        let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
+        apply_ws_fill(&mut backend, &cloid, checkpoint + 1);
+        assert_eq!(backend.inventory_flatten_deadline_ms, None);
+        backend.live.flatten_after_ms = 5_000;
+        let feed = |backend: &mut HyperliquidLiveBackend, tid, start, size, side| {
+            backend
+                .process_session_event(SessionEvent::AccountData {
+                    generation: 1,
+                    received_ns: 100,
+                    channel: AccountChannel::UserFills,
+                    data: serde_json::json!({"isSnapshot": false, "fills": [{
+                        "coin":"CASHCAT", "px":"0.1", "sz":size, "side":side,
+                        "time":checkpoint + tid, "oid":7, "tid":tid, "cloid":cloid,
+                        "startPosition":start, "crossed":false, "fee":"0.001",
+                        "closedPnl":"0", "hash":format!("0x{tid:x}")
+                    }]}),
+                })
+                .unwrap();
+        };
+        feed(&mut backend, 2_u64, "4", "2", "B");
+        let deadline = backend.inventory_flatten_deadline_ms.unwrap();
+        assert!(!backend.timed_flatten_due(deadline - 1));
+        assert!(backend.timed_flatten_due(deadline));
+        feed(&mut backend, 3, "6", "1", "A");
+        assert_eq!(backend.account.inventory_units, 5);
+        assert_eq!(backend.inventory_flatten_deadline_ms, Some(deadline));
+        // An older fill cannot change position or reset the deadline.
+        feed(&mut backend, 2, "1", "1", "A");
+        assert_eq!(backend.inventory_flatten_deadline_ms, Some(deadline));
+        feed(&mut backend, 4, "5", "5", "A");
+        assert_eq!(backend.account.inventory_units, 0);
+        assert_eq!(backend.inventory_flatten_deadline_ms, None);
+        feed(&mut backend, 5, "0", "3", "A");
+        assert_eq!(backend.account.inventory_units, -3);
+        assert!(backend.inventory_flatten_deadline_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn timed_exit_cancels_through_quota_cooldown_and_quote_hold() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        backend.live.flatten_after_ms = 100;
+        backend.account.inventory_units = 4;
+        backend.observe_inventory_for_timed_exit(900);
+        backend.last_quote_action_ms = 999;
+        backend.rate_limited_until_ms = 50_000;
+        backend.next_flatten_attempt_ms = 50_000;
+        backend
+            .reconcile(bid_target(100_000, 200), 1_000)
+            .await
+            .unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
+        assert!(backend.deferred_desired.is_none());
+        assert!(
+            backend.timed_flatten_due(1_001),
+            "retry delay must not permit quoting"
+        );
     }
 
     /// The inventory watermark is exchange time: fills gate on venue
@@ -3765,6 +3898,54 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn unwatermarked_account_updates_do_not_trigger_a_rest_reconcile_storm() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        let now = unix_ms();
+        backend
+            .apply_authoritative_snapshot(flat_snapshot_at(now))
+            .unwrap();
+        let reconciled_at = backend.last_reconcile_ms;
+        backend.reconcile_requested = false;
+
+        let account_update = serde_json::json!({
+            "marginSummary": {
+                "accountValue": "300.0", "totalMarginUsed": "0.0",
+                "totalNtlPos": "0.0"
+            },
+            "assetPositions": [], "withdrawable": "300.0"
+        });
+        for _ in 0..100 {
+            backend
+                .process_session_event(SessionEvent::AccountData {
+                    generation: 1,
+                    received_ns: 100,
+                    channel: AccountChannel::ClearinghouseState,
+                    data: account_update.clone(),
+                })
+                .unwrap();
+            assert!(!backend.reconciliation_requested());
+        }
+
+        apply_ws_fill(&mut backend, &cloid, now + 1);
+        backend
+            .process_session_event(SessionEvent::AccountData {
+                generation: 1,
+                received_ns: 200,
+                channel: AccountChannel::ClearinghouseState,
+                data: account_update,
+            })
+            .unwrap();
+        assert_eq!(backend.account.inventory_units, 4);
+        assert!(!backend.reconciliation_requested());
+
+        backend
+            .maintenance(reconciled_at + backend.live.reconcile_interval_ms)
+            .await
+            .unwrap();
+        assert!(backend.reconciliation_requested());
+    }
+
     fn apply_ws_fill(backend: &mut HyperliquidLiveBackend, cloid: &str, time: u64) {
         let fill = serde_json::json!({
             "isSnapshot": false,
@@ -3927,6 +4108,38 @@ mod tests {
             .unwrap();
         assert_eq!(backend.diagnostics.unknown_outcomes, 1);
         assert!(backend.reconcile_requested);
+    }
+
+    #[test]
+    fn acceptance_calibration_survives_integer_lot_minimum_boundary() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend.quoting.available_capital_usdc = 11.0;
+        backend.quoting.target_capital_utilisation = 0.98;
+        backend.quoting.leverage = 1.0;
+        backend.q_max = 1;
+        backend.live.min_order_notional_multiplier = 1.05;
+        backend.live.max_order_notional_multiplier = 1.10;
+        backend.live.acceptance_max_order_notional_usdc = 11.0;
+        let policy = cj_core::CarteaJaimungalPolicy::new(
+            backend.instrument.clone(),
+            backend.effective_quoting_config().unwrap(),
+            backend.risk.clone(),
+        )
+        .unwrap();
+
+        // The former 10.20 target loses a whole lot as mid crosses 10.20/38,
+        // taking model-unit notional below the venue's 10.00 minimum.
+        for mid in [0.2684, 0.2685, 0.2695, 0.2700] {
+            let unit = policy.derive_inventory_unit(mid, backend.q_max).unwrap();
+            let notional = backend.instrument.size_from_units(unit) * mid;
+            assert!(notional >= backend.instrument.minimum_notional);
+            assert!(notional <= backend.live.acceptance_max_order_notional_usdc);
+            let px = backend.instrument.price_to_units(mid).unwrap();
+            let live_unit = backend.minimum_live_order_quantity(px).unwrap();
+            let live_notional = backend.instrument.size_from_units(live_unit) * mid;
+            assert!(live_notional >= 10.5);
+            assert!(live_notional <= backend.live.acceptance_max_order_notional_usdc);
+        }
     }
 
     #[test]

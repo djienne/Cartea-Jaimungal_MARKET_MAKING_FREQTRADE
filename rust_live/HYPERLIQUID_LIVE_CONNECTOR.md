@@ -1,6 +1,7 @@
 # Hyperliquid live execution connector reference
 
-Research and local-code audit date: **2026-08-21**. Target runtime:
+Protocol research: **2026-08-21**; local transport reliability checks:
+**2026-09-05**. Target runtime:
 `rust_live`, initially validated only for **CASHCAT**.
 
 This is the implementation reference for the pure-Rust real-money Hyperliquid
@@ -8,16 +9,18 @@ connector. The backend is selected only when the tracked default-off TOML flag
 is explicitly enabled. Hyperliquid's API changes over time, so release work must
 recheck the linked official documentation and pinned protocol fixtures.
 
-## Remediation changes (2026-08-23)
+## Operational safeguards
 
-A full-review remediation series (commits `43c4d6b..4dc3db4`) changed connector
-behavior in ways that supersede older statements in this document:
-
-- **Teardown always runs.** `run_live`'s loop errors no longer unwind past the
-  shutdown sequence; cancel-resting-orders, reconcile, and dead-man clearing
-  execute on every exit path, and the release profile unwinds on panic. Event
-  log saturation, enqueue refusals, and refused pings degrade (pause quoting,
-  request reconcile) instead of ending the session.
+- **Loop errors reach teardown.** Ordinary `run_live` loop errors reach the
+  cancellation/reconciliation sequence before being returned. This is not a
+  guarantee of successful cleanup during a venue outage, arbitrary panic, or
+  process kill. Enqueue refusals and refused pings degrade quoting rather than
+  ending the session.
+- **Socket writes have deadlines.** Account subscriptions, ping/pong and close
+  use the existing connection timeout; live action writes use
+  `action_timeout_ms`. A timed-out write remains an unknown outcome requiring
+  reconciliation, not proof of rejection or permission to resubmit. These
+  deadlines run in the async transport, not the quote-computation hot path.
 - **Cancel responses are attributed positionally.** Action state keeps one
   slot per wire order (`None` where untracked), so a venue status array can no
   longer be applied to the wrong order when a cancel raced a fill; mismatched
@@ -45,8 +48,8 @@ behavior in ways that supersede older statements in this document:
   against exchange time only, and the dry-run simulator schedules activation
   and cancellation from `source_exchange_ms`, matching replay.
 - **The session actor never blocks on the strategy loop.** Event delivery is
-  non-blocking (drop-and-degrade on a full channel), removing a mutual-wait
-  with awaited oneshot responses; one malformed account frame is skipped, not
+  non-blocking, including disconnect reporting, so a full event channel cannot
+  prevent reconnect or shutdown. One malformed account frame is skipped, not
   a reason to tear down the socket.
 - **Requote hysteresis.** A resting order within
   `max(replace_threshold_ticks × quantum, replace_threshold_bps)` of the new
@@ -797,6 +800,15 @@ orders while still permitting cancels, logs `rate limit hit; suspending new
 orders`, and enters a 30-second cooldown before retrying. That path was
 exercised live on 2026-08-23: it held the reserve at ~119 rather than draining
 it to zero, leaving room to flatten.
+
+`live.flatten_after_ms` optionally limits continuously non-flat holding time
+(default `0`, disabled), independently of paper `dry_run.flatten_after_ms`.
+Live fills or authoritative positions arm it; partial reductions and additions
+do not reset it. Expiry cancels quotes then uses the bounded reduce-only IOC
+close, including during ordinary placement quota cooldowns. Failures pause
+quoting and retry after 30 seconds; venue acceptance and liquidity determine
+the actual flat time. Successful reconciliation permits another quoting cycle.
+The deadline is session-local and restarts on recovery of an existing position.
 
 Implementation consequences:
 

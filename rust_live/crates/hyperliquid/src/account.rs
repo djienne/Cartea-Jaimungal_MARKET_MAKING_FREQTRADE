@@ -2,7 +2,7 @@ use crate::latency::{LatencyKind, LatencyMonitor};
 use crate::lockfree::AsyncRing;
 use crate::transport::{account_subscriptions, application_ping, subscription_request};
 use crate::types::ProcessClock;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -92,9 +92,7 @@ pub struct AccountStreamArgs {
     pub shutdown: watch::Receiver<bool>,
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
-    /// Deadline for one connect attempt. `connect_async` has none of its own,
-    /// so without this a wedged network stack hangs the loop below instead of
-    /// failing it -- see the note in `market.rs`, where that cost 19.65 h.
+    /// Deadline for connection establishment and subscription/heartbeat/close writes.
     pub connect_timeout: Duration,
 }
 
@@ -167,9 +165,12 @@ where
 {
     let (mut write, mut read) = socket.split();
     for subscription in account_subscriptions(&args.account, &args.dex, &args.symbol) {
-        write
-            .send(Message::Text(subscription_request(&subscription).into()))
-            .await?;
+        tokio::time::timeout(
+            args.connect_timeout,
+            write.send(Message::Text(subscription_request(&subscription).into())),
+        )
+        .await
+        .context("account WebSocket subscription write timed out")??;
     }
     push_event(
         args,
@@ -237,7 +238,9 @@ where
                         }
                     }
                     Message::Ping(payload) => {
-                        write.send(Message::Pong(payload)).await?;
+                        tokio::time::timeout(args.connect_timeout, write.send(Message::Pong(payload)))
+                            .await
+                            .context("account WebSocket pong write timed out")??;
                         args.metrics
                             .protocol_pings_received
                             .fetch_add(1, Ordering::Relaxed);
@@ -248,7 +251,9 @@ where
             }
             _ = ping.tick() => {
                 pending_ping = Some(args.clock.now_ns());
-                write.send(Message::Text(application_ping().into())).await?;
+                tokio::time::timeout(args.connect_timeout, write.send(Message::Text(application_ping().into())))
+                    .await
+                    .context("account WebSocket ping write timed out")??;
                 args.metrics.pings_sent.fetch_add(1, Ordering::Relaxed);
             }
             () = tokio::time::sleep_until(last_inbound + args.idle_timeout) => {
@@ -257,7 +262,7 @@ where
             }
             changed = args.shutdown.changed() => {
                 if changed.is_err() || *args.shutdown.borrow() {
-                    let _ = write.send(Message::Close(None)).await;
+                    let _ = tokio::time::timeout(args.connect_timeout, write.send(Message::Close(None))).await;
                     return Ok(());
                 }
             }
@@ -272,4 +277,38 @@ fn push_event(args: &AccountStreamArgs, event: AccountStreamEvent) -> Result<()>
         bail!("account-event ring saturated");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+
+    #[tokio::test]
+    async fn stalled_account_subscription_write_times_out() {
+        let (client, _server) = tokio::io::duplex(1);
+        let socket = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let (_shutdown, shutdown) = watch::channel(false);
+        let mut args = AccountStreamArgs {
+            ws_url: String::new(),
+            account: "0x1111111111111111111111111111111111111111".to_owned(),
+            dex: String::new(),
+            symbol: "CASHCAT".to_owned(),
+            events: Arc::new(AsyncRing::new(8)),
+            clock: Arc::new(ProcessClock::default()),
+            latency: None,
+            metrics: Arc::new(AccountStreamMetrics::default()),
+            healthy: Arc::new(AtomicBool::new(false)),
+            shutdown,
+            ping_interval: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(30),
+            connect_timeout: Duration::from_millis(50),
+        };
+        let error =
+            tokio::time::timeout(Duration::from_secs(1), run_connected(&mut args, socket, 1))
+                .await
+                .expect("stalled subscription write prevented the deadline")
+                .unwrap_err();
+        assert!(error.to_string().contains("write timed out"), "{error:#}");
+    }
 }
