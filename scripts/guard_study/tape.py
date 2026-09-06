@@ -5,8 +5,9 @@ pandas/pyarrow, reusing the alignment conventions from estimator_common.py
 (prices = one row per side per BBO event; exchange_timestamp is the time
 base, matching the replay guard which runs on exchange time).
 
-Everything here is measurement-side: it sees all 20 book levels and the BBO
-sizes that the Rust replay loader drops.
+Everything here is measurement-side: it sees the per-update BBO sizes from the
+`prices` stream, which the Rust replay loader drops (`MidRecord` carries prices
+only); both see all 20 book levels.
 """
 
 from __future__ import annotations

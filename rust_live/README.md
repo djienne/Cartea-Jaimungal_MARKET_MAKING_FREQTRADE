@@ -3,11 +3,9 @@
 This directory contains the current trader. The Python estimators and replay
 harness provide an independent numerical comparison path;
 `tests/python_parity.rs` pins selected Rust calibration, HJB, and quote outputs
-against it. Both use schema-v5 direct-window calibration semantics: there is no
-EMA or other cross-window smoothing between observed parameters and the HJB,
-and the arrival rate handed to the HJB is the raw per-side market-order rate
-scaled by the survival fit's intercept (v4 fed the raw rate, off by that factor;
-v4 snapshots are refused). `python scripts/parity_fixture.py` regenerates the
+against it. Both use schema-v5 direct-window calibration (no cross-window
+smoothing; lambda = raw MO rate × survival intercept, `../scripts/README.md`);
+v4 snapshots are refused. `python scripts/parity_fixture.py` regenerates the
 parity goldens.
 
 The Rust model is intentionally singular: asymmetric Cartea–Jaimungal arrival
@@ -30,7 +28,9 @@ The Cargo workspace enforces dependency direction:
 ## Safety boundary
 
 - `dry-run` consumes real public Hyperliquid data and simulates orders locally.
-- `replay` consumes the existing symbol-partitioned Parquet history.
+- `replay` consumes the existing symbol-partitioned Parquet history
+  (`--from/--to` select a range, `--latency-ms` overrides the paper latencies;
+  `../docs/DRY_RUN_GRID.md` "Offline comparison").
 - `live` selects the stateful Hyperliquid backend only when `[live].enabled=true`.
   The tracked profile ships disabled and refuses before credentials or network.
 - Production live always enforces latency. `acceptance_test` is the only bypass
@@ -98,23 +98,16 @@ session refuses to inherit is exactly the one flatten exists to clear. The
 stored fingerprint is adopted only once the store is flat, so an interrupted
 flatten still blocks the next quoting session.
 
-A **toxic-flow guard** withdraws quoting when order flow turns against us: a
-fast mid-move breaker (≥8% in 5 s) plus VPIN, with re-entry requiring both a
-cooldown and VPIN clearing. On a frozen replay of the 2026-08-22 liquidation
-cascade it cut the loss 74% (−87.95 → −23.13, re-baselined) and bounded ending
-inventory, while being bit-identical on a calm control window. See
-[`../docs/TOXIC_FLOW_GUARD.md`](../docs/TOXIC_FLOW_GUARD.md); four candidate
-extensions were studied and rejected or deferred in
-[`../docs/FLOW_GUARD_CANDIDATES.md`](../docs/FLOW_GUARD_CANDIDATES.md).
+A **toxic-flow guard** (fast mid-move breaker ≥8% in 5 s plus VPIN; re-entry
+needs both a cooldown and VPIN clearing) withdraws quoting. Evidence:
+[`../docs/TOXIC_FLOW_GUARD.md`](../docs/TOXIC_FLOW_GUARD.md); rejected
+extensions: [`../docs/FLOW_GUARD_CANDIDATES.md`](../docs/FLOW_GUARD_CANDIDATES.md).
 
-`dry-run-grid` runs several parameter sets against **one** shared market feed
-and ranks promotable rows by executable-side, fee-adjusted flatten P&L. One
-WebSocket regardless of variant count,
-because the venue allows ten per IP and that budget is shared with the
-collectors and any live session; it never records Parquet and never touches
-credentials. It runs as a container (`docker compose up -d` at the repo root)
-and **resumes** its run across a restart, so a reboot costs a gap rather than
-the measurement. See [`../docs/DRY_RUN_GRID.md`](../docs/DRY_RUN_GRID.md).
+`dry-run-grid` runs several parameter sets against one shared market feed and
+ranks promotable rows by executable-side, fee-adjusted flatten P&L. It runs as a
+container (`docker compose up -d` at the repo root); one socket, no Parquet, no
+credentials, resumes across restarts — see
+[`../docs/DRY_RUN_GRID.md`](../docs/DRY_RUN_GRID.md).
 
 Market data is **not** produced by this binary. The reference recorder is the
 `hl-cashcat-collector` Docker container, and `storage.data_dir`
@@ -179,8 +172,9 @@ The central `[latency]` configuration enables the production gate and sets
 its default maximum acceptable rolling p95 to 150 ms. Monitoring always runs,
 but enforcement is bypassed for validation, API/WebSocket probes, replay,
 dry-run, and the feature-gated acceptance runner. Production `live` always
-enables enforcement and requires 20 fresh samples from both sockets plus three
-healthy observer windows before reopening. Warm-up, stale/dropped samples,
+enables enforcement and requires 20 fresh dispatch samples and 10 fresh ping
+samples from each socket (`minimum_samples` / `minimum_network_samples`) plus
+three healthy observer windows before reopening. Warm-up, stale/dropped samples,
 observer failures, or a breached rolling p95 withdraw both quotes with reason
 `latency_limit`. Dropped-sample and observer-error blocks apply to the
 evaluation window they occurred in — the gate judges deltas, not lifetime
@@ -213,6 +207,10 @@ cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
 
 cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml replay
+#   --from <RFC 3339 | epoch ms>   start of the tape range (requires --to)
+#   --to   <RFC 3339 | epoch ms>   end of the tape range
+#   --latency-ms <ms>              decision/ack/cancel latency override
+#   (see ../docs/DRY_RUN_GRID.md "Offline comparison")
 
 cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
   --config rust_live/config/cashcat.toml dry-run --no-write-parquet
@@ -271,17 +269,11 @@ must be exactly equal.
 
 ## Important units
 
-- price and HJB depth: USDC per base asset;
-- kappa: `1 / USDC`;
-- lambda: market orders per second per side, times that side's survival-fit
-  intercept `A` (schema v5), so `lambda * exp(-kappa * depth)` is the measured
-  fill intensity; the unscaled rate is `diagnostics.*.lambda_raw`;
-- epsilon: USDC per base asset;
-- sigma squared: `USDC^2 / second`;
-- inventory `q`: physical base position divided by the flat-state inventory
-  unit.
+See [`../docs/UNITS.md`](../docs/UNITS.md).
 
-The CASHCAT profile dynamically verifies venue metadata. The tracked validation
-fixture expects integer base sizes, up to six price decimals, five significant
-figures, and at most 3x venue leverage; startup refuses if live metadata no
-longer matches the validated constraints.
+The CASHCAT profile dynamically verifies venue metadata. The tracked
+`[instrument]` profile expects integer base sizes and five significant figures;
+price decimals (`6 - szDecimals`) and maximum leverage come from venue metadata
+at startup, and `validate` refuses if live metadata no longer matches the
+profile or `quoting.leverage` exceeds the venue maximum.
+`cashcat.validation.json` records only the parity tolerances and gate.

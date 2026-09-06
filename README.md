@@ -32,9 +32,9 @@ calibration toolchain. **Works ONLY for Hyperliquid.**
 This is a research implementation of the Cartea–Jaimungal model, **not a
 strategy with demonstrated production profitability**.
 
-The `causal-v2` study uses 457.43 hours of CASHCAT data, 81 calibration fits
+The `causal-v3` study uses 469.19 hours of CASHCAT data, 81 calibration fits
 and 324 staged risk trials. All three train-selected finalists lose on the
-137.23-hour scored suffix; the leader loses in all five latency/cadence scenarios.
+140.76-hour scored suffix; the leader loses in all five latency/cadence scenarios.
 Some fixed controls are positive, but carry residual inventory or depend on
 exit timing that this host has not demonstrated. The period is reused research
 data, not an untouched holdout. See `docs/CAUSAL_EXECUTION_REVIEW.md` for the
@@ -90,13 +90,10 @@ cargo run --locked --release -- --config config/cashcat_dryrun_realistic.toml dr
     --grid config/grid_cashcat.toml --duration-seconds 0 --out-dir reports/grid_live
 ```
 
-The grid opens **one** socket regardless of variant count — the venue allows ten
-per IP and that budget is shared with the collectors. It never writes Parquet and
-never touches credentials. It checkpoints every stats tick and **resumes** on
-restart, so a reboot costs a gap rather than the run; past
-`--max-carry-inventory-gap-seconds` (900) every position is closed at its last
-observed mark rather than marked across a price move nobody saw, and past
-`--max-resume-gap-seconds` (3600) the grid starts fresh. Real money is a single explicit config
+The grid opens one socket regardless of variant count, never writes Parquet or
+reads credentials, and resumes across restarts; past the carry/resume windows
+positions are closed at the last mark or the run starts fresh
+(`docs/DRY_RUN_GRID.md`). Real money is a single explicit config
 (`config/cashcat.toml` with `live.enabled = true`), never a grid;
 `rust_live/tests/cli_safety.rs` asserts grid mode cannot reach the live backend
 even when handed a live-enabled config.
@@ -200,28 +197,13 @@ Where:
 3. **Backward Euler**: For asymmetric κ (κ+ ≠ κ-), solve the nonlinear HJB on a (t,q) grid via implicit backward-Euler.
 4. **Boundary condition**: `h(T,q) = -α q²` (terminal penalty)
 
-**Reading the control back out.** The solution is `δ*(t,q)`, a *surface*, and
-both coordinates are read as such:
-
-- **Time.** The Rust solver keeps every backward step, and each quote uses the
-  episode's actual time-to-go. A perpetual instrument has no terminal time, so
-  episodes run for `T` and restart at the horizon or once inventory is genuinely
-  flat. Python names this `hjb_time_mode = "episodic"`; its `"stationary"` option
-  is retained only for comparisons and reads `t=0`, making `α` nearly inert.
-  - **Departure:** the book liquidates the residual at `T` at market and pays
-    `α q²`. Every quote here is post-only by construction, so the terminal
-    condition acts through the depths alone — it cannot force a taker unwind.
-  - At our calibration the terminal effect runs opposite to the naive
-    "flatten harder near T" picture: the shipped `φκT = 300` against `ακ = 0.05`, so the running penalty
-    — which is what remains to be paid over the time left, hence largest at `t=0`
-    and gone at `T` — dominates, and the agent unwinds hardest at the *start* of
-    an episode. This matches the book's running-penalty-dominated example; see
-    `docs/UNITS.md`.
-- **Inventory.** Eq. 10.2 makes `q` a unit-jump count, so `h` exists only at
-  integer `q` — but partial fills land in between. Depths are blended linearly
-  between the bracketing integers (exact at every integer). Quote diagnostics
-  record `q_exact` and `q_rounded`; Python replay also reports the residual
-  summary so fractional risk is visible rather than rounded away.
+**Reading the control back out.** The solution `δ*(t,q)` is a surface: the Rust
+solver keeps every backward step and each quote reads the episode's real
+time-to-go (episodes run for `T` and restart at the horizon or once flat);
+depths are blended linearly between integer `q` for partial fills; and at the
+shipped `φκT = 300` against `ακ = 0.05` the running penalty dominates, so the
+agent unwinds hardest at the *start* of an episode. Details and the departures
+from the book: `docs/UNITS.md`.
 
 ### Parameter Estimation and Calibration
 

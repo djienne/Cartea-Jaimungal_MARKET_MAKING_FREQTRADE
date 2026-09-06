@@ -23,31 +23,14 @@ mm-live --config config/cashcat_dryrun_realistic.toml dry-run
 mm-live --config config/cashcat.toml live          # real money, explicit, gated
 ```
 
-The second service in that file is **`mm-archiver`**. The CASHCAT collector keeps
-30 days and deletes the rest, so a replay window is destroyed on a clock: once a
-period rolls off, no sweep can ever score it again. Every 21 days the archiver
-attempts a full-search sweep and writes it with the grid's P&L curve under
-`docs/history/<date>_<SYMBOL>/`. The 9-day margin is retry time, not a guarantee:
-after `sweep_FAILED.log`, rerun with `--force` before the oldest shards expire.
+The second service in that file is **`mm-archiver`**: every 21 days it writes a
+full sweep plus the grid's P&L curve under `docs/history/<date>_<SYMBOL>/`, and
+**does not commit** — `docs/history/README.md` has the why, the failure handling
+and the manual `git add docs/history` step.
 
-It **writes but does not commit** — that would need an SSH key in a container —
-and logs an uncommitted-history reminder on every wake. Confirm the exact paths
-with `git status`, then run `git add docs/history && git commit && git push`.
-
-Two things it gets right on purpose, both learned here the hard way: due-ness
-comes from the newest directory on disk rather than a sleep timer (a timer
-restarts its countdown on every reboot and could never fire), and symbols are
-selected by tape length > 7 days rather than a hardcoded list, which separates
-the 30-day collector from the 3-day one without reading another project's
-compose file.
-
-Why it is containerized: on 2026-08-27 a Windows-update reboot at 13:47 killed
-the bare-process grid and it stayed down, unnoticed, for 66 h. `restart:
-unless-stopped` brings it back when Docker starts (Docker Desktop must be set to
-start on login), `stop_signal: SIGINT` reaches the teardown path, and the
-`HEALTHCHECK` plus the existing `autoheal` container catch the case
-`restart:` cannot see — a process that is alive but blind. It is registered in
-`../folder_list.txt` so `start_all.bat` brings it up with the rest of the fleet.
+Containerised after the 2026-08-27 reboot loss (66 h unnoticed); the compose
+header explains the three mechanisms (`restart`, `stop_signal`, healthcheck +
+autoheal). Registered in `../folder_list.txt` so `start_all.bat` brings it up.
 
 **A restart continues the run, it does not start a new one.** The grid
 checkpoints every configured variant to `<out-dir>/grid_state.json` every stats
@@ -61,14 +44,9 @@ Three things bound that, and they are the point rather than an afterthought:
   `max_feed_downtime_fraction` budget measures blindness *while quoting* (stale
   resting orders, fills never seen), and a stopped process has none of that. It
   lives in `resumed_downtime_ms` instead, is subtracted from the budget's
-  denominator, and the rendered table prints `[RESUMED]`. Two windows bound the
-  resume (2026-09-04): inside `--max-carry-inventory-gap-seconds` (900)
-  inventory carries; between that and `--max-resume-gap-seconds` (3600) the run
-  resumes but every position is closed at its checkpoint mark first.
-- **Beyond `--max-resume-gap-seconds` (default 3600) it starts fresh instead.**
-  Resuming with a position intact means marking it at a price whose path was
-  never observed; that is the mechanism that made the 46.4 h run report a 13.2%
-  rally as profit, and the carry window above is what now guards it.
+  denominator, and the rendered table prints `[RESUMED]`.
+- **The carry (900 s) and resume (3600 s) windows**, and why they exist:
+  `docs/DRY_RUN_GRID.md` "Checkpoint recovery".
 - **An edited grid spec starts fresh.** The checkpoint carries a fingerprint of
   every variant's config, and resume is all-or-nothing — a partially-resumed
   grid would have rows that are not comparable, which is the one thing the grid
@@ -81,12 +59,6 @@ not the CWD. So configs at `/opt/mm/config` require the tape at
 "no usable price data under ...". The grid calibrates from that tape at startup,
 so the mount is required, not optional.
 
-The grid opens **one** WebSocket no matter how many variants it runs. That is
-deliberate: Hyperliquid allows ten per IP and the budget is shared with the
-collectors and any live session. Bridge networking NATs through the host, so
-containerizing does not change that count. The grid never writes Parquet and
-never reads credentials.
-
 ## Collectors — separate, and must stay that way
 
 Not operated from this repo. `hl-cashcat-collector` (CASHCAT alone, 30-day
@@ -94,43 +66,24 @@ retention) and `hl-collector` (ETH, ACE, CHIP, PENGU, NIL, 3 days) live in
 `HYPERLIQUID_DATA/docker-compose.yml` and write to the shared `./data/eth_mm`
 tree, reachable here as the `scripts/HL_data` junction.
 
-**Their `SYMBOLS` lists must stay disjoint** or every trade lands on disk twice:
-`estimator_common._load_parquet_dir()` concatenates every `*.parquet` in a
-directory blindly. On 2026-08-16 two collectors shared `scripts/HL_data` and
-doubled `n_trades` and λ± (2104 rows / 1055 unique trade_ids).
+**Their `SYMBOLS` lists must stay disjoint** or every trade lands on disk twice
+(2026-08-16). Trade-id dedup now protects calibration, and the expected
+replay-backfill drop rate is in `docs/DATA_COLLECTION.md`.
 
-That specific consequence is now corrected downstream, not upstream:
-`normalize_trades()` drops repeated `trade_id`s and reports the count as
-`MarketWindow.meta["duplicate_trade_ids_dropped"]`, and `cj-data` does the same
-in Rust. So the rule still holds — it wastes disk and the non-trade streams
-rely on collapsing by `ts_ms` — but a duplicate no longer silently biases a
-calibration.
+**`scripts/` is their Docker build context** (`hyperliquid_data_collector.py`,
+`run_collector.py`, `Dockerfile` — do not move or rename them). After touching
+it rebuild both collectors: `scripts/README.md` "Updating".
 
-Expect a *small* non-zero drop count as normal: the venue replays trades after
-each reconnect and the collector has no suppression for it, so it appends the
-same trade with a new receive timestamp. Measured 2026-08-25 over 211 h:
-**1,123 of 752,532 rows, 0.149%**, all identical in price, size, side and
-exchange timestamp. A drop count near that scale is backfill; a drop count near
-half the rows is two collectors.
-
-**`scripts/` is their Docker build context.** `HYPERLIQUID_DATA/docker-compose.yml`
-builds both with `context: ../Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/scripts`,
-`dockerfile: Dockerfile`, and the image copies exactly `hyperliquid_data_collector.py`
-and `run_collector.py`. Do not move or rename those three paths. The failure is
-silent — running containers keep going and only break at the next rebuild — so
-after touching `scripts/`, run
-`docker compose -f ../HYPERLIQUID_DATA/docker-compose.yml build hl-cashcat-collector`.
-
-Collector websocket gotcha (fixed 2026-08-19, 945648e): Hyperliquid expires a
-websocket session about every 3 hours and sends a close frame; the SDK logs it,
-its manager thread exits, and nothing in the SDK reconnects. Recovery used to be
-the time-based `_watchdog_inactivity`, so every routine expiry cost a full
-`INACTIVITY_TIMEOUT_SEC` (180 s) of missing data — over 60.3 h of CASHCAT that
-was 20 gaps of 3.1–3.5 min on a clockwork ~3 h cadence, 71% of all missing data.
-`_websocket_is_down()` now reads the SDK's own state and the watchdog acts within
-~10 s.
+Collector websocket expiry (a ~3 h close frame the SDK never recovers from) was
+fixed 2026-08-19 (945648e): `scripts/README.md` "Websocket expiry".
 
 ## Gotchas that bite
+
+**Docker Desktop must run on the WSL 2 engine.** The 4.89 upgrade (2026-09-05)
+silently switched the backend to Docker VMM, whose virtiofs sharing wedged under
+the fleet's load: every bind mount stalled and `docker stop`/`exec` hung. Fix:
+`settings-store.json` `UseLibkrun=false`, `WslEngineEnabled=true`, then
+`docker desktop restart`. Keep bind mounts, never named volumes for reports.
 
 **Rebuilding while the grid runs used to fail** with `Access is denied. (os
 error 5)`, because the running `mm-live.exe` held the binary. Containerizing
@@ -175,10 +128,10 @@ further ~30 on each reconnect. `replayed_trades_ignored` rising while
 `feed_gaps` stays flat is the system working.
 
 **Disk is now bounded, and the bound is on the event logs.** A pre-ALO 46.4 h
-run measured 0.31 MB/h per variant compressed, about 4.5 GB/month for the
-current 20-row spec; the rate varies with event mix. `--log-max-mb` (64) and
-`--log-keep` (3) cap each variant at 256 MB, so the current ceiling is **5.1 GB
-total** (~34 days at that measured rate). A
+run measured 0.31 MB/h per variant compressed, about 5 GB/month for the
+current 22-row spec; the rate varies with event mix. `--log-max-mb` (64) and
+`--log-keep` (3) cap each variant at 256 MB, so the current ceiling is **about
+5.5 GiB total** (~34 days at that measured rate). A
 rotation logs what it deleted; it never drops a generation silently.
 
 **The checkpoint does not grow with run duration.** `grid_state.json` and its

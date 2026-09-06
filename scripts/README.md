@@ -83,11 +83,9 @@ other three Hyperliquid collectors, and are operated from there:
   (3 days), as controls and candidates.
 
 **The two `SYMBOLS` lists must never overlap.** Both write into the same
-`./data/eth_mm` directory. On 2026-08-16 two collectors were run over the same
-symbol into one directory: each wrote its own shards under its own names, nothing
-collided or errored, and every trade simply landed on disk twice — the estimators
-read the directory, not the writer, so `n_trades` and λ± silently doubled. If you
-add a symbol to one list, remove it from the other in the same edit.
+`./data/eth_mm` directory and the estimators read the directory, not the writer
+(2026-08-16: every trade landed twice). If you add a symbol to one list, remove
+it from the other in the same edit. See `docs/DATA_COLLECTION.md`.
 
 ### Quick start
 

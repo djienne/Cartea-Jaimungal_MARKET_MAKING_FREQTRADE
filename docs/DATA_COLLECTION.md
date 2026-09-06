@@ -23,6 +23,20 @@ prevents repeated public trades from silently doubling λ, but overlap still
 wastes disk and leaves non-trade streams dependent on timestamp collapsing.
 CASHCAT lives only in `hl-cashcat-collector`.
 
+The 2026-08-16 incident: two collectors shared `scripts/HL_data` and doubled
+`n_trades` and λ± (2104 rows / 1055 unique trade_ids), because
+`estimator_common._load_parquet_dir()` concatenates every `*.parquet` blindly.
+`normalize_trades()` now drops repeated `trade_id`s and reports the count as
+`MarketWindow.meta["duplicate_trade_ids_dropped"]`; `cj-data` does the same in
+Rust.
+
+Expect a *small* non-zero drop count as normal: the venue replays trades after
+each reconnect and the collector has no suppression for it, so it appends the
+same trade with a new receive timestamp. Measured 2026-08-25 over 211 h:
+**1,123 of 752,532 rows, 0.149%**, all identical in price, size, side and
+exchange timestamp. A drop count near that scale is backfill; a drop count near
+half the rows is two collectors.
+
 ## The data is on the host, not inside the container
 
 The mount is a **bind mount**, so the tape is ordinary Windows files:
@@ -57,16 +71,18 @@ not restart the proven collectors.
 - Its own compose project (`hyperliquid_data`) and its own network
   (`hyperliquid_data_default`).
 - **No `depends_on`** and no link to the trading runtime. The root compose file
-  runs only the read-only dry-run grid; live/account commands are started
-  explicitly. Neither is part of the collector compose project.
+  runs only the read-only dry-run grid and the offline period archiver
+  (`network_mode: none`); live/account commands are started explicitly. None
+  is part of the collector compose project.
 - `live` and `dry-run-grid` never write Parquet. `dry-run` can be configured as a
   recorder, but the writer lock and shard preflight prevent it from joining an
   active collector — see the next section.
 
 ## A live bot cannot disturb collection, by code
 
-`storage.write_parquet` is read in exactly one place: `run_public_dry_run` in
-`rust_live/src/main.rs`. The `live` command never constructs a
+`storage.write_parquet` selects a recorder in exactly one place:
+`run_public_dry_run` in `rust_live/src/main.rs` (config validation also reads
+it, only to scope the retention check). The `live` command never constructs a
 `ParquetRecorderHandle` and never takes the writer lock, so **starting or
 stopping a live session has no effect on collection at all**.
 
@@ -97,7 +113,8 @@ python HYPERLIQUID_DATA/inventory.py     # what is collected, and is it fresh
 ```
 
 Healthy logs report a rolling BBO count and periodic
-`Flushed buffers for 3 data types across symbols`.
+`Flushed buffers for N data types across symbols` (N is the non-empty buffer
+count, normally 4 since `asset_ctx` was added).
 
 ## Watchdog
 

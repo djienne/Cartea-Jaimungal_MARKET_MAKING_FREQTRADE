@@ -11,7 +11,8 @@ with a fresh full sweep and the grid's P&L curve for the period. A successful
 cycle has 9 days of slack against 30-day retention, so an interrupted attempt can
 be retried within that margin. A failure is not harmless indefinitely; inspect
 `sweep_FAILED.log` and rerun with `--force` before the oldest unarchived shards
-expire.
+expire. Due-ness is read from the newest directory on disk, not a sleep timer,
+so a reboot cannot reset the countdown.
 
 These files are committed. That is the point: they are the only durable record
 of a window whose raw data is gone.

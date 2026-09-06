@@ -88,4 +88,6 @@ causal benefit from latency alone.
   more efficient, at the cost of the worst 30s markout in the earlier sweep.
 - Draw no latency conclusion until latency is varied independently on several
   representative frozen windows with adequate fills. The collector's 30-day
-  retention makes that experiment possible (`DATA_COLLECTION.md`).
+  retention makes that experiment possible (`DATA_COLLECTION.md`);
+  `scripts/replay_latency.py` now runs exactly that experiment (`--from/--to`,
+  `--latency 0 50 150 300`).

@@ -1,9 +1,11 @@
 # Dry-run grid
 
-The grid compares 22 independent paper accounts on one public market feed.
-It does not construct a live backend, read trading credentials, open an account
-socket or write collector Parquet. It is not a latency benchmark or permission
-to trade. Scientific results and limitations are in `CAUSAL_EXECUTION_REVIEW.md`;
+The grid compares 22 independent paper accounts on one public market feed,
+over **one** WebSocket regardless of variant count (the venue allows ten per
+IP and that budget is shared with the collectors and any live session). It does
+not construct a live backend, read trading credentials, open an account socket
+or write collector Parquet. It is not a latency benchmark or permission to
+trade. Scientific results and limitations are in `CAUSAL_EXECUTION_REVIEW.md`;
 this guide describes operation, not a history of parameter changes.
 
 ## Run and inspect
@@ -39,14 +41,17 @@ python scripts/grid_pnl_curve.py
 The same Rust paper step can score one existing grid row:
 
 ```sh
-mm-live --config path/to/replay.toml replay --train-fraction 0.25 \
-  --grid rust_live/config/grid_cashcat.toml --variant sweep1 --report sweep1.json
+mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
+  --grid rust_live/config/grid_cashcat.toml --variant sweep1 \
+  --from 2026-08-30T14:24:06Z --to 2026-09-05T11:09:28Z \
+  --train-fraction 0.25 --latency-ms 150 --report sweep1.json
 ```
 
-Set the replay config's `storage.data_dir` to a frozen tape and
-`calibration.window_minutes = 480` for two training hours and six scored hours,
-with `storage.retention_minutes` at least 510 to satisfy config validation.
-Use separate report paths for `sweep1`, `sweep2` and `sweep3`. Calibration (unless
+`--from/--to` select the tape range (RFC 3339 or epoch ms); without them the
+config's `calibration.window_minutes` ending at the newest shard is replayed.
+`--latency-ms` overrides all three dry-run latencies. `scripts/replay_latency.py`
+wraps this for latency ladders and the `--against-live` fidelity check (see
+"Queue model" below). Use separate report paths per variant. Calibration (unless
 a saved profile is selected), VPIN volume scale and order sizing use only the
 training prefix; replay neither loads nor updates the calibration cache. Scoring
 starts flat with cold flow guards and no orders, and stops on terminal risk
@@ -202,10 +207,14 @@ leaderboard's `quote_pause_reason` identifies a current data pause.
 On Windows, Docker Desktop must start at sign-in and its Windows Startup entry
 must be enabled. The paper container's `restart: unless-stopped` policy recovers
 process exits and daemon restarts; a deliberate stop remains stopped.
-**Docker Desktop recovery requires Windows sign-in**: a reboot left at the login
-screen is not an unattended trading host.
-Do not enable automatic login or disable Windows updates as a workaround; use an
-always-on host if recovery before login is required.
+The host uses automatic sign-in so Docker Desktop starts unattended (verified: a
+reboot cost 127 s). A host without it is not an unattended trading host.
+
+Docker Desktop must run on the WSL 2 engine. The 4.89 upgrade (2026-09-05)
+silently switched the backend to Docker VMM, whose virtiofs sharing wedged under
+the fleet's load: every bind mount stalled and `docker stop`/`exec` hung. Fix:
+`settings-store.json` `UseLibkrun=false`, `WslEngineEnabled=true`, then
+`docker desktop restart`. Keep bind mounts, never named volumes for reports.
 
 ### Checkpoint recovery
 
@@ -228,7 +237,10 @@ is silently converted into a resumable clean account.
 
 `--max-carry-inventory-gap-seconds` and `--max-resume-gap-seconds` control
 these limits. Zero resume window disables resume; zero carry window closes
-inventory on any resume. Terminal invalid accounts remain frozen.
+inventory on any resume. Terminal invalid accounts remain frozen. The carry
+window exists because resuming with a position intact marks it at a price whose
+path was never observed: that mechanism let a 46.4 h run report a 13.2% rally
+as profit (2026-08-27).
 
 A gap close updates cash, realized P&L, fees and daily risk together, reducing
 equity by spread/exit costs relative to the checkpoint mark. It is a conservative
@@ -269,13 +281,8 @@ for the recorded equity history. `equity_history.csv` is not rotated.
 
 ## The period archive — what outlives the tape
 
-`scripts/archive_period.py` checks hourly and attempts a full-search archive
-every 21 days in `mm-archiver`, ahead of the collector's 30-day CASHCAT retention.
-It writes scores, leaderboard and period P&L artifacts under `docs/history/`,
-not raw market data, and does not commit them. Sweep windows can overlap;
-archived grid curves preserve run boundaries.
-
-Inspect `sweep_FAILED.log` and rerun with `--force` before source data expires.
-A completed summary does not make deleted raw tape reproducible. Review the
-specific generated paths before manually staging an archive. Collector ownership
-and data validation are documented in `DATA_COLLECTION.md`.
+`scripts/archive_period.py` (`mm-archiver`) writes a full sweep, leaderboard and
+period P&L under `docs/history/` every 21 days, ahead of the collector's 30-day
+retention, and does not commit. Cadence, layout, failure handling and the manual
+commit step: `history/README.md`. Collector ownership and data validation:
+`DATA_COLLECTION.md`.

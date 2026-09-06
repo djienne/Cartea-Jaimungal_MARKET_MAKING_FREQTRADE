@@ -23,8 +23,10 @@ scripts\Manage-CashcatLive.ps1 -Action Promote
 
 The selector takes the valid, live-equivalent row with the highest
 `promotion_pnl_usdc` and requires that value to be positive; otherwise live
-remains disabled. Dry-run-only taker-flatten variants are excluded because the
-live backend has no equivalent exit policy. A successful selection writes
+remains disabled. Rows with `flatten_after_ms > 0` or a fixed
+`parameter_profile` are excluded: promote-best does not translate a paper
+lot-age exit into `live.flatten_after_ms`, and a frozen fit is not a live
+calibration. A successful selection writes
 `rust_live/run/cashcat-active-live.toml` and `cashcat-promotion.json` atomically.
 
 Live orders are the first valid lot between 1.05 and 1.10 times the current
@@ -32,10 +34,10 @@ CASHCAT minimum notional. Directional exposure is one such order, working gross
 is two, and the daily realised-loss stop is 1 USDC. Quote calculations continue
 normally, but the executor coalesces intermediate targets and paces placements
 from the venue-reported address allowance while preserving 100 placement
-actions plus ten scheduled safety actions. Because this account currently has
-very little placement allowance, the venue dead-man uses an eight-hour deadline
-refreshed every six hours; the one-minute host watchdog is the primary fast
-recovery path. Cancels have separate accounting and are never blocked by the
+actions plus ten scheduled safety actions. The venue dead-man runs an 8 h
+deadline refreshed every 6 h for budget reasons
+(`rust_live/HYPERLIQUID_LIVE_CONNECTOR.md` §7.5); the one-minute host watchdog
+is the primary fast recovery path. Cancels have separate accounting and are never blocked by the
 ordinary placement throttle.
 
 `Canary` runs the selected production pathway for 7,200 seconds and always runs

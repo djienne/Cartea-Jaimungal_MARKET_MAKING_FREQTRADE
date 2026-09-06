@@ -24,7 +24,7 @@ on/off flow guard. Alpha*kappa stays at 0.05. No price-event cap or shortened
 training tape is used. This is the complete configured staged sweep, not an
 exhaustive crossing of every calibration with every risk setting.
 
-Python causal-v2 uses 1,000 USDC initial equity, 2,092 base units/order, leverage
+Python causal-v3 uses 1,000 USDC initial equity, 2,092 base units/order, leverage
 one, 1.5/4.5 bps maker/taker fees and the search scenario's 100 ms activation and
 250 ms refresh. It is a shortlisting experiment, not the paper execution model.
 

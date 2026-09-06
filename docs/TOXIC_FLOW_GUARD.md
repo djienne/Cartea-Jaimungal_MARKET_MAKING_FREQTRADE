@@ -105,7 +105,8 @@ that price, and the simulator of the time had no cancel attribution (time
 decay was forbidden; the current model is in `DRY_RUN_GRID.md`, "Queue
 model"), so with one level a maker quote resting
 inside the book could never fill at all; the original A/B filled only because it
-ran with a decay of 0.05, which the validator has since refused. Fill counts
+ran with a decay of 0.05, which the config no longer accepts (the key was
+removed; see `DRY_RUN_GRID.md` "Queue model"). Fill counts
 therefore drop sharply and are not comparable with the table further down.
 
 | 16 h window, current simulator | guard off | guard on | guard on + reduce-only |

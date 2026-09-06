@@ -1,46 +1,12 @@
 //! Toxic-flow guard: withdraw quoting when order flow turns against us.
 //!
-//! # What this is for
+//! Two tiers, because they fail differently: a fast mid-move breaker (adverse
+//! move within a few seconds) bounds the damage, and VPIN identifies the toxic
+//! regime so quoting stays out of the aftermath. Re-entry needs both the
+//! cooldown and VPIN clearing. It cannot prevent the first fills, and the
+//! thresholds were fitted on one cascade (n=1).
 //!
-//! The 161.95 h CASHCAT tape had exactly one losing six-hour window. 26 of the
-//! other 27 sum to +35.28 USDC; that one is −241.17 on 1,771 fills. It was a
-//! liquidation cascade, not a slow toxic drift:
-//!
-//! ```text
-//! 05:11:00  mid 0.12305     —
-//! 05:11:20  mid 0.09952  −31%    ten seconds
-//! 05:12:00  mid 0.03900  −70%    sixty seconds
-//! 05:16:00  mid ~0.11           recovered
-//! ```
-//!
-//! This guard does not predict that event. Its narrower goal is to stop adding
-//! exposure once the move is observable and stay out of the aftermath.
-//!
-//! # Why two tiers
-//!
-//! Re-verified over 165.11 h, both thresholds had **zero** breaches outside the
-//! cascade:
-//!
-//! | tier | first trip | mid had already moved |
-//! |---|---|---|
-//! | fast mid-move breaker (≥8% in 5 s) | 05:11:15 | −14% |
-//! | VPIN ≥ 0.40 | 05:11:30 | −45% |
-//!
-//! The breaker is 16 seconds and 31 percentage points earlier, so it bounds the
-//! damage. VPIN is slower but identifies the *regime* — 86% of that window's
-//! volume arrived after it fired — so it is what prevents re-entering the
-//! aftermath. Neither alone is enough, which is why both ship.
-//!
-//! The existing `calibration.max_toxicity` gate (κ·ε, threshold 1.5) is a
-//! different thing and did not fire: it read 0.254/0.235 through this cascade.
-//! It is a slowly-varying property of the calibration fit, not a flow alarm.
-//!
-//! # What it is not
-//!
-//! It cannot prevent the first fills — at −14% resting bids have already been
-//! hit. And the thresholds are fitted on a single event (n=1) in one tape, so
-//! they are a starting point to re-check as the tape grows, not a constant of
-//! nature.
+//! Evidence, thresholds and the A/B: `docs/TOXIC_FLOW_GUARD.md`.
 
 use cj_core::types::{AggressorSide, TradePrint};
 use mm_settings::FlowGuardConfig;

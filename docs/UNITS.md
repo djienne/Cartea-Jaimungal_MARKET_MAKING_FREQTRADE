@@ -9,7 +9,7 @@ consistently.
 | Depth / delta | USDC |
 | Epsilon | USDC |
 | Kappa | 1 / USDC |
-| Lambda | market orders / second (per side; prints sharing side + exchange timestamp are one MO) |
+| Lambda | market orders / second per side, multiplied by that side's survival-fit intercept `A` (schema v5), so `lambda * exp(-kappa * depth)` is the measured fill intensity; the unscaled rate is `lambda_raw`. Prints sharing side + exchange timestamp are one MO. |
 | HJB horizon `T` | seconds |
 | Inventory `q` | physical base position divided by the base amount represented by one inventory unit |
 | inventory unit | Rust stores `inventory_unit` in venue size quanta and converts it to base units for the HJB; Python calls the base amount `inventory_unit_base`. It is derived while flat as `available_capital_usdc * target_capital_utilisation * leverage / (q_max * mid)`, rounded down to the venue size quantum. The runtime refuses a derived unit below the venue minimum notional and preserves the existing unit while inventory is non-zero. In `cashcat.toml`, 1000 USDC capital gives about 247 USDC notional per unit; `cashcat_dryrun_realistic.toml` intentionally uses less capital and therefore a smaller unit. |
@@ -76,8 +76,9 @@ not a current acceptance threshold.
 1. **No HJB-forced liquidation at `T`.** The book liquidates the residual at
    market and pays `alpha*q^2`; the implemented terminal condition acts through
    quote depths and the episode clock restarts. Ordinary quotes remain post-only.
-   Two dry-run-grid variants test a separately accounted taker exit, but that
-   policy is not part of the HJB or live backend.
+   Several dry-run-grid rows (`flatten_after_ms`) and the optional
+   `live.flatten_after_ms` test a separately accounted timed taker exit, but that
+   policy is outside the HJB.
 2. **Episodes restart on a real clock**, at `T` or once flat past
    `episode_min_elapsed_fraction * T`. A perpetual instrument has no natural
    terminal time; the book's agent starts flat at `t=0`, so reaching flat is the
@@ -113,8 +114,9 @@ ours, so the agreement is expected. Checked against the book PDF 2026-08-17.
 
 Consequence: Python's `hjb_alpha_kappa` / Rust's `alpha_kappa` was chosen while
 `alpha` was effectively inert. Episodic control makes it mathematically active,
-but at the current `phi*kappa*T=300` its influence is confined to the final 8.75
-seconds. A later sweep returned bit-identical P&L at 0.05, 0.5, and 5.0, so this
+but at the current `phi*kappa*T=300` its influence is confined to about the
+final 12 seconds (3.5 s at phi=1000), measured on the shipped config. A later
+sweep returned bit-identical P&L at 0.05, 0.5, and 5.0, so this
 regime cannot tune it; revisit only with a lower running penalty.
 
 ### Solver resolution

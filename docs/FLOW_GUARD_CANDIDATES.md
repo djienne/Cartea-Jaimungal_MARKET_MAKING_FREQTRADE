@@ -132,9 +132,10 @@ dominate any inventory-rate limit on this strategy. E failed; no A/B.
 
 ## Candidate 4 — oracle-vs-mid dislocation + OI drop: DEFER
 
-Nothing records `activeAssetCtx` (the bot's wire decoder handles only
-bbo/trades/l2Book), so the signal cannot be backtested. Two things were
-established now:
+At the time of the study nothing recorded `activeAssetCtx` (the bot's wire
+decoder still handles only bbo/trades/l2Book), so the signal could not be
+backtested; the collectors have recorded it as `asset_ctx/` since 2026-08-23
+(below). Two things were established then:
 
 1. **The premise holds.** `cross_symbol.py`, 08-22 05:00–05:30 across the
    sibling tapes (frozen to `guard_study_tapes/siblings/` before their 3-day
