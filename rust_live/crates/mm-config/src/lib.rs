@@ -431,7 +431,11 @@ impl AppConfig {
         if self.latency.queue_capacity == 0 || !self.latency.queue_capacity.is_power_of_two() {
             bail!("latency.queue_capacity must be a positive power of two");
         }
-        if self.storage.retention_minutes < self.calibration.window_minutes + 30 {
+        // Only the recorder prunes, so retention only constrains the window
+        // when Parquet is being written.
+        if self.storage.write_parquet
+            && self.storage.retention_minutes < self.calibration.window_minutes + 30
+        {
             bail!("storage retention must exceed the calibration window by at least 30 minutes");
         }
         if !(1..=4_096).contains(&self.storage.live_log_max_mb)

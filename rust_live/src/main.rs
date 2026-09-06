@@ -28,7 +28,7 @@ use mm_live::lockfree::{
 };
 use mm_live::metrics::Metrics;
 use mm_live::parquet_io::{
-    ensure_no_external_writer, load_market_window, CollectorLock, MarketDataSet,
+    ensure_no_external_writer, load_market_window, parse_utc_ms, CollectorLock, MarketDataSet,
     ParquetEventRecorder, ParquetRecorderHandle,
 };
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
@@ -104,6 +104,16 @@ enum Command {
         grid: Option<PathBuf>,
         #[arg(long, requires = "grid")]
         variant: Option<String>,
+        /// Assume this decision, acknowledgement and cancel latency instead of the config's.
+        #[arg(long)]
+        latency_ms: Option<u64>,
+        /// Start of the tape range to replay, RFC 3339 or epoch ms (default:
+        /// the config window ending at the newest shard).
+        #[arg(long, requires = "to")]
+        from: Option<String>,
+        /// End of the tape range to replay, RFC 3339 or epoch ms.
+        #[arg(long, requires = "from")]
+        to: Option<String>,
     },
     /// Connect to the public feed and simulate orders locally.
     DryRun {
@@ -400,7 +410,20 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             train_fraction,
             grid,
             variant,
+            latency_ms,
+            from,
+            to,
         } => {
+            let mut config = config.clone();
+            if let Some(ms) = latency_ms {
+                config.dry_run.decision_latency_ms = ms;
+                config.dry_run.acknowledgement_latency_ms = ms;
+                config.dry_run.cancel_latency_ms = ms;
+            }
+            let range = match (from, to) {
+                (Some(from), Some(to)) => Some((parse_utc_ms(&from)?, parse_utc_ms(&to)?)),
+                _ => None,
+            };
             run_replay_command(
                 &config,
                 instrument,
@@ -408,6 +431,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
                 train_fraction,
                 grid.as_deref(),
                 variant.as_deref(),
+                range,
             )
             .await
         }
@@ -3194,6 +3218,7 @@ fn calibrate_model(
         &config.storage.data_dir,
         &instrument.symbol,
         &config.calibration,
+        None,
     )?;
     if require_current_data {
         let now_ms = unix_ms();
@@ -3325,6 +3350,7 @@ async fn run_replay_command(
     train_fraction: f64,
     grid_path: Option<&Path>,
     variant_name: Option<&str>,
+    range: Option<(u64, u64)>,
 ) -> Result<()> {
     let started_at_ms = unix_ms();
     let (config, fixed_parameters, config_fingerprint) = if let Some(path) = grid_path {
@@ -3343,6 +3369,7 @@ async fn run_replay_command(
         &config.storage.data_dir,
         &instrument.symbol,
         &config.calibration,
+        range,
     )?;
     let (training, scoring) = data.split_for_replay(train_fraction)?;
     let snapshot = if fixed_parameters.is_none() {

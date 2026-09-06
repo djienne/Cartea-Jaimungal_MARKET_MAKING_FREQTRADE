@@ -149,22 +149,25 @@ struct RawBookTop {
     ask_levels: Vec<(f64, f64)>,
 }
 
+/// `range` is an explicit `(start_ms, end_ms)` window over the collected tape.
+/// Without it the window is `config.window_minutes` ending at the newest shard.
 pub fn load_market_window(
     data_root: &Path,
     symbol: &str,
     config: &CalibrationConfig,
+    range: Option<(u64, u64)>,
 ) -> Result<MarketDataSet> {
     let base = data_root.join(symbol);
-    let (mut prices, price_shards) = read_prices(
-        &base.join("prices"),
-        config.window_minutes,
-        config.shard_window_margin_seconds,
-    )?;
-    let (mut trades, trade_shards) = read_trades(
-        &base.join("trades"),
-        config.window_minutes,
-        config.shard_window_margin_seconds,
-    )?;
+    let (window_minutes, anchor_ms) = match range {
+        Some((start, end)) if end > start => ((end - start) / 60_000 + 1, Some(end)),
+        Some(_) => bail!("replay range end must be after its start"),
+        None => (config.window_minutes, None),
+    };
+    let margin = config.shard_window_margin_seconds;
+    let (mut prices, price_shards) =
+        read_prices(&base.join("prices"), window_minutes, margin, anchor_ms)?;
+    let (mut trades, trade_shards) =
+        read_trades(&base.join("trades"), window_minutes, margin, anchor_ms)?;
     if prices.is_empty() {
         bail!("no usable price data under {}", base.display());
     }
@@ -195,10 +198,13 @@ pub fn load_market_window(
     }
     let (normalized_trades, duplicate_trade_ids_dropped) = normalize_trades(trades, time_source);
     let mid_end = mids.last().map_or(0.0, |row| row.ts_ms);
-    let window_end_ms = normalized_trades
+    let data_end_ms = normalized_trades
         .last()
         .map_or(mid_end, |row| mid_end.min(row.ts_ms));
-    let window_start_ms = window_end_ms - config.window_minutes as f64 * 60_000.0;
+    let (window_start_ms, window_end_ms) = match range {
+        Some((start, end)) => (start as f64, (end as f64).min(data_end_ms)),
+        None => (data_end_ms - window_minutes as f64 * 60_000.0, data_end_ms),
+    };
     let mids: Vec<_> = mids
         .into_iter()
         .filter(|row| row.ts_ms >= window_start_ms && row.ts_ms <= window_end_ms)
@@ -208,11 +214,8 @@ pub fn load_market_window(
         .filter(|row| row.ts_ms >= window_start_ms && row.ts_ms <= window_end_ms)
         .collect();
 
-    let (raw_books, orderbook_shards) = read_book_tops(
-        &base.join("orderbooks"),
-        config.window_minutes,
-        config.shard_window_margin_seconds,
-    )?;
+    let (raw_books, orderbook_shards) =
+        read_book_tops(&base.join("orderbooks"), window_minutes, margin, anchor_ms)?;
     // Historical orderbooks improve replay queue initialization but do not
     // enter kappa/lambda/epsilon estimation. The legacy collector can atomically
     // compact/delete these shards while Rust is reading; retain the failure
@@ -255,8 +258,9 @@ fn read_prices(
     directory: &Path,
     window_minutes: u64,
     margin_seconds: u64,
+    anchor_ms: Option<u64>,
 ) -> Result<(Vec<RawPrice>, ShardStats)> {
-    let files = selected_shards(directory, window_minutes, margin_seconds)?;
+    let files = selected_shards(directory, window_minutes, margin_seconds, anchor_ms)?;
     let mut rows = Vec::new();
     let mut stats = ShardStats {
         files_present: count_parquet_files(directory)?,
@@ -279,8 +283,9 @@ fn read_trades(
     directory: &Path,
     window_minutes: u64,
     margin_seconds: u64,
+    anchor_ms: Option<u64>,
 ) -> Result<(Vec<RawTrade>, ShardStats)> {
-    let files = selected_shards(directory, window_minutes, margin_seconds)?;
+    let files = selected_shards(directory, window_minutes, margin_seconds, anchor_ms)?;
     let mut rows = Vec::new();
     let mut stats = ShardStats {
         files_present: count_parquet_files(directory)?,
@@ -303,11 +308,12 @@ fn read_book_tops(
     directory: &Path,
     window_minutes: u64,
     margin_seconds: u64,
+    anchor_ms: Option<u64>,
 ) -> Result<(Vec<RawBookTop>, ShardStats)> {
     if !directory.exists() {
         return Ok((Vec::new(), ShardStats::default()));
     }
-    let files = selected_shards(directory, window_minutes, margin_seconds)?;
+    let files = selected_shards(directory, window_minutes, margin_seconds, anchor_ms)?;
     let mut rows = Vec::new();
     let mut stats = ShardStats {
         files_present: count_parquet_files(directory)?,
@@ -326,10 +332,13 @@ fn read_book_tops(
     Ok((rows, stats))
 }
 
+/// Shards stamped within `window_minutes` (plus margin) of `anchor_ms`, or of
+/// the newest shard when no anchor is given.
 fn selected_shards(
     directory: &Path,
     window_minutes: u64,
     margin_seconds: u64,
+    anchor_ms: Option<u64>,
 ) -> Result<Vec<PathBuf>> {
     if !directory.exists() {
         return Ok(Vec::new());
@@ -345,15 +354,29 @@ fn selected_shards(
         }
     }
     stamped.sort_by_key(|(timestamp, _)| *timestamp);
-    let Some((latest, _)) = stamped.last() else {
+    let Some((newest, _)) = stamped.last() else {
         return Ok(Vec::new());
     };
+    let latest = anchor_ms.unwrap_or(*newest);
     let lookback = (window_minutes * 60 + margin_seconds) * 1_000;
     let cutoff = latest.saturating_sub(lookback);
+    let ceiling = latest.saturating_add(margin_seconds * 1_000);
     Ok(stamped
         .into_iter()
-        .filter_map(|(timestamp, path)| (timestamp >= cutoff).then_some(path))
+        .filter_map(|(timestamp, path)| {
+            (timestamp >= cutoff && timestamp <= ceiling).then_some(path)
+        })
         .collect())
+}
+
+/// Parse a UTC instant given as RFC 3339 (`2026-09-02T00:00:00Z`) or epoch ms.
+pub fn parse_utc_ms(text: &str) -> Result<u64> {
+    if let Ok(ms) = text.parse::<u64>() {
+        return Ok(ms);
+    }
+    let parsed = chrono::DateTime::parse_from_rfc3339(text)
+        .with_context(|| format!("{text:?} is neither epoch ms nor RFC 3339"))?;
+    u64::try_from(parsed.timestamp_millis()).context("timestamp before 1970")
 }
 
 fn shard_timestamp(path: &Path) -> Option<u64> {
