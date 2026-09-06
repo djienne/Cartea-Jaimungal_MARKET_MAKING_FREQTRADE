@@ -172,7 +172,6 @@ acknowledgement_latency_ms = 250
 cancel_latency_ms = 250
 tail_latency_multiplier = 2.35
 tail_latency_every = 20
-queue_decay_per_second = 0.0
 promotion_flatten_fee_rate = 0.00035
 promotion_flatten_slippage_bps = 25.0
 # Measured from the venue (metaAndAssetCtxs, 2026-08-23). It is not zero for

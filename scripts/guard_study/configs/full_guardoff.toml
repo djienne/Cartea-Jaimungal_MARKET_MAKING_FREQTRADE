@@ -121,7 +121,6 @@ starting_equity_usdc = 1000.0
 decision_latency_ms = 250
 acknowledgement_latency_ms = 250
 cancel_latency_ms = 250
-queue_decay_per_second = 0.05
 # Measured from the venue (metaAndAssetCtxs, 2026-08-23). It is not zero for
 # this instrument, and 0.0 silently omitted a real cost from every dry run.
 funding_rate_per_hour = 0.0000125

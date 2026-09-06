@@ -40,7 +40,7 @@ fn backend() -> DryRunBackend {
             cancel_latency_ms: 100,
             tail_latency_multiplier: 2.35,
             tail_latency_every: 20,
-            queue_decay_per_second: 0.0,
+            queue_cancel_power: 0.0,
             promotion_flatten_fee_rate: 0.00035,
             promotion_flatten_slippage_bps: 25.0,
             funding_rate_per_hour: 0.0,

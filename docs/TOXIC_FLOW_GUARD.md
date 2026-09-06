@@ -101,8 +101,9 @@ move the numbers: the estimator now hands the HJB `lambda_raw x survival
 intercept` (parameter schema v5), and the replay loader carries all twenty
 recorded book levels instead of the top one. The second matters more than it
 sounds. The simulator fills a virtual order only once it can see the queue at
-that price, and the shipped profile forbids queue decay
-(`dry_run.queue_decay_per_second = 0`), so with one level a maker quote resting
+that price, and the simulator of the time had no cancel attribution (time
+decay was forbidden; the current model is in `DRY_RUN_GRID.md`, "Queue
+model"), so with one level a maker quote resting
 inside the book could never fill at all; the original A/B filled only because it
 ran with a decay of 0.05, which the validator has since refused. Fill counts
 therefore drop sharply and are not comparable with the table further down.
@@ -127,8 +128,8 @@ is why `unknown_queue_activations` is ~38,000 per leg). Neither exists today.
 
 Provenance: `scripts/guard_study/configs/{crash,calm}_guard{off,on}_v5.toml`
 and `*_guardon_ro.toml` (identical to the 2026-08-23 configs except
-`queue_decay_per_second = 0.0` and, for `_ro`, `reduce_only_while_tripped =
-true`); run artifacts under `scripts/guard_study_tapes/runs/<name>/`
+no queue decay (the key has since been removed) and, for `_ro`,
+`reduce_only_while_tripped = true`); run artifacts under `scripts/guard_study_tapes/runs/<name>/`
 (git-ignored). Binary `mm-live` at the commit that introduced this section.
 
 ## The A/B

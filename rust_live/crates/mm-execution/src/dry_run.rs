@@ -24,7 +24,10 @@ pub struct DryRunDiagnostics {
     pub fills: u64,
     pub partial_fills: u64,
     pub queue_ahead_consumed_units: f64,
-    pub queue_decay_units: f64,
+    /// Queue ahead removed when a visible level shrank and the loss was
+    /// attributed in front of us (`attribute_level_changes`).
+    #[serde(default)]
+    pub queue_cancel_units: f64,
     pub unknown_queue_activations: u64,
     pub max_working_orders: usize,
     pub liquidation_breach_events: u64,
@@ -54,7 +57,7 @@ impl Default for DryRunDiagnostics {
             fills: 0,
             partial_fills: 0,
             queue_ahead_consumed_units: 0.0,
-            queue_decay_units: 0.0,
+            queue_cancel_units: 0.0,
             unknown_queue_activations: 0,
             max_working_orders: 0,
             liquidation_breach_events: 0,
@@ -77,8 +80,10 @@ struct VirtualOrder {
     cancel_effective_ms: Option<u64>,
     remaining_units: i64,
     queue_ahead_units: f64,
-    initial_queue_units: f64,
-    last_queue_update_ms: u64,
+    /// Size of our price level when the queue was last reconciled; prints
+    /// and snapshots move it so a shrink can be told apart from a trade.
+    /// Invariant: `0 <= queue_ahead_units <= level_units_seen`.
+    level_units_seen: f64,
     activated: bool,
     queue_known: bool,
 }
@@ -152,10 +157,8 @@ impl DryRunBackend {
         risk: RiskConfig,
     ) -> Result<Self> {
         instrument.validate()?;
-        if config.queue_decay_per_second != 0.0 {
-            bail!(
-                "queue_decay_per_second must be zero until a queue-decay model is calibrated from venue evidence"
-            );
+        if !config.queue_cancel_power.is_finite() || config.queue_cancel_power < 0.0 {
+            bail!("queue_cancel_power must be finite and non-negative");
         }
         if !config.flatten_fee_rate.is_finite()
             || config.flatten_fee_rate < 0.0
@@ -529,8 +532,7 @@ impl DryRunBackend {
                         cancel_effective_ms: None,
                         remaining_units: intent.qty_units,
                         queue_ahead_units: 0.0,
-                        initial_queue_units: 0.0,
-                        last_queue_update_ms: now_ms,
+                        level_units_seen: 0.0,
                         activated: false,
                         queue_known: false,
                     });
@@ -597,15 +599,16 @@ impl DryRunBackend {
                 self.accrue_funding(*bbo);
                 self.resolve_markouts(*bbo);
                 self.latest_bbo = Some(*bbo);
-                self.refresh_unknown_queues(now_ms);
+                self.refresh_unknown_queues();
                 self.mark_account(bbo.mid_units());
             }
             MarketEvent::Book(book) => {
                 self.latest_book = Some(book.clone());
-                self.refresh_unknown_queues(now_ms);
+                self.refresh_unknown_queues();
+                self.attribute_level_changes(book);
             }
             MarketEvent::Trade(trade) => {
-                self.refresh_unknown_queues(now_ms);
+                self.refresh_unknown_queues();
                 for fill in self.match_trade(*trade) {
                     self.record_lot(
                         fill.exchange_ms,
@@ -765,18 +768,17 @@ impl DryRunBackend {
             let visible = visible_queue(self.latest_bbo, self.latest_book.as_ref(), order.intent);
             if let Some(visible) = visible {
                 order.queue_ahead_units = visible;
-                order.initial_queue_units = visible;
+                order.level_units_seen = visible;
                 order.queue_known = true;
             } else {
                 self.diagnostics.unknown_queue_activations =
                     self.diagnostics.unknown_queue_activations.saturating_add(1);
             }
-            order.last_queue_update_ms = order.active_ms;
             order.activated = true;
         }
     }
 
-    fn refresh_unknown_queues(&mut self, now_ms: u64) {
+    fn refresh_unknown_queues(&mut self) {
         for order in self
             .orders
             .iter_mut()
@@ -788,9 +790,36 @@ impl DryRunBackend {
                 continue;
             };
             order.queue_ahead_units = visible;
-            order.initial_queue_units = visible;
-            order.last_queue_update_ms = now_ms;
+            order.level_units_seen = visible;
             order.queue_known = true;
+        }
+    }
+
+    /// hftbacktest-style queue advance from a book snapshot. Prints at our
+    /// price were already deducted in `match_trade`, so a level that shrank
+    /// since the last reconciliation lost the difference to cancellations, and
+    /// a share front^n / (front^n + back^n) of them sat ahead of us. Growth
+    /// joins the queue behind us. n = 0 attributes nothing (trades-only queue).
+    /// Levels the snapshot does not reach are left alone.
+    fn attribute_level_changes(&mut self, book: &BookSnapshot) {
+        let n = self.config.queue_cancel_power;
+        for order in self
+            .orders
+            .iter_mut()
+            .filter(|order| order.activated && order.queue_known)
+        {
+            let Some(new) = level_size(book, order.intent) else {
+                continue;
+            };
+            let (front, seen) = (order.queue_ahead_units, order.level_units_seen);
+            if new < seen && n > 0.0 && front > 0.0 {
+                let back = (seen - front).max(0.0);
+                let share = front.powf(n) / (front.powf(n) + back.powf(n));
+                let removed = ((seen - new) * share).min(front);
+                order.queue_ahead_units = front - removed;
+                self.diagnostics.queue_cancel_units += removed;
+            }
+            order.level_units_seen = new.max(order.queue_ahead_units);
         }
     }
 
@@ -853,6 +882,16 @@ impl DryRunBackend {
                 .then_with(|| a.id.cmp(&b.id))
         });
         let mut remaining_trade = trade.qty_units.max(0) as f64;
+        // The print left our level whether or not it reached us in the
+        // simulated queue, so the level size must not read it as a cancel.
+        for &index in &indices {
+            let order = &mut self.orders[index];
+            order.level_units_seen = if order.intent.px == trade.px {
+                (order.level_units_seen - remaining_trade).max(0.0)
+            } else {
+                0.0
+            };
+        }
         let mut fills = Vec::new();
         let mut projected_inventory = self.account.inventory_units;
         for index in indices {
@@ -860,7 +899,6 @@ impl DryRunBackend {
                 break;
             }
             let order = &mut self.orders[index];
-            order.last_queue_update_ms = trade.exchange_ms;
             // A print strictly beyond our price consumed our whole level, so
             // there is no queue left to wait behind -- whether or not we could
             // see it. Charging it only in the unknown case made shallow
@@ -875,6 +913,7 @@ impl DryRunBackend {
             }
             let queue_consumed = order.queue_ahead_units.min(remaining_trade);
             order.queue_ahead_units -= queue_consumed;
+            order.level_units_seen = order.level_units_seen.max(order.queue_ahead_units);
             remaining_trade -= queue_consumed;
             self.diagnostics.queue_ahead_consumed_units += queue_consumed;
             if order.queue_ahead_units > 0.0 || remaining_trade < 1.0 {
@@ -1169,11 +1208,44 @@ fn visible_queue(
             return Some(level.qty_units.max(0) as f64);
         }
     }
+    // Strictly inside the spread nobody can be ahead of us. Both sources must
+    // agree when both exist: replay BBOs are fresher than its ~5 s books, live
+    // books carry the depth a stale BBO would hide.
+    let inside = |bid: i64, ask: i64| bid > 0 && ask > 0 && intent.px > bid && intent.px < ask;
+    let book_inside = book.map(|book| match (book.bids.first(), book.asks.first()) {
+        (Some(bid), Some(ask)) => inside(bid.px, ask.px),
+        _ => false,
+    });
+    let bbo_inside = bbo.map(|bbo| inside(bbo.bid_px, bbo.ask_px));
+    if book_inside.unwrap_or(true)
+        && bbo_inside.unwrap_or(true)
+        && (book_inside.or(bbo_inside)).is_some()
+    {
+        return Some(0.0);
+    }
     bbo.and_then(|bbo| match intent.side {
         Side::Buy if intent.px == bbo.bid_px && bbo.bid_sz > 0 => Some(bbo.bid_sz as f64),
         Side::Sell if intent.px == bbo.ask_px && bbo.ask_sz > 0 => Some(bbo.ask_sz as f64),
         _ => None,
     })
+}
+
+/// Size resting at `intent.px` in `book`, `Some(0.0)` for a price the book
+/// spans but does not list, `None` beyond its deepest level.
+fn level_size(book: &BookSnapshot, intent: OrderIntent) -> Option<f64> {
+    let levels = match intent.side {
+        Side::Buy => &book.bids,
+        Side::Sell => &book.asks,
+    };
+    if let Some(level) = levels.iter().find(|level| level.px == intent.px) {
+        return Some(level.qty_units.max(0) as f64);
+    }
+    let deepest = levels.last()?.px;
+    let spanned = match intent.side {
+        Side::Buy => intent.px >= deepest,
+        Side::Sell => intent.px <= deepest,
+    };
+    spanned.then_some(0.0)
 }
 
 fn unix_ms() -> u64 {
@@ -1389,7 +1461,7 @@ mod tests {
         config.decision_latency_ms = 100;
         config.acknowledgement_latency_ms = 100;
         config.cancel_latency_ms = 50;
-        config.queue_decay_per_second = 0.0;
+        config.queue_cancel_power = 0.0;
         let mut backend = DryRunBackend::new(
             instrument(),
             config,
@@ -1898,6 +1970,137 @@ mod tests {
         assert_eq!(backend.diagnostics.unknown_queue_activations, 1);
     }
 
+    /// A bid resting at 10_000 whose level the book shows as `qty` units,
+    /// activated with zero latency so the queue is known from the first event.
+    async fn bid_with_known_queue(qty: i64) -> DryRunBackend {
+        let mut backend = DryRunBackend::new(
+            instrument(),
+            DryRunConfig {
+                decision_latency_ms: 0,
+                acknowledgement_latency_ms: 0,
+                ..DryRunConfig::default()
+            },
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        backend.latest_bbo = Some(Bbo {
+            bid_px: 10_000,
+            bid_sz: 0,
+            ask_px: 10_010,
+            ask_sz: 0,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        });
+        let mut quote = bid_quotes();
+        quote.bid.as_mut().unwrap().px = 10_000;
+        backend.reconcile(quote, 1_000).await.unwrap();
+        backend
+            .on_market_event(&MarketEvent::Book(level_book(10_000, qty, 1_001)))
+            .await
+            .unwrap();
+        assert_eq!(backend.orders[0].queue_ahead_units, qty as f64);
+        backend
+    }
+
+    fn level_book(px: i64, qty_units: i64, exchange_ms: u64) -> BookSnapshot {
+        BookSnapshot {
+            bids: vec![crate::types::BookLevel { px, qty_units }],
+            asks: vec![],
+            exchange_ms,
+            recv_ns: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shrinking_level_advances_the_queue_by_the_power_share() {
+        // front 8, back 2, n = 2: the 4 units that left were ahead of us with
+        // share 64 / (64 + 4), so 3.7647 of them come off the front.
+        let mut backend = bid_with_known_queue(10).await;
+        backend.orders[0].queue_ahead_units = 8.0;
+        backend
+            .on_market_event(&MarketEvent::Book(level_book(10_000, 6, 1_002)))
+            .await
+            .unwrap();
+        let front = backend.orders[0].queue_ahead_units;
+        assert!(
+            (front - (8.0 - 4.0 * 64.0 / 68.0)).abs() < 1e-9,
+            "front {front}"
+        );
+        assert!((backend.diagnostics.queue_cancel_units - 4.0 * 64.0 / 68.0).abs() < 1e-9);
+        assert_eq!(backend.orders[0].level_units_seen, 6.0);
+    }
+
+    #[tokio::test]
+    async fn a_print_at_our_price_is_not_counted_again_as_a_cancel() {
+        let mut backend = bid_with_known_queue(10).await;
+        backend
+            .on_market_event(&MarketEvent::Trade(TradePrint {
+                aggressor: AggressorSide::Sell,
+                px: 10_000,
+                qty_units: 3,
+                exchange_ms: 1_002,
+                recv_ns: 0,
+                trade_id: 1,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(backend.orders[0].queue_ahead_units, 7.0);
+        backend
+            .on_market_event(&MarketEvent::Book(level_book(10_000, 7, 1_003)))
+            .await
+            .unwrap();
+        assert_eq!(backend.orders[0].queue_ahead_units, 7.0);
+        assert_eq!(backend.diagnostics.queue_cancel_units, 0.0);
+    }
+
+    #[tokio::test]
+    async fn a_quote_inside_the_spread_has_nobody_ahead_even_without_bbo_sizes() {
+        let mut backend = DryRunBackend::new(
+            instrument(),
+            DryRunConfig {
+                decision_latency_ms: 0,
+                acknowledgement_latency_ms: 0,
+                ..DryRunConfig::default()
+            },
+            QuotingConfig::default(),
+            RiskConfig::default(),
+        )
+        .unwrap();
+        let bbo = Bbo {
+            bid_px: 10_000,
+            bid_sz: 0,
+            ask_px: 10_010,
+            ask_sz: 0,
+            exchange_ms: 1_000,
+            recv_ns: 0,
+        };
+        backend.latest_bbo = Some(bbo);
+        let mut quote = bid_quotes();
+        quote.bid.as_mut().unwrap().px = 10_004;
+        backend.reconcile(quote, 1_000).await.unwrap();
+        backend
+            .on_market_event(&MarketEvent::Bbo(Bbo {
+                exchange_ms: 1_001,
+                ..bbo
+            }))
+            .await
+            .unwrap();
+        assert_eq!(backend.diagnostics.unknown_queue_activations, 0);
+        let fills = backend
+            .on_market_event(&MarketEvent::Trade(TradePrint {
+                aggressor: AggressorSide::Sell,
+                px: 10_004,
+                qty_units: 1,
+                exchange_ms: 1_002,
+                recv_ns: 0,
+                trade_id: 1,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(fills.len(), 1);
+    }
+
     #[tokio::test]
     async fn overlapping_reduce_only_orders_share_one_inventory_balance() {
         let mut backend = DryRunBackend::new(
@@ -1922,8 +2125,7 @@ mod tests {
                 cancel_effective_ms: None,
                 remaining_units: 5,
                 queue_ahead_units: 0.0,
-                initial_queue_units: 0.0,
-                last_queue_update_ms: 1_000,
+                level_units_seen: 0.0,
                 activated: true,
                 queue_known: true,
             });
@@ -2120,7 +2322,7 @@ mod tests {
             DryRunConfig {
                 decision_latency_ms: 0,
                 acknowledgement_latency_ms: 0,
-                queue_decay_per_second: 0.0,
+                queue_cancel_power: 0.0,
                 ..DryRunConfig::default()
             },
             QuotingConfig::default(),

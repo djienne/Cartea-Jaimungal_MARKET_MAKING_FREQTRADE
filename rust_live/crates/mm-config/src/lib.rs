@@ -655,10 +655,8 @@ impl AppConfig {
         {
             bail!("quoting.reduce_only_threshold_q must be finite and inside [0, model.q_max]");
         }
-        if self.dry_run.queue_decay_per_second != 0.0 {
-            bail!(
-                "dry_run.queue_decay_per_second must be zero until calibrated from venue evidence"
-            );
+        if !self.dry_run.queue_cancel_power.is_finite() || self.dry_run.queue_cancel_power < 0.0 {
+            bail!("dry_run.queue_cancel_power must be finite and non-negative");
         }
         if !self.dry_run.tail_latency_multiplier.is_finite()
             || self.dry_run.tail_latency_multiplier < 1.0

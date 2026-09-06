@@ -87,8 +87,9 @@ Common assumptions are 297.88 USDC starting capital, 1.5 bps maker fees,
 0.0000125/hour funding, and 150 ms each for decision, acknowledgement and
 cancellation. A 2.35 multiplier applies during one exchange-time second in
 every 20-second cycle. These configured assumptions are not continuously
-measured execution capabilities. The model uses visible queue information with no uncalibrated
-time decay; finite market-depth data cannot reconstruct a venue's order queue.
+measured execution capabilities. Queue position follows the model in "Queue
+model" below; twenty recorded levels cannot reconstruct the venue's queue past
+them.
 
 All rows retain common paper execution settings, capital-derived order sizing,
 risk gates and the current-data VPIN volume scale. The finalists therefore test
@@ -109,6 +110,46 @@ deadlines include lot age plus decision/acknowledgement latency: `flatten300`,
 `sweep1_flat550` target 550 ms, before event discretization. Combinations are
 controlled comparisons, not presumed improvements.
 
+## Queue model
+
+The simulator tracks, per resting order, the volume ahead of it (`front`) and
+the size of its price level as last reconciled (`seen`), in the style of
+nkaz001/hftbacktest's probabilistic queue model:
+
+- **Activation.** `front = seen =` the level's size in the latest `l2Book`
+  snapshot (live BBO size at the touch is a fallback). A price strictly inside
+  the spread has nobody ahead, `front = 0`. A price beyond the deepest recorded
+  level is *unknown-queue*: it cannot fill on a print at its price, only on a
+  print strictly beyond it, until a later snapshot shows the level.
+- **Print at our price.** The print consumes `front` first; what is left fills
+  us. Both `front` and `seen` drop by the print, so the next snapshot does not
+  read the trade as a cancellation.
+- **Snapshot.** If the level shrank by `chg` beyond what prints explain, a share
+  `front^n / (front^n + back^n)` of `chg` is taken off `front`, where
+  `back = seen - front`. Growth joins the queue behind us. `n` is
+  `dry_run.queue_cancel_power` (shipped 2.0, an uncalibrated prior); `0`
+  counts trades only, hftbacktest's risk-averse model. The removed volume is
+  reported as `queue_cancel_units`.
+
+Hyperliquid pushes `l2Book` at roughly one snapshot every 5 s for CASHCAT with
+20 levels per side, which reach about 40 bps from mid. The harvester keeps every
+frame, so this is the venue's limit, not the tape's: a quote at 60 bps half
+spread is unknown-queue most of the time under any model, and
+`unknown_queue_activations` in the reports says how often.
+
+**Fidelity against the live dry run.** Replay and the grid share this
+simulator, so replaying the grid's own window should reproduce its row up to
+feed outages the tape did not see:
+
+```
+python scripts/replay_latency.py --variant sweep1_flat300 --against-live
+```
+
+prints the leaderboard row (net, fills, inventory, resumes, downtime) above a
+replay of the same window at the configured latency. A window with heavy
+downtime is not a fidelity measurement. The same script sweeps assumed
+latencies over any tape range (`--from`, `--to`, `--latency ...`).
+
 ## Accounting and validity
 
 The runtime ranks `leaderboard.json` by promotion P&L: remaining inventory
@@ -121,8 +162,9 @@ liquidated profit, and fill counts alone do not establish an edge.
 
 Quotes use only the consumed book and a nondecreasing decision clock. Trades
 cannot fill orders that were not active at the trade's exchange timestamp.
-Post-only acceptance is checked at activation; queue volume precedes partial
-fills, and cancellation latency leaves orders exposed until cancellation arrives.
+Post-only acceptance is checked at activation; the queue ahead (see "Queue
+model") must be consumed before a print reaches us, and cancellation latency
+leaves orders exposed until cancellation arrives.
 
 - Event loss is disqualifying. Feed gaps during execution are recorded separately
   and assessed against `runtime.max_feed_downtime_fraction` (default 5%) and

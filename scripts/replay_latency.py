@@ -8,6 +8,11 @@ container of the grid image, so the running grid is untouched. The first
 train_fraction of the range only seeds sizing; the rest is scored. Reports
 land in --out. Note the variant's exit deadline is flatten_after_ms plus twice
 the latency, so a rung moves that too.
+
+    python scripts/replay_latency.py --variant sweep1_flat300 --against-live
+
+replays the running grid's own window at the configured latency and prints
+the leaderboard row above it: the fidelity check between replay and dry run.
 """
 
 import argparse
@@ -18,14 +23,16 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "rust_live" / "config"
+GRID = REPO / "rust_live" / "reports" / "grid_live"
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--variant", required=True)
-    p.add_argument("--from", dest="start", required=True, help="RFC 3339 or epoch ms")
-    p.add_argument("--to", dest="end", required=True, help="RFC 3339 or epoch ms")
-    p.add_argument("--latency", type=int, nargs="+", required=True, help="ms, one rung each")
+    p.add_argument("--from", dest="start", help="RFC 3339 or epoch ms")
+    p.add_argument("--to", dest="end", help="RFC 3339 or epoch ms")
+    p.add_argument("--latency", type=int, nargs="+", help="ms, one rung each")
+    p.add_argument("--against-live", action="store_true", help="the grid's own window at the config latency")
     p.add_argument("--train-fraction", type=float, default=0.05)
     p.add_argument("--data-dir", type=Path, default=REPO / "scripts" / "HL_data")
     p.add_argument("--out", type=Path, default=REPO / "rust_live" / "reports" / "replay_latency")
@@ -34,6 +41,17 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     config = (CONFIG / "cashcat_dryrun_realistic.toml").read_text()
     starting_equity = float(re.search(r"^starting_equity_usdc\s*=\s*([\d.]+)", config, re.M).group(1))
+
+    if args.against_live:
+        board = json.loads((GRID / "leaderboard.json").read_text())
+        row = next(r for r in board["rows"] if r["name"] == args.variant)
+        args.start, args.end = str(board["started_at_ms"]), str(board["generated_at_ms"])
+        args.latency = [int(re.search(r"^decision_latency_ms\s*=\s*(\d+)", config, re.M).group(1))]
+        print(f"live  {row['net_pnl_usdc']:8.2f} {row['realized_pnl_usdc']:8.2f} {row['fees_usdc']:6.2f} "
+              f"{row['inventory_units']:5d} {row['fills']:6d}   resumes={board['resumes']} "
+              f"downtime_s={board['resumed_downtime_ms'] / 1000:.0f} feed_failures={board['feed_failures']}")
+    elif not (args.start and args.end and args.latency):
+        p.error("--from, --to and --latency are required unless --against-live")
 
     print(f"{'lat':>5} {'net':>8} {'real':>8} {'fees':>6} {'inv':>5} {'fills':>6} {'rejects':>8} "
           f"{'unkQ':>6} {'orders':>7} {'flat':>5} {'score_h':>8} valid", flush=True)

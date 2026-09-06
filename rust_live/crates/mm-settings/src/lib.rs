@@ -183,7 +183,10 @@ pub struct DryRunConfig {
     /// seconds. CASHCAT measurements put p95 near 2.35x the median.
     pub tail_latency_multiplier: f64,
     pub tail_latency_every: u64,
-    pub queue_decay_per_second: f64,
+    /// Exponent n of the hftbacktest-style cancel attribution: when a visible
+    /// level shrinks, front^n / (front^n + back^n) of the loss is taken off
+    /// the queue ahead of us. 0 counts trades only. Uncalibrated prior.
+    pub queue_cancel_power: f64,
     /// Taker fee used when comparing variants after conservatively flattening
     /// their residual inventory at the executable side of the book.
     pub promotion_flatten_fee_rate: f64,
@@ -226,9 +229,7 @@ impl Default for DryRunConfig {
             cancel_latency_ms: 250,
             tail_latency_multiplier: 2.35,
             tail_latency_every: 20,
-            // Hyperliquid exposes only aggregate depth, not order identities.
-            // Time alone is therefore not evidence that queue ahead vanished.
-            queue_decay_per_second: 0.0,
+            queue_cancel_power: 2.0,
             promotion_flatten_fee_rate: 0.00035,
             promotion_flatten_slippage_bps: 25.0,
             flatten_after_ms: 0,

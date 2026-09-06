@@ -136,7 +136,6 @@ starting_equity_usdc = 297.88
 decision_latency_ms = 150
 acknowledgement_latency_ms = 150
 cancel_latency_ms = 150
-queue_decay_per_second = 0.05
 # Measured from the venue (metaAndAssetCtxs, 2026-08-23). CASHCAT is not
 # a zero-funding instrument; 0.0 silently omitted a real cost.
 funding_rate_per_hour = 0.0000125
