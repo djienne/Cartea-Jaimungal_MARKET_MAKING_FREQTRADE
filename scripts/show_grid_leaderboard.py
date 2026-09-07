@@ -175,6 +175,11 @@ def status_lines(board: dict[str, Any]) -> list[str]:
             f"feed {feed_state} | gaps {gaps} | event loss {event_loss} | "
             f"downtime {downtime_pct:.3f}% | "
             f"resumes {int(board.get('resumes', 0))} | valid {valid}/{len(board['rows'])}"
+            + (
+                f" | reconfigured {reconfigured} (history continued)"
+                if (reconfigured := sum(1 for r in board["rows"] if r.get("config_changes", 0)))
+                else ""
+            )
         ),
     ]
 

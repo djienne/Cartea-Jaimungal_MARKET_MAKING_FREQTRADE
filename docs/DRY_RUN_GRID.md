@@ -265,8 +265,10 @@ downtime. `run_started_ms` remains constant within the resumed run.
 ## Reports and logs
 
 The root leaderboard and checkpoint describe the active run. Its artifacts live
-under `rust_live/reports/grid_live/runs/<run_id>/`: per-variant reports, logs
-and `equity_history.csv`. The history records one row per variant every
+under `rust_live/reports/grid_live/runs/<run_id>/`: per-variant reports, logs,
+`equity_history.csv` and a copy of its latest checkpoint, so no run is ever
+lost to a fresh start; copying that checkpoint back to the root resumes it. The
+history records one row per variant every
 `--history-seconds` (default 60; zero disables it), plus a final shutdown sample.
 It retains run identity and mid-price, so plotting does not require retained tape.
 
