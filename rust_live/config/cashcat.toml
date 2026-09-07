@@ -14,7 +14,9 @@ network = "mainnet"
 # threads are pinned to the other cores. Pair with OS-level isolation for a
 # genuinely quiet core.
 hot_path_cpu = 4
-market_stale_ms = 5000
+# Raised from 5000 on 2026-09-07: CASHCAT's BBO stream idles past 5 s about 34
+# times an hour (median pause 1.6 s), and every pause cancels all resting orders.
+market_stale_ms = 10000
 # How late a genuinely NEW trade may arrive before the socket is treated as
 # broken and reconnected. Not the quoting guard -- market_stale_ms above is what
 # decides whether the book is fresh enough to quote from. Raised from 5000 on
