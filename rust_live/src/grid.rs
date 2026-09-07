@@ -17,8 +17,11 @@ use std::path::{Path, PathBuf};
 pub struct PaperMarketState {
     pub bbo: Option<Bbo>,
     pub pause_reason: Option<&'static str>,
+    /// Set on the observation that ends a pause: how long quoting was blind.
+    pub resumed_after_ms: Option<u64>,
     connected_ns: u64,
     ready_after_ns: u64,
+    paused_since_ns: u64,
 }
 
 impl PaperMarketState {
@@ -63,6 +66,14 @@ impl PaperMarketState {
             Some("waiting for a fresh BBO")
         } else {
             None
+        };
+        self.resumed_after_ms = match (was_paused, self.pause_reason.is_some()) {
+            (false, true) => {
+                self.paused_since_ns = now_ns;
+                None
+            }
+            (true, false) => Some(now_ns.saturating_sub(self.paused_since_ns) / 1_000_000),
+            _ => None,
         };
         connection_changed || (!was_paused && self.pause_reason.is_some())
     }

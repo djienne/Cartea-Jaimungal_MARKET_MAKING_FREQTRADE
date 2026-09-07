@@ -2015,6 +2015,7 @@ fn observe_grid_market(
     now_ns: u64,
     metrics: &Metrics,
     max_age_ms: u64,
+    carry_limit_ms: u64,
 ) -> Result<()> {
     let previous = market.pause_reason;
     let withdraw = market.observe(
@@ -2043,6 +2044,28 @@ fn observe_grid_market(
             warn!(reason, "paper quoting paused; recovery remains active");
         } else {
             info!("fresh BBO received; paper quoting resumed without resetting accounts");
+        }
+    }
+    // A feed gap is the same blindness as a process outage: orders were already
+    // withdrawn, only inventory was held at a mark nobody watched. Past the carry
+    // window it is closed at that mark, exactly as a resume does, so P&L after
+    // the gap is attributable to decisions taken after it.
+    if let Some(gap_ms) = market.resumed_after_ms.filter(|gap| *gap > carry_limit_ms) {
+        let mut flattened = 0_usize;
+        for variant in variants.iter_mut() {
+            if variant.backend.flatten_carried_position()?.is_some() {
+                flattened += 1;
+                variant.logger.log("feed_gap_flattened", None, &gap_ms)?;
+            }
+        }
+        if flattened > 0 {
+            warn!(
+                gap_ms,
+                carry_limit_ms,
+                flattened,
+                "the feed gap exceeded the inventory carry window; open positions were closed at \
+                 their last observed touch with promotion exit costs"
+            );
         }
     }
     Ok(())
@@ -2547,7 +2570,7 @@ async fn run_dry_run_grid(
                     bail!("public market task exited unexpectedly: {result:?}");
                 }
                 _ = stats.tick() => {
-                    observe_grid_market(&mut variants, &mut market, None, clock.now_ns(), &metrics, config.runtime.market_stale_ms)?;
+                    observe_grid_market(&mut variants, &mut market, None, clock.now_ns(), &metrics, config.runtime.market_stale_ms, max_carry_inventory_gap_seconds.saturating_mul(1_000))?;
                     let feed = metrics.snapshot();
                     let now_ms = unix_ms();
                     let feed_down_for_ms = feed.feed_down_for_ms(now_ms);
@@ -2638,7 +2661,7 @@ async fn run_dry_run_grid(
                     let mut pending = Some(event);
                     let mut drained = 0_u32;
                     while let Some(event) = pending.take() {
-                        observe_grid_market(&mut variants, &mut market, Some(&event), clock.now_ns(), &metrics, config.runtime.market_stale_ms)?;
+                        observe_grid_market(&mut variants, &mut market, Some(&event), clock.now_ns(), &metrics, config.runtime.market_stale_ms, max_carry_inventory_gap_seconds.saturating_mul(1_000))?;
                         if let MarketEvent::Trade(print) = &event {
                             vpin_value = vpin.observe(print);
                         }
@@ -4407,6 +4430,7 @@ mod tests {
             book.recv_ns,
             &metrics,
             5_000,
+            u64::MAX,
         )
         .unwrap();
         step_paper_variant(
@@ -4424,7 +4448,16 @@ mod tests {
             .feed_disconnected_since_ms
             .store(unix_ms(), Ordering::Relaxed);
         metrics.reconnects.store(1, Ordering::Relaxed);
-        observe_grid_market(&mut variants, &mut market, None, 2_000_000, &metrics, 5_000).unwrap();
+        observe_grid_market(
+            &mut variants,
+            &mut market,
+            None,
+            2_000_000,
+            &metrics,
+            5_000,
+            u64::MAX,
+        )
+        .unwrap();
         assert_eq!(variants[0].backend.working_order_count(), 0);
         assert!(market.bbo.is_none());
         let paused = variants[0].backend.account_state();
@@ -4447,6 +4480,7 @@ mod tests {
             book.recv_ns,
             &metrics,
             5_000,
+            u64::MAX,
         )
         .unwrap();
         step_paper_variant(
@@ -4461,6 +4495,77 @@ mod tests {
         assert!(variants[0].backend.working_order_count() > 0);
         assert!(variants[0].backend.scientifically_valid());
         assert_eq!(variants[0].backend.daily_realized_pnl_usdc(), -0.125);
+    }
+
+    #[tokio::test]
+    async fn a_feed_gap_past_the_carry_window_closes_inventory_at_the_last_mark() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut variants = vec![grid_variant(directory.path())];
+        let mut account = variants[0].backend.account_state();
+        account.inventory_units = 10;
+        account.average_entry_px = 1.0;
+        account.cash_usdc -= 10.0;
+        account.equity_usdc = account.cash_usdc + 15.0;
+        variants[0]
+            .backend
+            .restore_from_snapshot(
+                account,
+                mm_live::execution::DryRunDiagnostics::default(),
+                1_000,
+                None,
+                0.0,
+            )
+            .unwrap();
+        let mut book = Bbo {
+            bid_px: 99_900,
+            ask_px: 100_100,
+            bid_sz: 1,
+            ask_sz: 1,
+            exchange_ms: unix_ms(),
+            recv_ns: 1_000_000,
+        };
+        variants[0].backend.restore_checkpoint_bbo(Some(book));
+        let mut market = grid::PaperMarketState::default();
+        let metrics = Metrics::default();
+        // Down at 2 ms, back at 3 ms: a 1 ms gap against a zero carry window.
+        metrics
+            .feed_disconnected_since_ms
+            .store(unix_ms(), Ordering::Relaxed);
+        observe_grid_market(
+            &mut variants,
+            &mut market,
+            None,
+            2_000_000,
+            &metrics,
+            5_000,
+            0,
+        )
+        .unwrap();
+        assert_eq!(variants[0].backend.account_state().inventory_units, 10);
+        metrics
+            .feed_disconnected_since_ms
+            .store(0, Ordering::Relaxed);
+        book.recv_ns = 3_000_000;
+        book.exchange_ms = unix_ms();
+        metrics
+            .feed_connected_at_ns
+            .store(book.recv_ns, Ordering::Release);
+        observe_grid_market(
+            &mut variants,
+            &mut market,
+            Some(&MarketEvent::Bbo(book)),
+            book.recv_ns,
+            &metrics,
+            5_000,
+            0,
+        )
+        .unwrap();
+        assert!(market.pause_reason.is_none());
+        assert_eq!(market.resumed_after_ms, Some(1));
+        let closed = variants[0].backend.account_state();
+        assert_eq!(closed.inventory_units, 0);
+        assert!(closed.fees_usdc > 0.0);
+        assert!(variants[0].backend.scientifically_valid());
     }
 
     #[test]

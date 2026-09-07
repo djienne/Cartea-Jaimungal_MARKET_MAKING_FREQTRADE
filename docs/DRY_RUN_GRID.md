@@ -172,8 +172,12 @@ model") must be consumed before a print reaches us, and cancellation latency
 leaves orders exposed until cancellation arrives.
 
 - Event loss is disqualifying. Feed gaps during execution are recorded separately
-  and assessed against `runtime.max_feed_downtime_fraction` (default 5%) and
-  `runtime.max_feed_gap_ms` (default 60 seconds).
+  and only their total is judged, against `runtime.max_feed_downtime_fraction`
+  (default 5%). A single gap, however long, is not: quoting is withdrawn within
+  `runtime.market_stale_ms` and resumes on the first fresh BBO, and inventory
+  held through a gap longer than `--max-carry-inventory-gap-seconds` is closed
+  at its last mark with promotion exit costs, the same rule a resume applies.
+  Multi-minute venue outages are routine over a week and must not condemn a run.
 - The consecutive-loss breaker is terminal. Its cap is 500 in the paper profile
   and 25 in the live profiles; zero would halt immediately. A latched account
   freezes, reports invalidity and cannot continue lot exits or reconciliation.

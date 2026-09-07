@@ -111,10 +111,11 @@ pub struct RuntimeConfig {
     /// one venue connection recycle, so `scientifically_valid` was false for
     /// every long run and therefore said nothing. The counters carry the truth;
     /// this only decides where to draw the line.
+    ///
+    /// The length of any single gap is not judged here: quoting is withdrawn
+    /// for its duration, and inventory held through a gap longer than the
+    /// grid's carry window is closed at its last mark, as on a resume.
     pub max_feed_downtime_fraction: f64,
-    /// A single gap this long disqualifies a run regardless of the total: a
-    /// ten-minute hole is a different kind of problem from sixty short blips.
-    pub max_feed_gap_ms: u64,
     /// How late a *genuinely new* trade print may arrive before the public
     /// stream is treated as broken and reconnected.
     ///
@@ -162,7 +163,6 @@ impl Default for RuntimeConfig {
             stats_interval_ms: 5_000,
             log_json: false,
             max_feed_downtime_fraction: 0.05,
-            max_feed_gap_ms: 60_000,
             max_trade_lag_ms: 15_000,
         }
     }
@@ -362,9 +362,6 @@ impl AppConfig {
             || !self.runtime.max_feed_downtime_fraction.is_finite()
         {
             bail!("runtime.max_feed_downtime_fraction must be finite and inside [0, 1]");
-        }
-        if self.runtime.max_feed_gap_ms == 0 {
-            bail!("runtime.max_feed_gap_ms must be greater than zero");
         }
         // Zero would mean "time out instantly" and never connect at all; a
         // sub-second budget cannot survive a TLS handshake over a slow link.
@@ -1011,12 +1008,6 @@ impl FeedHealth {
                 runtime.max_feed_downtime_fraction * 100.0
             ));
         }
-        if self.longest_gap_ms > runtime.max_feed_gap_ms {
-            reasons.push(format!(
-                "longest public feed gap was {} ms, over the {} ms limit",
-                self.longest_gap_ms, runtime.max_feed_gap_ms
-            ));
-        }
         reasons
     }
 
@@ -1063,13 +1054,17 @@ mod feed_health_tests {
     }
 
     #[test]
-    fn one_long_gap_is_disqualifying_even_when_the_total_is_small() {
-        // 90 s missing from a 24 h run is only 0.1% of it, but a gap that long
-        // is a different kind of problem from many short blips.
-        let health = FeedHealth::new(1, 90_000, 90_000, 24 * 60 * 60 * 1_000, false);
+    fn one_long_gap_with_a_small_total_stays_valid() {
+        // A three-minute venue outage in a week is routine. Quoting was paused
+        // for it and inventory past the carry window was closed at the last
+        // mark, so only the cumulative budget judges it.
+        let health = FeedHealth::new(1, 180_000, 180_000, 24 * 60 * 60 * 1_000, false);
         assert!(health.downtime_fraction < 0.05);
-        assert!(!health.is_valid(&runtime()));
-        assert!(health.failures(&runtime())[0].contains("longest"));
+        assert!(
+            health.is_valid(&runtime()),
+            "{:?}",
+            health.failures(&runtime())
+        );
     }
 
     #[test]
