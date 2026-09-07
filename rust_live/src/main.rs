@@ -2047,25 +2047,18 @@ fn observe_grid_market(
         }
     }
     // A feed gap is the same blindness as a process outage: orders were already
-    // withdrawn, only inventory was held at a mark nobody watched. Past the carry
-    // window it is closed at that mark, exactly as a resume does, so P&L after
-    // the gap is attributable to decisions taken after it.
+    // withdrawn, only inventory was held at a mark nobody watched, so past the
+    // carry window it is closed at that mark exactly as a resume does.
     if let Some(gap_ms) = market.resumed_after_ms.filter(|gap| *gap > carry_limit_ms) {
-        let mut flattened = 0_usize;
+        warn!(
+            gap_ms,
+            carry_limit_ms,
+            "feed gap exceeded the carry window; closing carried inventory at its last mark"
+        );
         for variant in variants.iter_mut() {
             if variant.backend.flatten_carried_position()?.is_some() {
-                flattened += 1;
                 variant.logger.log("feed_gap_flattened", None, &gap_ms)?;
             }
-        }
-        if flattened > 0 {
-            warn!(
-                gap_ms,
-                carry_limit_ms,
-                flattened,
-                "the feed gap exceeded the inventory carry window; open positions were closed at \
-                 their last observed touch with promotion exit costs"
-            );
         }
     }
     Ok(())
