@@ -1942,6 +1942,7 @@ struct PaperVariant {
     name: String,
     description: String,
     config_fingerprint: String,
+    config_changes: u32,
     fixed_parameters: Option<CjParameters>,
     config: AppConfig,
     policy: CarteaJaimungalPolicy,
@@ -2173,6 +2174,7 @@ impl PaperVariant {
             fills: self.fills,
             working_orders: self.backend.working_order_count(),
             max_drawdown_usdc: self.max_drawdown_usdc,
+            config_changes: self.config_changes,
             scientifically_valid,
             eligible_for_promotion: scientifically_valid
                 && promotion_pnl_usdc.is_some()
@@ -2283,31 +2285,21 @@ async fn run_dry_run_grid(
             }
         }
     }
-    // The estimator semantics are part of the run's identity: a resume across
-    // a parameter-schema change would splice two parameterisations into one
-    // P&L curve and keep an inventory unit sized under the old one.
-    let grid_fingerprint = std::iter::once(format!(
-        "execution=causal-v4;estimator=v{}:{}",
+    // The run's identity: what a checkpoint's accounting cannot survive. A new
+    // execution model or estimator schema, or a different starting equity, makes
+    // the old numbers meaningless. Anything else resumes and is marked per row.
+    let grid_fingerprint = format!(
+        "execution=causal-v4;estimator=v{}:{};starting_equity={}",
         mm_live::calibration::PARAMETER_SCHEMA_VERSION,
-        mm_live::calibration::ESTIMATOR_SEMANTICS
-    ))
-    .chain(
-        variant_configs
-            .iter()
-            .map(|(entry, _, _, fingerprint)| format!("{}={fingerprint}", entry.name)),
-    )
-    .collect::<Vec<_>>()
-    .join(";");
+        mm_live::calibration::ESTIMATOR_SEMANTICS,
+        config.dry_run.starting_equity_usdc
+    );
     let resume_from = load_resumable_checkpoint(
         &state_path,
         &instrument.symbol,
         &grid_fingerprint,
         launched_at_ms,
         max_resume_gap_seconds,
-        &variant_configs
-            .iter()
-            .map(|(entry, _, _, fingerprint)| (entry.name.as_str(), fingerprint.as_str()))
-            .collect::<Vec<_>>(),
     );
     let run_id = resume_from.as_ref().map_or_else(
         || format!("run-{launched_at_ms}"),
@@ -2379,6 +2371,7 @@ async fn run_dry_run_grid(
             name: entry.name.clone(),
             description: entry.overrides.describe(),
             config_fingerprint,
+            config_changes: 0,
             fixed_parameters,
             report_path: run_dir.join(format!("{}.json", entry.name)),
             peak_equity_usdc: variant_config.dry_run.starting_equity_usdc,
@@ -2824,10 +2817,9 @@ fn load_resumable_checkpoint(
     grid_fingerprint: &str,
     launched_at_ms: u64,
     max_resume_gap_seconds: u64,
-    expected: &[(&str, &str)],
 ) -> Option<grid::PersistedGridState> {
     let state = grid::PersistedGridState::load(state_path)?;
-    if let Err(error) = state.validate_variants(expected) {
+    if let Err(error) = state.validate_variants() {
         warn!(%error, "checkpoint rejected before adopting run state or artifacts");
         return None;
     }
@@ -2862,18 +2854,29 @@ fn load_resumable_checkpoint(
 
 /// Restore every variant's accounting from a checkpoint.
 ///
-/// All-or-nothing: a checkpoint missing a variant, or carrying one whose
-/// parameters have changed, is refused as a whole rather than applied in part.
-/// A grid where some variants resumed and others started from zero equity would
-/// produce a leaderboard whose rows are not comparable -- the one thing the
-/// grid exists to make possible.
+/// History continues across parameter changes: a retuned row keeps its
+/// accounting and counts the change, a row the checkpoint never had starts from
+/// zero. Both are printed under the leaderboard so a reader knows which rows
+/// span more than one configuration.
 fn resume_grid(variants: &mut [PaperVariant], state: &grid::PersistedGridState) -> Result<()> {
     for variant in variants {
-        let persisted = state
+        let Some(persisted) = state
             .variants
             .iter()
             .find(|entry| entry.name == variant.name)
-            .context("validated checkpoint lost a variant")?;
+        else {
+            info!(variant = %variant.name, "new to this run; starting from zero");
+            continue;
+        };
+        variant.config_changes = persisted.config_changes;
+        if persisted.config_fingerprint != variant.config_fingerprint {
+            variant.config_changes += 1;
+            warn!(
+                variant = %variant.name,
+                config_changes = variant.config_changes,
+                "parameters changed since the checkpoint; history continues and the row is marked"
+            );
+        }
         variant.backend.restore_from_snapshot(
             persisted.account,
             persisted.diagnostics.clone(),
@@ -2913,6 +2916,7 @@ fn checkpoint_grid(
         persisted.push(grid::PersistedVariant {
             name: variant.name.clone(),
             config_fingerprint: variant.config_fingerprint.clone(),
+            config_changes: variant.config_changes,
             inventory_unit: variant.inventory_unit,
             last_bbo: variant.backend.checkpoint_bbo(),
             account: variant.backend.account_snapshot(),
@@ -3443,6 +3447,7 @@ async fn run_replay_command(
         name: variant_name.unwrap_or("replay").to_owned(),
         description: String::new(),
         config_fingerprint,
+        config_changes: 0,
         fixed_parameters,
         backend: DryRunBackend::new(
             instrument.clone(),
@@ -4267,6 +4272,7 @@ mod tests {
             name: "baseline".to_owned(),
             description: String::new(),
             config_fingerprint: config.fingerprint().unwrap(),
+            config_changes: 0,
             fixed_parameters: None,
             policy,
             surface,
@@ -4488,6 +4494,52 @@ mod tests {
         assert!(variants[0].backend.working_order_count() > 0);
         assert!(variants[0].backend.scientifically_valid());
         assert_eq!(variants[0].backend.daily_realized_pnl_usdc(), -0.125);
+    }
+
+    #[test]
+    fn a_retuned_row_resumes_and_is_counted_while_a_new_row_starts_fresh() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut variants = vec![grid_variant(directory.path())];
+        let mut persisted = grid::PersistedVariant {
+            name: "baseline".to_owned(),
+            config_fingerprint: "before the retune".to_owned(),
+            config_changes: 1,
+            inventory_unit: 1_000,
+            last_bbo: None,
+            account: variants[0].backend.account_state(),
+            diagnostics: mm_live::execution::DryRunDiagnostics::default(),
+            fills: 7,
+            peak_equity_usdc: 1_000.0,
+            max_drawdown_usdc: 0.0,
+            failure: None,
+            current_day: None,
+            daily_realized_pnl_usdc: 0.0,
+        };
+        persisted.account.fees_usdc = 0.5;
+        let mut state = grid::PersistedGridState {
+            schema_version: grid::PersistedGridState::SCHEMA_VERSION,
+            symbol: "CASHCAT".to_owned(),
+            grid_fingerprint: String::new(),
+            run_id: "run-1000".to_owned(),
+            started_at_ms: 1_000,
+            checkpoint_ms: 2_000,
+            resumes: 0,
+            resumed_downtime_ms: 0,
+            feed_health: mm_live::config::FeedHealth::new(0, 0, 0, 1_000, false),
+            trade_prints: 0,
+            replayed_trades_ignored: 0,
+            variants: vec![persisted],
+        };
+        resume_grid(&mut variants, &state).unwrap();
+        assert_eq!(variants[0].config_changes, 2);
+        assert_eq!(variants[0].fills, 7);
+        assert_eq!(variants[0].backend.account_state().fees_usdc, 0.5);
+
+        state.variants[0].name = "someone_else".to_owned();
+        let mut fresh = vec![grid_variant(directory.path())];
+        resume_grid(&mut fresh, &state).unwrap();
+        assert_eq!(fresh[0].config_changes, 0);
+        assert_eq!(fresh[0].fills, 0);
     }
 
     #[tokio::test]
@@ -4776,7 +4828,7 @@ mod tests {
         let state = grid::PersistedGridState {
             schema_version: grid::PersistedGridState::SCHEMA_VERSION,
             symbol: "CASHCAT".to_owned(),
-            grid_fingerprint: "matching".to_owned(),
+            grid_fingerprint: "execution=causal-v4".to_owned(),
             run_id: "run-1000".to_owned(),
             started_at_ms: 1_000,
             checkpoint_ms: 2_000,
@@ -4791,15 +4843,9 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let report = directory.path().join("leaderboard.json");
         std::fs::write(&report, b"previous run").unwrap();
-        assert!(load_resumable_checkpoint(
-            &path,
-            "CASHCAT",
-            "matching",
-            2_100,
-            3_600,
-            &[("missing", "config")]
-        )
-        .is_none());
+        assert!(
+            load_resumable_checkpoint(&path, "CASHCAT", "execution=other", 2_100, 3_600).is_none()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert_eq!(std::fs::read(&report).unwrap(), b"previous run");
     }
@@ -4934,6 +4980,7 @@ mod grid_health_tests {
             fills: 1,
             working_orders: 0,
             max_drawdown_usdc: 0.0,
+            config_changes: 0,
             scientifically_valid: true,
             eligible_for_promotion: true,
         };
@@ -5010,6 +5057,7 @@ mod grid_health_tests {
             fills: 0,
             working_orders: 0,
             max_drawdown_usdc: 0.0,
+            config_changes: 0,
             scientifically_valid: true,
             eligible_for_promotion: true,
         }];

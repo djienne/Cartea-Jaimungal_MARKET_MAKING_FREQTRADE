@@ -223,10 +223,14 @@ the fleet's load: every bind mount stalled and `docker stop`/`exec` hung. Fix:
 ### Checkpoint recovery
 
 Schema-3 checkpoints contain every variant's accounting, diagnostics, daily risk
-and last observed BBO. Startup validates the complete variant set and execution/
-configuration fingerprints before adopting the run ID, inventory sizing or output
-paths. A rejected checkpoint starts a separate run; it cannot overwrite the
-rejected run's artifacts. Incompatible execution models start fresh.
+and last observed BBO. **A config change continues the run.** A retuned row
+keeps its history and its `config_changes` count goes up; a row new to the spec
+starts from zero; a row removed from the spec is dropped. The leaderboard
+prints `[RECONFIGURED]` naming the rows that span more than one configuration.
+Only the run's identity starts fresh: the symbol, the execution model, the
+estimator parameter schema, or `dry_run.starting_equity_usdc`, because the old
+accounting has no meaning under a different one. A rejected checkpoint starts a
+separate run; it cannot overwrite the rejected run's artifacts.
 
 `grid_state.json` is replaced atomically with one `.bak` generation. Decode
 failures warn and try the backup. Missing feed-health fields are errors, not an

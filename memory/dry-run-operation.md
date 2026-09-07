@@ -47,10 +47,9 @@ Three things bound that, and they are the point rather than an afterthought:
   denominator, and the rendered table prints `[RESUMED]`.
 - **The carry (900 s) and resume (3600 s) windows**, and why they exist:
   `docs/DRY_RUN_GRID.md` "Checkpoint recovery".
-- **An edited grid spec starts fresh.** The checkpoint carries a fingerprint of
-  every variant's config, and resume is all-or-nothing — a partially-resumed
-  grid would have rows that are not comparable, which is the one thing the grid
-  exists to provide.
+- **An edited config or grid spec continues the run** (since 2026-09-07); the
+  changed rows are counted and printed under the table as `[RECONFIGURED]`.
+  Only symbol, execution model, estimator schema or starting equity start fresh.
 
 **Container paths are load-bearing.** Configs set
 `data_dir = "../../scripts/HL_data"`, resolved relative to the *config file*,

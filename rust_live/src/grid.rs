@@ -364,6 +364,8 @@ pub struct LeaderboardRow {
     pub fills: u64,
     pub working_orders: usize,
     pub max_drawdown_usdc: f64,
+    #[serde(default)]
+    pub config_changes: u32,
     pub scientifically_valid: bool,
     /// False for invalid rows and for dry-run-only policies with no live
     /// equivalent, such as `flatten_after_ms > 0`.
@@ -427,6 +429,9 @@ pub struct PersistedVariant {
     /// meantime, which would silently splice two different strategies into one
     /// P&L curve.
     pub config_fingerprint: String,
+    /// How many times this row's parameters changed while its history continued.
+    #[serde(default)]
+    pub config_changes: u32,
     pub inventory_unit: i64,
     pub last_bbo: Option<mm_live::types::Bbo>,
     pub account: mm_live::types::DryRunAccountState,
@@ -455,8 +460,8 @@ pub struct PersistedVariant {
 pub struct PersistedGridState {
     pub schema_version: u32,
     pub symbol: String,
-    /// Identity of the whole grid: every variant name and config fingerprint.
-    /// A changed spec -- a variant added, removed or retuned -- starts fresh.
+    /// `key=value;...` identity of the run: execution model, estimator schema,
+    /// starting equity. Only these start fresh; any other change resumes.
     pub grid_fingerprint: String,
     pub run_id: String,
     /// The *original* start, carried across every resume. This is what makes
@@ -509,15 +514,16 @@ impl PersistedGridState {
         Some(state)
     }
 
-    pub fn validate_variants(&self, expected: &[(&str, &str)]) -> Result<()> {
-        if self.variants.len() != expected.len()
-            || self
-                .variants
-                .iter()
-                .map(|entry| &entry.name)
-                .collect::<BTreeSet<_>>()
-                .len()
-                != expected.len()
+    /// Refuse a checkpoint whose accounting is corrupt. A variant missing from
+    /// it starts from zero; one whose parameters changed resumes and is marked.
+    pub fn validate_variants(&self) -> Result<()> {
+        if self
+            .variants
+            .iter()
+            .map(|entry| &entry.name)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != self.variants.len()
             || self.started_at_ms > self.checkpoint_ms
             || self
                 .run_id
@@ -525,17 +531,12 @@ impl PersistedGridState {
                 .and_then(|suffix| suffix.parse::<u64>().ok())
                 .is_none()
         {
-            bail!("checkpoint has an incompatible variant set or run ID");
+            bail!("checkpoint has duplicate variants or a bad run ID");
         }
-        for (name, fingerprint) in expected {
-            let entry = self
-                .variants
-                .iter()
-                .find(|entry| entry.name == *name)
-                .with_context(|| format!("checkpoint has no variant {name:?}"))?;
+        for entry in &self.variants {
+            let name = &entry.name;
             let account = entry.account;
-            if entry.config_fingerprint != *fingerprint
-                || entry.inventory_unit <= 0
+            if entry.inventory_unit <= 0
                 || ![
                     account.cash_usdc,
                     account.equity_usdc,
@@ -595,12 +596,23 @@ impl PersistedGridState {
                 self.symbol
             ));
         }
-        if self.grid_fingerprint != grid_fingerprint {
-            return Some(
-                "grid spec or base config changed since the checkpoint; the variants are not \
-                 the same strategies"
-                    .to_owned(),
-            );
+        // Key-by-key, so a checkpoint written before a key existed still resumes.
+        let stored: BTreeMap<&str, &str> = self
+            .grid_fingerprint
+            .split(';')
+            .filter_map(|part| part.split_once('='))
+            .collect();
+        for (key, value) in grid_fingerprint
+            .split(';')
+            .filter_map(|part| part.split_once('='))
+        {
+            if stored.get(key).is_some_and(|was| *was != value) {
+                return Some(format!(
+                    "{key} changed since the checkpoint ({} -> {value}); the old accounting has \
+                     no meaning under it",
+                    stored[key]
+                ));
+            }
         }
         None
     }
@@ -785,6 +797,19 @@ impl Leaderboard {
                  than one process lifetime",
                 self.resumes,
                 self.resumed_downtime_ms as f64 / 60_000.0
+            );
+        }
+        let reconfigured: Vec<String> = self
+            .rows
+            .iter()
+            .filter(|row| row.config_changes > 0)
+            .map(|row| format!("{} x{}", row.name, row.config_changes))
+            .collect();
+        if !reconfigured.is_empty() {
+            let _ = writeln!(
+                out,
+                "\n  [RECONFIGURED] parameters changed mid-run, history continued: {}",
+                reconfigured.join(", ")
             );
         }
         out
@@ -1034,6 +1059,7 @@ mod tests {
             fills: 0,
             working_orders: 0,
             max_drawdown_usdc: 0.0,
+            config_changes: 0,
             scientifically_valid: true,
             eligible_for_promotion: true,
         };
@@ -1167,6 +1193,7 @@ mod tests {
                 fills: 12,
                 working_orders: 2,
                 max_drawdown_usdc: 3.25,
+                config_changes: 0,
                 scientifically_valid: true,
                 eligible_for_promotion: true,
             }],
@@ -1254,7 +1281,7 @@ mod tests {
         PersistedGridState {
             schema_version: PersistedGridState::SCHEMA_VERSION,
             symbol: "CASHCAT".to_owned(),
-            grid_fingerprint: "wide8=abc;wide16=def".to_owned(),
+            grid_fingerprint: "execution=causal-v4;estimator=v5:direct".to_owned(),
             run_id: "run-1000".to_owned(),
             started_at_ms: 1_000,
             checkpoint_ms: 3_600_000,
@@ -1270,11 +1297,14 @@ mod tests {
     #[test]
     fn every_variant_must_validate_before_resume() {
         let mut state = checkpoint();
-        let expected = [("wide8", "abc")];
-        assert!(state.validate_variants(&expected).is_err());
+        assert!(
+            state.validate_variants().is_ok(),
+            "nothing to refuse in an empty checkpoint"
+        );
         state.variants.push(PersistedVariant {
             name: "wide8".to_owned(),
             config_fingerprint: "abc".to_owned(),
+            config_changes: 0,
             inventory_unit: 10,
             last_bbo: None,
             account: mm_live::types::DryRunAccountState::default(),
@@ -1286,18 +1316,15 @@ mod tests {
             current_day: None,
             daily_realized_pnl_usdc: 0.0,
         });
-        assert!(state.validate_variants(&expected).is_ok());
-        assert!(state.validate_variants(&[("wide8", "retuned")]).is_err());
+        assert!(state.validate_variants().is_ok());
         state.variants[0].inventory_unit = 0;
-        assert!(state.validate_variants(&expected).is_err());
+        assert!(state.validate_variants().is_err());
         state.variants[0].inventory_unit = 10;
         state.variants[0].account.inventory_units = 1;
-        assert!(state.validate_variants(&expected).is_err());
+        assert!(state.validate_variants().is_err());
         state.variants[0].account.inventory_units = 0;
         state.variants.push(state.variants[0].clone());
-        assert!(state
-            .validate_variants(&[("wide8", "abc"), ("wide8", "abc")])
-            .is_err());
+        assert!(state.validate_variants().is_err());
     }
 
     #[test]
@@ -1330,26 +1357,34 @@ mod tests {
 
     #[test]
     fn a_matching_checkpoint_is_resumable() {
-        assert!(checkpoint()
-            .rejection("CASHCAT", "wide8=abc;wide16=def")
+        let state = checkpoint();
+        assert!(state
+            .rejection("CASHCAT", "execution=causal-v4;estimator=v5:direct")
+            .is_none());
+        // A key the checkpoint predates is not a change.
+        assert!(state
+            .rejection(
+                "CASHCAT",
+                "execution=causal-v4;estimator=v5:direct;starting_equity=250"
+            )
             .is_none());
     }
 
-    /// The trap this guards: editing a variant and restarting would otherwise
-    /// splice two different strategies into one P&L curve, with nothing in the
-    /// output saying so.
+    /// Only the run's identity starts fresh: a different execution model or
+    /// estimator schema makes the old accounting meaningless. Retuned
+    /// parameters resume and are counted per row instead.
     #[test]
-    fn an_edited_grid_spec_is_not_resumable() {
+    fn a_changed_identity_is_not_resumable() {
         let reason = checkpoint()
-            .rejection("CASHCAT", "wide8=abc;wide16=CHANGED")
-            .expect("a retuned grid must be refused");
-        assert!(reason.contains("not the same strategies"), "{reason}");
+            .rejection("CASHCAT", "execution=causal-v5;estimator=v5:direct")
+            .expect("a new execution model must be refused");
+        assert!(reason.contains("execution changed"), "{reason}");
     }
 
     #[test]
     fn a_checkpoint_from_another_instrument_is_not_resumable() {
         let reason = checkpoint()
-            .rejection("ETH", "wide8=abc;wide16=def")
+            .rejection("ETH", "execution=causal-v4;estimator=v5:direct")
             .expect("a different symbol must be refused");
         assert!(reason.contains("CASHCAT"), "{reason}");
     }
