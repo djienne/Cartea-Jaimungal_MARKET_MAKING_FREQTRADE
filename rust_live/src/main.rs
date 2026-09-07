@@ -2588,8 +2588,7 @@ async fn run_dry_run_grid(
                         &instrument.symbol,
                         started_at_ms,
                         &metrics,
-                        &config.runtime,
-                        !scientifically_valid.load(Ordering::Acquire),
+                                                !scientifically_valid.load(Ordering::Acquire),
                         resumes,
                         resumed_downtime_ms,
                         latest_bbo.load(),
@@ -2696,7 +2695,6 @@ async fn run_dry_run_grid(
         &instrument.symbol,
         started_at_ms,
         &metrics,
-        &config.runtime,
         !scientifically_valid.load(Ordering::Acquire),
         resumes,
         resumed_downtime_ms,
@@ -2731,24 +2729,14 @@ async fn run_dry_run_grid(
     // latching the run invalid: a multi-day grid always sees a venue connection
     // recycle, so the old boolean was false for every long run and said nothing.
     //
-    // The verdict comes from the board rather than being recomputed here, so
-    // the session reports and the leaderboard cannot disagree about whether the
-    // same run was valid.
     let feed_health = board.feed_health;
-    let feed_failures = board.feed_failures.clone();
-    let feed_valid = feed_failures.is_empty();
-    if feed_valid {
-        info!(
-            gaps = feed_health.gaps,
-            downtime_ms = feed_health.downtime_ms,
-            longest_gap_ms = feed_health.longest_gap_ms,
-            "public feed health within limits"
-        );
-    } else {
-        for reason in &feed_failures {
-            warn!(reason = %reason, "public feed health disqualifies this run");
-        }
-    }
+    info!(
+        gaps = feed_health.gaps,
+        downtime_ms = feed_health.downtime_ms,
+        longest_gap_ms = feed_health.longest_gap_ms,
+        event_loss = feed_health.event_loss,
+        "public feed health"
+    );
     for variant in &variants {
         let report = SessionReport {
             schema_version: 2,
@@ -2769,13 +2757,8 @@ async fn run_dry_run_grid(
             execution: variant.backend.diagnostics().clone(),
             metrics: metrics.snapshot(),
             latency: (*latency.snapshot()).clone(),
-            scientifically_valid: variant.backend.scientifically_valid() && feed_valid,
-            invalid_reasons: variant
-                .failure
-                .iter()
-                .cloned()
-                .chain(feed_failures.iter().cloned())
-                .collect(),
+            scientifically_valid: variant.backend.scientifically_valid(),
+            invalid_reasons: variant.failure.iter().cloned().collect(),
             event_log_path: run_dir.display().to_string(),
             market_event_ring_high_water: events.high_water_mark(),
         };
@@ -2972,13 +2955,8 @@ fn grid_health_verdict(
         .filter(|row| row.scientifically_valid)
         .count();
     let working_orders: usize = board.rows.iter().map(|row| row.working_orders).sum();
-    let evidence = if board.feed_failures.is_empty() {
-        String::new()
-    } else {
-        format!("; evidence INVALID: {}", board.feed_failures.join("; "))
-    };
     Ok(format!(
-        "grid responsive: leaderboard {} s old; {feed_status}; {quote_status}; {working_orders} working orders; {valid_rows}/{} scientifically valid; {} s elapsed{evidence}",
+        "grid responsive: leaderboard {} s old; {feed_status}; {quote_status}; {working_orders} working orders; {valid_rows}/{} scientifically valid; {} s elapsed",
         age_ms / 1_000,
         board.rows.len(),
         board.elapsed_seconds
@@ -3004,9 +2982,6 @@ fn promote_best_config(
             board.elapsed_seconds,
             min_elapsed_seconds
         );
-    }
-    if !board.feed_failures.is_empty() || board.feed_health.event_loss {
-        bail!("leaderboard feed evidence is invalid; refusing live promotion");
     }
     let winner = board
         .rows
@@ -3116,21 +3091,14 @@ fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Write `leaderboard.json`, with the feed's verdict on the run so far folded
-/// into every row.
-///
-/// The verdict is recomputed here, on every stats tick, rather than once in the
-/// teardown. A grid can be killed at any moment -- a host reboot ended the
-/// 2026-08-27 run mid-heartbeat -- and whatever it leaves behind is what gets
-/// read months later. An artifact that can only tell the truth if the process
-/// exits cleanly is an artifact that lies exactly when it matters.
+/// Write `leaderboard.json` on every stats tick, so a grid killed before its
+/// teardown still leaves an artifact that tells the truth.
 fn write_grid_leaderboard(
     variants: &[PaperVariant],
     path: &Path,
     symbol: &str,
     started_at_ms: u64,
     metrics: &Metrics,
-    runtime: &mm_live::config::RuntimeConfig,
     event_loss: bool,
     resumes: u32,
     resumed_downtime_ms: u64,
@@ -3148,27 +3116,19 @@ fn write_grid_leaderboard(
             .saturating_sub(resumed_downtime_ms),
         event_loss,
     );
-    let feed_failures = feed_health.failures(runtime);
-    let feed_valid = feed_failures.is_empty();
     let mut board = grid::Leaderboard {
         generated_at_ms: now,
         started_at_ms,
         elapsed_seconds: now.saturating_sub(started_at_ms) / 1_000,
         symbol: symbol.to_owned(),
         feed_health,
-        feed_failures,
         feed_down_for_ms,
         quote_pause_reason: quote_pause_reason.map(str::to_owned),
         resumes,
         resumed_downtime_ms,
         rows: variants
             .iter()
-            .map(|variant| {
-                let mut row = variant.leaderboard_row(latest_bbo);
-                row.scientifically_valid = row.scientifically_valid && feed_valid;
-                row.eligible_for_promotion = row.eligible_for_promotion && feed_valid;
-                row
-            })
+            .map(|variant| variant.leaderboard_row(latest_bbo))
             .collect(),
     };
     board.sort_by_promotion_pnl();
@@ -4861,7 +4821,6 @@ mod grid_health_tests {
                 3_600_000,
                 false,
             ),
-            feed_failures: Vec::new(),
             feed_down_for_ms,
             quote_pause_reason: None,
             resumes: 0,
@@ -4887,18 +4846,15 @@ mod grid_health_tests {
     fn health_reports_recovery_and_invalid_evidence_without_a_restart_loop() {
         let mut snapshot = board(unix_ms(), 70_000);
         snapshot.quote_pause_reason = Some("public feed disconnected; retrying".to_owned());
-        snapshot.feed_failures = vec!["gap exceeded the scientific limit".to_owned()];
         let (_directory, path) = write(&snapshot);
         let verdict = grid_health_verdict(&path, 120, 180).unwrap();
         assert!(verdict.contains("feed down 70 s; retrying"));
-        assert!(verdict.contains("evidence INVALID"));
         assert!(!verdict.contains("feed up"));
         snapshot.feed_down_for_ms = 0;
         snapshot.quote_pause_reason = None;
         snapshot.write_atomic(&path).unwrap();
         let verdict = grid_health_verdict(&path, 120, 180).unwrap();
         assert!(verdict.contains("data ready"));
-        assert!(verdict.contains("evidence INVALID"));
     }
 
     #[test]

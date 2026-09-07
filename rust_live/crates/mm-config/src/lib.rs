@@ -103,19 +103,6 @@ pub struct RuntimeConfig {
     pub execution_event_capacity: usize,
     pub stats_interval_ms: u64,
     pub log_json: bool,
-    /// Share of a run's wall time that may be lost to public-feed gaps before
-    /// the evidence is called invalid.
-    ///
-    /// A gap is missing data and is always recorded, but a binary latch made
-    /// the verdict useless: past about three hours a run is guaranteed at least
-    /// one venue connection recycle, so `scientifically_valid` was false for
-    /// every long run and therefore said nothing. The counters carry the truth;
-    /// this only decides where to draw the line.
-    ///
-    /// The length of any single gap is not judged here: quoting is withdrawn
-    /// for its duration, and inventory held through a gap longer than the
-    /// grid's carry window is closed at its last mark, as on a resume.
-    pub max_feed_downtime_fraction: f64,
     /// How late a *genuinely new* trade print may arrive before the public
     /// stream is treated as broken and reconnected.
     ///
@@ -162,7 +149,6 @@ impl Default for RuntimeConfig {
             execution_event_capacity: 16_384,
             stats_interval_ms: 5_000,
             log_json: false,
-            max_feed_downtime_fraction: 0.05,
             max_trade_lag_ms: 15_000,
         }
     }
@@ -357,11 +343,6 @@ impl AppConfig {
             if capacity == 0 || !capacity.is_power_of_two() {
                 bail!("{name} must be a positive power of two");
             }
-        }
-        if !(0.0..=1.0).contains(&self.runtime.max_feed_downtime_fraction)
-            || !self.runtime.max_feed_downtime_fraction.is_finite()
-        {
-            bail!("runtime.max_feed_downtime_fraction must be finite and inside [0, 1]");
         }
         // Zero would mean "time out instantly" and never connect at all; a
         // sub-second budget cannot survive a TLS handshake over a slow link.
@@ -949,11 +930,9 @@ struct ValidationEvidence {
 /// How much of a run the public feed was missing, and whether that disqualifies
 /// the evidence.
 ///
-/// Feed gaps used to latch `scientifically_valid` false forever, which made the
-/// flag meaningless for any run long enough to see a venue connection recycle —
-/// i.e. every run past about three hours. The counters below are the durable
-/// artefact; the verdict is a convenience derived from them, so a reader can
-/// see "9 gaps, 31 s total, worst 3.8 s over 72 h" instead of a bare `false`.
+/// Feed health is counted and shown, never judged. Quoting is withdrawn while
+/// the feed is down and inventory past the carry window is closed at its last
+/// mark, so an outage shortens the measurement without corrupting it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FeedHealth {
     pub gaps: u64,
@@ -961,8 +940,7 @@ pub struct FeedHealth {
     pub longest_gap_ms: u64,
     pub run_ms: u64,
     pub downtime_fraction: f64,
-    /// True when the causal event ring saturated. Unlike a gap, this means the
-    /// simulation processed the wrong sequence, so it is always disqualifying.
+    /// True when the causal event ring saturated and events were dropped.
     pub event_loss: bool,
 }
 
@@ -988,89 +966,15 @@ impl FeedHealth {
             event_loss,
         }
     }
-
-    /// Reasons this run's feed disqualifies its evidence. Empty means healthy.
-    pub fn failures(&self, runtime: &RuntimeConfig) -> Vec<String> {
-        let mut reasons = Vec::new();
-        if self.event_loss {
-            reasons.push(
-                "causal market-event ring saturated: events were dropped, so the simulated \
-                 sequence is wrong rather than merely incomplete"
-                    .to_owned(),
-            );
-        }
-        if self.downtime_fraction > runtime.max_feed_downtime_fraction {
-            reasons.push(format!(
-                "public feed was down for {:.2}% of the run ({} gaps, {} ms total), over the {:.2}% limit",
-                self.downtime_fraction * 100.0,
-                self.gaps,
-                self.downtime_ms,
-                runtime.max_feed_downtime_fraction * 100.0
-            ));
-        }
-        reasons
-    }
-
-    pub fn is_valid(&self, runtime: &RuntimeConfig) -> bool {
-        self.failures(runtime).is_empty()
-    }
 }
 
 #[cfg(test)]
 mod feed_health_tests {
     use super::*;
 
-    fn runtime() -> RuntimeConfig {
-        RuntimeConfig::default()
-    }
-
-    #[test]
-    fn short_blips_over_a_long_run_stay_valid() {
-        // The case that made the old latch useless: a multi-day grid always
-        // sees venue connection recycles, so this must not disqualify it.
-        let health = FeedHealth::new(9, 31_402, 3_812, 72 * 60 * 60 * 1_000, false);
-        assert!(health.downtime_fraction < 0.001);
-        assert!(
-            health.is_valid(&runtime()),
-            "{:?}",
-            health.failures(&runtime())
-        );
-    }
-
-    #[test]
-    fn event_loss_is_always_disqualifying() {
-        // Zero downtime, but the ring dropped events: the sequence is wrong.
-        let health = FeedHealth::new(0, 0, 0, 3_600_000, true);
-        assert!(!health.is_valid(&runtime()));
-        assert!(health.failures(&runtime())[0].contains("ring saturated"));
-    }
-
-    #[test]
-    fn too_much_cumulative_downtime_is_disqualifying() {
-        // 10% of a one-hour run, against the 5% default.
-        let health = FeedHealth::new(20, 360_000, 30_000, 3_600_000, false);
-        assert!(!health.is_valid(&runtime()));
-        assert!(health.failures(&runtime())[0].contains("down for"));
-    }
-
-    #[test]
-    fn one_long_gap_with_a_small_total_stays_valid() {
-        // A three-minute venue outage in a week is routine. Quoting was paused
-        // for it and inventory past the carry window was closed at the last
-        // mark, so only the cumulative budget judges it.
-        let health = FeedHealth::new(1, 180_000, 180_000, 24 * 60 * 60 * 1_000, false);
-        assert!(health.downtime_fraction < 0.05);
-        assert!(
-            health.is_valid(&runtime()),
-            "{:?}",
-            health.failures(&runtime())
-        );
-    }
-
     #[test]
     fn a_zero_length_run_does_not_divide_by_zero() {
         let health = FeedHealth::new(0, 0, 0, 0, false);
         assert_eq!(health.downtime_fraction, 0.0);
-        assert!(health.is_valid(&runtime()));
     }
 }

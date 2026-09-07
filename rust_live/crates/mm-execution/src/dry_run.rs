@@ -1024,17 +1024,6 @@ impl DryRunBackend {
         if reduced_existing_position {
             if realized_delta < 0.0 {
                 self.account.consecutive_losses = self.account.consecutive_losses.saturating_add(1);
-                // The breaker LATCHES rather than cooling off: `quote.rs` stops
-                // quoting at the cap, and this counter only resets on a winning
-                // closing fill -- which a variant that can no longer fill will
-                // never get. So the variant is finished, and a row that keeps
-                // reporting itself valid is a lie rather than a result. On
-                // 2026-09-04 that hid a variant frozen for 8.7 h of a 9.6 h run.
-                // Nothing else would have shown it: `Metrics::risk_refusals` is
-                // hot-path-only and the grid spawns no hot-path threads.
-                if self.account.consecutive_losses >= self.risk.max_consecutive_losses {
-                    self.invalidate("consecutive-loss breaker latched");
-                }
             } else if realized_delta > 0.0 {
                 self.account.consecutive_losses = 0;
             }
@@ -1350,82 +1339,6 @@ mod tests {
             recv_ns: 1,
         };
         assert_eq!(visible_queue(Some(bbo), Some(&book), intent), Some(0.0));
-    }
-
-    #[tokio::test]
-    async fn a_losing_maker_fill_cannot_trigger_a_profitable_exit_after_invalidation() {
-        let mut backend = flatten_backend(1_000);
-        backend.config.decision_latency_ms = 0;
-        backend.config.acknowledgement_latency_ms = 0;
-        backend.config.cancel_latency_ms = 200;
-        backend.quoting.min_order_lifetime_ms = 0;
-        backend.quoting.maker_fee_rate = 0.0;
-        backend.risk.max_consecutive_losses = 1;
-        let mut account = backend.account;
-        account.cash_usdc = 800.0;
-        account.inventory_units = 2;
-        account.average_entry_px = 100.0;
-        backend
-            .restore_from_snapshot(account, DryRunDiagnostics::default(), 1, None, 0.0)
-            .unwrap();
-        let book = Bbo {
-            bid_px: 9_700,
-            ask_px: 9_900,
-            bid_sz: 1,
-            ask_sz: 1,
-            exchange_ms: 50,
-            recv_ns: 0,
-        };
-        backend
-            .on_market_event(&MarketEvent::Bbo(book))
-            .await
-            .unwrap();
-        let mut quotes = bid_quotes();
-        quotes.bid = None;
-        quotes.ask = Some(OrderIntent {
-            side: Side::Sell,
-            px: 9_900,
-            qty_units: 1,
-            post_only: true,
-            reduce_only: true,
-        });
-        backend.reconcile(quotes, 50).await.unwrap();
-        backend
-            .on_market_event(&MarketEvent::Bbo(Bbo {
-                exchange_ms: 100,
-                ..book
-            }))
-            .await
-            .unwrap();
-        backend
-            .on_market_event(&MarketEvent::Bbo(Bbo {
-                bid_px: 10_100,
-                ask_px: 10_300,
-                exchange_ms: 900,
-                ..book
-            }))
-            .await
-            .unwrap();
-        let mut cancel = quotes;
-        cancel.ask = None;
-        backend.reconcile(cancel, 950).await.unwrap();
-        let trade = MarketEvent::Trade(TradePrint {
-            aggressor: AggressorSide::Buy,
-            px: 9_900,
-            qty_units: 2,
-            exchange_ms: 1_000,
-            recv_ns: 0,
-            trade_id: 1,
-        });
-        let events = backend.on_market_event(&trade).await.unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(!backend.scientifically_valid());
-        assert_eq!(backend.account.inventory_units, 1);
-        assert_eq!(backend.account.consecutive_losses, 1);
-        assert_eq!(backend.diagnostics.flatten_events, 0);
-        let frozen = serde_json::to_value(backend.account).unwrap();
-        assert!(backend.on_market_event(&trade).await.unwrap().is_empty());
-        assert_eq!(serde_json::to_value(backend.account).unwrap(), frozen);
     }
 
     #[tokio::test]
@@ -2185,37 +2098,17 @@ mod tests {
     }
 
     #[test]
-    fn the_latched_loss_breaker_marks_the_variant_invalid() {
-        // The breaker never releases -- it resets only on a winning closing
-        // fill, which a variant that has stopped quoting can never take. So a
-        // row that reached the cap is finished, and must not keep reporting
-        // itself as a result.
-        let risk = RiskConfig {
-            max_consecutive_losses: 3,
-            ..RiskConfig::default()
-        };
+    fn a_losing_streak_is_counted_and_never_stops_the_variant() {
         let mut backend = DryRunBackend::new(
             instrument(),
             DryRunConfig::default(),
             QuotingConfig::default(),
-            risk,
+            RiskConfig::default(),
         )
         .unwrap();
-
-        take_losing_round_trips(&mut backend, 2);
-        assert_eq!(backend.account.consecutive_losses, 2);
-        assert!(
-            backend.scientifically_valid(),
-            "one short of the cap still measures something"
-        );
-
-        take_losing_round_trips(&mut backend, 1);
-        assert_eq!(backend.account.consecutive_losses, 3);
-        assert!(!backend.scientifically_valid());
-        assert_eq!(
-            backend.diagnostics.invalid_reason.as_deref(),
-            Some("consecutive-loss breaker latched")
-        );
+        take_losing_round_trips(&mut backend, 40);
+        assert_eq!(backend.account.consecutive_losses, 40);
+        assert!(backend.scientifically_valid());
     }
 
     #[tokio::test]

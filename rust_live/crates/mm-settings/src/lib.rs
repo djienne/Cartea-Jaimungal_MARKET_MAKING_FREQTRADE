@@ -105,7 +105,6 @@ pub struct RiskConfig {
     pub min_liquidation_buffer_usdc: f64,
     pub maintenance_margin_rate: f64,
     pub max_daily_loss_usdc: f64,
-    pub max_consecutive_losses: u32,
     pub max_market_spread_bps: f64,
 }
 
@@ -118,7 +117,6 @@ impl Default for RiskConfig {
             min_liquidation_buffer_usdc: 100.0,
             maintenance_margin_rate: 0.05,
             max_daily_loss_usdc: 200.0,
-            max_consecutive_losses: 25,
             max_market_spread_bps: 100.0,
         }
     }

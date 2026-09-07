@@ -40,11 +40,9 @@ than the run.
 
 Three things bound that, and they are the point rather than an afterthought:
 
-- **The interruption is NOT counted as feed downtime.** The 5%
-  `max_feed_downtime_fraction` budget measures blindness *while quoting* (stale
-  resting orders, fills never seen), and a stopped process has none of that. It
-  lives in `resumed_downtime_ms` instead, is subtracted from the budget's
-  denominator, and the rendered table prints `[RESUMED]`.
+- **The interruption is NOT counted as feed downtime.** Feed downtime measures
+  blindness *while quoting*; a stopped process has none of that. It lives in
+  `resumed_downtime_ms` instead and the rendered table prints `[RESUMED]`.
 - **The carry window (900 s)**, and why it exists (any gap resumes since 2026-09-07):
   `docs/DRY_RUN_GRID.md` "Checkpoint recovery".
 - **An edited config or grid spec continues the run** (since 2026-09-07); the
@@ -108,12 +106,9 @@ for 19.65 h and the line printed 117 byte-identical copies of
 60 s floor while down, and fires the moment the feed drops. So a
 `grid feed health` at `INFO` genuinely means the feed is up.
 
-**A leaderboard can now disqualify itself.** `feed_failures` and
-`feed_down_for_ms` are recomputed into `leaderboard.json` on every write, with
-open gaps counted, and ANDed into each row's `scientifically_valid`. Before, the
-verdict only existed in the teardown, so a run killed mid-flight left 18 rows
-claiming validity after 42.5% downtime. Check `feed_failures` before quoting any
-number out of that file.
+**The feed never invalidates a run** (since 2026-09-07; before that a 60 s
+gap or 5% downtime did, and `feed_failures` existed). `feed_health` in
+`leaderboard.json` carries the counters so a short measurement reads as one.
 
 **Check a run is alive with `mm-live grid-health`**, not by looking for a
 process — that is what the container healthcheck runs. Liveness alone is not

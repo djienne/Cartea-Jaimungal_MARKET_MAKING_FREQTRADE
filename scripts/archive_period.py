@@ -304,15 +304,12 @@ def leaderboard_headline(path):
     except Exception as error:  # noqa: BLE001
         return ["- leaderboard unreadable: %r" % (error,)]
     health = board.get("feed_health") or {}
-    failures = board.get("feed_failures") or []
     lines = [
         "- elapsed: %.1f h, %d resume(s)"
         % (board.get("elapsed_seconds", 0) / 3600.0, board.get("resumes", 0)),
-        "- feed: %.2f%% down, verdict %s"
-        % (health.get("downtime_fraction", 0.0) * 100.0, "INVALID" if failures else "VALID"),
+        "- feed: %.2f%% down, event loss %s"
+        % (health.get("downtime_fraction", 0.0) * 100.0, "YES" if health.get("event_loss") else "no"),
     ]
-    for reason in failures:
-        lines.append("  - " + reason)
     rows = board.get("rows") or []
     if rows:
         lines += ["", "| variant | net P&L | fills | inventory |", "| --- | ---: | ---: | ---: |"]

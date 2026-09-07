@@ -49,7 +49,7 @@ def main() -> None:
         args.latency = [int(re.search(r"^decision_latency_ms\s*=\s*(\d+)", config, re.M).group(1))]
         print(f"live  {row['net_pnl_usdc']:8.2f} {row['realized_pnl_usdc']:8.2f} {row['fees_usdc']:6.2f} "
               f"{row['inventory_units']:5d} {row['fills']:6d}   resumes={board['resumes']} "
-              f"downtime_s={board['resumed_downtime_ms'] / 1000:.0f} feed_failures={board['feed_failures']}")
+              f"downtime_s={board['resumed_downtime_ms'] / 1000:.0f} event_loss={board['feed_health']['event_loss']}")
     elif not (args.start and args.end and args.latency):
         p.error("--from, --to and --latency are required unless --against-live")
 

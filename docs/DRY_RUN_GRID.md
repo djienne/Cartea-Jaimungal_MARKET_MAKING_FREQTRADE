@@ -171,16 +171,13 @@ Post-only acceptance is checked at activation; the queue ahead (see "Queue
 model") must be consumed before a print reaches us, and cancellation latency
 leaves orders exposed until cancellation arrives.
 
-- Event loss is disqualifying. Feed gaps during execution are recorded separately
-  and only their total is judged, against `runtime.max_feed_downtime_fraction`
-  (default 5%). A single gap, however long, is not: quoting is withdrawn within
+- Nothing about the feed invalidates a run. Gaps, downtime and event loss are
+  counted and shown in `feed_health`, not judged. Quoting is withdrawn within
   `runtime.market_stale_ms` and resumes on the first fresh BBO, and inventory
   held through a gap longer than `--max-carry-inventory-gap-seconds` is closed
   at its last mark with promotion exit costs, the same rule a resume applies.
-  Multi-minute venue outages are routine over a week and must not condemn a run.
-- The consecutive-loss breaker is terminal. Its cap is 500 in the paper profile
-  and 25 in the live profiles; zero would halt immediately. A latched account
-  freezes, reports invalidity and cannot continue lot exits or reconciliation.
+  An outage shortens the measurement; it does not corrupt it.
+- A losing streak never stops a row; `consecutive_losses` is a diagnostic only.
 - The daily-loss gate is non-latching. Its daily accounting survives resume.
 - A variant error invalidates that variant without aborting the other accounts.
   Execution-invalid rows have no promotion P&L; all scientifically invalid rows

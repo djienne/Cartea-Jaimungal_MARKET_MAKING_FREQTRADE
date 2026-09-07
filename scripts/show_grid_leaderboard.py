@@ -157,14 +157,11 @@ def status_lines(board: dict[str, Any]) -> list[str]:
     age_seconds = max(0.0, time.time() - generated_ms / 1_000)
     feed = board.get("feed_health", {})
     down_ms = int(board.get("feed_down_for_ms", 0))
-    failures = board.get("feed_failures", [])
     valid = sum(bool(row.get("scientifically_valid")) for row in board["rows"])
     downtime_pct = 100.0 * float(feed.get("downtime_fraction", 0.0))
     gaps = int(feed.get("gaps", 0))
     event_loss = "YES" if feed.get("event_loss", False) else "no"
     feed_state = f"DOWN for {down_ms / 1_000:.1f}s" if down_ms else "up"
-    if failures:
-        feed_state += f"; failures: {', '.join(map(str, failures))}"
     return [
         (
             f"{board.get('symbol', '?')} dry-run grid | "

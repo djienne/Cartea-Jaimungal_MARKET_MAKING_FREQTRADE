@@ -41,9 +41,8 @@ recheck the linked official documentation and pinned protocol fixtures.
   are pruned. The persistence writer writes deltas instead of rewriting every
   table per wake; nonce-range fsyncs are prefetched off the dispatch path.
 - **Risk inputs are durable and live.** `consecutive_losses` is tracked from
-  closing fills (it was previously pinned to zero in live, making
-  `max_consecutive_losses` dead); daily P&L rolls are read through a scalar
-  accessor with no full-state clone per event.
+  closing fills as a diagnostic (no gate reads it since 2026-09-07); daily P&L
+  rolls are read through a scalar accessor with no full-state clone per event.
 - **Clocks are venue clocks.** The inventory watermark compares fill times
   against exchange time only, and the dry-run simulator schedules activation
   and cancellation from `source_exchange_ms`, matching replay.

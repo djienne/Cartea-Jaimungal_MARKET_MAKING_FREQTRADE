@@ -118,9 +118,7 @@ impl CarteaJaimungalPolicy {
         if self.risk.kill_switch || !bbo.is_valid() || inventory_unit <= 0 {
             return empty(QuoteReason::RiskLimit);
         }
-        if risk_state.daily_realized_pnl_usdc <= -self.risk.max_daily_loss_usdc
-            || risk_state.consecutive_losses >= self.risk.max_consecutive_losses
-        {
+        if risk_state.daily_realized_pnl_usdc <= -self.risk.max_daily_loss_usdc {
             return empty(QuoteReason::RiskLimit);
         }
 

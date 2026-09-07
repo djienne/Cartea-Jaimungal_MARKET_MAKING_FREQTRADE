@@ -378,21 +378,9 @@ pub struct Leaderboard {
     pub started_at_ms: u64,
     pub elapsed_seconds: u64,
     pub symbol: String,
-    /// The feed's verdict on this run *so far*, recomputed on every write.
-    ///
-    /// It used to be evaluated only in the end-of-run teardown, and applied
-    /// only to the per-variant `SessionReport`s. That made `leaderboard.json`
-    /// -- the file that actually gets read and quoted into the write-ups --
-    /// incapable of ever saying a run was disqualified. The 2026-08-27 run was
-    /// killed by a host reboot before teardown and left 18 rows all claiming
-    /// `scientifically_valid: true` after 42.5% downtime, with a longest gap
-    /// 1,179x over the limit.
-    ///
-    /// A run can always die before its teardown, so the artifact that is
-    /// rewritten continuously has to be the honest one.
+    /// Feed counters for this run so far, recomputed on every write so a run
+    /// killed before teardown still leaves an honest artifact.
     pub feed_health: FeedHealth,
-    /// Why the feed disqualifies this run; empty means it does not.
-    pub feed_failures: Vec<String>,
     /// How long the feed has been down *at this instant*; 0 when it is up.
     ///
     /// Folded into `feed_health` as well, but kept separate because it answers
@@ -784,12 +772,6 @@ impl Leaderboard {
                 },
             );
         }
-        // Printed under the table rather than per row: the reason is the same
-        // for every variant, and a reader who scrolls past a screenful of tags
-        // still needs to be told what disqualified them.
-        for reason in &self.feed_failures {
-            let _ = writeln!(out, "\n  [FEED INVALID] {reason}");
-        }
         if self.resumes > 0 {
             let _ = writeln!(
                 out,
@@ -1069,7 +1051,6 @@ mod tests {
             elapsed_seconds: 0,
             symbol: "CASHCAT".to_owned(),
             feed_health: healthy_feed(),
-            feed_failures: Vec::new(),
             feed_down_for_ms: 0,
             quote_pause_reason: None,
             resumes: 0,
@@ -1174,7 +1155,6 @@ mod tests {
             elapsed_seconds: (now_ms - 1_000) / 1_000,
             symbol: "CASHCAT".to_owned(),
             feed_health: healthy_feed(),
-            feed_failures: Vec::new(),
             feed_down_for_ms: 0,
             quote_pause_reason: None,
             resumes: 0,
