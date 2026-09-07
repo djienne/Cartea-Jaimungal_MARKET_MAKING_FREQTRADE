@@ -144,13 +144,9 @@ enum Command {
         /// Seconds between equity-history samples. Zero disables the history.
         #[arg(long, default_value_t = 60)]
         history_seconds: u64,
-        /// Maximum checkpoint age for resume, in seconds. Zero starts fresh.
-        /// Process downtime is recorded separately from feed downtime.
-        #[arg(long, default_value_t = 3600)]
-        max_resume_gap_seconds: u64,
-        /// Maximum gap for carrying inventory, in seconds. Longer resumable gaps
-        /// close valid positions at checkpoint bid/ask with promotion exit costs.
-        /// Must not exceed the resume window. Zero closes on every resume.
+        /// Maximum gap for carrying inventory, in seconds. Longer gaps close
+        /// valid positions at checkpoint bid/ask with promotion exit costs.
+        /// Zero closes on every resume. A checkpoint resumes after any gap.
         #[arg(long, default_value_t = 900)]
         max_carry_inventory_gap_seconds: u64,
         /// Roll bounded event logs at this many MiB and before reopening.
@@ -454,7 +450,6 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             duration_seconds,
             out_dir,
             history_seconds,
-            max_resume_gap_seconds,
             max_carry_inventory_gap_seconds,
             log_max_mb,
             log_keep,
@@ -466,7 +461,6 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
                 duration_seconds,
                 out_dir.as_deref(),
                 history_seconds,
-                max_resume_gap_seconds,
                 max_carry_inventory_gap_seconds,
                 mm_live::report::LogRotation {
                     max_bytes: log_max_mb.saturating_mul(1024 * 1024),
@@ -2204,17 +2198,9 @@ async fn run_dry_run_grid(
     duration_seconds: u64,
     out_dir: Option<&Path>,
     history_seconds: u64,
-    max_resume_gap_seconds: u64,
     max_carry_inventory_gap_seconds: u64,
     log_rotation: mm_live::report::LogRotation,
 ) -> Result<()> {
-    if max_resume_gap_seconds > 0 && max_carry_inventory_gap_seconds > max_resume_gap_seconds {
-        bail!(
-            "--max-carry-inventory-gap-seconds ({max_carry_inventory_gap_seconds}) exceeds \
-             --max-resume-gap-seconds ({max_resume_gap_seconds}): the carry window can \
-             only narrow the resume window, never widen it"
-        );
-    }
     let launched_at_ms = unix_ms();
     // Overwritten by a resumed checkpoint below, so that elapsed time, the
     // downtime fraction and the equity curve all run from the original start
@@ -2299,7 +2285,6 @@ async fn run_dry_run_grid(
         &instrument.symbol,
         &grid_fingerprint,
         launched_at_ms,
-        max_resume_gap_seconds,
     );
     let run_id = resume_from.as_ref().map_or_else(
         || format!("run-{launched_at_ms}"),
@@ -2816,15 +2801,10 @@ fn load_resumable_checkpoint(
     symbol: &str,
     grid_fingerprint: &str,
     launched_at_ms: u64,
-    max_resume_gap_seconds: u64,
 ) -> Option<grid::PersistedGridState> {
     let state = grid::PersistedGridState::load(state_path)?;
     if let Err(error) = state.validate_variants() {
         warn!(%error, "checkpoint rejected before adopting run state or artifacts");
-        return None;
-    }
-    if max_resume_gap_seconds == 0 {
-        info!("resuming is disabled (--max-resume-gap-seconds 0); starting fresh");
         return None;
     }
     if let Some(reason) = state.rejection(symbol, grid_fingerprint) {
@@ -2835,20 +2815,10 @@ fn load_resumable_checkpoint(
         warn!("checkpoint is from the future; starting fresh");
         return None;
     }
-    let gap_ms = launched_at_ms.saturating_sub(state.checkpoint_ms);
-    let limit_ms = max_resume_gap_seconds.saturating_mul(1_000);
-    if gap_ms > limit_ms {
-        // Refusing is the conservative choice, not the cautious-looking one.
-        // Resuming here would carry every variant's inventory across a price
-        // path nobody observed and mark it at whatever the market had become --
-        // precisely how the 46.4 h run came to report a 13.2% rally as profit.
-        warn!(
-            gap_ms,
-            limit_ms,
-            "previous grid run was interrupted for longer than the resume limit; starting fresh              rather than marking held inventory across an unobserved move"
-        );
-        return None;
-    }
+    // Any gap resumes: past the carry window the caller closes held inventory
+    // at the checkpoint mark, so a long outage costs the run its positions, not
+    // its history. (Marking inventory across an unobserved move is how a 46.4 h
+    // run once reported a 13.2% rally as profit; the carry window is the guard.)
     Some(state)
 }
 
@@ -4843,9 +4813,7 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let report = directory.path().join("leaderboard.json");
         std::fs::write(&report, b"previous run").unwrap();
-        assert!(
-            load_resumable_checkpoint(&path, "CASHCAT", "execution=other", 2_100, 3_600).is_none()
-        );
+        assert!(load_resumable_checkpoint(&path, "CASHCAT", "execution=other", 2_100).is_none());
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert_eq!(std::fs::read(&report).unwrap(), b"previous run");
     }

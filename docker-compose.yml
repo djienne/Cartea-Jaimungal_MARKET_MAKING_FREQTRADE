@@ -70,8 +70,6 @@ services:
       - "0"
       - --out-dir
       - /opt/mm/reports/grid_live
-      - --max-resume-gap-seconds
-      - "3600"
       - --max-carry-inventory-gap-seconds
       - "900"
 

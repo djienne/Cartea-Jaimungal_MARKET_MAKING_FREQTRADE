@@ -45,7 +45,7 @@ Three things bound that, and they are the point rather than an afterthought:
   resting orders, fills never seen), and a stopped process has none of that. It
   lives in `resumed_downtime_ms` instead, is subtracted from the budget's
   denominator, and the rendered table prints `[RESUMED]`.
-- **The carry (900 s) and resume (3600 s) windows**, and why they exist:
+- **The carry window (900 s)**, and why it exists (any gap resumes since 2026-09-07):
   `docs/DRY_RUN_GRID.md` "Checkpoint recovery".
 - **An edited config or grid spec continues the run** (since 2026-09-07); the
   changed rows are counted and printed under the table as `[RECONFIGURED]`.

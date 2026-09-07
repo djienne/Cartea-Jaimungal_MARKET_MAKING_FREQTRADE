@@ -240,12 +240,11 @@ is silently converted into a resumable clean account.
 | Checkpoint gap | Behavior |
 |---|---|
 | Up to 900 seconds | Restore accounting with no working orders; carry inventory, waiting for a fresh BBO before normal stale-lot exits |
-| Over 900 seconds, up to 3600 | Close valid carried inventory at the checkpoint bid/ask with configured promotion fee/slippage before feed startup |
-| Over 3600 seconds | Start a fresh run |
+| Over 900 seconds | Close valid carried inventory at the checkpoint bid/ask with configured promotion fee/slippage before feed startup, then resume |
 
-`--max-carry-inventory-gap-seconds` and `--max-resume-gap-seconds` control
-these limits. Zero resume window disables resume; zero carry window closes
-inventory on any resume. Terminal invalid accounts remain frozen. The carry
+`--max-carry-inventory-gap-seconds` sets the carry window; zero closes
+inventory on any resume. There is no upper limit on the gap: a run resumes
+after an outage of any length. Terminal invalid accounts remain frozen. The carry
 window exists because resuming with a position intact marks it at a price whose
 path was never observed: that mechanism let a 46.4 h run report a 13.2% rally
 as profit (2026-08-27).
