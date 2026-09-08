@@ -1491,12 +1491,14 @@ async fn run_live(
     // Returning early would abandon live exposure to the venue dead-man
     // deadline, and an account under the venue's cumulative-volume threshold
     // cannot arm a dead-man at all.
+    let mut stop_reason = "error";
     let loop_result: Result<()> = async {
         loop {
             tokio::select! {
                 biased;
                 result = &mut shutdown_signal => {
                     result?;
+                    stop_reason = "interrupted";
                     break;
                 }
                 () = async {
@@ -1505,7 +1507,7 @@ async fn run_live(
                     } else {
                         std::future::pending::<()>().await;
                     }
-                } => break,
+                } => { stop_reason = "duration_elapsed"; break; },
                 // Quote dispatch outranks the market drain: with the ring
                 // ranked higher, a burst of market events deferred order
                 // placement and cancellation exactly when requoting mattered
@@ -1824,7 +1826,15 @@ async fn run_live(
     }
     quote_enabled.store(false, Ordering::Release);
     signal.notify(HOT_SIGNAL_ACCOUNT);
+    let valid_before_shutdown = backend.operationally_valid();
     let shutdown_result = backend.shutdown(unix_ms()).await;
+    for event in backend.take_execution_events() {
+        // Cleanup must finish even if its diagnostic writer is unavailable.
+        let _ = event_logger.log("execution_event", None, &event);
+        if matches!(event, ExecutionEvent::Fill(_)) {
+            metrics.fills.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     let final_account = backend.account_state();
     inventory_units.store(final_account.inventory_units, Ordering::Release);
     metrics
@@ -1833,19 +1843,39 @@ async fn run_live(
     signal.notify(HOT_SIGNAL_SHUTDOWN);
     let _ = shutdown_tx.send(true);
     let flush_result = event_logger.flush();
-    let _ = tokio::time::timeout(Duration::from_secs(5), market_task).await;
-    let _ = tokio::time::timeout(Duration::from_secs(5), session_task).await;
+    let market_stopped = matches!(
+        tokio::time::timeout(Duration::from_secs(5), market_task).await,
+        Ok(Ok(()))
+    );
+    let session_stopped = matches!(
+        tokio::time::timeout(Duration::from_secs(5), session_task).await,
+        Ok(Ok(()))
+    );
     let hot_join_result = tokio::task::spawn_blocking(move || hot_thread.join())
         .await
         .context("cannot join live hot-path task")
         .and_then(|joined| joined.map_err(|_| anyhow::anyhow!("live hot-path thread panicked")));
     let observer_result = latency_observer.stop();
+    let operationally_valid = loop_result.is_ok()
+        && shutdown_result.is_ok()
+        && flush_result.is_ok()
+        && hot_join_result.is_ok()
+        && observer_result.is_ok()
+        && market_stopped
+        && session_stopped
+        && valid_before_shutdown
+        && market_evidence_valid.load(Ordering::Acquire)
+        && metrics.snapshot().dropped_causal_events == 0;
     let report = LiveSessionReport {
-        schema_version: 4,
+        schema_version: 5,
         build: mm_live::BuildInfo::current(),
         session_id: format!("{}-{started_at_ms}", instrument.symbol),
         started_at_ms,
         finished_at_ms: unix_ms(),
+        stop_reason: stop_reason.to_owned(),
+        shutdown_succeeded: shutdown_result.is_ok(),
+        operationally_valid,
+        effective_config,
         config_fingerprint: config.fingerprint()?,
         instrument,
         calibration: calibration_snapshot,

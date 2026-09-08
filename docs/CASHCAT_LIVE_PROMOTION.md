@@ -42,8 +42,11 @@ ordinary placement throttle.
 
 `Canary` runs the selected production pathway for 7,200 seconds and always runs
 `live-flatten` afterwards. It writes the pass evidence only when the full
-duration, at least one fill, zero unknown/rejected actions, scientific validity,
-and final flatness all hold. `Arm` refuses without that evidence. Once armed,
+duration, at least one fill, zero unknown/rejected actions, operational validity,
+successful shutdown and final flatness all hold. A recovered private socket
+reconnect retains its scientific discontinuity flag but can pass the operational
+verdict after reconciliation; event loss or an unresolved fault cannot.
+`Arm` refuses without that evidence. Once armed,
 the Windows supervisor checks health every minute and promotion every twelve
 hours. A changed winner is applied only after stop, cancel, flatten and flat
 verification; failures leave live stopped.
@@ -54,6 +57,27 @@ scripts\Manage-CashcatLive.ps1 -Action Arm
 scripts\Manage-CashcatLive.ps1 -Action Status
 scripts\Manage-CashcatLive.ps1 -Action Disarm
 ```
+
+## Bounded operational profile
+
+`rust_live/config/cashcat_canary.toml` is the reusable, default-disabled profile
+for a supervised four-hour execution experiment. It uses isolated 1x, about
+11 USDC directional exposure, a 0.25 USDC loss stop and timed reduce-only exits.
+Its comments specify the differences from the paper winner; it does not test
+the frozen `sweep_a` fit or paper execution timing. After explicitly enabling
+it, run `mm-live --config rust_live/config/cashcat_canary.toml live
+--duration-seconds 14400` and then the same config with `live-flatten`.
+The paper grid and collectors keep their own state and processes.
+
+Live reports include resolved settings, `stop_reason`, `shutdown_succeeded` and
+`operationally_valid`. `execution.operationally_healthy` is current state and is
+false after orderly shutdown. Historical `invalid_reason` remains visible;
+heartbeat `active_fault_reason` is null after recovery. Latency `session_summary`
+retains counts, extrema and means with constant memory; rolling percentiles
+still control admission. `ack_to_fill` measures the first observed fill after
+an acknowledgement in this process and includes normal resting time, so it is
+reported but never used as a transport gate. Snapshot/replayed fills have no
+invented acknowledgement time.
 
 ## Hyperliquid transport choices
 

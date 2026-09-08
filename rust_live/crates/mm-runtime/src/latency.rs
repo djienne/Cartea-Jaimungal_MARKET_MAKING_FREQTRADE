@@ -198,6 +198,23 @@ pub struct LatencyGateSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SessionLatencySummary {
+    pub samples: u64,
+    pub min_ns: u64,
+    pub max_ns: u64,
+    pub mean_ns: f64,
+}
+
+impl SessionLatencySummary {
+    fn record(&mut self, value: u64) {
+        self.samples += 1;
+        self.min_ns = self.min_ns.min(value);
+        self.max_ns = self.max_ns.max(value);
+        self.mean_ns += (value as f64 - self.mean_ns) / self.samples as f64;
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct LatencySnapshot {
     pub schema_version: u32,
     pub symbol: String,
@@ -211,6 +228,8 @@ pub struct LatencySnapshot {
     pub gate: LatencyGateSnapshot,
     pub distributions: BTreeMap<String, LatencyDistribution>,
     pub short_distributions: BTreeMap<String, LatencyDistribution>,
+    /// Exact counts/extrema and a running mean; constant memory for any run length.
+    pub session_summary: BTreeMap<String, SessionLatencySummary>,
 }
 
 impl LatencySnapshot {
@@ -225,7 +244,7 @@ impl LatencySnapshot {
             .map(|kind| (kind.name().to_owned(), LatencyDistribution::default()))
             .collect();
         Self {
-            schema_version: 2,
+            schema_version: 3,
             symbol: symbol.to_owned(),
             session_started_at_ms,
             generated_at_ms: unix_ms(),
@@ -236,6 +255,7 @@ impl LatencySnapshot {
             observer_errors: 0,
             gate: initial_gate(config, gate_enforced),
             distributions,
+            session_summary: BTreeMap::new(),
             short_distributions: LatencyKind::ALL
                 .into_iter()
                 .map(|kind| (kind.name().to_owned(), LatencyDistribution::default()))
@@ -408,7 +428,7 @@ struct LatencyAggregator {
     config: LatencyConfig,
     gate_enforced: bool,
     windows: BTreeMap<LatencyKind, VecDeque<LatencySample>>,
-    totals: BTreeMap<LatencyKind, u64>,
+    summaries: BTreeMap<LatencyKind, SessionLatencySummary>,
     healthy_windows: u8,
     /// Lifetime totals at the previous evaluation. The gate blocks on the
     /// *delta* since then: dropped samples or observer errors are evidence
@@ -436,7 +456,7 @@ impl LatencyAggregator {
                 .into_iter()
                 .map(|kind| (kind, VecDeque::new()))
                 .collect(),
-            totals: LatencyKind::ALL.into_iter().map(|kind| (kind, 0)).collect(),
+            summaries: BTreeMap::new(),
             healthy_windows: 0,
             seen_dropped_samples: 0,
             seen_observer_errors: 0,
@@ -450,7 +470,15 @@ impl LatencyAggregator {
                     .entry(sample.kind)
                     .or_default()
                     .push_back(sample);
-                *self.totals.entry(sample.kind).or_default() += 1;
+                self.summaries
+                    .entry(sample.kind)
+                    .or_insert(SessionLatencySummary {
+                        samples: 0,
+                        min_ns: u64::MAX,
+                        max_ns: 0,
+                        mean_ns: 0.0,
+                    })
+                    .record(sample.value_ns);
             }
         }
         let cutoff = now_ns.saturating_sub(self.window_ns);
@@ -464,7 +492,9 @@ impl LatencyAggregator {
                 kind.name().to_owned(),
                 distribution(
                     samples,
-                    self.totals.get(&kind).copied().unwrap_or(0),
+                    self.summaries
+                        .get(&kind)
+                        .map_or(0, |summary| summary.samples),
                     now_ns,
                 ),
             );
@@ -472,14 +502,16 @@ impl LatencyAggregator {
                 kind.name().to_owned(),
                 distribution_since(
                     samples,
-                    self.totals.get(&kind).copied().unwrap_or(0),
+                    self.summaries
+                        .get(&kind)
+                        .map_or(0, |summary| summary.samples),
                     now_ns,
                     short_cutoff,
                 ),
             );
         }
         let mut snapshot = LatencySnapshot {
-            schema_version: 2,
+            schema_version: 3,
             symbol: self.symbol.clone(),
             session_started_at_ms: self.session_started_at_ms,
             generated_at_ms: unix_ms(),
@@ -491,6 +523,11 @@ impl LatencyAggregator {
             gate: initial_gate(&self.config, self.gate_enforced),
             distributions,
             short_distributions,
+            session_summary: self
+                .summaries
+                .iter()
+                .map(|(kind, summary)| (kind.name().to_owned(), summary.clone()))
+                .collect(),
         };
         // Gate on what happened since the previous evaluation; the snapshot
         // keeps lifetime totals for reporting.
@@ -599,7 +636,8 @@ fn evaluate_gate(
         LatencyKind::DecisionToSocketWrite,
         LatencyKind::SubmitToAck,
         LatencyKind::CancelToAck,
-        LatencyKind::AckToFill,
+        // Ack-to-fill includes time legitimately resting on the book; it is
+        // an execution statistic, not a transport-latency admission gate.
         LatencyKind::FillToCloseSend,
     ];
     let threshold_ns = config.max_acceptable_p95_ms * 1_000_000.0;
@@ -740,6 +778,40 @@ mod tests {
         assert_eq!(hot.p99_ns, Some(50));
         assert_eq!(hot.p999_ns, Some(50));
         assert_eq!(hot.max_ns, Some(50));
+    }
+
+    #[test]
+    fn session_summary_survives_expired_windows_without_gating_on_resting_time() {
+        let config = test_config(16, 60);
+        let monitor = LatencyMonitor::new("SYN", 1, &config, false);
+        monitor.record(LatencyKind::FillToFlat, 2_000_000_000, 1);
+        monitor.record(LatencyKind::FillToFlat, 4_000_000_000, 2);
+        monitor.record(LatencyKind::AckToFill, 300_000_000_000, 2);
+        let mut aggregator = LatencyAggregator::new("SYN", 1, config, false);
+        let snapshot = aggregator.drain(&monitor, 90_000_000_000);
+        assert_eq!(snapshot.distributions["fill_to_flat"].window_samples, 0);
+        let summary = &snapshot.session_summary["fill_to_flat"];
+        assert_eq!(summary.samples, 2);
+        assert_eq!(summary.min_ns, 2_000_000_000);
+        assert_eq!(summary.max_ns, 4_000_000_000);
+        assert_eq!(summary.mean_ns, 3_000_000_000.0);
+        let mut config = aggregator.config.clone();
+        config.gate_enabled = true;
+        let mut distributions = snapshot.distributions;
+        for name in [
+            "public_ws_ping_rtt",
+            "account_ws_ping_rtt",
+            "market_event_dispatch",
+        ] {
+            let d = distributions.get_mut(name).unwrap();
+            d.window_samples = 20;
+            d.p95_ns = Some(1);
+            d.sample_age_ms = Some(0);
+        }
+        let ack = distributions.get_mut("ack_to_fill").unwrap();
+        ack.window_samples = 1;
+        ack.p95_ns = Some(300_000_000_000);
+        assert!(evaluate_gate(&distributions, &config, 0, 0, true).trading_allowed);
     }
 
     #[test]

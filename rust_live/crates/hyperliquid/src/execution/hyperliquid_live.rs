@@ -1,3 +1,7 @@
+#[path = "safety.rs"]
+mod safety;
+use safety::SafetyExit;
+
 use super::traits::{AccountStateProvider, ExecutionBackend};
 use crate::config::{AppConfig, LiveMode, QuotingConfig, RiskConfig};
 use crate::hyperliquid::account_types::{
@@ -37,6 +41,8 @@ pub struct LiveExecutionDiagnostics {
     pub operationally_healthy: bool,
     pub scientifically_valid: bool,
     pub invalid_reason: Option<String>,
+    pub quote_pause_reason: Option<String>,
+    pub operational_fault: bool,
     pub connection_generation: u64,
     pub reconciliations: u64,
     pub orders_submitted: u64,
@@ -171,6 +177,8 @@ enum PlacementRefusal {
     /// A transient condition — typically the transient exposure cap while a
     /// replacement's cancel is still in flight. Keep the target and retry.
     Defer(String),
+    /// A known budget stop; REST reconciliation cannot replenish this budget.
+    Pause(&'static str),
     /// A risk, quota, or venue-limit breach. Pause quoting until reconciled.
     Degrade(anyhow::Error),
 }
@@ -191,6 +199,7 @@ impl From<PlacementRefusal> for anyhow::Error {
     fn from(refusal: PlacementRefusal) -> Self {
         match refusal {
             PlacementRefusal::Defer(reason) => anyhow::anyhow!(reason),
+            PlacementRefusal::Pause(reason) => anyhow::anyhow!(reason),
             PlacementRefusal::Degrade(error) => error,
         }
     }
@@ -262,8 +271,10 @@ pub struct HyperliquidLiveBackend {
     q_max: i64,
     latency: Arc<LatencyMonitor>,
     last_fill_received_ns: Option<u64>,
+    acknowledged_at_ns: BTreeMap<u64, u64>,
     inventory_flatten_deadline_ms: Option<u64>,
     next_flatten_attempt_ms: u64,
+    timed_exit_task: Option<tokio::task::JoinHandle<(SafetyExit, Result<()>)>>,
     allow_untracked_position: bool,
     reconcile_requested: bool,
     /// Exchange-time watermark up to which `account.inventory_units` already
@@ -442,8 +453,10 @@ impl HyperliquidLiveBackend {
             q_max: config.model.q_max,
             latency,
             last_fill_received_ns: None,
+            acknowledged_at_ns: BTreeMap::new(),
             inventory_flatten_deadline_ms: None,
             next_flatten_attempt_ms: 0,
+            timed_exit_task: None,
             allow_untracked_position,
             reconcile_requested: false,
             // Exchange time, never local: 0 accepts every admitted fill. The
@@ -596,14 +609,29 @@ impl HyperliquidLiveBackend {
         &self.diagnostics
     }
 
+    pub fn take_execution_events(&mut self) -> Vec<ExecutionEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
+
     pub const fn operationally_healthy(&self) -> bool {
-        self.diagnostics.operationally_healthy
+        self.diagnostics.operationally_healthy && self.timed_exit_task.is_none()
+    }
+
+    pub fn operationally_valid(&self) -> bool {
+        self.operationally_healthy()
+            && self.session.healthy()
+            && self.state.persistence_healthy()
+            && !self.diagnostics.operational_fault
+            && self.diagnostics.unknown_outcomes == 0
+            && self.diagnostics.orders_rejected == 0
     }
 
     pub fn health_snapshot(&self) -> serde_json::Value {
         serde_json::json!({
             "generated_at_ms": unix_ms(),
-            "operationally_healthy": self.diagnostics.operationally_healthy,
+            "operationally_healthy": self.operationally_healthy(),
+            "timed_exit_inflight": self.timed_exit_task.is_some(),
+            "quote_pause_reason": self.diagnostics.quote_pause_reason,
             "session_healthy": self.session.healthy(),
             "persistence_healthy": self.state.persistence_healthy(),
             "inventory_units": self.account.inventory_units,
@@ -616,6 +644,7 @@ impl HyperliquidLiveBackend {
             "next_placement_allowed_ms": self.next_placement_allowed_ms,
             "consecutive_rejections": self.consecutive_rejections,
             "invalid_reason": self.diagnostics.invalid_reason,
+            "active_fault_reason": (!self.operationally_healthy()).then_some(&self.diagnostics.invalid_reason),
         })
     }
 
@@ -788,26 +817,10 @@ impl HyperliquidLiveBackend {
     }
 
     pub async fn cancel_all_bot_orders(&mut self) -> Result<()> {
-        let cloids = self.state.with_state(|state| {
-            state
-                .orders
-                .values()
-                .filter(|order| !order.status.terminal())
-                .map(|order| order.cloid.clone())
-                .collect::<Vec<String>>()
-        })?;
-        if !cloids.is_empty() {
-            let action_count = cloids.len() as u64;
-            let outcome = self.cancel_cloids_resilient(cloids).await?;
-            self.diagnostics.cancels_submitted += 1;
-            self.count_cancel_actions(action_count);
-            require_action_known(&outcome)?;
-        }
-        self.reconcile_safety_position().await?;
-        if !self.account.open_orders.is_empty() {
-            bail!("bot-order cancellation did not produce an empty venue order set");
-        }
-        Ok(())
+        let mut exit = SafetyExit::new(self);
+        let result = exit.cancel_all_bot_orders().await;
+        exit.apply(self)?;
+        result
     }
 
     pub fn enqueue_cancel_all_bot_orders(&mut self) -> Result<()> {
@@ -924,6 +937,7 @@ impl HyperliquidLiveBackend {
                 }
             }
             SessionEvent::Disconnected { reason, .. } => {
+                self.acknowledged_at_ns.clear();
                 self.diagnostics.operationally_healthy = false;
                 self.diagnostics.scientifically_valid = false;
                 self.diagnostics.invalid_reason = Some(reason);
@@ -1000,13 +1014,28 @@ impl HyperliquidLiveBackend {
                 AccountChannel::LedgerUpdates => {}
             },
             SessionEvent::ActionCompleted {
-                purpose, outcome, ..
+                purpose,
+                outcome,
+                received_ns,
             } => {
                 if matches!(outcome, ActionOutcome::Unknown { .. }) {
                     self.diagnostics.unknown_outcomes += 1;
                     self.diagnostics.operationally_healthy = false;
                     self.reconcile_requested = true;
                 } else if let Some(body) = outcome.body() {
+                    if let Some(statuses) = body
+                        .pointer("/response/data/statuses")
+                        .and_then(serde_json::Value::as_array)
+                    {
+                        for status in statuses {
+                            if let Some(oid) = status
+                                .pointer("/resting/oid")
+                                .and_then(serde_json::Value::as_u64)
+                            {
+                                self.acknowledged_at_ns.entry(oid).or_insert(received_ns);
+                            }
+                        }
+                    }
                     let rejected = body
                         .pointer("/response/data/statuses")
                         .and_then(serde_json::Value::as_array)
@@ -1082,31 +1111,26 @@ impl HyperliquidLiveBackend {
 
     pub async fn maintenance(&mut self, now_ms: u64) -> Result<Vec<ExecutionEvent>> {
         self.watch_session_readiness(now_ms);
-        if self.timed_flatten_due(now_ms) && now_ms >= self.next_flatten_attempt_ms {
+        if self
+            .timed_exit_task
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            self.finish_timed_exit().await?;
+        }
+        if self.timed_exit_task.is_none()
+            && self.timed_flatten_due(now_ms)
+            && now_ms >= self.next_flatten_attempt_ms
+        {
             tracing::info!(
                 inventory_units = self.account.inventory_units,
                 "timed inventory close due"
             );
             self.deferred_desired = None;
-            // Safety actions bypass the ordinary placement cooldown. Verify
-            // cancellations before closing, so resting quotes cannot reopen us.
-            let result = async {
-                self.cancel_all_bot_orders().await?;
-                self.market_close().await
-            }
-            .await;
-            self.reconcile_requested = true;
+            // One owned task keeps venue waits off the event loop. Quote
+            // admission stays closed until cancellation and close both finish.
+            self.timed_exit_task = Some(tokio::spawn(SafetyExit::new(self).run()));
             self.diagnostics.operationally_healthy = false;
-            if let Err(error) = result {
-                self.next_flatten_attempt_ms = unix_ms().saturating_add(RATE_LIMIT_COOLDOWN_MS);
-                self.degrade("timed inventory close failed", &error);
-            }
-            // Publish the safety snapshot immediately; ordinary reconciliation
-            // will recover the close fills, fees and terminal order states.
-            self.pending_events.push(ExecutionEvent::AccountReconciled {
-                inventory_units: self.account.inventory_units,
-                equity_usdc: self.account.account_value_usdc,
-            });
         }
         if !self.state.persistence_healthy() {
             self.diagnostics.operationally_healthy = false;
@@ -1152,6 +1176,33 @@ impl HyperliquidLiveBackend {
             }
         }
         Ok(std::mem::take(&mut self.pending_events))
+    }
+
+    async fn finish_timed_exit(&mut self) -> Result<()> {
+        let Some(task) = self.timed_exit_task.take() else {
+            return Ok(());
+        };
+        let result = match task.await {
+            Ok((exit, result)) => {
+                exit.apply(self)?;
+                result
+            }
+            Err(error) => {
+                self.diagnostics.operational_fault = true;
+                Err(anyhow::anyhow!("timed exit task failed: {error}"))
+            }
+        };
+        self.reconcile_requested = true;
+        self.diagnostics.operationally_healthy = false;
+        if let Err(error) = result {
+            self.next_flatten_attempt_ms = unix_ms().saturating_add(RATE_LIMIT_COOLDOWN_MS);
+            self.degrade("timed inventory close failed", &error);
+        }
+        self.pending_events.push(ExecutionEvent::AccountReconciled {
+            inventory_units: self.account.inventory_units,
+            equity_usdc: self.account.account_value_usdc,
+        });
+        Ok(())
     }
 
     fn observe_inventory_for_timed_exit(&mut self, now_ms: u64) {
@@ -1200,7 +1251,7 @@ impl HyperliquidLiveBackend {
     }
 
     pub const fn reconciliation_requested(&self) -> bool {
-        self.reconcile_requested
+        self.reconcile_requested && self.timed_exit_task.is_none()
     }
 
     pub fn spawn_reconciliation(&mut self, sender: mpsc::Sender<Result<AuthoritativeSnapshot>>) {
@@ -1214,6 +1265,11 @@ impl HyperliquidLiveBackend {
     }
 
     pub fn apply_reconciliation(&mut self, snapshot: AuthoritativeSnapshot) -> Result<()> {
+        // A routine fetch may predate the exit's IOC. The exit checks its own
+        // position and requests a full refresh once its orders have settled.
+        if self.timed_exit_task.is_some() {
+            return Ok(());
+        }
         self.apply_authoritative_snapshot(snapshot)
     }
 
@@ -1291,89 +1347,17 @@ impl HyperliquidLiveBackend {
     }
 
     pub async fn market_close(&mut self) -> Result<()> {
-        for (attempt, slippage) in [
-            25.0_f64,
-            100.0,
-            self.live.emergency_flatten_max_slippage_bps,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if attempt != 0 || self.account.inventory_units == 0 {
-                self.reconcile_safety_position().await?;
-            }
-            let inventory = self.account.inventory_units;
-            if inventory == 0 {
-                return Ok(());
-            }
-            let (side, quantity) = closing_side_and_quantity(inventory)
-                .context("nonzero inventory has no closing intent")?;
-            let bbo = self.fresh_bbo_with_priority(true).await?;
-            let request = self.ioc_request(side, quantity, true, slippage, bbo)?;
-            let started_ns = self.clock.now_ns();
-            if let Some(fill_ns) = self.last_fill_received_ns {
-                self.latency.record(
-                    LatencyKind::FillToCloseSend,
-                    started_ns.saturating_sub(fill_ns),
-                    started_ns,
-                );
-            }
-            let outcome = self.session.place_orders(0, vec![request]).await?;
-            self.count_address_actions(1);
-            self.record_order_outcome(&outcome);
-            require_action_known(&outcome)?;
-            for _ in 0..10 {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                self.reconcile_safety_position().await?;
-                if self.account.inventory_units == 0 {
-                    let done_ns = self.clock.now_ns();
-                    self.latency.record(
-                        LatencyKind::CloseSendToFill,
-                        done_ns.saturating_sub(started_ns),
-                        done_ns,
-                    );
-                    if let Some(fill_ns) = self.last_fill_received_ns {
-                        self.latency.record(
-                            LatencyKind::FillToFlat,
-                            done_ns.saturating_sub(fill_ns),
-                            done_ns,
-                        );
-                    }
-                    return Ok(());
-                }
-            }
-        }
-        bail!(
-            "reduce-only market close left residual inventory {}",
-            self.account.inventory_units
-        )
+        let mut exit = SafetyExit::new(self);
+        let result = exit.market_close().await;
+        exit.apply(self)?;
+        result
     }
 
     async fn reconcile_safety_position(&mut self) -> Result<()> {
-        let (clearinghouse, open_orders) = tokio::try_join!(
-            self.client.clearinghouse_state_safety(),
-            self.client.open_orders_safety(),
-        )?;
-        ensure_no_foreign_positions(&clearinghouse, &self.instrument)?;
-        let inventory = clearinghouse
-            .asset_positions
-            .iter()
-            .find(|position| position.position.coin == self.instrument.symbol)
-            .map_or(Ok(0), |position| {
-                parse_fixed(&position.position.szi, self.instrument.sz_decimals)
-            })?;
-        self.account.inventory_units = inventory;
-        // Fills queued while a close awaited REST must not replay an older
-        // startPosition over the confirmed post-close position.
-        self.last_inventory_update_exchange_ms = self
-            .last_inventory_update_exchange_ms
-            .max(clearinghouse.time);
-        self.observe_inventory_for_timed_exit(unix_ms());
-        self.account.open_orders = open_orders;
-        self.last_reconcile_ms = unix_ms();
-        self.startup_reconciliation = StartupReconciliation::Complete;
-        self.diagnostics.reconciliations = self.diagnostics.reconciliations.saturating_add(1);
-        Ok(())
+        let mut exit = SafetyExit::new(self);
+        let result = exit.reconcile_safety_position().await;
+        exit.apply(self)?;
+        result
     }
 
     pub async fn reconcile_authoritative(&mut self) -> Result<()> {
@@ -1518,7 +1502,7 @@ impl HyperliquidLiveBackend {
         if self.account.maker_fee_rate > self.live.max_maker_fee_rate {
             bail!("actual maker fee exceeds configured live maximum");
         }
-        self.apply_fill_rows(&fills, false, false)?;
+        self.apply_fill_rows(&fills, false, false, None)?;
         self.reconcile_orders(&open_orders, &fills, &order_statuses)?;
         if self.account.inventory_units != 0
             && self.state.inventory_unit()?.is_none()
@@ -1574,6 +1558,10 @@ impl HyperliquidLiveBackend {
             .max(MINIMUM_TERMINAL_ORDER_RETENTION_MS);
         self.state
             .prune_terminal_orders(unix_ms().saturating_sub(terminal_grace_ms))?;
+        self.state.with_state(|state| {
+            self.acknowledged_at_ns
+                .retain(|oid, _| state.orders.values().any(|order| order.oid == Some(*oid)));
+        })?;
         Ok(())
     }
 
@@ -1706,12 +1694,16 @@ impl HyperliquidLiveBackend {
             }
             match status {
                 LiveOrderStatus::Resting => {
+                    self.acknowledged_at_ns
+                        .entry(update.order.oid)
+                        .or_insert_with(|| self.clock.now_ns());
                     self.pending_events.push(ExecutionEvent::OrderAcknowledged {
                         cloid: cloid.to_owned(),
                         oid: Some(update.order.oid),
                     });
                 }
                 LiveOrderStatus::Canceled => {
+                    self.acknowledged_at_ns.remove(&update.order.oid);
                     self.pending_events.push(ExecutionEvent::OrderCanceled {
                         cloid: cloid.to_owned(),
                         oid: Some(update.order.oid),
@@ -1731,10 +1723,12 @@ impl HyperliquidLiveBackend {
 
     fn apply_fills(&mut self, data: serde_json::Value, received_ns: u64) -> Result<()> {
         let message = parse_user_fills(data)?;
-        if !message.fills.is_empty() && !message.is_snapshot {
-            self.last_fill_received_ns = Some(received_ns);
-        }
-        self.apply_fill_rows(&message.fills, true, !message.is_snapshot)
+        self.apply_fill_rows(
+            &message.fills,
+            true,
+            !message.is_snapshot,
+            (!message.is_snapshot).then_some(received_ns),
+        )
     }
 
     fn apply_fill_rows(
@@ -1742,6 +1736,7 @@ impl HyperliquidLiveBackend {
         fills: &[UserFill],
         adjust_inventory: bool,
         reject_foreign: bool,
+        received_ns: Option<u64>,
     ) -> Result<()> {
         let mut applied_any = false;
         for fill in fills {
@@ -1832,6 +1827,16 @@ impl HyperliquidLiveBackend {
                 self.observe_inventory_for_timed_exit(unix_ms());
             }
             self.diagnostics.fills += 1;
+            if let Some(received_ns) = received_ns {
+                self.last_fill_received_ns = Some(received_ns);
+                if let Some(ack_ns) = self.acknowledged_at_ns.remove(&fill.oid) {
+                    self.latency.record(
+                        LatencyKind::AckToFill,
+                        received_ns.saturating_sub(ack_ns),
+                        received_ns,
+                    );
+                }
+            }
             if fill.crossed {
                 self.diagnostics.taker_fills += 1;
             } else {
@@ -1929,58 +1934,9 @@ impl HyperliquidLiveBackend {
     }
 
     async fn fresh_bbo_with_priority(&mut self, safety_critical: bool) -> Result<Bbo> {
-        if let Some(bbo) = self.latest_bbo {
-            if bbo.recv_ns != 0
-                && self.clock.now_ns().saturating_sub(bbo.recv_ns)
-                    <= self.market_stale_ms.saturating_mul(1_000_000)
-            {
-                return Ok(bbo);
-            }
-        }
-        let book = if safety_critical {
-            self.client.l2_book_safety().await?
-        } else {
-            self.client.l2_book().await?
-        };
-        let levels = book
-            .get("levels")
-            .and_then(serde_json::Value::as_array)
-            .context("l2Book missing levels")?;
-        let price = |side: usize| -> Result<(i64, i64)> {
-            let level = levels
-                .get(side)
-                .and_then(|levels| levels.get(0))
-                .context("l2Book side is empty")?;
-            Ok((
-                self.instrument.price_to_units(
-                    level
-                        .get("px")
-                        .and_then(serde_json::Value::as_str)
-                        .context("book px")?
-                        .parse()?,
-                )?,
-                parse_fixed(
-                    level
-                        .get("sz")
-                        .and_then(serde_json::Value::as_str)
-                        .context("book sz")?,
-                    self.instrument.sz_decimals,
-                )?,
-            ))
-        };
-        let (bid_px, bid_sz) = price(0)?;
-        let (ask_px, ask_sz) = price(1)?;
-        let bbo = Bbo {
-            bid_px,
-            bid_sz,
-            ask_px,
-            ask_sz,
-            exchange_ms: book
-                .get("time")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_else(unix_ms),
-            recv_ns: self.clock.now_ns(),
-        };
+        let bbo = SafetyExit::new(self)
+            .fresh_bbo_with_priority(safety_critical)
+            .await?;
         self.latest_bbo = Some(bbo);
         Ok(bbo)
     }
@@ -1993,35 +1949,7 @@ impl HyperliquidLiveBackend {
         slippage_bps: f64,
         bbo: Bbo,
     ) -> Result<LiveOrderRequest> {
-        if !slippage_bps.is_finite()
-            || slippage_bps < 0.0
-            || slippage_bps > self.live.emergency_flatten_max_slippage_bps
-        {
-            bail!("IOC slippage exceeds configured limit");
-        }
-        let touch = match side {
-            Side::Buy => bbo.ask_px,
-            Side::Sell => bbo.bid_px,
-        };
-        let multiplier = match side {
-            Side::Buy => 1.0 + slippage_bps / 10_000.0,
-            Side::Sell => 1.0 - slippage_bps / 10_000.0,
-        };
-        let preliminary = (touch as f64 * multiplier).round() as i64;
-        let quantum = self.instrument.price_quantum(preliminary);
-        let px_units = match side {
-            Side::Buy => preliminary.saturating_add(quantum - 1) / quantum * quantum,
-            Side::Sell => preliminary / quantum * quantum,
-        };
-        let sequence = self.state.next_cloid_sequence()?;
-        Ok(LiveOrderRequest {
-            side,
-            px_units,
-            qty_units,
-            reduce_only,
-            time_in_force: TimeInForce::Ioc,
-            cloid: make_cloid(self.session_started_at_ms, 0, side, sequence),
-        })
+        SafetyExit::new(self).ioc_request(side, qty_units, reduce_only, slippage_bps, bbo)
     }
 
     fn minimum_live_order_quantity(&self, px_units: i64) -> Result<i64> {
@@ -2072,12 +2000,34 @@ impl HyperliquidLiveBackend {
         }
     }
 
+    fn placement_pause_reason(&self) -> Result<Option<&'static str>> {
+        if self.live.mode == LiveMode::AcceptanceTest {
+            let campaign = self.state.campaign()?;
+            if campaign.turnover_usdc >= self.live.acceptance_max_turnover_usdc - 12.0
+                || campaign.realized_pnl_usdc
+                    <= -(self.live.acceptance_max_realized_loss_usdc - 0.1)
+            {
+                return Ok(Some("acceptance campaign cleanup reserve reached"));
+            }
+        } else if self.risk_scalars()?.daily_realized_pnl_usdc
+            <= -self.live.production_max_daily_realized_loss_usdc
+        {
+            return Ok(Some("production daily realized-loss stop is active"));
+        }
+        Ok(None)
+    }
+
     fn validate_new_orders(
         &mut self,
         requests: &[LiveOrderRequest],
         bbo: Bbo,
         now_ms: u64,
     ) -> std::result::Result<(), PlacementRefusal> {
+        if requests.iter().any(|request| !request.reduce_only) {
+            if let Some(reason) = self.placement_pause_reason()? {
+                return Err(PlacementRefusal::Pause(reason));
+            }
+        }
         if self.diagnostics.address_requests_cap != 0
             && self
                 .diagnostics
@@ -2095,7 +2045,7 @@ impl HyperliquidLiveBackend {
         // records whether its cancel is genuinely in flight, which is what
         // separates the steady-state exposure from the transient one below.
         let action_timeout_ms = self.live.action_timeout_ms;
-        let (working, campaign) = self.state.with_state(|state| {
+        let working = self.state.with_state(|state| {
             let working: Vec<(Side, i64, i64, bool)> = state
                 .orders
                 .values()
@@ -2109,7 +2059,7 @@ impl HyperliquidLiveBackend {
                     )
                 })
                 .collect();
-            (working, state.campaign)
+            working
         })?;
         for request in requests {
             let notional = self.instrument.price_from_units(request.px_units)
@@ -2190,14 +2140,6 @@ impl HyperliquidLiveBackend {
                         .to_owned(),
                 ));
             }
-            if campaign.turnover_usdc >= self.live.acceptance_max_turnover_usdc - 12.0
-                || campaign.realized_pnl_usdc
-                    <= -(self.live.acceptance_max_realized_loss_usdc - 0.1)
-            {
-                return Err(PlacementRefusal::Defer(
-                    "acceptance campaign cleanup reserve reached".to_owned(),
-                ));
-            }
         } else {
             let directional_cap =
                 self.instrument.minimum_notional * self.live.max_directional_notional_multiplier;
@@ -2222,12 +2164,6 @@ impl HyperliquidLiveBackend {
             {
                 return Err(PlacementRefusal::Defer(
                     "transient exposure cap reached while a cancel is in flight".to_owned(),
-                ));
-            }
-            let daily = self.state.risk_scalars(unix_ms() / 86_400_000)?;
-            if daily.daily_realized_pnl_usdc <= -self.live.production_max_daily_realized_loss_usdc {
-                return Err(PlacementRefusal::degrade(
-                    "production daily realized-loss stop is active",
                 ));
             }
         }
@@ -2273,12 +2209,7 @@ impl HyperliquidLiveBackend {
     }
 
     async fn cancel_cloids_resilient(&mut self, cloids: Vec<String>) -> Result<ActionOutcome> {
-        if self.session.healthy() {
-            return self.session.cancel_cloids(cloids).await;
-        }
-        self.client
-            .cancel_by_cloid_with_nonce(&cloids, self.state.emergency_nonce()?)
-            .await
+        SafetyExit::new(self).cancel_cloids_resilient(cloids).await
     }
 
     fn record_order_outcome(&mut self, outcome: &ActionOutcome) {
@@ -2333,6 +2264,22 @@ fn live_directional_notional_cap(
 #[async_trait]
 impl ExecutionBackend for HyperliquidLiveBackend {
     async fn reconcile(&mut self, mut desired: DesiredQuotes, now_ms: u64) -> Result<()> {
+        if self.timed_exit_task.is_some() {
+            self.deferred_desired = None;
+            return Ok(());
+        }
+        let pause = self.placement_pause_reason()?;
+        if self.diagnostics.quote_pause_reason.as_deref() != pause {
+            if let Some(reason) = pause {
+                warn!(reason, "new exposure paused");
+            }
+            self.diagnostics.quote_pause_reason = pause.map(str::to_owned);
+        }
+        if pause.is_some() {
+            desired.bid = desired.bid.filter(|order| order.reduce_only);
+            desired.ask = desired.ask.filter(|order| order.reduce_only);
+            desired.reason = crate::types::QuoteReason::RiskLimit;
+        }
         let timed_exit = self.timed_flatten_due(now_ms);
         if timed_exit {
             desired.bid = None;
@@ -2524,6 +2471,11 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                     }
                     return Ok(());
                 }
+                Err(PlacementRefusal::Pause(reason)) => {
+                    self.diagnostics.quote_pause_reason = Some(reason.to_owned());
+                    self.deferred_desired = None;
+                    return Ok(());
+                }
                 Err(PlacementRefusal::Degrade(error)) => {
                     let reason = error.to_string();
                     self.note_rate_limit_if_applicable(now_ms, &reason);
@@ -2569,6 +2521,8 @@ impl ExecutionBackend for HyperliquidLiveBackend {
     }
 
     async fn shutdown(&mut self, _now_ms: u64) -> Result<()> {
+        // Never detach a pending exit or race its IOC with shutdown cleanup.
+        self.finish_timed_exit().await?;
         // A known cancel response updates durable state inside the session
         // actor before its event reaches the strategy loop. Give that state a
         // bounded moment to settle; an immediate REST snapshot can lag the
@@ -2626,11 +2580,14 @@ impl ExecutionBackend for HyperliquidLiveBackend {
             }
         }
         self.clear_deadman().await?;
+        // Recover final fees/fills as well as flatness before the report is made.
+        self.reconcile_authoritative().await?;
         self.diagnostics.operationally_healthy = false;
         Ok(())
     }
 
     fn invalidate(&mut self, reason: &str) {
+        self.diagnostics.operational_fault = true;
         self.diagnostics.operationally_healthy = false;
         self.diagnostics.scientifically_valid = false;
         self.diagnostics.invalid_reason = Some(reason.to_owned());
@@ -3048,8 +3005,10 @@ mod tests {
             q_max: 6,
             latency,
             last_fill_received_ns: None,
+            acknowledged_at_ns: BTreeMap::new(),
             inventory_flatten_deadline_ms: None,
             next_flatten_attempt_ms: 0,
+            timed_exit_task: None,
             allow_untracked_position: false,
             reconcile_requested: false,
             last_inventory_update_exchange_ms: 0,
@@ -4187,6 +4146,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn safety_result_preserves_newer_fills_and_does_not_double_count_quota_refresh() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend.diagnostics.address_requests_used = 100;
+        let mut exit = SafetyExit::new(&backend);
+        exit.confirmed = Some(flat_snapshot_at(10).clearinghouse);
+        exit.submitted_orders = 1;
+        backend.last_inventory_update_exchange_ms = 11;
+        backend.account.inventory_units = 7;
+        backend.account.fees_usdc = 0.01;
+        backend.diagnostics.address_requests_used = 101;
+        exit.apply(&mut backend).unwrap();
+        assert_eq!(backend.account.inventory_units, 7);
+        assert_eq!(backend.account.fees_usdc, 0.01);
+        assert_eq!(backend.diagnostics.address_requests_used, 101);
+    }
+
+    #[tokio::test]
+    async fn recovered_disconnect_can_be_operationally_valid_without_erasing_the_gap() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend
+            .process_session_event(SessionEvent::Disconnected {
+                generation: 1,
+                received_ns: 1,
+                reason: "Expired".to_owned(),
+            })
+            .unwrap();
+        assert!(!backend.operationally_valid());
+        // Model a successful authoritative reconciliation after readiness.
+        backend.diagnostics.operationally_healthy = true;
+        assert!(backend.operationally_valid());
+        assert!(!backend.scientifically_valid());
+        backend.diagnostics.unknown_outcomes = 1;
+        assert!(!backend.operationally_valid());
+    }
+
+    #[tokio::test]
+    async fn live_acknowledgement_measures_first_fill_and_ignores_duplicate_fill_rows() {
+        let (directory, mut backend, cloid) = lifecycle_backend();
+        let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
+        backend.acknowledged_at_ns.insert(7, 1);
+        apply_ws_fill(&mut backend, &cloid, checkpoint + 1);
+        assert!(!backend.acknowledged_at_ns.contains_key(&7));
+        assert_eq!(backend.diagnostics.fills, 1);
+        let last_fill = backend.last_fill_received_ns;
+        apply_ws_fill(&mut backend, &cloid, checkpoint + 1);
+        assert_eq!(backend.diagnostics.fills, 1);
+        assert_eq!(backend.last_fill_received_ns, last_fill);
+        let observer = crate::latency::LatencyObserver::spawn(
+            backend.latency.clone(),
+            backend.clock.clone(),
+            "CASHCAT".to_owned(),
+            1,
+            LatencyConfig::default(),
+            false,
+            Duration::from_secs(60),
+            directory.path().join("latency.json"),
+        )
+        .unwrap();
+        observer.stop().unwrap();
+        assert_eq!(
+            backend.latency.snapshot().session_summary["ack_to_fill"].samples,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_timed_exit_does_not_block_events_or_admit_quotes() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        backend.live.flatten_after_ms = 1;
+        backend.account.inventory_units = 4;
+        backend.observe_inventory_for_timed_exit(1);
+        tokio::time::timeout(Duration::from_millis(100), backend.maintenance(2))
+            .await
+            .unwrap()
+            .unwrap();
+        // The real safety routine is awaiting the stub's cancel reply.
+        tokio::task::yield_now().await;
+        assert!(!backend.timed_exit_task.as_ref().unwrap().is_finished());
+        let checkpoint = backend.state.load_required().unwrap().event_checkpoint_ms;
+        apply_ws_fill(&mut backend, &cloid, checkpoint + 1);
+        let book = Bbo {
+            bid_px: 99_000,
+            ask_px: 101_000,
+            ..Bbo::default()
+        };
+        backend
+            .on_market_event(&MarketEvent::Bbo(book))
+            .await
+            .unwrap();
+        assert_eq!(backend.latest_bbo.unwrap().bid_px, 99_000);
+        assert_eq!(backend.diagnostics.fills, 1);
+        backend
+            .apply_reconciliation(flat_snapshot_at(checkpoint + 2))
+            .unwrap();
+        assert_eq!(backend.account.inventory_units, 4);
+        backend.reconcile(bid_target(99_000, 100), 3).await.unwrap();
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
+        assert!(!backend.operationally_healthy());
+        // A test-only unresponsive transport must not outlive the fixture.
+        let task = backend.timed_exit_task.take().unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_the_owned_exit() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        let exit = SafetyExit::new(&backend);
+        let (release, released) = tokio::sync::oneshot::channel();
+        backend.timed_exit_task = Some(tokio::spawn(async move {
+            released.await.unwrap();
+            (exit, Ok(()))
+        }));
+        let finish = backend.finish_timed_exit();
+        tokio::pin!(finish);
+        assert!(tokio::time::timeout(Duration::from_millis(10), &mut finish)
+            .await
+            .is_err());
+        release.send(()).unwrap();
+        finish.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn acceptance_cleanup_reserve_stops_quotes_without_degrading_the_session() {
         let (_directory, mut backend) = requote_backend(100_000, 200);
         backend.live.acceptance_max_turnover_usdc = 60.0;
@@ -4202,7 +4284,13 @@ mod tests {
         backend.reconcile(desired, 1_000).await.unwrap();
         assert_eq!(backend.diagnostics.cancels_submitted, 1);
         assert_eq!(backend.diagnostics.orders_submitted, 0);
-        assert_eq!(backend.deferred_desired, Some(desired));
+        assert!(backend.deferred_desired.is_none());
+        assert!(backend.diagnostics.quote_pause_reason.is_some());
+        for now in 1_001..1_101 {
+            backend.reconcile(desired, now).await.unwrap();
+        }
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert!(!backend.reconciliation_requested());
         assert!(backend.operationally_healthy());
         assert!(backend.diagnostics.invalid_reason.is_none());
     }

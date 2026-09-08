@@ -209,6 +209,11 @@ pub struct LiveSessionReport {
     pub session_id: String,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
+    pub stop_reason: String,
+    pub shutdown_succeeded: bool,
+    pub operationally_valid: bool,
+    /// Resolved settings, including effective sizing; contains paths, never key material.
+    pub effective_config: crate::config::AppConfig,
     pub config_fingerprint: String,
     pub instrument: InstrumentSpec,
     pub calibration: Option<CalibrationSnapshot>,

@@ -166,8 +166,10 @@ switch ($Action) {
             [int64]$report.execution.unknown_outcomes -ne 0 -or
             [int64]$report.execution.orders_rejected -ne 0 -or
             [int64]$report.account.inventory_units -ne 0 -or
-            -not [bool]$report.scientifically_valid) {
-            throw 'canary evidence did not satisfy duration/fill/validity/flatness gates'
+            $report.stop_reason -ne 'duration_elapsed' -or
+            $report.shutdown_succeeded -ne $true -or
+            $report.operationally_valid -ne $true) {
+            throw 'canary evidence did not satisfy duration/fill/operational/flatness gates'
         }
         $evidence = [ordered]@{
             schema_version = 1
