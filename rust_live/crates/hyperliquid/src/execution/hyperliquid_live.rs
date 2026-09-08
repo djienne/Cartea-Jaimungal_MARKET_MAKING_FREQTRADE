@@ -2194,8 +2194,8 @@ impl HyperliquidLiveBackend {
                 || campaign.realized_pnl_usdc
                     <= -(self.live.acceptance_max_realized_loss_usdc - 0.1)
             {
-                return Err(PlacementRefusal::degrade(
-                    "acceptance campaign cleanup reserve reached",
+                return Err(PlacementRefusal::Defer(
+                    "acceptance campaign cleanup reserve reached".to_owned(),
                 ));
             }
         } else {
@@ -2396,7 +2396,7 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 if !unchanged
                     && !cancel_already_in_flight(&order, now_ms, self.live.action_timeout_ms)
                 {
-                    cancel.push(order.cloid);
+                    cancel.push((side, order.cloid));
                 }
             }
             if let Some(target) = target.filter(|_| !unchanged) {
@@ -2419,6 +2419,29 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 });
             }
         }
+        let ordinary_count = place.iter().filter(|order| !order.reduce_only).count() as u64;
+        let routine_replacement_blocked = ordinary_count > 0
+            && replacement_may_wait
+            && (self.rate_limited(now_ms)
+                || !self.placement_quota_available(now_ms, ordinary_count));
+        if routine_replacement_blocked {
+            // A routine reprice must keep the known resting quote until its
+            // replacement is allowed to go out. Safety withdrawals and
+            // reduce-only replacements still proceed immediately.
+            self.deferred_desired = Some(desired);
+            let blocked_bid = place
+                .iter()
+                .any(|order| !order.reduce_only && order.side == Side::Buy);
+            let blocked_ask = place
+                .iter()
+                .any(|order| !order.reduce_only && order.side == Side::Sell);
+            cancel.retain(|(side, _)| match side {
+                Side::Buy => !blocked_bid,
+                Side::Sell => !blocked_ask,
+            });
+            place.retain(|order| order.reduce_only);
+        }
+        let cancel: Vec<_> = cancel.into_iter().map(|(_, cloid)| cloid).collect();
         let mut action_submitted = false;
         if !cancel.is_empty() {
             let canceled_actions = cancel.len() as u64;
@@ -4161,6 +4184,44 @@ mod tests {
         assert_eq!(underfunded, 0.0);
         assert!((allocated_usable_equity(67.56, 299.48, 100.0) - 67.56).abs() < 1.0e-9);
         assert_eq!(allocated_usable_equity(67.56, 50.0, 100.0), 0.0);
+    }
+
+    #[tokio::test]
+    async fn acceptance_cleanup_reserve_stops_quotes_without_degrading_the_session() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        backend.live.acceptance_max_turnover_usdc = 60.0;
+        backend
+            .state
+            .update(|state| {
+                state.campaign.turnover_usdc = 48.0;
+                Ok(())
+            })
+            .unwrap();
+        let desired = bid_target(99_800, 200);
+
+        backend.reconcile(desired, 1_000).await.unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
+        assert_eq!(backend.deferred_desired, Some(desired));
+        assert!(backend.operationally_healthy());
+        assert!(backend.diagnostics.invalid_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn quota_pacing_keeps_the_resting_quote_until_replacement_can_send() {
+        let (_directory, mut backend) = requote_backend(100_000, 200);
+        backend.next_placement_allowed_ms = 2_000;
+        let desired = bid_target(99_800, 200);
+
+        backend.reconcile(desired, 1_000).await.unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 0);
+        assert_eq!(backend.diagnostics.orders_submitted, 0);
+        assert_eq!(backend.deferred_desired, Some(desired));
+
+        backend.maintenance(2_000).await.unwrap();
+        assert_eq!(backend.diagnostics.cancels_submitted, 1);
+        assert_eq!(backend.diagnostics.orders_submitted, 1);
+        assert!(backend.deferred_desired.is_none());
     }
 
     #[tokio::test]
