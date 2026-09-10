@@ -61,6 +61,34 @@ def test_replay_headline_reports_the_window_and_the_rows(tmp_path):
     assert "| flatten300 | +11.20 | 217 | 0 |" in text
 
 
+def test_replay_headline_ranks_the_rows_it_shows(tmp_path):
+    """The archive outlives the tape, so its headline must not be file order.
+
+    Boards written before 2026-09-10 lead with the best *promotable* row, and
+    promotability is false for every flatten variant. The 2026-09-10 archive
+    was published headed by `baseline` at -193.50 while `sweep1_flat300` sat at
+    +953.05 three rows down, and once the shards roll off nothing can re-derive
+    that ranking.
+    """
+    rows = [
+        {"name": "baseline", "net_pnl_usdc": -193.5, "promotion_pnl_usdc": -193.51,
+         "fills": 5614, "inventory_units": 13},
+        {"name": "sweep1_flat300", "net_pnl_usdc": 953.05, "promotion_pnl_usdc": 953.05,
+         "fills": 2948, "inventory_units": 0},
+        {"name": "blown", "net_pnl_usdc": -197.34, "promotion_pnl_usdc": None,
+         "fills": 4161, "inventory_units": 144},
+    ]
+    path = tmp_path / "replay_leaderboard.json"
+    path.write_text(json.dumps(_replay_board(rows=rows)), encoding="utf-8")
+
+    shown = [
+        line.split("|")[1].strip()
+        for line in archive_period.replay_headline(path)
+        if line.startswith("|") and "variant" not in line and "---" not in line
+    ]
+    assert shown == ["sweep1_flat300", "baseline", "blown"]
+
+
 def test_replay_headline_refuses_a_live_board_instead_of_relabelling_it(tmp_path):
     """A live board and a replay board are the same schema on purpose.
 

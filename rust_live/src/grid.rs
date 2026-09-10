@@ -757,17 +757,21 @@ impl EquityHistory {
 }
 
 impl Leaderboard {
+    /// Rank by promotion P&L alone, best first, unscored rows last.
+    ///
+    /// This sorted every `eligible_for_promotion` row ahead of every
+    /// ineligible one until 2026-09-10, because `promote-best` read `rows[0]`
+    /// and needed the first row to be promotable. Nothing selects on that flag
+    /// now, and it is false for every flatten row, so the board simply opened
+    /// with whichever promotable row happened to exist: the 2026-09-10 archive
+    /// heads its table with `baseline` at -193.50, above `sweep1_flat300` at
+    /// +953.05. The flag stays on the row as a fact about it. It is not a rank.
     pub fn sort_by_promotion_pnl(&mut self) {
-        self.rows.sort_by(
-            |a, b| match (a.eligible_for_promotion, b.eligible_for_promotion) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => b
-                    .promotion_pnl_usdc
-                    .partial_cmp(&a.promotion_pnl_usdc)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            },
-        );
+        self.rows.sort_by(|a, b| {
+            b.promotion_pnl_usdc
+                .partial_cmp(&a.promotion_pnl_usdc)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
@@ -1062,13 +1066,24 @@ mod tests {
             quote_pause_reason: None,
             resumes: 0,
             resumed_downtime_ms: 0,
-            rows: vec![row("a", -1.0), row("b", 2.0), row("c", 0.5)],
+            rows: vec![
+                row("a", -1.0),
+                row("b", 2.0),
+                row("c", 0.5),
+                row("unscored", 0.0),
+            ],
             replay: None,
         };
+        // Ineligibility is not a demerit: `b` is every flatten row, which has
+        // no live equivalent and is still the best measurement on the board.
         board.rows[1].eligible_for_promotion = false;
+        // Disqualified rows have no executable exit price, so they cannot be
+        // ranked against rows that do -- last, not worst.
+        board.rows[3].promotion_pnl_usdc = None;
+        board.rows[3].scientifically_valid = false;
         board.sort_by_promotion_pnl();
         let order: Vec<&str> = board.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(order, vec!["c", "a", "b"]);
+        assert_eq!(order, vec!["b", "c", "a", "unscored"]);
     }
 
     #[test]

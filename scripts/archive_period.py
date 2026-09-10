@@ -318,7 +318,20 @@ def leaderboard_headline(path):
         "- feed: %.2f%% down, event loss %s"
         % (health.get("downtime_fraction", 0.0) * 100.0, "YES" if health.get("event_loss") else "no"),
     ]
-    rows = board.get("rows") or []
+    # Rank here instead of trusting file order. Boards written before
+    # 2026-09-10 lead with the best *promotable* row rather than the best row,
+    # and promotability is false for every flatten variant, so `rows[:3]` on
+    # one of those headlines the period with `baseline` at -193.50 while
+    # `sweep1_flat300` sits at +953.05 further down. Nothing selects on
+    # promotability any more, and these archives outlive the tape they score.
+    rows = sorted(
+        board.get("rows") or [],
+        key=lambda row: (
+            row.get("promotion_pnl_usdc") is None,
+            -(row.get("promotion_pnl_usdc") or 0.0),
+            str(row.get("name", "")).lower(),
+        ),
+    )
     if rows:
         lines += ["", "| variant | net P&L | fills | inventory |", "| --- | ---: | ---: | ---: |"]
         shown = rows[:3] + ([None] if len(rows) > 6 else []) + rows[-3:] if len(rows) > 6 else rows

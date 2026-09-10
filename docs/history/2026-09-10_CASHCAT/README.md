@@ -29,13 +29,13 @@ latency, while a grid row may be stitched across restarts. See
 
 | variant | net P&L | fills | inventory |
 | --- | ---: | ---: | ---: |
-| baseline | -193.50 | 5614 | 13 |
 | sweep1_flat300 | +953.05 | 2948 | 0 |
 | sweep1_flat550 | +642.00 | 2946 | 0 |
+| contender_flat300 | +479.48 | 4204 | 0 |
 | ... | | | |
-| sweep3 | -190.18 | 5943 | -591 |
-| sweep1_unguarded | -183.90 | 4874 | 1191 |
-| sweep1_wide60 | -151.14 | 2678 | 4163 |
+| unguarded | -193.32 | 6127 | 788 |
+| wide40 | -152.97 | 6927 | -4227 |
+| wide60 | -189.37 | 428 | 2513 |
 
 ## Dry-run grid
 
@@ -44,13 +44,13 @@ latency, while a grid row may be stitched across restarts. See
 
 | variant | net P&L | fills | inventory |
 | --- | ---: | ---: | ---: |
-| wide60 | -0.07 | 188 | -540 |
-| q12 | -40.81 | 2804 | 28 |
-| q9 | -63.51 | 2941 | 95 |
+| sweep1_flat300 | +19.01 | 83 | 0 |
+| contender_flat300 | +11.59 | 217 | 0 |
+| flatten300 | +11.59 | 217 | 0 |
 | ... | | | |
-| sweep1_unguarded | -8.90 | 271 | 219 |
-| slow5s | -192.27 | 6148 | -695 |
+| q3 | -179.44 | 3541 | 293 |
 | slow15s | -195.43 | 6089 | -270 |
+| slow5s | -192.27 | 6148 | -695 |
 
 ## Files
 

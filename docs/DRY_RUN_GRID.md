@@ -143,7 +143,7 @@ Timestep, Newton tolerance and the convergence study behind them: `CAUSAL_EXECUT
 
 `eligible_for_promotion` is false for rows with a lot-age exit or a fixed
 parameter profile: they have no live equivalent as written. That is a property
-of the row, not a verdict -- there is no automatic promotion, and the shipped
+of the row, not a verdict and not a rank -- there is no automatic promotion, and the shipped
 live config in fact runs a timed exit (`live.flatten_after_ms`) by choice. Their
 exit deadlines include the round trip; see the fidelity limits above.
 
@@ -182,7 +182,11 @@ see -- and the unknown queue above is the first reason it may not.
 
 The runtime ranks `leaderboard.json` by promotion P&L: remaining inventory
 valued at the executable side with the configured exit fee and slippage
-(currently 3.5 and 25 bps). Net marked P&L, cash/realized results, inventory,
+(currently 3.5 and 25 bps). It sorted every `eligible_for_promotion` row above
+every ineligible one until 2026-09-10, because `promote-best` read `rows[0]`
+and needed it promotable; since promotability is false for every flatten
+variant, the board opened with whichever promotable row existed rather than the
+best one. Net marked P&L, cash/realized results, inventory,
 fees, funding, drawdown and fills remain separate diagnostics.
 `show_grid_leaderboard.py` shows both and sorts by promotion P&L by default, so
 its order is the board's own; `--sort net-pnl` restores the previous ranking.
