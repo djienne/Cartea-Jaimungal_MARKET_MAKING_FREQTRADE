@@ -103,7 +103,8 @@ needs both a cooldown and VPIN clearing) withdraws quoting. Evidence:
 extensions: [`../docs/FLOW_GUARD_CANDIDATES.md`](../docs/FLOW_GUARD_CANDIDATES.md).
 
 `dry-run-grid` runs several parameter sets against one shared market feed and
-ranks promotable rows by executable-side, fee-adjusted flatten P&L. It runs as a
+ranks every scientifically valid row by executable-side, fee-adjusted flatten
+P&L. That ranking informs; it selects nothing -- the live config is edited. It runs as a
 container (`docker compose up -d` at the repo root); one socket, no Parquet, no
 credentials, resumes across restarts — see
 [`../docs/DRY_RUN_GRID.md`](../docs/DRY_RUN_GRID.md).

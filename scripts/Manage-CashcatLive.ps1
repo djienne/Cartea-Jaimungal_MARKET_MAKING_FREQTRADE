@@ -9,10 +9,6 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $rustRoot = Join-Path $repoRoot 'rust_live'
 $runRoot = Join-Path $rustRoot 'run'
 $reportRoot = Join-Path $rustRoot 'reports\live_active'
-$binary = Join-Path $rustRoot 'target\release\mm-live.exe'
-$baseConfig = Join-Path $rustRoot 'config\cashcat_dryrun_realistic.toml'
-$gridSpec = Join-Path $rustRoot 'config\grid_cashcat.toml'
-$leaderboard = Join-Path $rustRoot 'reports\grid_live\leaderboard.json'
 # The live configuration is edited, not generated. Change the parameters in
 # config/cashcat.toml (it defaults to the grid's `sweep1_flat300` row) and the
 # canary and the live service both pick them up. There is no promotion step and
@@ -25,17 +21,6 @@ $taskName = 'CASHCAT Quota-Aware Live Supervisor'
 
 New-Item -ItemType Directory -Force -Path $runRoot, $reportRoot | Out-Null
 
-function Invoke-MmLive {
-    param([string[]]$Arguments)
-    if (-not (Test-Path -LiteralPath $binary)) {
-        throw "Release binary is missing: $binary"
-    }
-    & $binary @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "mm-live failed with exit code $LASTEXITCODE"
-    }
-}
-
 function Invoke-LiveFlatten {
     if (-not (Test-Path -LiteralPath $liveConfig)) {
         throw "Live config is missing: $liveConfig"
@@ -47,19 +32,26 @@ function Invoke-LiveFlatten {
     }
 }
 
+# Liveness only. It restarts a dead or unhealthy container after flattening; it
+# does not judge whether the strategy is making money.
+#
+# It used to: it stopped live unless the best `eligible_for_promotion` row on the
+# dry-run leaderboard had positive `promotion_pnl_usdc`. That was coherent while
+# `promote-best` generated the live config from exactly that row. Since the live
+# config is hand-edited (2026-09-10) the two are unrelated -- config/cashcat.toml
+# ships `sweep1_flat300`, whose paper lot-age exit makes it permanently
+# ineligible, so the gate was reading a different strategy's P&L (`wide60` on
+# 2026-09-10) to decide this one's fate. Removed rather than re-pointed at a
+# config-declared row name, which would be a human claim that goes stale on the
+# next edit of the config.
+#
+# The economic stop that remains is first-hand:
+# `production_max_daily_realized_loss_usdc` (1 USDC) pauses new placements off the
+# live account's own realised P&L, in
+# hyperliquid_live.rs::placement_pause_reason. Stopping live is a decision, and
+# it is `-Action Disarm`.
 function Invoke-SupervisorTick {
     if (-not (Test-Path -LiteralPath $armMarker)) {
-        return
-    }
-    $board = Get-Content -LiteralPath $leaderboard -Raw | ConvertFrom-Json
-    $best = $board.rows | Where-Object eligible_for_promotion |
-        Sort-Object promotion_pnl_usdc -Descending | Select-Object -First 1
-    if ($null -eq $best -or [double]$best.promotion_pnl_usdc -le 0.0) {
-        $running = docker ps --filter name=cashcat-live --format '{{.Names}}'
-        if ($running) {
-            docker compose -f $composeFile stop cashcat-live | Out-Null
-            Invoke-LiveFlatten
-        }
         return
     }
     $container = docker inspect cashcat-live --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>$null

@@ -25,9 +25,10 @@ backend are intentionally not executed by normal CI. CI hard-gates the pure
 core, dry-run execution and the runtime crates, and publishes the full connector
 report for review.
 
-Current suite sizes are 302 Rust tests (`cargo test --workspace --all-features`,
-which includes the `backtest` feature) and 255 Python (`pytest tests/`). The
-Python count fell by 137 on 2026-09-10 when the Python replay was deleted.
+Current suite sizes are 300 Rust tests (`cargo test --workspace --all-features`,
+which includes the `backtest` feature) and 256 Python (`pytest tests/`). Both
+moved on 2026-09-10: Python fell by 136 when the Python replay was deleted, and
+Rust fell by 2 when `promote-best` was removed.
 
 ## Defects this campaign found
 
@@ -66,6 +67,8 @@ latency gate enforced, submitting zero orders, cancels or dead-man actions.
 
 ## Remaining boundary
 
-Continuous live operation is gated on a strictly profitable, promotable dry-run
-row; `../docs/CASHCAT_LIVE_PROMOTION.md` holds the selection rule and the
-canary/arm sequence.
+Continuous live operation is gated on a passing two-hour canary, and on nothing
+automatic after that: what trades real money is whatever
+`config/cashcat.toml` says, and choosing it is a deliberate edit.
+`../docs/CASHCAT_LIVE_PROMOTION.md` holds the canary/arm sequence and why the
+leaderboard no longer decides.

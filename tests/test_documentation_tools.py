@@ -131,3 +131,23 @@ def test_plotter_reads_rotated_compressed_fills_even_after_damage(tmp_path):
         fills = grid_pnl_curve.read_fills(files["baseline"])
     assert fills["ts_ms"].tolist() == [1_000, 3_000]
     assert fills["signed_qty"].sum() == 2
+
+
+def test_the_live_supervisor_makes_no_economic_decision():
+    """The supervisor is a liveness watchdog, not a strategy selector.
+
+    It once stopped live unless the best `eligible_for_promotion` leaderboard row
+    had positive `promotion_pnl_usdc`. That was coherent only while `promote-best`
+    generated the live config from that row. With a hand-edited config the two are
+    unrelated -- the shipped `sweep1_flat300` is permanently ineligible -- so the
+    gate judged one strategy by another's P&L. Re-introducing any leaderboard read
+    here brings that back.
+    """
+    script = (ROOT / "scripts" / "Manage-CashcatLive.ps1").read_text(encoding="utf-8")
+    tick = script.split("function Invoke-SupervisorTick {", 1)[1].split("\nswitch (", 1)[0]
+    body = "\n".join(line for line in tick.splitlines() if not line.lstrip().startswith("#"))
+    assert "leaderboard" not in body.lower()
+    assert "promotion_pnl" not in body
+    # It may still stop live, but only to restart an unhealthy container.
+    assert body.count("stop cashcat-live") == 1
+    assert "up -d --no-deps cashcat-live" in body

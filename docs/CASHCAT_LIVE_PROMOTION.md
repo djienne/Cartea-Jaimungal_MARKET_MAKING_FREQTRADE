@@ -46,10 +46,20 @@ successful shutdown and final flatness all hold. A recovered private socket
 reconnect retains its scientific discontinuity flag but can pass the operational
 verdict after reconciliation; event loss or an unresolved fault cannot.
 `Arm` refuses without that evidence. Once armed, the Windows supervisor checks
-health every minute: it restarts an exited or unhealthy container after
-flattening, and stops live entirely if no valid row has positive
-`promotion_pnl_usdc`. It never changes the configuration -- that is yours to
-edit, and a change takes effect on the next start.
+health every minute and does exactly one thing: it restarts an exited or
+unhealthy container, flattening first. It never changes the configuration --
+that is yours to edit, and a change takes effect on the next start -- and it
+makes no economic judgement.
+
+It used to make one, stopping live unless the best `eligible_for_promotion` row
+had positive `promotion_pnl_usdc`. That rule only meant something while
+`promote-best` generated the live config from that same row. Once the config
+became hand-edited, the shipped `sweep1_flat300` was permanently ineligible and
+the gate was reading an unrelated row to decide its fate, so it was removed
+rather than re-pointed at a row name the config would have to keep claiming
+truthfully. What stops a losing live session is measured on the live account:
+`production_max_daily_realized_loss_usdc` (1 USDC) pauses new placements off
+realised P&L, and `Disarm` stops it deliberately.
 
 That switch was exercised on real money on 2026-08-31: while flat, the durable
 state accepted a config-fingerprint change to `wide4` and the new two-sided ALO
