@@ -15,7 +15,7 @@ The trader is `rust_live/`. **The grid is a compose service** as of 2026-08-30
 modes are still run by hand.
 
 ```
-docker compose up -d                 # dry-run grid + period archiver; never live trading
+docker compose up -d                 # the dry-run grid alone; never live trading
 docker compose logs -f               # watch it
 docker compose stop                  # SIGINT, 60 s grace, teardown runs
 
@@ -23,10 +23,14 @@ mm-live --config config/cashcat_dryrun_realistic.toml dry-run
 mm-live --config config/cashcat.toml live          # real money, explicit, gated
 ```
 
-The second service in that file is **`mm-archiver`**: every 21 days it writes a
-full sweep plus the grid's P&L curve under `docs/history/<date>_<SYMBOL>/`, and
+**The grid is the only service in that file** since 2026-09-10. Replay and the
+period archive are host commands now, not containers: only things that must run
+continuously get one. `scripts/archive_period.py` still writes a full replay plus
+the grid's P&L curve under `docs/history/<date>_<SYMBOL>/` every 21 days and
 **does not commit** — `docs/history/README.md` has the why, the failure handling
-and the manual `git add docs/history` step.
+and the manual `git add docs/history` step — but it needs a scheduled task rather
+than a restart policy, and nothing notices if that task is missing until a window
+rolls off unarchived.
 
 Containerised after the 2026-08-27 reboot loss (66 h unnoticed); the compose
 header explains the three mechanisms (`restart`, `stop_signal`, healthcheck +
@@ -85,7 +89,9 @@ the fleet's load: every bind mount stalled and `docker stop`/`exec` hung. Fix:
 **Rebuilding while the grid runs used to fail** with `Access is denied. (os
 error 5)`, because the running `mm-live.exe` held the binary. Containerizing
 removed that: the build happens in the image, so `docker compose build` never
-contends with a live run. Only the bare-process modes still have the problem.
+contends with a live run. The bare-process modes still have it, and `mm-live
+replay` is one of them again — a long `--all-variants` run holds the binary, so
+`cargo build` will fail until it finishes.
 
 **Logs come from Docker now**, not a shell redirect — `docker compose logs -f`,
 capped at 3 × 10 MB. The old `... > reports/grid_live/run.log` pattern also only
@@ -148,5 +154,34 @@ gap too long, or an edited spec), which is exactly when you do want to split.
 
 `mm-live calibrate` solves κ/λ/ε and the HJB surface over Parquet history. The
 Python estimators (`estimate_all.py`, `get_{kappa,lambda,epsilon}.py`) are kept
-for replay and independent analysis; the Rust trader does not consume their JSON
-snapshots. See `../docs/UNITS.md` before changing φ or α.
+as the independent oracle that `rust_live/tests/python_parity.rs` pins the Rust
+math against; the trader does not consume their JSON snapshots. See
+`../docs/UNITS.md` before changing φ or α.
+
+## Replay is Rust, and native
+
+The Python replay and its staged sweep were deleted on 2026-09-10. Scoring a
+parameter set offline is `mm-live replay`, built with `cargo build --release`
+and run from the host:
+
+```
+mm-live --config config/cashcat_dryrun_realistic.toml replay \
+  --grid config/grid_cashcat.toml --all-variants --train-fraction 0.05 \
+  --board replay_leaderboard.json
+mm-live ... replay --grid ... --against-live reports/grid_live/leaderboard.json
+```
+
+**Pass `--from`/`--to` for anything but a spot check.** Without a range it
+replays the config's `calibration.window_minutes` — two hours — ending at the
+newest shard, which on a 24-day tape fails closed on `InsufficientData` rather
+than scoring what you meant. `archive_period.py` hit exactly that.
+
+It writes the **same schema as the live `leaderboard.json`**, because a replay
+row and a grid row both come from `PaperVariant::leaderboard_row`. That is what
+makes them comparable and what makes them easy to confuse: a replay board
+carries a `replay` key and the viewer prints `REPLAY (not a live run)`. What was
+lost with the Python engine is the staged parameter *search* — in Rust the
+search space is the grid spec, so a new parameter set is a new variant row.
+`docs/DRY_RUN_GRID.md` "Offline comparison" lists the fidelity limits; the one
+that bites is that a `--latency-ms` rung retunes the flatten family, since the
+exit deadline is `flatten_after_ms` plus the decision and acknowledgement legs.

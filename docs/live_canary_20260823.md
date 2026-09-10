@@ -83,8 +83,7 @@ Ending state, verified directly against the venue: 0 open orders, no positions,
 The binding constraint on this strategy is the address-action budget, not the
 WebSocket message rate the configuration validates against. At ~2 actions per
 requote and ~11 USDC notional per fill, allowance breaks even at roughly one
-fill per 5.5 requotes; this run managed one per 350. See the action-cost
-section added to `requote_hysteresis_sweep.md` — the shipped
+fill per 5.5 requotes; this run managed one per 350. The shipped
 `replace_threshold_bps = 2.0` costs 220 actions per fill, and `4.0` costs 120.
 
 At the end of this campaign, further live validation on the account was blocked:

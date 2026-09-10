@@ -38,26 +38,61 @@ python scripts/grid_pnl_curve.py
 
 ## Offline comparison
 
-The same Rust paper step can score one existing grid row:
+`mm-live replay` scores grid rows over a tape window instead of a live feed. It
+is a command, not a service, so it runs natively; only the collectors and the
+grid need containers, because only they run continuously.
 
 ```sh
+cargo build --release                     # in rust_live/
+
 mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
-  --grid rust_live/config/grid_cashcat.toml --variant sweep1 \
+  --grid rust_live/config/grid_cashcat.toml --all-variants \
   --from 2026-08-30T14:24:06Z --to 2026-09-05T11:09:28Z \
-  --train-fraction 0.25 --latency-ms 150 --report sweep1.json
+  --train-fraction 0.05 --latency-ms 150 \
+  --board replay_leaderboard.json
 ```
 
-`--from/--to` select the tape range (RFC 3339 or epoch ms); without them the
-config's `calibration.window_minutes` ending at the newest shard is replayed.
-`--latency-ms` overrides all three dry-run latencies. `scripts/replay_latency.py`
-wraps this for latency ladders and the `--against-live` fidelity check (see
-"Queue model" below). Use separate report paths per variant. Calibration (unless
-a saved profile is selected), VPIN volume scale and order sizing use only the
-training prefix; replay neither loads nor updates the calibration cache. Scoring
-starts flat with cold flow guards and no orders, and stops on terminal risk
-invalidation. Reports identify both windows, the consumed time source, fitted
-parameters and the last scored event. This is a controlled model comparison,
-not evidence that historical venue fills would match paper fills.
+`--variant` is repeatable and `--all-variants` takes the whole spec. `--from` /
+`--to` select the tape range (RFC 3339 or epoch ms); without them the config's
+`calibration.window_minutes` ending at the newest shard is replayed.
+`--latency-ms` overrides all three dry-run latencies and is itself repeatable,
+one rung of a ladder each.
+
+**The board is the point.** `--board` writes the live `leaderboard.json` schema,
+because a replay row and a grid row both come from
+`PaperVariant::leaderboard_row` — same code, same accounting — so
+`show_grid_leaderboard.py` renders either and rows compare field for field. A
+replay board carries a `replay` key and a live board does not; that is the only
+thing distinguishing two deliberately identical shapes, so check it first.
+
+Tape and calibration are loaded once and shared: `[calibration]` is not
+overridable, so per-variant refits would be byte-identical work. Calibration
+(unless a frozen `parameter_profile` is selected), VPIN volume scale and order
+sizing use only the training prefix; replay neither loads nor updates the
+calibration cache. Each variant starts flat with cold guards and no orders, and
+stops on terminal risk invalidation. This is a controlled model comparison, not
+evidence that historical venue fills would match paper fills.
+
+### Fidelity limits, before reading any replay-vs-live table
+
+- **A latency rung retunes the flatten family, it does not merely handicap it.**
+  The exit deadline is `flatten_after_ms` plus the decision and acknowledgement
+  legs, so at the shipped 150 ms `flatten300` is a 301 ms exit and `flatten550`
+  a 550 ms one. `--latency-ms 0` collapses the deadline to the raw
+  `flatten_after_ms`, a rung no real stack can reach.
+- **Use a small `--train-fraction` to reproduce a live row.** The grid was never
+  trained on the window it ran, so the default 0.7 throws most of the
+  comparison away refitting parameters the grid already had.
+- **A live row may be stitched, a replay never is.** Live rows cross `resumes`,
+  `resumed_downtime_ms` and checkpoint restores; a replay is one continuous
+  pass. A window with heavy downtime is not a fidelity measurement.
+- **Carried inventory is priced differently.** The live gap-carry path charges
+  the promotion 25 bps; the replay's timed exit charges `flatten_slippage_bps`
+  (2.5) plus `flatten_fee_rate` (0.00045).
+- **`feed_health` on a replay board is not a measurement.** A replay consumes a
+  tape slice and cannot observe a gap inside it, so those counters read zero
+  meaning "not measured". `calibration` is likewise null for `sweep1_*` and
+  `contender_*`, which skip the fit entirely.
 
 ## Experimental controls
 
@@ -78,8 +113,9 @@ finalists, four targeted combinations and two fixed-fit flatten contenders:
 | `contender_flat300` | Saved control fit, phi*kappa*T=300, q max=6, 60 bps floor, 301 ms exit target |
 | `contender_flat550` | Same fixed control fit and 60 bps floor, 550 ms exit target |
 
-The four `parameter_profiles` store the six fitted CJ parameters from
-`cashcat_sweep.json`, not a new fit with similar settings. Finalist A/B/C
+The four `parameter_profiles` store six fitted CJ parameters each, frozen from
+the retired Python sweep and now recorded nowhere else, not a new fit with
+similar settings. Finalist A/B/C
 arrival-jump horizons are 1000/1000, 1000/500 and 500/1000 ms; all use the
 upper-quartile depth support. The contenders use the 200/200 ms, full-support
 training fit, rather than the recent-data fit of `flatten300` and `flatten550`.
@@ -146,14 +182,15 @@ spread is unknown-queue most of the time under any model, and
 simulator, so replaying the grid's own window should reproduce its row up to
 feed outages the tape did not see:
 
-```
-python scripts/replay_latency.py --variant sweep1_flat300 --against-live
+```sh
+mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
+  --grid rust_live/config/grid_cashcat.toml \
+  --against-live rust_live/reports/grid_live/leaderboard.json
 ```
 
-prints the leaderboard row (net, fills, inventory, resumes, downtime) above a
-replay of the same window at the configured latency. A window with heavy
-downtime is not a fidelity measurement. The same script sweeps assumed
-latencies over any tape range (`--from`, `--to`, `--latency ...`).
+`--against-live` takes the window, the latency and — absent `--variant` — the
+variant list straight from that board, then prints each live row beside its
+replay. See "Offline comparison" above for the limits that table cannot show.
 
 ## Accounting and validity
 
@@ -287,8 +324,9 @@ for the recorded equity history. `equity_history.csv` is not rotated.
 
 ## The period archive — what outlives the tape
 
-`scripts/archive_period.py` (`mm-archiver`) writes a full sweep, leaderboard and
-period P&L under `docs/history/` every 21 days, ahead of the collector's 30-day
-retention, and does not commit. Cadence, layout, failure handling and the manual
-commit step: `history/README.md`. Collector ownership and data validation:
-`DATA_COLLECTION.md`.
+`scripts/archive_period.py` writes a full replay of every grid variant, the
+leaderboard and the period P&L under `docs/history/` every 21 days, ahead of the
+collector's 30-day retention, and does not commit. It runs `mm-live replay` as a
+host binary, so it needs a scheduled task rather than a restart policy. Cadence,
+layout, failure handling and the manual commit step: `history/README.md`.
+Collector ownership and data validation: `DATA_COLLECTION.md`.

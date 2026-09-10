@@ -79,7 +79,7 @@ aged terminal orders are dropped, so per-event cost stays flat over a session.
 Superseded market quote revisions coalesce until the configured minimum order
 lifetime, while fill/risk cancellations bypass that delay; a resting order
 within the requote hold window (`replace_threshold_ticks` /
-  `replace_threshold_bps`, evidence in `../docs/requote_hysteresis_sweep.md`) is
+  `replace_threshold_bps`) is
 kept to preserve queue position. The connector tracks its local contribution
 to the venue address-action budget, preserves a separate WebSocket allowance
 for cancels and emergency reduction, and config validation rejects budgets the

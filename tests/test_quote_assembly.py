@@ -6,9 +6,9 @@ band in bps of mid, fees included, for any plausible parameter combination.
 The clamps are the hard guarantee; this sweep proves the wiring end-to-end,
 HJB solve -> assemble_half_spread.
 
-``replay_market_maker.assemble_half_spread`` delegates to ``mm_core``, so the
-sweep runs against ``mm_core`` directly and separately checks that the replay
-wrapper and its defaults reach the same arithmetic.
+``mm_core.assemble_half_spread`` is the single implementation: the Rust
+quoting path is pinned against it by ``rust_live/tests/python_parity.rs``, so
+this sweep is what stands behind that pin.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ if str(SCRIPTS) not in sys.path:
 
 from hjb import compute_h_asymmetric  # noqa: E402
 from mm_core import QuoteConfig, assemble_half_spread  # noqa: E402
-from replay_market_maker import assemble_half_spread as replay_assemble  # noqa: E402
 
 SPREAD_MULTIPLIER = 3.0
 MAKER_FEE = 0.00015
@@ -143,28 +142,3 @@ def test_central_live_combo_ask_lands_in_band_before_clamping():
     # The bid side is tighter than 3 bps pre-clamp and rides the floor.
     assert bid_spread.clamped in (None, "floor")
     assert MIN_BPS - 1e-9 <= bid_spread.bps <= MAX_BPS + 1e-9
-
-
-def test_replay_wrapper_reaches_the_same_arithmetic():
-    """The replay exposes its own entry point with its own defaults. It
-    delegates to mm_core, so this asserts the delegation and the defaults,
-    not a second implementation."""
-    config = _config()
-    for delta_model, mid in itertools.product((0.0, 0.005, 0.05, 0.2, 0.5, 2.0, 10.0), MIDS):
-        core = assemble_half_spread(delta_model, mid, config)
-        replay_total = replay_assemble(
-            delta_model,
-            mid,
-            spread_multiplier=SPREAD_MULTIPLIER,
-            maker_fee=MAKER_FEE,
-            min_half_spread_bps=MIN_BPS,
-            max_half_spread_bps=MAX_BPS,
-        )
-        assert core is not None and replay_total is not None
-        assert abs(core.delta - replay_total) < 1e-12, (
-            f"core/replay divergence at delta={delta_model} mid={mid}: "
-            f"{core.delta} vs {replay_total}"
-        )
-
-    # A disabled side stays disabled through the wrapper.
-    assert replay_assemble(float("inf"), 4300.0) is None

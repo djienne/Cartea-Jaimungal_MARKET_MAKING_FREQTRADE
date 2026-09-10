@@ -2,7 +2,11 @@
 
 The acceptance gate now tolerates a ~1 h data gap (raised from 300 s on
 2026-08-19). That only makes sense if a gap cannot move the numbers, so these
-tests pin the three places it could and the two places it was measured not to.
+tests pin the places it could.
+
+The markout half of this file moved out with the Python replay: markout is now
+measured only by the Rust simulator, which pins its own staleness rule in
+``rust_live/crates/mm-execution/src/dry_run.rs``.
 
 Measured on 61.2 h of real CASHCAT to 2026-08-19: the price stream had 91.5 min
 of gaps > 60 s, but only 43.2 min were the collector actually down -- the other
@@ -27,10 +31,6 @@ from estimator_common import (  # noqa: E402
     DEFAULT_OUTAGE_THRESHOLD_SECONDS,
     MarketWindow,
     outage_seconds,
-)
-from replay_market_maker import (  # noqa: E402
-    MARKOUT_MAX_STALENESS_MS,
-    future_mid_from_arrays,
 )
 import pandas as pd  # noqa: E402
 
@@ -132,54 +132,6 @@ def test_lambda_denominator_matters_at_the_new_gate_threshold():
 
 
 # -------------------------------------------------------------- markouts ---
-
-
-def _prices(*seconds):
-    return np.array([int(s * 1e9) for s in seconds], dtype=np.int64)
-
-
-def test_markout_uses_the_first_mid_at_or_after_the_horizon():
-    ts = _prices(0, 1, 2, 3)
-    mid = np.array([10.0, 11.0, 12.0, 13.0])
-    assert future_mid_from_arrays(ts, mid, 0, 2000) == pytest.approx(12.0)
-
-
-def test_markout_declines_across_an_outage():
-    """A fill just before an outage must not have the outage's drift booked as
-    its markout."""
-    ts = _prices(0, 1, 500)
-    mid = np.array([10.0, 11.0, 99.0])
-    assert future_mid_from_arrays(ts, mid, 0, 2000) is None
-
-
-def test_markout_accepts_a_mid_inside_the_staleness_budget():
-    ts = _prices(0, 1, 2 + MARKOUT_MAX_STALENESS_MS / 1000.0 - 0.5)
-    mid = np.array([10.0, 11.0, 12.0])
-    assert future_mid_from_arrays(ts, mid, 0, 2000) == pytest.approx(12.0)
-
-
-def test_markout_still_declines_past_the_end_of_the_tape():
-    ts = _prices(0, 1)
-    mid = np.array([10.0, 11.0])
-    assert future_mid_from_arrays(ts, mid, 0, 60_000) is None
-
-
-def test_markout_staleness_can_be_disabled_for_reproducing_old_artifacts():
-    ts = _prices(0, 1, 500)
-    mid = np.array([10.0, 11.0, 99.0])
-    assert future_mid_from_arrays(ts, mid, 0, 2000, max_staleness_ms=None) == pytest.approx(99.0)
-
-
-# ------------------------------------------------------------- the gate ----
-
-
-def test_gate_threshold_tolerates_an_hour():
-    # Pin the replay-report gate's explicit one-hour tolerance.
-    from run_replay_report import DEFAULT_MAX_PRICE_GAP_SECONDS
-
-    assert DEFAULT_MAX_PRICE_GAP_SECONDS == pytest.approx(3600.0)
-    # The 474 s outage that failed the old gate must now pass.
-    assert 474.0 <= DEFAULT_MAX_PRICE_GAP_SECONDS
 
 
 def test_outage_threshold_default_is_the_documented_one():

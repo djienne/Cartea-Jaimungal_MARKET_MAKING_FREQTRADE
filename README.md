@@ -120,9 +120,7 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 ├── scripts/                               # measurement + data collection
 │   ├── mm_core.py                         # single Python quoting implementation
 │   ├── hjb.py                             # symmetric + asymmetric HJB solvers
-│   ├── replay_market_maker.py             # event replay (queue, latency, markouts)
-│   ├── sweep_replay.py                    # staged train/held-out parameter sweep
-│   ├── benchmark_replay.py                # replay throughput, minimum-of-repeats
+│   ├── archive_period.py                  # period archive before the tape rolls off
 │   ├── grid_pnl_curve.py                  # P&L curves from a grid run
 │   ├── compress_reports.py                # zstd migration for report logs
 │   ├── verify_market_viability.py         # can a passive maker profit here at all?
@@ -324,20 +322,33 @@ python scripts/get_epsilon.py          # ε± arrival jump, 200 ms primary
 python scripts/compute_spreads.py      # refresh κ/ε/λ, print spreads vs inventory
 ```
 
-### Replay and sweeps
+### Replay and backtests
+
+Replay is Rust. It runs the same paper simulator as the dry-run grid over a
+Parquet window, so a replay row and a leaderboard row are the same object and
+can be compared field for field. It is a command run from time to time, not a
+service, so it runs natively -- no container.
 
 ```bash
-# Deterministic replay of a Parquet window
-python scripts/replay_market_maker.py --data-dir scripts/HL_data --symbol CASHCAT
+cd rust_live && cargo build --release
 
-# Staged train/held-out parameter sweep. Selection runs on the whole train slice
-# by default; --search-max-price-events truncates it, and every artifact records
-# which tape selection actually ran on.
-python scripts/sweep_replay.py --data-dir scripts/HL_data --symbol CASHCAT
+# Every variant of the grid spec, over the tape on disk
+mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
+  --grid rust_live/config/grid_cashcat.toml --all-variants \
+  --train-fraction 0.05 --board replay_leaderboard.json
 
-# Replay throughput (minimum over repeats, since this host is shared)
-python scripts/benchmark_replay.py --data-dir scripts/HL_data --symbol CASHCAT
+# The fidelity check: the grid's own window, printed beside its live rows
+mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
+  --grid rust_live/config/grid_cashcat.toml \
+  --against-live rust_live/reports/grid_live/leaderboard.json
 ```
+
+A replay board uses the live `leaderboard.json` schema, so
+`scripts/show_grid_leaderboard.py` renders either. Read
+`docs/DRY_RUN_GRID.md` "Offline comparison" first: the two measurements differ
+by window, assumed latency and whether the live run was stitched across
+restarts, and a latency rung retunes the flatten family rather than merely
+handicapping it.
 
 ### Reading a grid run
 

@@ -111,8 +111,9 @@ is needed. These checks support numerical/accounting consistency, not an edge.
 
 ## Artifacts and paper roster
 
-`cashcat_sweep.json` and `cashcat_sweep.md` are the canonical complete search
-and paper-comparison records. The 22-row paper roster contains the three exact
+The canonical search record was the Python sweep, deleted 2026-09-10; the
+profiles it produced survive in `grid_cashcat.toml`, which is now their only
+source. The 22-row paper roster contains the three exact
 finalist fits, four targeted first-finalist combinations, two fixed-fit flatten
 contenders and 13 recent-fit controls. Fixed-fit and lot-age-exit rows remain
 ineligible for live promotion. Roster changes start a separate paper run rather

@@ -628,8 +628,8 @@ impl DryRunBackend {
     }
 
     /// FIFO-match a fill against opposing open lots; the remainder opens a new
-    /// one. Mirrors `match_holding_time` in `scripts/replay_market_maker.py`, so
-    /// the two simulators age a position the same way.
+    /// one. This lot clock is what the flatten deadline reads, so it decides
+    /// when a timed exit fires.
     fn record_lot(&mut self, ts_ms: u64, signed_units: i64) {
         let mut remaining = signed_units;
         while remaining != 0 {

@@ -126,7 +126,8 @@ max_half_spread_bps = 80.0
 replace_threshold_ticks = 1
 # Hold a resting quote while the new target is within this window (max of
 # ticks and bps), preserving queue position and WebSocket budget. Default from
-# the remediation plan; docs/requote_hysteresis_sweep.* holds the evidence run.
+# the remediation plan, measured by a replay whose engine has since been
+# replaced; re-measure with `mm-live replay` before treating 2.0 as tuned.
 replace_threshold_bps = 2.0
 min_order_lifetime_ms = 100
 reduce_only_threshold_q = 5.0

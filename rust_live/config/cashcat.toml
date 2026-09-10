@@ -85,9 +85,11 @@ max_shard_failure_rate = 0.05
 [model]
 q_max = 6
 horizon_seconds = 150.0
-# Raised 200 -> 300 (cap 300 -> 450) on 2026-09-02 from the held-out phi
-# ladder, docs/cashcat_phi_ladder.md. Held-out P&L, 118.7 h after the 08-28
-# split, AT THIS PROFILE'S horizon_seconds = 150:
+# Raised 200 -> 300 (cap 300 -> 450) on 2026-09-02 from a held-out phi
+# ladder. That ladder was run by the retired Python sweep and cannot be
+# reproduced; the numbers are kept here because this comment is now the only
+# record of them. Held-out P&L, 118.7 h after the 08-28 split, AT THIS
+# PROFILE'S horizon_seconds = 150:
 #
 #   phi*kappa*T   100     200     300     400     600    1000    3000
 #   eps500      -346.16 -235.47 -137.14 -149.95  -69.86  -57.65  -52.73
@@ -101,7 +103,7 @@ horizon_seconds = 150.0
 #    control as 200 at T=150. A first version of this promotion was chosen from
 #    a ladder run at T=300 and shipped at T=150, which silently doubled the
 #    intended step. Any future ladder must be run at the horizon it will ship
-#    at; scripts/phi_ladder.py now defaults to 150 and prints it.
+#    at, and must state that horizon beside the number.
 #
 # 2. THE CURVE IS NOT MONOTONE. 400 is a local dip in BOTH calibrations, which
 #    is why this is 300 and not 400. Neither is 300 an argmax -- the argmax is
@@ -152,7 +154,8 @@ max_half_spread_bps = 80.0
 replace_threshold_ticks = 1
 # Hold a resting quote while the new target is within this window (max of
 # ticks and bps), preserving queue position and WebSocket budget. Default from
-# the remediation plan; docs/requote_hysteresis_sweep.* holds the evidence run.
+# the remediation plan, measured by a replay whose engine has since been
+# replaced; re-measure with `mm-live replay` before treating 2.0 as tuned.
 replace_threshold_bps = 2.0
 min_order_lifetime_ms = 100
 reduce_only_threshold_q = 5.0

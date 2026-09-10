@@ -155,9 +155,29 @@ def status_lines(board: dict[str, Any]) -> list[str]:
     generated_ms = int(board["generated_at_ms"])
     generated = datetime.fromtimestamp(generated_ms / 1_000).astimezone()
     age_seconds = max(0.0, time.time() - generated_ms / 1_000)
+    valid = sum(bool(row.get("scientifically_valid")) for row in board["rows"])
+    if window := board.get("replay"):
+        # A replay board is the live schema on purpose, so the rows compare
+        # field for field -- which is exactly what makes it easy to read one as
+        # the other. Say which this is, and drop the feed counters: a replay
+        # consumes a tape slice and cannot see a gap inside it, so printing
+        # "gaps 0, downtime 0.000%" would assert something nobody measured.
+        scored_hours = (window["scoring_end_ms"] - window["scoring_start_ms"]) / 3_600_000.0
+        scored_from = datetime.fromtimestamp(window["scoring_start_ms"] / 1_000).astimezone()
+        return [
+            (
+                f"{board.get('symbol', '?')} REPLAY (not a live run) | "
+                f"{generated:%Y-%m-%d %H:%M:%S %z} ({age_seconds:.1f}s old)"
+            ),
+            (
+                f"scored {scored_hours:.2f}h from {scored_from:%Y-%m-%d %H:%M} | "
+                f"latency {window['latency_ms']} ms assumed | "
+                f"train {100.0 * float(window['train_fraction']):.0f}% | "
+                f"valid {valid}/{len(board['rows'])}"
+            ),
+        ]
     feed = board.get("feed_health", {})
     down_ms = int(board.get("feed_down_for_ms", 0))
-    valid = sum(bool(row.get("scientifically_valid")) for row in board["rows"])
     downtime_pct = 100.0 * float(feed.get("downtime_fraction", 0.0))
     gaps = int(feed.get("gaps", 0))
     event_loss = "YES" if feed.get("event_loss", False) else "no"

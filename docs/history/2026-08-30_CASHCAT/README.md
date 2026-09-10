@@ -18,6 +18,15 @@ independent run boundaries; archive periods do not overlap.
 
 ## Replay sweep
 
+> **Removed 2026-09-10.** `sweep.md` / `sweep.json` were produced by the Python
+> replay, which has been deleted; all replay is now `mm-live replay`. The
+> headline below is kept because it is the only remaining record of those
+> numbers. The same window is re-scored by the Rust engine in
+> `../2026-09-10_CASHCAT/`, whose tape reaches back to 2026-08-16 — except for
+> the first ~31 h, which fall inside that run's training prefix and are
+> therefore no longer scored by anything.
+
+
 - status: `ok`
 - historical pre-schema-v5 sweep; values below are preserved evidence, not current defaults
 - search scenario: `good` (100 ms latency, 250 ms refresh)
@@ -56,7 +65,7 @@ independent run boundaries; archive periods do not overlap.
 
 | file | what it is |
 | --- | --- |
-| `sweep.md` / `sweep.json` | the full staged sweep on the tape above |
+| ~~`sweep.md` / `sweep.json`~~ | removed with the Python replay; see the note above |
 | `grid_leaderboard.json` | the grid's ranking at the moment of archiving |
 | `grid_equity_curve.csv.zst` | the period's P&L curve, thinned and compressed |
 | `grid_pnl_curve.png` | that curve, rendered |

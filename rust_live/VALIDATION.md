@@ -4,9 +4,9 @@
 > market-order rate scaled by the survival fit's intercept `A`; v4 fed the raw
 > rate to the HJB while the fitted fill probability was `A·exp(-κδ)`, so fill
 > intensity was off by `A` (1.04 / 0.99 on CASHCAT). The dated results below
-> remain v4 evidence. Parity goldens were regenerated and the current staged
-> sweep was later rerun under v5; see `../docs/cashcat_sweep.md` rather than
-> using this file for current replay or grid status.
+> remain v4 evidence. Parity goldens were regenerated under v5; re-score with
+> `mm-live replay` rather than using this file for current replay or grid
+> status.
 
 > **Historical record.** Entries below are dated evidence, not a current host or
 > venue-status report. Current operational guidance lives in `README.md` and

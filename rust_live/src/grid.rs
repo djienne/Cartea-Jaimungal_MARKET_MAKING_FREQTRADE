@@ -407,6 +407,37 @@ pub struct Leaderboard {
     pub resumed_downtime_ms: u64,
     /// Promotable rows first, ordered by executable-side flatten P&L.
     pub rows: Vec<LeaderboardRow>,
+    /// Present only when this board came from `replay`; absent for a live grid.
+    ///
+    /// Check it first. The two boards are deliberately the same shape so rows
+    /// can be compared field for field, which is exactly what makes them easy
+    /// to confuse. It also warns that `feed_health` above is not a measurement
+    /// here: a replay consumes a tape slice and cannot observe a gap in it, so
+    /// those counters are zero meaning "not measured", not "the feed was
+    /// perfect".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<ReplayWindow>,
+}
+
+/// What a replay board scored: the window, the split and the assumed latency.
+///
+/// Enough for another run to be reproduced or refused as incomparable. A live
+/// row and a replay row of the same variant differ by the tape window, the
+/// latency assumption and whether the run was stitched across restarts; the
+/// first two are here and the third is `resumes` above.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayWindow {
+    pub training_start_ms: f64,
+    pub training_end_ms: f64,
+    pub scoring_start_ms: f64,
+    pub scoring_end_ms: f64,
+    pub train_fraction: f64,
+    /// The decision/acknowledgement/cancel latency every variant assumed.
+    ///
+    /// Load-bearing for the flatten family: the exit deadline is
+    /// `flatten_after_ms + decision + acknowledgement`, so a latency rung
+    /// retunes the strategy rather than merely handicapping it.
+    pub latency_ms: u64,
 }
 
 /// One variant's accounting, checkpointed so a restart can carry it forward.
@@ -807,15 +838,19 @@ mod tests {
         AppConfig::load(&path).expect("cashcat.toml must load")
     }
 
+    /// The shipped grid spec is now the only record of these parameters.
+    ///
+    /// It used to be cross-checked against `docs/cashcat_sweep.json`, the
+    /// Python sweep's artifact. That engine is gone, so a value pin here would
+    /// only compare the config with a copy of itself. What is still worth
+    /// asserting is structural: the rows are distinct, every frozen profile
+    /// still solves, and the flatten family is exactly `sweep1` plus the two
+    /// overrides that define it.
     #[test]
-    fn shipped_paper_candidates_match_saved_models_without_duplicate_rows() {
+    fn shipped_paper_candidates_are_distinct_and_every_frozen_profile_solves() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let spec = GridSpec::load(&root.join("config/grid_cashcat.toml")).unwrap();
         let config = AppConfig::load(&root.join("config/cashcat_dryrun_realistic.toml")).unwrap();
-        let sweep: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(root.join("../docs/cashcat_sweep.json")).unwrap(),
-        )
-        .unwrap();
         assert_eq!(spec.variants.len(), 22);
         let fingerprints: BTreeSet<_> = spec
             .variants
@@ -823,77 +858,34 @@ mod tests {
             .map(|entry| spec.resolve_variant(entry, &config).unwrap().2)
             .collect();
         assert_eq!(fingerprints.len(), 22);
-        let finalists = sweep["stage_c"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| (format!("sweep{}", index + 1), entry));
-        let contenders = sweep["paper_contenders"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| (entry["name"].as_str().unwrap().to_owned(), entry));
-        for (name, expected) in finalists.chain(contenders) {
-            let entry = spec
-                .variants
-                .iter()
-                .find(|entry| entry.name == name)
-                .unwrap();
+
+        let mut profiled = 0;
+        for entry in &spec.variants {
             let (applied, parameters, _) = spec.resolve_variant(entry, &config).unwrap();
-            let expected_parameters = &expected["params"];
-            let actual = parameters.unwrap();
+            let Some(actual) = parameters else { continue };
+            profiled += 1;
             for (key, value) in [
                 ("lambda+", actual.lambda_plus),
                 ("lambda-", actual.lambda_minus),
                 ("kappa+", actual.kappa_plus),
                 ("kappa-", actual.kappa_minus),
-                ("epsilon+", actual.epsilon_plus),
-                ("epsilon-", actual.epsilon_minus),
             ] {
-                let expected_value = expected_parameters[key].as_f64().unwrap();
-                assert!(
-                    (value - expected_value).abs() <= 2.0 * f64::EPSILON * expected_value.abs(),
-                    "{name}: {key}"
-                );
+                assert!(value.is_finite() && value > 0.0, "{}: {key}", entry.name);
             }
-            assert!(actual.sigma2_per_second.is_none());
+            assert!(actual.epsilon_plus.is_finite() && actual.epsilon_plus >= 0.0);
+            assert!(actual.epsilon_minus.is_finite() && actual.epsilon_minus >= 0.0);
+            // A frozen fit is not a live calibration, so it must never be
+            // offered to promotion; `sigma2` is likewise the calibrator's.
+            assert!(actual.sigma2_per_second.is_none(), "{}", entry.name);
             let surface = mm_live::hjb::solve_asymmetric(actual, &applied.model, 306.0, 1)
-                .unwrap_or_else(|error| panic!("{name}: {error}"));
+                .unwrap_or_else(|error| panic!("{}: {error}", entry.name));
             assert!(surface.max_final_residual <= applied.model.newton_tolerance);
-            assert_eq!(
-                applied.model.q_max,
-                expected["risk"]["q_max"].as_i64().unwrap()
-            );
-            assert_eq!(
-                applied.model.horizon_seconds,
-                expected["risk"]["horizon_seconds"].as_f64().unwrap()
-            );
-            assert_eq!(
-                applied.model.phi_kappa_t,
-                expected["risk"]["phi_kappa_t"].as_f64().unwrap()
-            );
-            assert_eq!(
-                applied.model.phi_kappa_t_max,
-                expected["risk"]["phi_kappa_t_max"]
-                    .as_f64()
-                    .unwrap_or(applied.model.phi_kappa_t)
-            );
-            assert_eq!(
-                applied.model.alpha_kappa,
-                expected["risk"]["alpha_kappa"].as_f64().unwrap()
-            );
-            assert_eq!(
-                applied.flow_guard.enabled,
-                expected["risk"]["flow_guard"].as_bool().unwrap()
-            );
-            if let Some(spread) = expected["risk"]["min_half_spread_bps"].as_f64() {
-                assert_eq!(applied.quoting.min_half_spread_bps, spread);
-            }
-            if let Some(deadline) = expected["risk"]["flatten_after_ms"].as_u64() {
-                assert_eq!(entry.overrides.flatten_after_ms, Some(deadline));
-            }
         }
+        assert!(
+            profiled >= 8,
+            "expected the sweep and contender rows, got {profiled}"
+        );
+
         let first = spec
             .variants
             .iter()
@@ -1056,6 +1048,7 @@ mod tests {
             resumes: 0,
             resumed_downtime_ms: 0,
             rows: vec![row("a", -1.0), row("b", 2.0), row("c", 0.5)],
+            replay: None,
         };
         board.rows[1].eligible_for_promotion = false;
         board.sort_by_promotion_pnl();
@@ -1177,6 +1170,7 @@ mod tests {
                 scientifically_valid: true,
                 eligible_for_promotion: true,
             }],
+            replay: None,
         }
     }
 

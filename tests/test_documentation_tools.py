@@ -16,61 +16,68 @@ if str(SCRIPTS) not in sys.path:
 
 import archive_period  # noqa: E402
 import grid_pnl_curve  # noqa: E402
-import sweep_replay  # noqa: E402
 
 
-def test_sweep_markdown_discloses_execution_and_scoring_limits():
-    text = sweep_replay.to_markdown({
-        "status": "ok",
-        "stage_c": [{"key": "calibration|risk", "held_out": {}, "train": {}}],
-        "latency_ladder": [{"scenario": {}}],
-    })
-    assert r"calibration\|risk" in text
-    assert "including training" in text
-    assert "quoted spread capture" in text
-    assert "not measured host execution capabilities" in text
-    assert "not solvency or promotion readiness" in text
-    assert "max(0, refresh" not in text
-
-
-def test_sweep_headline_reads_the_current_nested_schema(tmp_path):
-    payload = {
-        "status": "ok",
-        "search_scenario": {"name": "good", "latency_ms": 100, "refresh_ms": 250},
-        "split_at": "2026-08-26T10:35:45Z",
-        "stage_c": [
+def _replay_board(**overrides):
+    board = {
+        "generated_at_ms": 1_788_000_000_000,
+        "started_at_ms": 1_787_000_000_000,
+        "elapsed_seconds": 3_600,
+        "symbol": "CASHCAT",
+        "feed_health": {"gaps": 0, "downtime_fraction": 0.0, "event_loss": False},
+        "resumes": 0,
+        "rows": [
             {
-                "key": "winner",
-                "train": {"pnl_usdc": -83.54},
-                "held_out": {"pnl_usdc": -99.12, "maker_fills": 2753},
+                "name": "flatten300",
+                "net_pnl_usdc": 11.2,
+                "fills": 217,
+                "inventory_units": 0,
             }
         ],
-        "latency_ladder": [
-            {
-                "scenario": {"name": "colocated", "latency_ms": 50, "refresh_ms": 100},
-                "pnl_usdc": 130.74,
-                "maker_fills": 3046,
-            }
-        ],
+        "replay": {
+            "training_start_ms": 1_786_000_000_000,
+            "training_end_ms": 1_787_000_000_000,
+            "scoring_start_ms": 1_787_000_000_000,
+            "scoring_end_ms": 1_788_000_000_000,
+            "train_fraction": 0.05,
+            "latency_ms": 150,
+        },
     }
-    path = tmp_path / "sweep.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-    text = "\n".join(archive_period.sweep_headline(path))
-    assert "good (100 ms latency, 250 ms refresh)" in text
-    assert "| `winner` | -83.54 | **-99.12** | 2753 |" in text
-    assert "| colocated | +130.74 | 3046 |" in text
+    board.update(overrides)
+    return board
 
 
-def test_sweep_headline_refuses_schema_drift_instead_of_printing_zeros(tmp_path):
-    path = tmp_path / "stale-sweep.json"
-    path.write_text(
-        json.dumps({"status": "ok", "stage_c": [{"obsolete_key": 1}]}),
-        encoding="utf-8",
-    )
-    text = "\n".join(archive_period.sweep_headline(path))
-    assert "schema mismatch" in text
-    assert "+0.00" not in text
+def test_replay_headline_reports_the_window_and_the_rows(tmp_path):
+    path = tmp_path / "replay_leaderboard.json"
+    path.write_text(json.dumps(_replay_board()), encoding="utf-8")
+
+    text = "\n".join(archive_period.replay_headline(path))
+    assert "150 ms assumed latency" in text
+    assert "first 5% fits and sizes only" in text
+    assert "| flatten300 | +11.20 | 217 | 0 |" in text
+
+
+def test_replay_headline_refuses_a_live_board_instead_of_relabelling_it(tmp_path):
+    """A live board and a replay board are the same schema on purpose.
+
+    That is what makes them comparable and what makes mislabelling one as the
+    other easy, so the archive refuses rather than presenting a live ranking as
+    offline evidence for a window nobody replayed.
+    """
+    board = _replay_board()
+    del board["replay"]
+    path = tmp_path / "grid_leaderboard.json"
+    path.write_text(json.dumps(board), encoding="utf-8")
+
+    text = "\n".join(archive_period.replay_headline(path))
+    assert "not a replay board" in text
+    assert "flatten300" not in text
+
+
+def test_replay_headline_survives_an_unreadable_artifact(tmp_path):
+    path = tmp_path / "replay_leaderboard.json"
+    path.write_text("{ truncated", encoding="utf-8")
+    assert "unreadable" in "\n".join(archive_period.replay_headline(path))
 
 
 def test_history_discovery_and_downsampling_preserve_run_boundaries(tmp_path):

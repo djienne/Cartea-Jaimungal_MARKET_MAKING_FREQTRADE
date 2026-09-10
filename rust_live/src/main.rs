@@ -5,10 +5,10 @@ use clap::{Parser, Subcommand};
 use mm_live::calibration::{CalibrationSnapshot, Calibrator};
 use mm_live::config::AppConfig;
 use mm_live::execution::{
-    AccountStateProvider, DryRunBackend, ExecutionBackend, HyperliquidLiveBackend, MarketDataSource,
+    AccountStateProvider, DryRunBackend, ExecutionBackend, HyperliquidLiveBackend,
 };
 use mm_live::flow_guard::{FlowGuard, MidWindow, VpinTracker};
-use mm_live::hjb::{solve_asymmetric, CjParameters, HjbSurface};
+use mm_live::hjb::{solve_asymmetric, HjbSurface};
 use mm_live::hot_path::{
     flow_channel, risk_channel, spawn_hot_path, HotPathInputs, ModelBundle, RiskWriter,
 };
@@ -32,14 +32,11 @@ use mm_live::parquet_io::{
     ParquetEventRecorder, ParquetRecorderHandle,
 };
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
-use mm_live::replay::ParquetReplaySource;
 use mm_live::report::{
     JsonlEventLogger, LiveSessionReport, LogBackpressure, LogFormat, LogRotation, ModelReport,
     ReplayInputs, SessionReport,
 };
-use mm_live::types::{
-    unix_ms, Bbo, DesiredQuotes, ExecutionEvent, MarketEvent, ProcessClock, QuoteReason,
-};
+use mm_live::types::{unix_ms, Bbo, ExecutionEvent, MarketEvent, ProcessClock};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -53,7 +50,11 @@ use tracing_subscriber::EnvFilter;
 #[cfg(feature = "live-acceptance")]
 use hyperliquid_connector::acceptance as live_acceptance;
 
+mod backtest;
 mod grid;
+mod paper;
+
+use crate::paper::{step_paper_variant, PaperVariant};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -96,17 +97,42 @@ enum Command {
     Calibrate,
     /// Replay the selected Parquet window deterministically.
     Replay {
+        /// Stem for the per-variant session reports.
         #[arg(long)]
         report: Option<PathBuf>,
+        /// Where the leaderboard-shaped summary goes. Same schema as a live
+        /// `leaderboard.json`, so the same viewer renders both.
+        #[arg(long)]
+        board: Option<PathBuf>,
+        /// Fraction of the window used only to fit and size, never scored.
+        ///
+        /// Small when reproducing a live row: the grid was never trained on
+        /// that window, so a large prefix throws the comparison away.
         #[arg(long, default_value_t = 0.7)]
         train_fraction: f64,
-        #[arg(long, requires = "variant")]
-        grid: Option<PathBuf>,
-        #[arg(long, requires = "grid")]
-        variant: Option<String>,
-        /// Assume this decision, acknowledgement and cancel latency instead of the config's.
         #[arg(long)]
-        latency_ms: Option<u64>,
+        grid: Option<PathBuf>,
+        /// Repeatable. One row of the grid spec each.
+        #[arg(long, requires = "grid")]
+        variant: Vec<String>,
+        /// Score every variant in the spec.
+        #[arg(long, requires = "grid", conflicts_with = "variant")]
+        all_variants: bool,
+        /// Assume this decision, acknowledgement and cancel latency instead of
+        /// the config's. Repeatable: one rung of a ladder each.
+        ///
+        /// It retunes the flatten family rather than merely handicapping it --
+        /// the exit deadline is `flatten_after_ms` plus the decision and
+        /// acknowledgement legs.
+        #[arg(long)]
+        latency_ms: Vec<u64>,
+        /// Score the window a live `leaderboard.json` covers and print its rows
+        /// beside the replay's: the fidelity check between replay and dry run.
+        ///
+        /// Supplies the range, the latency and, absent `--variant`, the variant
+        /// list. Requires `--grid` to resolve those names.
+        #[arg(long, requires = "grid", conflicts_with_all = ["from", "to"])]
+        against_live: Option<PathBuf>,
         /// Start of the tape range to replay, RFC 3339 or epoch ms (default:
         /// the config window ending at the newest shard).
         #[arg(long, requires = "to")]
@@ -403,31 +429,34 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
         }
         Command::Replay {
             report,
+            board,
             train_fraction,
             grid,
             variant,
+            all_variants,
             latency_ms,
+            against_live,
             from,
             to,
         } => {
-            let mut config = config.clone();
-            if let Some(ms) = latency_ms {
-                config.dry_run.decision_latency_ms = ms;
-                config.dry_run.acknowledgement_latency_ms = ms;
-                config.dry_run.cancel_latency_ms = ms;
-            }
             let range = match (from, to) {
                 (Some(from), Some(to)) => Some((parse_utc_ms(&from)?, parse_utc_ms(&to)?)),
                 _ => None,
             };
-            run_replay_command(
+            backtest::run(
                 &config,
                 instrument,
-                report.as_deref(),
-                train_fraction,
-                grid.as_deref(),
-                variant.as_deref(),
-                range,
+                backtest::Request {
+                    report: report.as_deref(),
+                    board: board.as_deref(),
+                    train_fraction,
+                    grid_path: grid.as_deref(),
+                    variants: variant,
+                    all_variants,
+                    range,
+                    latencies: latency_ms,
+                    against_live: against_live.as_deref(),
+                },
             )
             .await
         }
@@ -1960,79 +1989,6 @@ fn apply_live_execution_events(
     Ok(())
 }
 
-/// One parameter set inside the grid: its own configuration, model surface,
-/// simulator and log. Nothing here is shared with a peer except the market feed.
-struct PaperVariant {
-    name: String,
-    description: String,
-    config_fingerprint: String,
-    config_changes: u32,
-    fixed_parameters: Option<CjParameters>,
-    config: AppConfig,
-    policy: CarteaJaimungalPolicy,
-    surface: HjbSurface,
-    inventory_unit: i64,
-    backend: DryRunBackend,
-    logger: JsonlEventLogger,
-    report_path: PathBuf,
-    episode_start_ns: u64,
-    quote_seq: u64,
-    fills: u64,
-    peak_equity_usdc: f64,
-    max_drawdown_usdc: f64,
-    /// Per variant, because the thresholds are a lever. The VPIN statistic
-    /// itself is a property of the market and is shared across variants; only
-    /// the trip decision is per variant.
-    guard: FlowGuard,
-    mid_window: MidWindow,
-    /// Set once this variant has failed. It then stops trading while the rest
-    /// of the grid continues, and its report carries the reason.
-    failure: Option<String>,
-}
-
-/// One variant's slice of a market event, in a form whose errors can be caught
-/// per variant instead of aborting the whole grid.
-#[allow(clippy::too_many_arguments)]
-async fn step_paper_variant(
-    variant: &mut PaperVariant,
-    event: &MarketEvent,
-    event_time: u64,
-    bbo: Option<Bbo>,
-    vpin_value: Option<f64>,
-) -> Result<Option<QuoteReason>> {
-    let execution_events = variant.backend.on_market_event(event).await?;
-    for execution_event in &execution_events {
-        variant
-            .logger
-            .log("execution_event", Some(event_time), execution_event)?;
-    }
-    // MAKER fills only. Counting every execution event made a flatten variant
-    // show roughly twice its fills, since each maker entry is followed by a
-    // taker exit -- and the leaderboard's fills column is what a reader uses to
-    // judge whether a row has measured anything.
-    variant.fills = variant.fills.saturating_add(
-        execution_events
-            .iter()
-            .filter(|event| matches!(event, ExecutionEvent::Fill(fill) if fill.maker))
-            .count() as u64,
-    );
-    if !variant.backend.scientifically_valid() {
-        warn!(variant = %variant.name, reason = ?variant.backend.diagnostics().invalid_reason, "paper variant halted by execution risk; manual review required");
-    }
-    let reason = if execution_events.is_empty() {
-        QuoteReason::Market
-    } else {
-        QuoteReason::Fill
-    };
-    if let Some(bbo) = bbo.filter(|_| variant.backend.scientifically_valid()) {
-        return variant
-            .step(bbo, event_time, reason, vpin_value)
-            .await
-            .map(Some);
-    }
-    Ok(None)
-}
-
 fn observe_grid_market(
     variants: &mut [PaperVariant],
     market: &mut grid::PaperMarketState,
@@ -2087,124 +2043,6 @@ fn observe_grid_market(
         }
     }
     Ok(())
-}
-
-impl PaperVariant {
-    /// Price this variant against the current book and hand the result to its
-    /// own simulator. This is the same `policy.compute` the hot path calls; the
-    /// grid deliberately does not spawn hot-path threads (see `src/grid.rs`).
-    async fn step(
-        &mut self,
-        bbo: Bbo,
-        decision_ms: u64,
-        reason: QuoteReason,
-        vpin: Option<f64>,
-    ) -> Result<QuoteReason> {
-        let account = self.backend.account_state();
-        let q_exact = if self.inventory_unit == 0 {
-            0.0
-        } else {
-            account.inventory_units as f64 / self.inventory_unit as f64
-        };
-        let model_now_ns = decision_ms.saturating_mul(1_000_000);
-        if self.episode_start_ns == 0 {
-            self.episode_start_ns = model_now_ns;
-        }
-        let elapsed = model_now_ns.saturating_sub(self.episode_start_ns) as f64 / 1_000_000_000.0;
-        let horizon_seconds = self.config.model.horizon_seconds;
-        let minimum_elapsed = horizon_seconds * self.config.model.episode_min_elapsed_fraction;
-        let episode_rolled = elapsed >= horizon_seconds
-            || (self.config.model.episode_reset_on_flat
-                && q_exact.round() == 0.0
-                && elapsed >= minimum_elapsed);
-        let elapsed = if episode_rolled {
-            self.episode_start_ns = model_now_ns;
-            0.0
-        } else {
-            elapsed
-        };
-        let tau = (horizon_seconds - elapsed).max(0.0);
-        let reason = if episode_rolled {
-            QuoteReason::Episode
-        } else {
-            reason
-        };
-        let risk_state = RiskState {
-            equity_usdc: account.equity_usdc,
-            daily_realized_pnl_usdc: self.backend.daily_realized_pnl_usdc(),
-            consecutive_losses: account.consecutive_losses,
-        };
-        self.quote_seq = self.quote_seq.wrapping_add(1);
-        // Toxic-flow guard, mirroring the hot path's arm: empty quotes cancel
-        // resting orders because a `None` target bypasses the requote hold.
-        let move_bps = self.mid_window.observe(model_now_ns, bbo.mid_units());
-        if self.guard.evaluate(decision_ms, move_bps, vpin) {
-            let mut quotes =
-                DesiredQuotes::empty(QuoteReason::ToxicFlow, self.quote_seq, model_now_ns);
-            quotes.source_exchange_ms = bbo.exchange_ms;
-            self.backend.reconcile(quotes, decision_ms).await?;
-            self.logger.log("quote_decision", None, &quotes)?;
-            return Ok(QuoteReason::ToxicFlow);
-        }
-        let quotes = self
-            .policy
-            .compute(
-                &self.surface,
-                bbo,
-                account.inventory_units,
-                self.inventory_unit,
-                tau,
-                self.quote_seq,
-                model_now_ns,
-                reason,
-                risk_state,
-            )
-            .quotes;
-        self.backend.reconcile(quotes, decision_ms).await?;
-        self.logger.log("quote_decision", None, &quotes)?;
-        Ok(quotes.reason)
-    }
-
-    fn observe_equity(&mut self) {
-        let equity = self.backend.account_state().equity_usdc;
-        if equity > self.peak_equity_usdc {
-            self.peak_equity_usdc = equity;
-        }
-        let drawdown = self.peak_equity_usdc - equity;
-        if drawdown > self.max_drawdown_usdc {
-            self.max_drawdown_usdc = drawdown;
-        }
-    }
-
-    fn leaderboard_row(&self, bbo: Option<Bbo>) -> grid::LeaderboardRow {
-        let account = self.backend.account_state();
-        let scientifically_valid = self.backend.scientifically_valid() && self.failure.is_none();
-        let promotion_pnl_usdc = scientifically_valid
-            .then(|| bbo.and_then(|value| self.backend.promotion_pnl_usdc(value)))
-            .flatten();
-        let has_live_equivalent =
-            self.config.dry_run.flatten_after_ms == 0 && self.fixed_parameters.is_none();
-        grid::LeaderboardRow {
-            name: self.name.clone(),
-            description: self.description.clone(),
-            net_pnl_usdc: account.equity_usdc - self.config.dry_run.starting_equity_usdc,
-            promotion_pnl_usdc,
-            equity_usdc: account.equity_usdc,
-            realized_pnl_usdc: account.realized_pnl_usdc,
-            mark_to_market_pnl_usdc: account.mark_to_market_pnl_usdc,
-            fees_usdc: account.fees_usdc,
-            funding_usdc: account.funding_usdc,
-            inventory_units: account.inventory_units,
-            fills: self.fills,
-            working_orders: self.backend.working_order_count(),
-            max_drawdown_usdc: self.max_drawdown_usdc,
-            config_changes: self.config_changes,
-            scientifically_valid,
-            eligible_for_promotion: scientifically_valid
-                && promotion_pnl_usdc.is_some()
-                && has_live_equivalent,
-        }
-    }
 }
 
 /// Run every variant in the grid against one shared public feed.
@@ -3160,6 +2998,7 @@ fn write_grid_leaderboard(
             .iter()
             .map(|variant| variant.leaderboard_row(latest_bbo))
             .collect(),
+        replay: None,
     };
     board.sort_by_promotion_pnl();
     board.write_atomic(path)?;
@@ -3321,233 +3160,6 @@ fn prepare_model_bundle(
         config.calibration.max_age_seconds,
         config.calibration.max_future_skew_seconds,
     )
-}
-
-async fn run_replay_command(
-    config: &AppConfig,
-    instrument: mm_live::InstrumentSpec,
-    report_path: Option<&Path>,
-    train_fraction: f64,
-    grid_path: Option<&Path>,
-    variant_name: Option<&str>,
-    range: Option<(u64, u64)>,
-) -> Result<()> {
-    let started_at_ms = unix_ms();
-    let (config, fixed_parameters, config_fingerprint) = if let Some(path) = grid_path {
-        let spec = grid::GridSpec::load(path)?;
-        let name = variant_name.context("grid replay requires a variant name")?;
-        let entry = spec
-            .variants
-            .iter()
-            .find(|entry| entry.name == name)
-            .with_context(|| format!("unknown replay variant {name:?}"))?;
-        spec.resolve_variant(entry, config)?
-    } else {
-        (config.clone(), None, config.fingerprint()?)
-    };
-    let data = load_market_window(
-        &config.storage.data_dir,
-        &instrument.symbol,
-        &config.calibration,
-        range,
-    )?;
-    let (training, scoring) = data.split_for_replay(train_fraction)?;
-    let snapshot = if fixed_parameters.is_none() {
-        let candidate =
-            Calibrator::new(&instrument.symbol, config.calibration.clone()).calibrate(&training)?;
-        if !candidate.is_quotable() {
-            bail!(
-                "replay training calibration failed closed: {:?}",
-                candidate.status
-            );
-        }
-        Some(candidate)
-    } else {
-        None
-    };
-    let parameters = fixed_parameters
-        .or_else(|| snapshot.as_ref().map(|value| value.parameters))
-        .context("replay has no usable parameters")?;
-    let policy = CarteaJaimungalPolicy::new(
-        instrument.clone(),
-        config.quoting.clone(),
-        config.risk.clone(),
-    )?;
-    let inventory_unit = policy.derive_inventory_unit(
-        training.mids.last().context("no training mid")?.mid,
-        config.model.q_max,
-    )?;
-    let surface = solve_asymmetric(
-        parameters,
-        &config.model,
-        instrument.size_from_units(inventory_unit),
-        1,
-    )?;
-    let mut replay = ReplayInputs {
-        variant: variant_name.map(str::to_owned),
-        time_source: data.time_source,
-        scored_until_ms: None,
-        training_start_ms: training.window_start_ms,
-        training_end_ms: training.window_end_ms,
-        scoring_start_ms: scoring.window_start_ms,
-        scoring_end_ms: scoring.window_end_ms,
-        parameters,
-        vpin_bucket_units: vpin_bucket_units(
-            &training,
-            &instrument,
-            config.flow_guard.vpin_buckets_per_day,
-        ),
-    };
-    let guard_window_ms = config.flow_guard.fast_move_window_ms;
-    let mid_capacity = guard_window_ms
-        .saturating_mul(200)
-        .div_ceil(1_000)
-        .clamp(64, 8_192) as usize;
-    let mut variant = PaperVariant {
-        name: variant_name.unwrap_or("replay").to_owned(),
-        description: String::new(),
-        config_fingerprint,
-        config_changes: 0,
-        fixed_parameters,
-        backend: DryRunBackend::new(
-            instrument.clone(),
-            config.dry_run.clone(),
-            config.quoting.clone(),
-            config.risk.clone(),
-        )?,
-        logger: JsonlEventLogger::create_with_rotation(
-            &config
-                .storage
-                .report_dir
-                .join(format!("replay-{started_at_ms}")),
-            "events",
-            LogBackpressure::BlockWhenFull,
-            LogFormat::Zstd,
-            LogRotation {
-                max_bytes: config.storage.live_log_max_mb * 1_024 * 1_024,
-                keep: config.storage.live_log_keep,
-            },
-        )?,
-        report_path: report_path.map_or_else(
-            || {
-                config
-                    .storage
-                    .report_dir
-                    .join(format!("replay-{started_at_ms}.json"))
-            },
-            Path::to_owned,
-        ),
-        peak_equity_usdc: config.dry_run.starting_equity_usdc,
-        guard: FlowGuard::new(config.flow_guard.clone()),
-        mid_window: MidWindow::new(mid_capacity, guard_window_ms),
-        config,
-        policy,
-        surface,
-        inventory_unit,
-        episode_start_ns: 0,
-        quote_seq: 0,
-        fills: 0,
-        max_drawdown_usdc: 0.0,
-        failure: None,
-    };
-    variant.logger.log("replay_inputs", None, &replay)?;
-    let metrics = Arc::new(Metrics::default());
-    let result = run_event_source(
-        &mut variant,
-        ParquetReplaySource::new(&scoring, &instrument)?,
-        &metrics,
-        replay.vpin_bucket_units,
-    )
-    .await;
-    if let Err(error) = &result {
-        variant.backend.invalidate(&format!("{error:#}"));
-    }
-    replay.scored_until_ms = result.as_ref().ok().copied();
-    variant.logger.flush()?;
-    write_report(
-        &variant.config,
-        Some(&variant.report_path),
-        "replay",
-        started_at_ms,
-        instrument,
-        snapshot,
-        Some(ModelReport::from_surface(&variant.surface, inventory_unit)),
-        LatencySnapshot::empty(
-            &variant.config.instrument.symbol,
-            started_at_ms,
-            &variant.config.latency,
-            false,
-        ),
-        &variant.backend,
-        &metrics,
-        variant
-            .backend
-            .diagnostics()
-            .invalid_reason
-            .iter()
-            .cloned()
-            .collect(),
-        variant.logger.path(),
-        0,
-        Some(replay),
-    )?;
-    result.map(|_| ())
-}
-
-async fn run_event_source<S: MarketDataSource>(
-    variant: &mut PaperVariant,
-    mut source: S,
-    metrics: &Arc<Metrics>,
-    vpin_bucket: i64,
-) -> Result<u64> {
-    let mut latest_bbo = None;
-    let mut decision_ms = 0;
-    let mut vpin = VpinTracker::new(
-        vpin_bucket,
-        variant.config.flow_guard.vpin_window_buckets as usize,
-    );
-    let mut vpin_value = None;
-    while let Some(event) = source.next_event().await? {
-        metrics.market_messages.fetch_add(1, Ordering::Relaxed);
-        match &event {
-            MarketEvent::Bbo(_) => &metrics.bbo_updates,
-            MarketEvent::Trade(_) => &metrics.trade_prints,
-            MarketEvent::Book(_) => &metrics.book_updates,
-        }
-        .fetch_add(1, Ordering::Relaxed);
-        decision_ms = decision_ms.max(event_ms(&event));
-        if let MarketEvent::Trade(print) = &event {
-            vpin_value = vpin.observe(print);
-        }
-        if let MarketEvent::Bbo(bbo) = &event {
-            latest_bbo = Some(*bbo);
-        }
-        variant
-            .logger
-            .log("market_event", Some(event_ms(&event)), &event)?;
-        if let Some(reason) =
-            step_paper_variant(variant, &event, decision_ms, latest_bbo, vpin_value).await?
-        {
-            metrics.quote_decisions.fetch_add(1, Ordering::Relaxed);
-            metrics.quote_publications.fetch_add(1, Ordering::Relaxed);
-            if reason == QuoteReason::RiskLimit {
-                metrics.risk_refusals.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        metrics
-            .fills
-            .store(variant.backend.diagnostics().fills, Ordering::Relaxed);
-        metrics.inventory_units.store(
-            variant.backend.account_state().inventory_units,
-            Ordering::Relaxed,
-        );
-        variant.observe_equity();
-        if !variant.backend.scientifically_valid() {
-            break;
-        }
-    }
-    variant.backend.shutdown(decision_ms).await?;
-    Ok(decision_ms)
 }
 
 async fn run_public_dry_run(
@@ -4172,6 +3784,10 @@ async fn wait_for_shutdown_signal() -> Result<()> {
 #[cfg(all(test, feature = "live-acceptance"))]
 mod tests {
     use super::*;
+    use crate::backtest::run_event_source;
+    use mm_live::hjb::CjParameters;
+    use mm_live::replay::ParquetReplaySource;
+    use mm_live::types::QuoteReason;
 
     fn cashcat() -> mm_live::InstrumentSpec {
         mm_live::InstrumentSpec {
@@ -4856,6 +4472,7 @@ mod grid_health_tests {
             resumes: 0,
             resumed_downtime_ms: 0,
             rows: Vec::new(),
+            replay: None,
         }
     }
 

@@ -5,14 +5,14 @@ WHY THIS EXISTS. `hl-cashcat-collector` keeps 30 days
 (`CASHCAT_RETENTION_MINUTES: 43200`) and deletes everything older. Two
 irreplaceable things ride that clock:
 
-1. **Replay.** A sweep can only score a window while its Parquet shards exist.
+1. **Replay.** A replay can only score a window while its Parquet shards exist.
    Once a period rolls off, no replay can ever be run against it again -- not
    re-run more cheaply, not re-run at all.
 2. **The dry-run grid.** Its event logs rotate at ~34 days
    (`--log-max-mb 64 --log-keep 3`), so grid history expires too.
 
 Every `--cadence-days` this attempts to write a period directory holding a fresh
-sweep plus the grid's P&L curve, small enough to commit. A 21-day cadence against
+replay plus the grid's P&L curve, small enough to commit. A 21-day cadence against
 30-day retention leaves 9 days to retry an interrupted or failed attempt; the
 failure is harmless only if a successful `--force` rerun lands before that
 margin expires.
@@ -20,7 +20,7 @@ margin expires.
 TWO WINDOW CONVENTIONS, deliberately different, both recorded in the period
 README:
 
-- the **sweep** scores the whole tape currently on disk (up to 30 days), so
+- the **replay** scores the whole tape currently on disk (up to 30 days), so
   consecutive archives overlap -- that overlap is the safety margin;
 - the **grid curve** is sliced to the period since the last archive, preserving
   `run_started_ms` boundaries so independent runs are never spliced.
@@ -43,6 +43,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -58,11 +59,41 @@ SHARD_RE = re.compile(r"_(\d{13})\.parquet$")
 # added later is picked up automatically once its tape grows past the line.
 DEFAULT_MIN_TAPE_DAYS = 7.0
 
-# The sweep's non-symbol defaults -- mid fallback, inventory unit base, tick
-# size -- are CASHCAT's. Running them against a different instrument would
-# silently produce confident numbers for the wrong asset, so an unknown symbol
-# is refused rather than archived wrongly.
-KNOWN_INSTRUMENTS = {"CASHCAT"}
+# A period holds a leaderboard, ~22 session reports and a thinned P&L curve.
+# The 2026-08-30 archive was 0.2 MB; 50 MB is generous headroom and still far
+# below anything that hurts a clone.
+SIZE_BUDGET_BYTES = 50 * 1024 * 1024
+
+# A replay is only meaningful for a symbol that has both a dry-run config and a
+# grid spec: those carry the instrument's tick size, lot base and variant rows.
+# A symbol with a long tape but no profile is refused rather than archived with
+# another asset's numbers.
+CONFIGS = ROOT / "rust_live" / "config"
+
+
+def instrument_profile(symbol):
+    """The (config, grid spec) pair for a symbol, or None when it has none."""
+    config = CONFIGS / ("%s_dryrun_realistic.toml" % symbol.lower())
+    spec = CONFIGS / ("grid_%s.toml" % symbol.lower())
+    return (config, spec) if config.exists() and spec.exists() else None
+
+
+def mm_live_binary():
+    """The natively built trader binary.
+
+    Replay is a command run from time to time, not a service, so it is a host
+    binary rather than a container: only the collectors and the dry-run grid
+    need to run continuously. `MM_LIVE_BIN` overrides for an unusual layout.
+    """
+    override = os.environ.get("MM_LIVE_BIN")
+    if override:
+        return Path(override)
+    suffix = ".exe" if os.name == "nt" else ""
+    for profile in ("release", "debug"):
+        candidate = ROOT / "rust_live" / "target" / profile / ("mm-live" + suffix)
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def log(message):
@@ -244,58 +275,31 @@ def run(command, label):
 # --------------------------------------------------------------------------
 
 
-def sweep_headline(sweep_json):
-    """A few lines a reader can act on without opening the 280 KB payload."""
+def replay_headline(board_json):
+    """The replay board, rendered the same way the live one is.
+
+    Both boards are the same schema on purpose -- a replay row and a live row
+    come from the same `PaperVariant::leaderboard_row` -- so this reuses
+    `leaderboard_headline` and only adds what is specific to a replay: the
+    window it scored and the latency it assumed.
+    """
     try:
-        payload = json.loads(Path(sweep_json).read_text(encoding="utf-8"))
+        board = json.loads(Path(board_json).read_text(encoding="utf-8"))
     except Exception as error:  # noqa: BLE001 - a bad artifact must not kill the archive
-        return ["- sweep payload unreadable: %r" % (error,)]
-    scenario = payload.get("search_scenario")
-    if isinstance(scenario, dict):
-        scenario = "%s (%s ms latency, %s ms refresh)" % (
-            scenario.get("name", "?"),
-            scenario.get("latency_ms", "?"),
-            scenario.get("refresh_ms", "?"),
-        )
-    lines = [
-        "- status: `%s`" % payload.get("status"),
-        "- search scenario: `%s`" % scenario,
-        "- train/held-out split at `%s`" % payload.get("split_at"),
-    ]
-    stage_c = payload.get("stage_c") or []
-    if stage_c:
-        try:
-            stage_lines = [
-                "| `%s` | %+.2f | **%+.2f** | %s |"
-                % (
-                    row["key"],
-                    row["train"]["pnl_usdc"],
-                    row["held_out"]["pnl_usdc"],
-                    row["held_out"]["maker_fills"],
-                )
-                for row in stage_c[:3]
-            ]
-        except (KeyError, TypeError, ValueError) as error:
-            return lines + ["", "- sweep summary schema mismatch: `%s`; read `sweep.json`" % error]
-        lines += ["", "| configuration | train P&L | held-out P&L | fills |", "| --- | ---: | ---: | ---: |"]
-        lines += stage_lines
-    ladder = payload.get("latency_ladder") or []
-    if ladder:
-        try:
-            ladder_lines = []
-            for row in ladder:
-                scenario = row["scenario"]
-                if isinstance(scenario, dict):
-                    scenario = scenario["name"]
-                ladder_lines.append(
-                    "| %s | %+.2f | %s |"
-                    % (scenario, row["pnl_usdc"], row["maker_fills"])
-                )
-        except (KeyError, TypeError, ValueError) as error:
-            return lines + ["", "- sweep summary schema mismatch: `%s`; read `sweep.json`" % error]
-        lines += ["", "| latency scenario | P&L | fills |", "| --- | ---: | ---: |"]
-        lines += ladder_lines
-    return lines
+        return ["- replay board unreadable: %r" % (error,)]
+    window = board.get("replay")
+    if not window:
+        return ["- **this is not a replay board**; refusing to present it as one"]
+    return [
+        "- scored: %s -> %s UTC at %s ms assumed latency"
+        % (
+            utc(window["scoring_start_ms"]),
+            utc(window["scoring_end_ms"]),
+            window.get("latency_ms", "?"),
+        ),
+        "- train/score split: first %.0f%% fits and sizes only"
+        % (100.0 * float(window.get("train_fraction", 0.0)),),
+    ] + leaderboard_headline(board_json)[2:]
 
 
 def leaderboard_headline(path):
@@ -347,15 +351,21 @@ def write_readme(period_dir, symbol, facts):
         ),
         "- build: `%s`" % facts.get("git_revision", "unknown"),
         "",
-        "The two windows differ on purpose. The sweep scores the whole tape on disk, so",
+        "The two windows differ on purpose. The replay scores the whole tape on disk, so",
         "consecutive archives overlap and a skipped cycle still loses nothing; the grid",
         "curve covers only the period since the last archive. Run boundaries remain explicit",
         "through `run_started_ms`; archive periods do not overlap.",
         "",
-        "## Replay sweep",
+        "## Replay",
+        "",
+        "The same variants the grid ran, scored offline by the same simulator over the",
+        "window above. Rows are directly comparable to the grid table below, but they are",
+        "not the same measurement: the replay is one continuous pass at an assumed",
+        "latency, while a grid row may be stitched across restarts. See",
+        "`docs/DRY_RUN_GRID.md` for the fidelity limits.",
         "",
     ]
-    body += facts["sweep_lines"]
+    body += facts["replay_lines"]
     body += ["", "## Dry-run grid", ""]
     body += facts["grid_lines"]
     body += [
@@ -364,7 +374,8 @@ def write_readme(period_dir, symbol, facts):
         "",
         "| file | what it is |",
         "| --- | --- |",
-        "| `sweep.md` / `sweep.json` | the full staged sweep on the tape above |",
+        "| `replay_leaderboard.json` | every grid variant, replayed over the tape above |",
+        "| `replay-<variant>.json` | that variant's full session report |",
         "| `grid_leaderboard.json` | the grid's ranking at the moment of archiving |",
         "| `grid_equity_curve.csv.zst` | the period's P&L curve, thinned and compressed |",
         "| `grid_pnl_curve.png` | that curve, rendered |",
@@ -392,11 +403,11 @@ def archive(symbol, args, now):
 
     log("  %s: tape %.1f d, %d shards -> %s" % (symbol, days, shards, final_dir.name))
     if args.dry_run:
-        log("  --dry-run: stopping before the sweep")
+        log("  --dry-run: stopping before the replay")
         return False
 
     # Build in `.partial` and rename at the end, so a period directory only ever
-    # exists complete. The sweep takes tens of minutes and the artifacts land one
+    # exists complete. The replay takes many minutes and the artifacts land one
     # at a time; without this, a `git add docs/history` mid-run would commit a
     # half-written period, and `last_period` would count it as done and skip the
     # next cycle. `.partial` is gitignored for the same reason.
@@ -405,24 +416,52 @@ def archive(symbol, args, now):
         shutil.rmtree(period_dir)
     period_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. The sweep. --search-max-price-events is left at its default 0 (the full
-    #    train slice): a truncated search is exactly the defect the archived
-    #    artifact exists to replace.
-    _, tail = run(
-        [
-            sys.executable,
-            SCRIPTS / "sweep_replay.py",
-            "--symbol", symbol,
-            "--data-dir", args.data_dir,
-            "--output", period_dir / "sweep.json",
-            "--markdown-output", period_dir / "sweep.md",
-            "--workers", str(args.workers),
-        ],
-        "sweep_replay.py",
-    )
-    if not (period_dir / "sweep.json").exists():
-        (period_dir / "sweep_FAILED.log").write_text(tail, encoding="utf-8")
-        log("  sweep produced no artifact; keeping the period with its failure log")
+    # 1. The replay: every variant of the grid spec, over the whole tape on
+    #    disk. The train fraction is small because this scores a window the
+    #    grid itself ran; a large prefix would throw most of the comparison
+    #    away to refit parameters the grid already had.
+    binary = mm_live_binary()
+    config, spec = instrument_profile(symbol)
+    if binary is None:
+        (period_dir / "replay_FAILED.log").write_text(
+            "no mm-live binary; build it with `cargo build --release` in rust_live/",
+            encoding="utf-8",
+        )
+        log("  no mm-live binary found; keeping the period with its failure log")
+    else:
+        # The session reports are written to scratch, then only their JSON is
+        # copied in. A replay also writes a per-variant event log beside each
+        # report, and over a 25-day tape those are ~60 MB PER VARIANT -- 1.6 GB
+        # for the spec, into a directory whose whole premise is being small
+        # enough to commit. The logs are a debugging artifact of one run, not
+        # evidence about the window, so they are not archived at all.
+        with tempfile.TemporaryDirectory(prefix="mm-archive-") as scratch:
+            _, tail = run(
+                [
+                    binary,
+                    "--config", config,
+                    "replay",
+                    "--grid", spec,
+                    "--all-variants",
+                    # The whole tape, explicitly. Without a range `mm-live
+                    # replay` falls back to the config's
+                    # `calibration.window_minutes` (two hours) ending at the
+                    # newest shard -- a calibration window, not an archive, and
+                    # it fails closed on InsufficientData long before it
+                    # produces anything worth keeping.
+                    "--from", str(oldest_ms),
+                    "--to", str(newest_ms),
+                    "--train-fraction", str(args.train_fraction),
+                    "--board", period_dir / "replay_leaderboard.json",
+                    "--report", Path(scratch) / "replay",
+                ],
+                "mm-live replay",
+            )
+            for report in sorted(Path(scratch).glob("replay-*.json")):
+                shutil.copy2(report, period_dir / report.name)
+        if not (period_dir / "replay_leaderboard.json").exists():
+            (period_dir / "replay_FAILED.log").write_text(tail, encoding="utf-8")
+            log("  replay produced no artifact; keeping the period with its failure log")
 
     # 2. The grid: leaderboard, the period's slice of the curve, and the render.
     grid_lines = ["- no grid run found"]
@@ -466,10 +505,10 @@ def archive(symbol, args, now):
             "grid_since_ms": grid_since_ms or oldest_ms,
             "first_archive": previous is None,
             "git_revision": os.environ.get("MM_GIT_REVISION", "unknown"),
-            "sweep_lines": (
-                sweep_headline(period_dir / "sweep.json")
-                if (period_dir / "sweep.json").exists()
-                else ["- **the sweep failed**; see `sweep_FAILED.log`"]
+            "replay_lines": (
+                replay_headline(period_dir / "replay_leaderboard.json")
+                if (period_dir / "replay_leaderboard.json").exists()
+                else ["- **the replay failed**; see `replay_FAILED.log`"]
             ),
             "grid_lines": grid_lines,
         },
@@ -482,6 +521,21 @@ def archive(symbol, args, now):
         shutil.rmtree(final_dir)
     period_dir.rename(final_dir)
     log("  wrote %s: %.0f KB" % (final_dir.name, size / 1024))
+    # These are committed, so a period that quietly grows by three orders of
+    # magnitude is a defect in whatever wrote it, not something to discover in
+    # `git push`. The archive is kept either way -- evidence beats tidiness --
+    # but it says so loudly enough that nobody commits 1.6 GB by accident.
+    if size > SIZE_BUDGET_BYTES:
+        biggest = sorted(
+            ((sum(f.stat().st_size for f in e.rglob("*")) if e.is_dir() else e.stat().st_size, e.name)
+             for e in final_dir.iterdir()),
+            reverse=True,
+        )[:3]
+        log("  WARNING %s is %.0f MB, over the %.0f MB budget for a committed period"
+            % (final_dir.name, size / 1e6, SIZE_BUDGET_BYTES / 1e6))
+        for entry_size, name in biggest:
+            log("    %-32s %.0f MB" % (name, entry_size / 1e6))
+        log("    do not commit this until it is understood")
     return True
 
 
@@ -520,9 +574,10 @@ def cycle(args):
         log("no symbol has more than %.0f d of tape yet" % args.min_tape_days)
         return
     for symbol in symbols:
-        if symbol not in KNOWN_INSTRUMENTS:
-            # The sweep's instrument defaults are CASHCAT's; running them against
-            # another asset would produce confident numbers for the wrong one.
+        if instrument_profile(symbol) is None:
+            # Without a config and a grid spec there is no instrument to replay
+            # against, and borrowing another asset's would produce confident
+            # numbers for the wrong one.
             log("  %s: qualifies on tape length but has no instrument profile; skipping" % symbol)
             continue
         due, why = is_due(args.out, symbol, args.cadence_days, now)
@@ -558,7 +613,10 @@ def parse_args(argv=None):
         help="equity curve thinning; 60 s full resolution is ~95 MB/month",
     )
     parser.add_argument(
-        "--workers", type=int, default=4, help="sweep workers (capped at 4 inside the sweep)"
+        "--train-fraction",
+        type=float,
+        default=0.05,
+        help="prefix used only to fit and size; the rest is scored",
     )
     parser.add_argument("--check-interval-seconds", type=float, default=3600.0)
     parser.add_argument(

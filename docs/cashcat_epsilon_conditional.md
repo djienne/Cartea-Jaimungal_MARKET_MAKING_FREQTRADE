@@ -185,8 +185,7 @@ guessing. **Every instrument that fits has `b >= 1` from 1 s out**, and 200 ms i
 only horizon anywhere that reads below 1. At the depths and 1--5 s horizons measured
 here, conditional markout consumes the quoted depth. This does not rule out a deeper
 or longer-hold policy: the later 60 bps replay is positive but carries large inventory
-and rests beyond the recorded book, so its queue and live achievability remain unknown
-(`cashcat_flatten_fast.md`).
+and rests beyond the recorded book, so its queue and live achievability remain unknown.
 
 ### Why `b ~ 1` is not merely mechanical
 

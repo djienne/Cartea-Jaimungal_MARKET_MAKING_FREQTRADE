@@ -44,9 +44,11 @@ fn backend() -> DryRunBackend {
             promotion_flatten_fee_rate: 0.00035,
             promotion_flatten_slippage_bps: 25.0,
             funding_rate_per_hour: 0.0,
-            // Zero: this fixture pins Rust/Python replay parity, and the
-            // flatten policy exists only on the dry-run side. Turning it on
-            // here would compare two different strategies.
+            // Zero: this fixture pins the live dry run against the offline
+            // replay, and both now run the same flatten policy. Leaving it on
+            // would make the comparison depend on a timed taker exit rather
+            // than on the maker fills this suite exists to check;
+            // `backtest.rs` covers the flatten path end to end.
             flatten_after_ms: 0,
             flatten_slippage_bps: 2.5,
             flatten_fee_rate: 0.00045,

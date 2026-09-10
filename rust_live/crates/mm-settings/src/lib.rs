@@ -196,7 +196,11 @@ pub struct DryRunConfig {
     /// Zero disables it, which is the shipped behaviour: hold until an
     /// offsetting maker fill arrives.
     ///
-    /// The replay evidence for this is `docs/cashcat_flatten_fast.md`.
+    /// The replay evidence for this came from the retired Python engine and
+    /// concluded the opposite of the live grid: that a 60 bps half-spread
+    /// floor, not fast flattening, was what made the replay positive. The grid
+    /// has `flatten300` ahead of `wide60`. Re-measure with `mm-live replay`
+    /// before trusting either.
     /// Adverse selection grows steeply with the markout horizon -- 12.84 bps at
     /// 200 ms against 29.77 at 6.6 s -- and waiting for a passive offset takes a
     /// 6.5 s median, so the position eats the whole accrual. Crossing early

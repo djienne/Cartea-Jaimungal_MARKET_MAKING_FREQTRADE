@@ -53,7 +53,7 @@ recheck the linked official documentation and pinned protocol fixtures.
 - **Requote hysteresis.** A resting order within
   `max(replace_threshold_ticks × quantum, replace_threshold_bps)` of the new
   target (same size and reduce-only) is held; withdrawals bypass the window.
-  Evidence: `docs/requote_hysteresis_sweep.md`. `min_order_lifetime_ms` rose
+  Measured by the retired Python replay. `min_order_lifetime_ms` rose
   to 100 and config validation rejects WebSocket budgets the worst-case
   requote rate plus pings and dead-man refreshes cannot fit.
 - **Latency gate un-latched.** Dropped-sample/observer-error blocks are
@@ -788,8 +788,8 @@ Two consequences follow, and both were observed live:
   `9769354` burned 2,440 actions in a single 40-minute session — about 19% of
   the entire lifetime cap.
 - Replay of one 120-minute CASHCAT window at the shipped
-  `replace_threshold_bps = 2.0` costs 11,902 address actions
-  (`docs/requote_hysteresis_sweep.md`). A *fresh* account's 10,000-request
+  `replace_threshold_bps = 2.0` costs 11,902 address actions.
+  A *fresh* account's 10,000-request
   buffer does not cover one two-hour session. Sustained operation requires the
   volume traded per action to exceed 1 USDC; that window managed roughly 1
   fill per 220 actions.

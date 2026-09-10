@@ -30,7 +30,7 @@ import sys
 import numpy as np
 
 from hjb import compute_h_symmetric, compute_h_asymmetric
-from replay_market_maker import MAX_HALF_SPREAD_BPS, MIN_HALF_SPREAD_BPS, assemble_half_spread
+from mm_core import QuoteConfig, assemble_half_spread
 
 
 MAKER_FEE = 0.0150 / 100.0  # 1.5 bps as fraction
@@ -136,8 +136,12 @@ def main():
     parser.add_argument("--skip-refresh", action="store_true", help="Use existing JSON params without running estimator scripts first")
     parser.add_argument("--spread-multiplier", type=float, default=1.0,
                         help="Scales the HJB model depth only (fee added separately); pass 3.0 to mirror the production config")
-    parser.add_argument("--min-half-spread-bps", type=float, default=MIN_HALF_SPREAD_BPS)
-    parser.add_argument("--max-half-spread-bps", type=float, default=MAX_HALF_SPREAD_BPS)
+    parser.add_argument(
+        "--min-half-spread-bps", type=float, default=QuoteConfig.min_half_spread_bps
+    )
+    parser.add_argument(
+        "--max-half-spread-bps", type=float, default=QuoteConfig.max_half_spread_bps
+    )
     args = parser.parse_args()
 
     start_dir = Path(__file__).resolve().parent
@@ -225,16 +229,19 @@ def main():
     print("\nq\tbid_px\t\task_px\t\tbid_bps\t\task_bps")
 
     def render_side(delta_model: float, side_sign: float) -> tuple[str, str]:
-        delta_total = assemble_half_spread(
+        assembled = assemble_half_spread(
             delta_model,
             mid,
-            spread_multiplier=args.spread_multiplier,
-            maker_fee=MAKER_FEE,
-            min_half_spread_bps=args.min_half_spread_bps,
-            max_half_spread_bps=args.max_half_spread_bps,
+            QuoteConfig(
+                maker_fee_rate=MAKER_FEE,
+                spread_multiplier=args.spread_multiplier,
+                min_half_spread_bps=args.min_half_spread_bps,
+                max_half_spread_bps=args.max_half_spread_bps,
+            ),
         )
-        if delta_total is None:
+        if assembled is None:
             return "DISABLED", "DISABLED"
+        delta_total = assembled.delta
         pre_clamp = delta_model * args.spread_multiplier + MAKER_FEE * mid
         marker = ""
         if pre_clamp < delta_total:
