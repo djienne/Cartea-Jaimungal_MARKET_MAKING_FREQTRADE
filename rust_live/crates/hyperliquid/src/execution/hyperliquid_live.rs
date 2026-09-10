@@ -1773,8 +1773,15 @@ impl HyperliquidLiveBackend {
                 if !state.processed_fill_keys.insert(key.clone()) {
                     return Ok(FillAdmission::Duplicate);
                 }
+                // Roll forward only. A fill stamped in an earlier day reaches
+                // here whenever the venue's `userFills` snapshot backfills
+                // across a restart that spanned midnight UTC -- snapshot rows
+                // take this same path -- and rolling backwards would zero a
+                // running daily loss. That figure is the only economic stop on
+                // the live account. Charging a stale fill to the current day
+                // can only stop trading earlier, which is the safe direction.
                 let day = fill.time / 86_400_000;
-                if state.pnl_day != day {
+                if day > state.pnl_day {
                     state.pnl_day = day;
                     state.daily_realized_pnl_usdc = 0.0;
                 }
@@ -3516,6 +3523,63 @@ mod tests {
         assert!(
             (daily - expected_daily).abs() < 1.0e-9,
             "daily realized pnl was {daily}, expected {expected_daily}"
+        );
+    }
+
+    /// The daily realized-loss stop is the only economic limit left on the
+    /// live account, so nothing that merely *arrives* may clear it.
+    ///
+    /// A reconnect replays `userFills` as a snapshot, and those rows take the
+    /// same path as live ones. Restart across midnight UTC and the backfill
+    /// carries yesterday's fills past a checkpoint that is also from yesterday:
+    /// keying the roll on inequality then reset the day's accumulated loss to
+    /// zero and handed the session a fresh 1 USDC of rope.
+    #[test]
+    fn a_backfilled_fill_from_a_past_day_cannot_clear_the_daily_loss() {
+        let (_directory, mut backend, cloid) = lifecycle_backend();
+        let now_ms = unix_ms();
+        let today = now_ms / 86_400_000;
+        backend
+            .state
+            .update(|state| {
+                // The process was down since yesterday, so the checkpoint is
+                // too and yesterday's fills are admissible.
+                state.event_checkpoint_ms = now_ms.saturating_sub(2 * 86_400_000);
+                state.pnl_day = today;
+                state.daily_realized_pnl_usdc = -0.90;
+                Ok(())
+            })
+            .unwrap();
+
+        backend
+            .process_session_event(SessionEvent::AccountData {
+                generation: 1,
+                received_ns: 100,
+                channel: AccountChannel::UserFills,
+                data: serde_json::json!({
+                    "isSnapshot": true,
+                    "fills": [{
+                        "coin":"CASHCAT", "px":"0.1", "sz":"1", "side":"B",
+                        "time": now_ms.saturating_sub(86_400_000),
+                        "oid":7, "tid":991, "cloid":cloid,
+                        "startPosition":"0", "crossed":false, "fee":"0.001",
+                        "closedPnl":"-0.05", "hash":"0xdead"
+                    }]
+                }),
+            })
+            .unwrap();
+
+        let scalars = backend.risk_scalars().unwrap();
+        assert_eq!(
+            backend.state.load_required().unwrap().pnl_day,
+            today,
+            "a fill from a past day must not move the P&L day backwards"
+        );
+        let expected = -0.90 - 0.05 - 0.001;
+        assert!(
+            (scalars.daily_realized_pnl_usdc - expected).abs() < 1.0e-9,
+            "daily realized pnl was {}, expected {expected}",
+            scalars.daily_realized_pnl_usdc
         );
     }
 

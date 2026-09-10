@@ -459,7 +459,9 @@ impl LiveStateStore {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("live-state memory lock poisoned"))?;
-        let rolled = state.pnl_day != day;
+        // Forward only, for the same reason the fill path rolls forward only:
+        // a stop that a backwards clock step can clear is not a stop.
+        let rolled = day > state.pnl_day;
         if rolled {
             state.pnl_day = day;
             state.daily_realized_pnl_usdc = 0.0;
