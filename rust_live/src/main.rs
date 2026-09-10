@@ -4148,6 +4148,7 @@ mod tests {
             exchange_ms: 2_000,
             recv_ns: 0,
         };
+        assert!(variant.leaderboard_row(Some(book)).invalid_reason.is_none());
         step_paper_variant(
             &mut variant,
             &MarketEvent::Bbo(book),
@@ -4159,6 +4160,15 @@ mod tests {
         .unwrap();
         assert!(!variant.backend.scientifically_valid());
         assert_eq!(variant.quote_seq, 0);
+        // The board is what gets read, so the verdict travels with its reason:
+        // three live rows sat at `scientifically_valid: false` for 87 h and the
+        // cause -- this one -- was only in `grid_state.json`.
+        let row = variant.leaderboard_row(Some(book));
+        assert!(!row.scientifically_valid);
+        assert_eq!(
+            row.invalid_reason.as_deref(),
+            Some("liquidation buffer breached")
+        );
     }
 
     #[tokio::test]

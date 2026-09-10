@@ -207,6 +207,13 @@ impl PaperVariant {
             max_drawdown_usdc: self.max_drawdown_usdc,
             config_changes: self.config_changes,
             scientifically_valid,
+            invalid_reason: (!scientifically_valid)
+                .then(|| {
+                    self.failure
+                        .clone()
+                        .or_else(|| self.backend.diagnostics().invalid_reason.clone())
+                })
+                .flatten(),
             eligible_for_promotion: scientifically_valid
                 && promotion_pnl_usdc.is_some()
                 && has_live_equivalent,

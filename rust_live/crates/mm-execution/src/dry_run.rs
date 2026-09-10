@@ -1883,7 +1883,7 @@ mod tests {
         assert_eq!(backend.diagnostics.unknown_queue_activations, 1);
     }
 
-    /// A bid resting at 10_000 whose level the book shows as `qty` units,
+    /// A bid resting at `10_000` whose level the book shows as `qty` units,
     /// activated with zero latency so the queue is known from the first event.
     async fn bid_with_known_queue(qty: i64) -> DryRunBackend {
         let mut backend = DryRunBackend::new(

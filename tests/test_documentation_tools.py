@@ -19,6 +19,7 @@ if str(SCRIPTS) not in sys.path:
 
 import archive_period  # noqa: E402
 import grid_pnl_curve  # noqa: E402
+import show_grid_leaderboard  # noqa: E402
 
 
 def _replay_board(**overrides):
@@ -193,3 +194,45 @@ def test_the_live_healthcheck_watches_the_file_the_live_config_writes():
     probe = " ".join(service["healthcheck"]["test"])
     watched = set(re.findall(r"/opt/\S*live_heartbeat\.json", probe))
     assert watched == {expected}, f"healthcheck watches {watched}, live writes {expected}"
+
+
+def test_the_viewer_ranks_by_the_boards_own_metric_and_says_why_a_row_is_out():
+    """The board ranks by `promotion_pnl_usdc`; the viewer used to re-rank by net.
+
+    Net P&L marks open inventory to market, which is what `promotion_pnl_usdc`
+    exists to avoid -- it discounts the inventory at a pessimistic exit instead.
+    Sorting the board by the metric it is not ranked by silently reorders it:
+    on the 87 h run `sweep1_flat300` (flat, +19.25 either way) and
+    `sweep1_wide60` (-636 units, +19.47 net but +19.15 executable) swap places.
+    A disqualified row has no exit price at all, so it is unrankable, not last.
+    """
+    rows = [
+        {"name": "flat", "promotion_pnl_usdc": 19.25, "net_pnl_usdc": 19.25},
+        {"name": "wide", "promotion_pnl_usdc": 19.15, "net_pnl_usdc": 19.47},
+        {"name": "blown", "promotion_pnl_usdc": None, "net_pnl_usdc": -192.19,
+         "invalid_reason": "liquidation buffer breached"},
+    ]
+    for row in rows:
+        row.update(
+            realized_pnl_usdc=row["net_pnl_usdc"],
+            fills=1,
+            fees_usdc=0.0,
+            inventory_units=0,
+            max_drawdown_usdc=0.0,
+            scientifically_valid=row["promotion_pnl_usdc"] is not None,
+        )
+
+    headers, table = show_grid_leaderboard.result_rows(
+        {"rows": rows}, {}, "promotion-pnl", ascending=False
+    )
+    assert [row[1] for row in table] == ["flat", "wide", "blown"]
+    assert headers[3] == "Promo"
+    assert [row[3] for row in table] == ["+19.25", "+19.15", "n/a"]
+    assert table[-1][-1] == "NO: liquidation buffer breached"
+    assert table[0][-1] == "yes"
+
+    # Unrankable, not worst: the row stays last when the sort is reversed.
+    _, ascending = show_grid_leaderboard.result_rows(
+        {"rows": rows}, {}, "promotion-pnl", ascending=True
+    )
+    assert [row[1] for row in ascending] == ["wide", "flat", "blown"]

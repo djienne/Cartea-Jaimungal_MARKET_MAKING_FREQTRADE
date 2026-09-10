@@ -373,6 +373,14 @@ pub struct LeaderboardRow {
     #[serde(default)]
     pub config_changes: u32,
     pub scientifically_valid: bool,
+    /// Why the row was disqualified, from the variant's own failure or the
+    /// backend diagnostics; `None` while it is valid.
+    ///
+    /// The board is what gets read, and `scientifically_valid: false` alone
+    /// cannot tell a variant that blew through its liquidation buffer from one
+    /// that merely printed a bad number -- a different scientific claim.
+    #[serde(default)]
+    pub invalid_reason: Option<String>,
     /// False for invalid rows and for dry-run-only policies with no live
     /// equivalent, such as `flatten_after_ms > 0`.
     pub eligible_for_promotion: bool,
@@ -1041,6 +1049,7 @@ mod tests {
             max_drawdown_usdc: 0.0,
             config_changes: 0,
             scientifically_valid: true,
+            invalid_reason: None,
             eligible_for_promotion: true,
         };
         let mut board = Leaderboard {
@@ -1174,6 +1183,7 @@ mod tests {
                 max_drawdown_usdc: 3.25,
                 config_changes: 0,
                 scientifically_valid: true,
+                invalid_reason: None,
                 eligible_for_promotion: true,
             }],
             replay: None,

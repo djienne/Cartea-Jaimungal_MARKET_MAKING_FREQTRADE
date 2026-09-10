@@ -2,13 +2,14 @@
 
 The live grid rewrites ``leaderboard.json`` every few seconds.  This command
 reads that snapshot, joins it to the variant overrides in ``grid_cashcat.toml``,
-and sorts by net P&L from best to worst by default.
+and sorts by the board's own ranking metric, ``promotion_pnl_usdc``, from best
+to worst by default.
 
 Usage:
     python scripts/show_grid_leaderboard.py
     python scripts/show_grid_leaderboard.py --watch 5
     python scripts/show_grid_leaderboard.py --markdown
-    python scripts/show_grid_leaderboard.py --sort realized-pnl
+    python scripts/show_grid_leaderboard.py --sort net-pnl
 """
 
 from __future__ import annotations
@@ -111,6 +112,7 @@ def money(value: Any) -> str:
 
 def sort_rows(rows: list[dict[str, Any]], field: str, ascending: bool) -> list[dict[str, Any]]:
     keys = {
+        "promotion-pnl": "promotion_pnl_usdc",
         "net-pnl": "net_pnl_usdc",
         "realized-pnl": "realized_pnl_usdc",
         "fills": "fills",
@@ -119,18 +121,55 @@ def sort_rows(rows: list[dict[str, Any]], field: str, ascending: bool) -> list[d
     if field == "name":
         return sorted(rows, key=lambda row: str(row["name"]).lower(), reverse=not ascending)
     key = keys[field]
-    if ascending:
-        return sorted(rows, key=lambda row: (float(row[key]), str(row["name"]).lower()))
-    # Negate only the scientific metric. Ties remain alphabetic instead of
-    # reversing their names as ``reverse=True`` would do.
-    return sorted(rows, key=lambda row: (-float(row[key]), str(row["name"]).lower()))
+
+    def rank(row: dict[str, Any]) -> tuple[int, float, str]:
+        raw = row.get(key)
+        name = str(row["name"]).lower()
+        if raw is None:
+            # Only ``promotion_pnl_usdc`` is optional, and it is null exactly
+            # when the row was disqualified: there is no executable exit price
+            # for a variant that stopped trading. An unscored row cannot be
+            # ranked against scored ones, so it sits last in either direction.
+            return (1, 0.0, name)
+        value = float(raw)
+        # Negate only the scientific metric. Ties remain alphabetic instead of
+        # reversing their names as ``reverse=True`` would do.
+        return (0, value if ascending else -value, name)
+
+    return sorted(rows, key=rank)
+
+
+def verdict(row: dict[str, Any]) -> str:
+    """Say why, not just whether.
+
+    ``scientifically_valid: false`` alone cannot tell a variant that blew
+    through its liquidation buffer from one that merely printed a bad number,
+    and those are different claims about the parameters.
+    """
+
+    if row["scientifically_valid"]:
+        return "yes"
+    reason = row.get("invalid_reason")
+    return f"NO: {reason}" if reason else "NO"
 
 
 def result_rows(
     board: dict[str, Any], overrides: dict[str, str], sort: str, ascending: bool
 ) -> tuple[list[str], list[list[str]]]:
     ordered = sort_rows(board["rows"], sort, ascending)
-    headers = ["#", "Variant", "Overrides from base", "Net", "Realized", "Fills", "Fees", "Inv", "Max DD", "Valid"]
+    headers = [
+        "#",
+        "Variant",
+        "Overrides from base",
+        "Promo",
+        "Net",
+        "Realized",
+        "Fills",
+        "Fees",
+        "Inv",
+        "Max DD",
+        "Valid",
+    ]
     rows = []
     for rank, row in enumerate(ordered, 1):
         name = str(row["name"])
@@ -139,13 +178,14 @@ def result_rows(
                 str(rank),
                 name,
                 overrides.get(name, "not found in grid spec"),
+                "n/a" if row.get("promotion_pnl_usdc") is None else signed_money(row["promotion_pnl_usdc"]),
                 signed_money(row["net_pnl_usdc"]),
                 signed_money(row["realized_pnl_usdc"]),
                 f"{int(row['fills']):,}",
                 money(row["fees_usdc"]),
                 f"{int(row['inventory_units']):+,}",
                 money(row["max_drawdown_usdc"]),
-                "yes" if row["scientifically_valid"] else "NO",
+                verdict(row),
             ]
         )
     return headers, rows
@@ -203,7 +243,7 @@ def status_lines(board: dict[str, Any]) -> list[str]:
 
 def terminal_table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))]
-    numeric = {0, 3, 4, 5, 6, 7, 8}
+    numeric = {0, 3, 4, 5, 6, 7, 8, 9}
 
     def render(row: list[str]) -> str:
         cells = []
@@ -219,7 +259,7 @@ def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     def line(values: list[str]) -> str:
         return "| " + " | ".join(value.replace("|", "\\|") for value in values) + " |"
 
-    alignment = ["---:", "---", "---", "---:", "---:", "---:", "---:", "---:", "---:", "---"]
+    alignment = ["---:", "---", "---", *["---:"] * 7, "---"]
     return "\n".join([line(headers), line(alignment), *(line(row) for row in rows)])
 
 
@@ -243,9 +283,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid", type=Path, default=DEFAULT_GRID)
     parser.add_argument(
         "--sort",
-        choices=("net-pnl", "realized-pnl", "fills", "max-drawdown", "name"),
-        default="net-pnl",
-        help="ranking field (default: net-pnl)",
+        choices=("promotion-pnl", "net-pnl", "realized-pnl", "fills", "max-drawdown", "name"),
+        default="promotion-pnl",
+        help=(
+            "ranking field (default: promotion-pnl, the board's own metric: "
+            "executable-side, fee-adjusted flatten P&L, which stops a large "
+            "directional inventory winning because the market moved with it)"
+        ),
     )
     parser.add_argument("--ascending", action="store_true", help="put the lowest value first")
     parser.add_argument("--markdown", action="store_true", help="print a copyable Markdown table")

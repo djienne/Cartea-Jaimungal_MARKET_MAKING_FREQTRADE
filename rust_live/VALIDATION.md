@@ -26,7 +26,7 @@ core, dry-run execution and the runtime crates, and publishes the full connector
 report for review.
 
 Current suite sizes are 300 Rust tests (`cargo test --workspace --all-features`,
-which includes the `backtest` feature) and 257 Python (`pytest tests/`). Both
+which includes the `backtest` feature) and 258 Python (`pytest tests/`). Both
 moved on 2026-09-10: Python fell by 136 when the Python replay was deleted, and
 Rust fell by 2 when `promote-best` was removed.
 

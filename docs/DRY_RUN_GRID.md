@@ -184,9 +184,15 @@ The runtime ranks `leaderboard.json` by promotion P&L: remaining inventory
 valued at the executable side with the configured exit fee and slippage
 (currently 3.5 and 25 bps). Net marked P&L, cash/realized results, inventory,
 fees, funding, drawdown and fills remain separate diagnostics.
-`show_grid_leaderboard.py` sorts by net P&L by default; this does not change
-runtime promotion ordering. Positive marked P&L with open inventory is not
-liquidated profit, and fill counts alone do not establish an edge.
+`show_grid_leaderboard.py` shows both and sorts by promotion P&L by default, so
+its order is the board's own; `--sort net-pnl` restores the previous ranking.
+It sorted by net until 2026-09-10 while never displaying promotion P&L at all,
+which left the ranking metric invisible in the only tool that reads the board.
+Positive marked P&L with open inventory is not liquidated profit, and fill
+counts alone do not establish an edge. A row that is not
+`scientifically_valid` carries its `invalid_reason` -- all three invalid rows of
+the 87 h run breached the liquidation buffer, which is a different claim about
+the parameters than a merely bad number.
 
 Quotes use only the consumed book and a nondecreasing decision clock. Trades
 cannot fill orders that were not active at the trade's exchange timestamp.
