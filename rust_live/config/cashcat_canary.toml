@@ -3,6 +3,11 @@
 # replace its frozen sweep_a parameters; q_max is one minimum-size live lot.
 # The 20-minute hold/address pacing and 30/60-second feed thresholds differ
 # from paper execution. A requested 1 ms exit is not a 1 ms venue fill.
+# It sets live.flatten_after_ms = 1 where config/cashcat.toml sets 301 for the
+# same row. The live timer adds no latency legs, so 1 means "cross as soon as
+# the position is seen" and 301 reproduces the paper row's effective hold
+# (1 + decision 150 + acknowledgement 150). This canary asks how fast the stack
+# can exit; the production profile reproduces what was scored. Not a conflict.
 # Numerical settings below follow the paper grid; the September 8 canary
 # used dt=0.25 s/tolerance=1e-8 and does not validate these tighter settings.
 [instrument]

@@ -9,9 +9,12 @@ services:
     restart: unless-stopped
     stop_signal: SIGINT
     stop_grace_period: 90s
+    # The live configuration is edited, not generated. `config/cashcat.toml` is
+    # mounted read-only below; there is no promotion step and no derived
+    # active-config file since 2026-09-10.
     command:
       - --config
-      - /opt/mm/run/cashcat-active-live.toml
+      - /opt/mm/config/cashcat.toml
       - live
       - --duration-seconds
       - "0"

@@ -283,6 +283,10 @@ max_maker_fee_rate = 0.0002
 # Close, not identical.
 #
 # Zero disables it and returns to holding for a passive offset.
+#
+# config/cashcat_canary.toml sets 1 for the same row on purpose: it measures
+# how fast the stack can exit, while this profile reproduces the deadline the
+# row was scored with. Different questions, not a disagreement.
 flatten_after_ms = 301
 flatten_on_stop = true
 emergency_flatten_max_slippage_bps = 250.0
