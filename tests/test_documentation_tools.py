@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import posixpath
+import re
 import sys
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -151,3 +154,42 @@ def test_the_live_supervisor_makes_no_economic_decision():
     # It may still stop live, but only to restart an unhealthy container.
     assert body.count("stop cashcat-live") == 1
     assert "up -d --no-deps cashcat-live" in body
+
+
+def test_the_live_healthcheck_watches_the_file_the_live_config_writes():
+    """The heartbeat path is derived, not declared, so two files must agree.
+
+    `live` writes `live_heartbeat.json` into `storage.report_dir`, which
+    `AppConfig::load` resolves relative to the *config file*. The healthcheck
+    still named `reports/live_active`, correct only while the service ran the
+    promotion-generated `/opt/mm/run/cashcat-active-live.toml`; pointing it at
+    `/opt/mm/config/cashcat.toml` moved the heartbeat to `/opt/mm/reports` and
+    left the check reading a path nothing writes -- permanently unhealthy after
+    `start_period`, which is a stop/flatten/restart loop under the supervisor.
+    """
+    compose = yaml.safe_load(
+        (ROOT / "docker-compose.live.yml").read_text(encoding="utf-8")
+    )
+    service = compose["services"]["cashcat-live"]
+    command = service["command"]
+    config_in_container = command[command.index("--config") + 1]
+
+    mounts = {}
+    for volume in service["volumes"]:
+        host, container = volume.split(":")[:2]
+        mounts[container] = ROOT / host.lstrip("./")
+    config_dir, config_name = posixpath.split(config_in_container)
+    config_on_host = mounts[config_dir] / config_name
+
+    report_dir = re.search(
+        r'^report_dir\s*=\s*"([^"]+)"',
+        config_on_host.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    ).group(1)
+    expected = posixpath.normpath(
+        posixpath.join(config_dir, report_dir, "live_heartbeat.json")
+    )
+
+    probe = " ".join(service["healthcheck"]["test"])
+    watched = set(re.findall(r"/opt/\S*live_heartbeat\.json", probe))
+    assert watched == {expected}, f"healthcheck watches {watched}, live writes {expected}"
