@@ -29,10 +29,9 @@ Usage:
     python scripts/archive_period.py --dry-run     # what would be written
     python scripts/archive_period.py               # archive if due
     python scripts/archive_period.py --force       # archive regardless
-    python scripts/archive_period.py --loop        # daemon; retired -- the
-                                                   # cadence is now the Windows
-                                                   # task "MM CASHCAT period
-                                                   # archive", daily at 04:30
+
+The cadence is the Windows task "MM CASHCAT period archive", daily at 04:30;
+this script decides for itself whether a period is due, so most runs no-op.
 """
 
 from __future__ import annotations
@@ -47,7 +46,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -624,30 +622,18 @@ def parse_args(argv=None):
         default=0.05,
         help="prefix used only to fit and size; the rest is scored",
     )
-    parser.add_argument("--check-interval-seconds", type=float, default=3600.0)
     parser.add_argument(
         "--dry-run", action="store_true", help="report what would happen, write nothing"
     )
     parser.add_argument("--force", action="store_true", help="archive even when not due")
-    parser.add_argument("--loop", action="store_true", help="stay up and check on the interval")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
     log("archiver: cadence %.0f d, out %s" % (args.cadence_days, args.out))
-    if not args.loop:
-        cycle(args)
-        return 0
-    while True:
-        try:
-            cycle(args)
-        except Exception as error:  # noqa: BLE001 - a bad cycle must not end the daemon
-            log("cycle failed: %r" % (error,))
-        # --force is a one-shot intent; honouring it every hour would rewrite the
-        # same period forever.
-        args.force = False
-        time.sleep(args.check_interval_seconds)
+    cycle(args)
+    return 0
 
 
 if __name__ == "__main__":
