@@ -12,7 +12,8 @@ consistently.
 | Lambda | market orders / second per side, multiplied by that side's survival-fit intercept `A` (schema v5), so `lambda * exp(-kappa * depth)` is the measured fill intensity; the unscaled rate is `lambda_raw`. Prints sharing side + exchange timestamp are one MO. |
 | HJB horizon `T` | seconds |
 | Inventory `q` | physical base position divided by the base amount represented by one inventory unit |
-| inventory unit | Rust stores `inventory_unit` in venue size quanta and converts it to base units for the HJB; Python calls the base amount `inventory_unit_base`. It is derived while flat as `available_capital_usdc * target_capital_utilisation * leverage / (q_max * mid)`, rounded down to the venue size quantum. The runtime refuses a derived unit below the venue minimum notional and preserves the existing unit while inventory is non-zero. In `cashcat.toml`, 1000 USDC capital gives about 247 USDC notional per unit; `cashcat_dryrun_realistic.toml` intentionally uses less capital and therefore a smaller unit. |
+| inventory unit | Rust stores `inventory_unit` in venue size quanta and converts it to base units for the HJB; Python calls the base amount `inventory_unit_base`. It is derived while flat as `available_capital_usdc * target_capital_utilisation * leverage / (q_max * mid)`, rounded down to the venue size quantum. The runtime refuses a derived unit below the venue minimum notional and preserves the existing unit while inventory is non-zero. In `cashcat.toml`, 1000 USDC capital gives about 493 USDC notional per unit at
+the shipped `q_max = 3`; `cashcat_dryrun_realistic.toml` intentionally uses less capital and therefore a smaller unit. |
 | `sigma2_per_sec` | USDC² / second (variance of 1 s mid increments, per base asset) |
 | `min_half_spread_bps` / `max_half_spread_bps` | basis points of mid (1e-4), clamps on the final half-spread including the fee cushion |
 
@@ -75,17 +76,17 @@ interpretability diagnostic, not a current acceptance threshold.
 1. **No HJB-forced liquidation at `T`.** The book liquidates the residual at
    market and pays `alpha*q^2`; the implemented terminal condition acts through
    quote depths and the episode clock restarts. Ordinary quotes remain post-only.
-   Several dry-run-grid rows (`flatten_after_ms`) and the optional
-   `live.flatten_after_ms` test a separately accounted timed taker exit, but that
-   policy is outside the HJB.
+   Several dry-run-grid rows (`flatten_after_ms`) and `live.flatten_after_ms`,
+   which the shipped profile sets to 301, run a separately accounted timed
+   taker exit. That policy is outside the HJB.
 2. **Episodes restart on a real clock**, at `T` or once flat past
    `episode_min_elapsed_fraction * T`. A perpetual instrument has no natural
    terminal time; the book's agent starts flat at `t=0`, so reaching flat is the
    natural place to restart.
 3. **The outermost inventory interval does not quote the adding side.** Any
-   non-finite bracketing node disables the blend, so with `q_max=6` a bid stops
-   above `q=5.0` rather than `q=5.5`. Conservative: a bid at `q=5.9` would permit
-   a jump to 6.9, past the boundary.
+   non-finite bracketing node disables the blend, so with the shipped `q_max=3`
+   a bid stops above `q=2.0` rather than `q=2.5`. Conservative: a bid at `q=2.9`
+   would permit a jump to 3.9, past the boundary.
 4. **A fee cushion, bps clamps, leverage and margin** are all outside the model
    entirely. See "Quote assembly" above and `rust_live/crates/cj-core/src/quote.rs`.
 
@@ -93,9 +94,9 @@ interpretability diagnostic, not a current acceptance threshold.
 
 Not the textbook "flatten harder as `t -> T`" picture, because the *running*
 penalty dwarfs the terminal one. The shipped config runs
-`phi*kappa*T = 300` (ceiling `phi_kappa_t_max = 450`) against
-`alpha*kappa = 0.05`, a factor of 6000. Earlier sweeps used 10, a factor of
-200. In either case the running penalty is what remains to be **paid**
+`phi*kappa*T = 3000` (ceiling `phi_kappa_t_max = 3000`, i.e. no headroom)
+against `alpha*kappa = 0.05`, a factor of 60000. Earlier sweeps used 10, a
+factor of 200. In either case the running penalty is what remains to be **paid**
 over the time left, so it is largest at `t=0` and vanishes at `T`. Measured at
 `q=+3` on live-scale CASHCAT parameters at `phi*kappa*T = 10`, the ask depth
 runs `-6.8e-6 -> +1.0e-4` as `tau` goes `150s -> 0`: the agent unwinds hardest
@@ -112,8 +113,9 @@ ours, so the agreement is expected. Checked against the book PDF 2026-08-17.
 
 Consequence: Python's `hjb_alpha_kappa` / Rust's `alpha_kappa` was chosen while
 `alpha` was effectively inert. Episodic control makes it mathematically active,
-but at the current `phi*kappa*T=300` its influence is confined to about the
-final 12 seconds (3.5 s at phi=1000), measured on the shipped config. A later
+and its reach shrinks as phi rises: about 12 s at `phi*kappa*T=300` and 3.5 s
+at 1000, so at the shipped 3000 it is confined to the last moments of an
+episode. A later
 sweep returned bit-identical P&L at 0.05, 0.5, and 5.0, so this
 regime cannot tune it; revisit only with a lower running penalty.
 

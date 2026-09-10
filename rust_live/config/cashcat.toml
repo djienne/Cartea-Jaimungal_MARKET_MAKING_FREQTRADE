@@ -83,7 +83,20 @@ shard_window_margin_seconds = 120
 max_shard_failure_rate = 0.05
 
 [model]
-q_max = 6
+# DEFAULT = the dry-run grid's `sweep1_flat300` row, chosen 2026-09-10. It is
+# the only row whose P&L is fully realised: net equals realised, inventory ends
+# at zero and max drawdown stays under 2 USDC, while `wide60` tops the board on
+# an open directional position. Change these back to q_max=6 / phiKT=300/450 to
+# return to the shipped control.
+#
+# TWO THINGS THIS CANNOT COPY from that row, both material:
+#   1. It used the FROZEN `sweep_a` fit from `grid_cashcat.toml`. A live run has
+#      no way to pin parameters -- it always calibrates -- so live tracks the
+#      market instead of that fit. The knobs below are the row; the parameters
+#      are not.
+#   2. The paper deadline adds the decision and acknowledgement legs; the live
+#      one does not. See `live.flatten_after_ms`.
+q_max = 3
 horizon_seconds = 150.0
 # Raised 200 -> 300 (cap 300 -> 450) on 2026-09-02 from a held-out phi
 # ladder. That ladder was run by the retired Python sweep and cannot be
@@ -105,11 +118,14 @@ horizon_seconds = 150.0
 #    intended step. Any future ladder must be run at the horizon it will ship
 #    at, and must state that horizon beside the number.
 #
-# 2. THE CURVE IS NOT MONOTONE. 400 is a local dip in BOTH calibrations, which
-#    is why this is 300 and not 400. Neither is 300 an argmax -- the argmax is
-#    3000, at the top of the grid, and the gradient points there the whole way.
-#    300 is a deliberately small step that is better than the value it replaces
-#    in both calibrations.
+# 2. THE CURVE IS NOT MONOTONE. 400 is a local dip in BOTH calibrations. The
+#    argmax is 3000, at the top of the grid, and the gradient points there the
+#    whole way -- which is a warning, not an endorsement: an optimum pinned to
+#    the edge of a grid means the grid is truncated, not that the edge is best.
+#    2026-09-02 took a deliberately small step to 300 for that reason.
+#    2026-09-10 went to 3000 anyway, because `sweep1_flat300` is that value and
+#    that row is the one the grid measured as fully realised. Read this as
+#    following a measured row, not as the ladder having chosen 3000.
 #
 # 3. IT IS STILL A LOSS. Every rung loses. Held-out spread capture is positive
 #    at every phi and adverse selection is always slightly larger, so raising
@@ -117,18 +133,29 @@ horizon_seconds = 150.0
 #    improvement is fill count, not better per-fill economics.
 #
 # And a caveat that limits all of the above: at any phi*kappa*T >= 100 the
-# integer-inventory quotes are IDENTICAL after clamping (cap 80 bps when flat,
-# floor 1.5 bps when unwinding). Phi only bites through the fractional-q
-# interpolation between those two clamped rows. So this axis is steering a
+# integer-inventory quotes are IDENTICAL after clamping. With the 60 bps floor
+# this profile now ships, EVERY quote is clamped -- the whole ladder reads 60
+# (floor) or 80 (cap) and nothing between -- so phi bites only through the
+# fractional-q interpolation between two clamped rows. So this axis is steering a
 # clamp geometry rather than the Cartea-Jaimungal control, and no value of it
 # addresses the real problem -- epsilon is fitted from unconditional market
 # order impact (~5 bps) while our fills actually suffer 22-29 bps.
 #
 # THE CAP MUST MOVE WITH PHI. hjb.rs rescales phi so phi*kappa*T never exceeds
 # phi_kappa_t_max, so raising phi alone silently keeps the old ceiling.
-# AppConfig::validate now refuses a cap below its phi. 1.5x headroom preserved.
-phi_kappa_t = 300.0
-phi_kappa_t_max = 450.0
+# AppConfig::validate refuses a cap below its phi. Cap == phi here, so there is
+# NO headroom and the volatility channel (volatility_risk_coefficient) is
+# clamped off entirely -- deliberate, because that is what `sweep1_flat300`
+# does, but it is a live behaviour change from the 1.5x headroom of 300/450.
+#
+# NUMERICAL COST, measured 2026-09-10. phi*kappa*T = 3000 narrows the stable
+# timestep sharply. At the live-calibrated kappa (~9600) the solve converges at
+# the shipped max_dt_seconds = 0.25 and DIVERGES at 0.5; at 300/450 it converged
+# at every step tried up to 5 s. So this profile sits one halving from a
+# non-converging HJB. That fails closed at startup rather than quoting badly,
+# but do not coarsen the step, and re-check convergence if kappa climbs.
+phi_kappa_t = 3000.0
+phi_kappa_t_max = 3000.0
 alpha_kappa = 0.05
 raw_phi_fallback = 0.0001
 raw_alpha_fallback = 0.001
@@ -149,7 +176,9 @@ leverage = 2.0
 maker_fee_rate = 0.00015
 spread_multiplier = 1.0
 extra_cushion_bps = 0.0
-min_half_spread_bps = 1.5
+# 60 bps floor, from `sweep1_flat300`. Every profitable grid row has it; the
+# band is 60-80 rather than 1.5-80.
+min_half_spread_bps = 60.0
 max_half_spread_bps = 80.0
 replace_threshold_ticks = 1
 # Hold a resting quote while the new target is within this window (max of
@@ -158,7 +187,7 @@ replace_threshold_ticks = 1
 # replaced; re-measure with `mm-live replay` before treating 2.0 as tuned.
 replace_threshold_bps = 2.0
 min_order_lifetime_ms = 100
-reduce_only_threshold_q = 5.0
+reduce_only_threshold_q = 3.0
 
 [risk]
 kill_switch = false
@@ -238,6 +267,23 @@ deadman_enabled = true
 deadman_deadline_ms = 28800000
 deadman_refresh_ms = 21600000
 max_maker_fee_rate = 0.0002
+# The timed taker exit of `sweep1_flat300`, which is what makes that row's P&L
+# realised rather than a marked-to-market position.
+#
+# 301, NOT 1. The two simulators state this deadline differently and the paper
+# row's `flatten_after_ms = 1` is not the number to copy. Paper adds the
+# decision and acknowledgement legs (1 + 150 + 150 = 301 ms effective); live
+# adds nothing (`hyperliquid_live.rs::observe_inventory_for_timed_exit`), so 1
+# here would cross out the moment a position is seen -- a far more aggressive
+# policy than the one that was measured. 301 reproduces the measured one.
+#
+# The live timer is also POSITION-level, not per-lot: it starts when inventory
+# leaves zero and only an authoritative flat observation resets it, so a
+# topped-up position exits on the first unit's clock. Paper ages each lot FIFO.
+# Close, not identical.
+#
+# Zero disables it and returns to holding for a passive offset.
+flatten_after_ms = 301
 flatten_on_stop = true
 emergency_flatten_max_slippage_bps = 250.0
 max_rest_weight_per_minute = 400

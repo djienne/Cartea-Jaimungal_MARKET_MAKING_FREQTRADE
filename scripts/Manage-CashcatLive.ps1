@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Status', 'Promote', 'Canary', 'Arm', 'Disarm', 'SupervisorTick', 'Flatten')]
+    [ValidateSet('Status', 'Canary', 'Arm', 'Disarm', 'SupervisorTick', 'Flatten')]
     [string]$Action = 'Status'
 )
 
@@ -13,11 +13,13 @@ $binary = Join-Path $rustRoot 'target\release\mm-live.exe'
 $baseConfig = Join-Path $rustRoot 'config\cashcat_dryrun_realistic.toml'
 $gridSpec = Join-Path $rustRoot 'config\grid_cashcat.toml'
 $leaderboard = Join-Path $rustRoot 'reports\grid_live\leaderboard.json'
-$activeConfig = Join-Path $runRoot 'cashcat-active-live.toml'
-$manifest = Join-Path $runRoot 'cashcat-promotion.json'
+# The live configuration is edited, not generated. Change the parameters in
+# config/cashcat.toml (it defaults to the grid's `sweep1_flat300` row) and the
+# canary and the live service both pick them up. There is no promotion step and
+# no derived active-config file.
+$liveConfig = Join-Path $rustRoot 'config\cashcat.toml'
 $armMarker = Join-Path $runRoot 'cashcat-live.arm'
 $canaryPass = Join-Path $runRoot 'live-canary-pass.json'
-$lastCheck = Join-Path $runRoot 'last-promotion-check.txt'
 $composeFile = Join-Path $repoRoot 'docker-compose.live.yml'
 $taskName = 'CASHCAT Quota-Aware Live Supervisor'
 
@@ -35,61 +37,13 @@ function Invoke-MmLive {
 }
 
 function Invoke-LiveFlatten {
-    if (-not (Test-Path -LiteralPath $activeConfig)) {
-        throw "Active live config is missing: $activeConfig"
+    if (-not (Test-Path -LiteralPath $liveConfig)) {
+        throw "Live config is missing: $liveConfig"
     }
     docker compose -f $composeFile run --rm --no-deps cashcat-live `
-        --config /opt/mm/run/cashcat-active-live.toml live-flatten
+        --config /opt/mm/config/cashcat.toml live-flatten
     if ($LASTEXITCODE -ne 0) {
         throw 'live-flatten failed; live remains stopped'
-    }
-}
-
-function Invoke-Promotion {
-    $backupConfig = "$activeConfig.previous"
-    $backupManifest = "$manifest.previous"
-    if (Test-Path -LiteralPath $activeConfig) {
-        Copy-Item -LiteralPath $activeConfig -Destination $backupConfig -Force
-    }
-    if (Test-Path -LiteralPath $manifest) {
-        Copy-Item -LiteralPath $manifest -Destination $backupManifest -Force
-    }
-    try {
-        Invoke-MmLive @(
-            '--config', $baseConfig,
-            'promote-best',
-            '--grid', $gridSpec,
-            '--leaderboard', $leaderboard,
-            '--output', $activeConfig,
-            '--manifest', $manifest,
-            '--min-elapsed-seconds', '43200'
-        )
-        $promotion = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
-        if (-not $promotion.changed) {
-            return $false
-        }
-        if (-not (Test-Path -LiteralPath $armMarker)) {
-            # Initial promotion only stages the config. The two-hour canary and
-            # explicit Arm gate must run before any continuous live service.
-            return $true
-        }
-        docker compose -f $composeFile stop cashcat-live
-        Invoke-LiveFlatten
-        docker compose -f $composeFile up -d --no-deps cashcat-live
-        if ($LASTEXITCODE -ne 0) {
-            throw 'failed to start the promoted live service'
-        }
-        return $true
-    }
-    catch {
-        if (Test-Path -LiteralPath $backupConfig) {
-            Copy-Item -LiteralPath $backupConfig -Destination $activeConfig -Force
-        }
-        if (Test-Path -LiteralPath $backupManifest) {
-            Copy-Item -LiteralPath $backupManifest -Destination $manifest -Force
-        }
-        docker compose -f $composeFile stop cashcat-live | Out-Null
-        throw
     }
 }
 
@@ -117,14 +71,6 @@ function Invoke-SupervisorTick {
             throw 'supervisor could not restart cashcat-live after flattening'
         }
     }
-    $promotionDue = -not (Test-Path -LiteralPath $lastCheck)
-    if (-not $promotionDue) {
-        $promotionDue = (Get-Date) - (Get-Item -LiteralPath $lastCheck).LastWriteTime -ge [TimeSpan]::FromHours(12)
-    }
-    if ($promotionDue) {
-        Invoke-Promotion | Out-Null
-        Set-Content -LiteralPath $lastCheck -Value ([DateTimeOffset]::Now.ToString('O'))
-    }
 }
 
 switch ($Action) {
@@ -132,26 +78,19 @@ switch ($Action) {
         [pscustomobject]@{
             Armed = Test-Path -LiteralPath $armMarker
             CanaryPassed = Test-Path -LiteralPath $canaryPass
-            ActiveConfig = Test-Path -LiteralPath $activeConfig
-            Promotion = if (Test-Path -LiteralPath $manifest) {
-                Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
-            } else { $null }
+            LiveConfig = $liveConfig
             Container = docker inspect cashcat-live --format '{{json .State}}' 2>$null
         } | ConvertTo-Json -Depth 8
     }
-    'Promote' { Invoke-Promotion | Out-Null }
     'Flatten' {
         docker compose -f $composeFile stop cashcat-live | Out-Null
         Invoke-LiveFlatten
     }
     'Canary' {
-        if (-not (Test-Path -LiteralPath $activeConfig)) {
-            throw 'Promote a corrected 12-hour winner before running the canary.'
-        }
         $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
         $reportName = "canary-$stamp.json"
         docker compose -f $composeFile run --rm --no-deps cashcat-live `
-            --config /opt/mm/run/cashcat-active-live.toml live `
+            --config /opt/mm/config/cashcat.toml live `
             --duration-seconds 7200 --report "/opt/mm/reports/live_active/$reportName"
         $runExit = $LASTEXITCODE
         Invoke-LiveFlatten

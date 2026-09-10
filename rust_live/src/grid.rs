@@ -109,8 +109,10 @@ impl Drop for GridRunLock {
 /// Sparse overrides applied on top of the base config.
 ///
 /// Every field is optional and `None` means "inherit". A variant that sets
-/// nothing is the shipped configuration, which is what makes `baseline` a
-/// meaningful control rather than a separately-maintained copy.
+/// nothing is the grid's base config, which is what makes `baseline` a
+/// meaningful control rather than a separately-maintained copy. Since
+/// 2026-09-10 that base is no longer the shipped live configuration: the live
+/// profile moved to `sweep1_flat300` and the base deliberately stayed put.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VariantOverrides {
@@ -128,8 +130,12 @@ pub struct VariantOverrides {
     pub phi_kappa_t_max: Option<f64>,
     /// `quoting.min_half_spread_bps` — floor on each quoted side's depth.
     pub min_half_spread_bps: Option<f64>,
-    /// Lot-age exit deadline before decision/acknowledgement latency.
-    /// Zero disables this paper-only policy; see `docs/CAUSAL_EXECUTION_REVIEW.md`.
+    /// Lot-age exit deadline before decision/acknowledgement latency. Zero
+    /// disables it; see `docs/CAUSAL_EXECUTION_REVIEW.md`.
+    ///
+    /// Paper-only as a GRID override -- a variant carrying it is refused by
+    /// promotion -- but the policy itself now exists live as
+    /// `live.flatten_after_ms`, which the shipped profile sets.
     pub flatten_after_ms: Option<u64>,
     /// `quoting.min_order_lifetime_ms` — requote cadence. Its interaction with
     /// spread width is non-monotone, so slow rows are controls rather than a

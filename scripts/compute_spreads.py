@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Compute bid/ask spreads (bps from mid) using mm_core, the same assembly the replay quotes from.
+Compute bid/ask spreads (bps from mid) using mm_core, the reference assembly
+Rust is pinned against.
 
 Inputs:
 - Refreshes κ/ε/λ± by calling get_kappa.py and get_epsilon.py.
@@ -119,7 +120,8 @@ def main():
     # floors it at 1e-300 before the log; on a very wide grid the smallest
     # entries are pure roundoff (possibly negative), get floored to log ~ -690,
     # and the corner depths come back wrong by ~0.1 with no error raised. The
-    # live path cannot reach this (it forces the asymmetric solver at q_max=6),
+    # live path cannot reach this (it forces the asymmetric solver at the
+    # shipped q_max, 3 since 2026-09-10),
     # so this flag is the only way in -- cap it rather than silently mislead.
     parser.add_argument(
         "--qmax",

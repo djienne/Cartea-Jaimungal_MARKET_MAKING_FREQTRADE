@@ -193,6 +193,11 @@ acknowledgement and close timings into the same observer.
 ## Commands
 
 `../README.md` lists the invocations in short form (`cd rust_live` first).
+
+`cargo build --release --no-default-features` drops the `backtest` feature: the
+binary loses the `replay` subcommand and contains no offline scoring path at
+all. Use it for a live or grid deployment; anything that replays needs the
+default build.
 Every subcommand also prints its own `--help`; `mm-live replay` in particular
 is documented in `../docs/DRY_RUN_GRID.md` "Offline comparison".
 

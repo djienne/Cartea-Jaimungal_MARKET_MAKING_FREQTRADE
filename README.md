@@ -79,7 +79,10 @@ cd rust_live
 
 cargo run --locked --release -- --config config/cashcat.toml validate     # config + venue metadata
 cargo run --locked --release -- --config config/cashcat.toml calibrate    # κ/λ/ε + HJB surface from Parquet
-cargo run --locked --release -- --config config/cashcat.toml replay       # deterministic Parquet replay
+# Offline scoring; needs the default `backtest` feature. See "Replay and
+# backtests" below -- a bare `replay` with no --from/--to only covers the
+# config's two-hour calibration window.
+cargo run --locked --release -- --config config/cashcat.toml replay
 
 # Live public feed, simulated orders. Never reads credentials.
 cargo run --locked --release -- --config config/cashcat_dryrun_realistic.toml dry-run
@@ -199,7 +202,7 @@ Where:
 solver keeps every backward step and each quote reads the episode's real
 time-to-go (episodes run for `T` and restart at the horizon or once flat);
 depths are blended linearly between integer `q` for partial fills; and at the
-shipped `φκT = 300` against `ακ = 0.05` the running penalty dominates, so the
+shipped `φκT = 3000` against `ακ = 0.05` the running penalty dominates, so the
 agent unwinds hardest at the *start* of an episode. Details and the departures
 from the book: `docs/UNITS.md`.
 

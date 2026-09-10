@@ -26,14 +26,18 @@ pub struct ModelConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            q_max: 6,
+            q_max: 3,
             horizon_seconds: 150.0,
-            // Kept equal to the shipped config/cashcat.toml. Every profile in
-            // the repo sets both explicitly, so nothing inherits these today --
-            // which is exactly why a stale pair here would sit unnoticed until
-            // the one config that omitted them quietly ran the old penalty.
-            phi_kappa_t: 300.0,
-            phi_kappa_t_max: 450.0,
+            // Kept equal to the shipped config/cashcat.toml, and pinned there by
+            // `the_model_defaults_track_the_shipped_inventory_penalty`. Every
+            // profile in the repo sets both explicitly, so nothing inherits
+            // these today -- which is exactly why a stale pair here would sit
+            // unnoticed until the one config that omitted them quietly ran the
+            // old penalty. Moved 300/450 -> 3000/3000 on 2026-09-10 with the
+            // live default; cap equal to phi closes the volatility channel's
+            // headroom, which is what the `sweep1_flat300` row does.
+            phi_kappa_t: 3000.0,
+            phi_kappa_t_max: 3000.0,
             alpha_kappa: 0.05,
             raw_phi_fallback: 0.0001,
             raw_alpha_fallback: 0.001,
@@ -91,7 +95,10 @@ impl Default for QuotingConfig {
             // message budget with room for pings and dead-man refreshes; 75ms
             // consumed the entire budget by itself.
             min_order_lifetime_ms: 100,
-            reduce_only_threshold_q: 5.0,
+            // Must stay inside [0, q_max], and q_max defaults to 3 with the
+            // shipped live profile; 5.0 here made `AppConfig::default()` fail
+            // its own validation.
+            reduce_only_threshold_q: 3.0,
         }
     }
 }
@@ -193,8 +200,12 @@ pub struct DryRunConfig {
     pub funding_rate_per_hour: f64,
     pub markout_horizons_ms: Vec<u64>,
     /// Flatten inventory by CROSSING once a lot has been held this long.
-    /// Zero disables it, which is the shipped behaviour: hold until an
-    /// offsetting maker fill arrives.
+    /// Zero disables it and holds for an offsetting maker fill.
+    ///
+    /// This is the PAPER deadline and still defaults to zero. Its live
+    /// counterpart `live.flatten_after_ms` is set to 301 in the shipped
+    /// CASHCAT profile, so "hold for a passive offset" is no longer the
+    /// shipped live behaviour.
     ///
     /// The replay evidence for this came from the retired Python engine and
     /// concluded the opposite of the live grid: that a 60 bps half-spread

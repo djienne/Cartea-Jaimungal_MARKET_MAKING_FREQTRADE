@@ -20,7 +20,7 @@ Two checks, both exact:
 
        % CHECK: delta_total = 2.4786e-04
 
-   and this script recomputes it by calling the Python replay/reference pricing
+   and this script recomputes it by calling the Python reference pricing
    path, then compares to the printed precision. Rust parity is checked
    separately by ``rust_live/tests/python_parity.rs``. Tagged worked-example
    numbers are therefore executable checks; dated evidence tables elsewhere in

@@ -800,8 +800,12 @@ orders`, and enters a 30-second cooldown before retrying. That path was
 exercised live on 2026-08-23: it held the reserve at ~119 rather than draining
 it to zero, leaving room to flatten.
 
-`live.flatten_after_ms` optionally limits continuously non-flat holding time
-(default `0`, disabled), independently of paper `dry_run.flatten_after_ms`.
+`live.flatten_after_ms` limits continuously non-flat holding time by CROSSING,
+independently of paper `dry_run.flatten_after_ms`. **The shipped CASHCAT profile
+sets it to 301 ms**, so the live path does cross on a timer by default; zero
+disables it. The live timer is position-level and does not add the latency legs
+the paper one does -- 301 here reproduces a paper `flatten_after_ms = 1` at the
+shipped 150 ms latencies.
 Live fills or authoritative positions arm it; partial reductions and additions
 do not reset it. Expiry cancels quotes then uses the bounded reduce-only IOC
 close, including during ordinary placement quota cooldowns. Failures pause

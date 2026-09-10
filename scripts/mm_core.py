@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Python quoting core for replay and Rust parity checks.
+"""Python quoting core: the reference implementation Rust is pinned against.
 
 Quote assembly, inventory mapping, maker-safety checks, and tick rounding once
-had multiple Python copies. Consolidating them here prevents a replay from
+had multiple Python copies. Consolidating them here prevents a caller from
 silently using different arithmetic from its own documented reference path.
 
-This module is the single Python implementation. The replay harness imports it;
+This module is the single Python implementation. `rust_live/tests/python_parity.rs`
+pins the Rust quoting path against it;
 ``rust_live/crates/cj-core`` independently implements the production path and
 ``rust_live/tests/python_parity.rs`` checks selected outputs against this one.
 
@@ -17,8 +18,8 @@ Conventions worth knowing before reading further:
 - Depths are measured from the MID, in price units, on the same coordinate the
   estimators calibrate in.
 - ``q`` is signed and spans the full [-q_max, +q_max]. ``allow_short=False`` and
-  the two-leg routing helpers remain only for historical replay compatibility;
-  the current Python replay and Rust runtime quote both sides from one instance.
+  the two-leg routing helpers are retained for historical comparison only; the
+  Rust runtime quotes both sides from one instance.
 - ``phi`` and ``alpha`` are NOT kappa-invariant -- eq. 10.28 uses -phi*kappa*q^2
   -- so ``solve_hjb`` derives them from live kappa via the dimensionless targets
   ``hjb_phi_kappa_t`` / ``hjb_alpha_kappa``. Tuning the raw values per symbol is
@@ -150,7 +151,7 @@ def parse_utc_timestamp(value: Any) -> datetime | None:
 class QuoteConfig:
     """Everything that shapes a quote, in one place.
 
-    The replay constructs this directly. Rust uses the corresponding validated
+    Constructed directly by callers. Rust uses the corresponding validated
     TOML schema; parity tests cover the shared numerical fields.
     """
 
@@ -458,7 +459,7 @@ def solve_hjb(
     """Solve the HJB for the current parameter snapshot.
 
     ``params`` is the flat merged kappa/epsilon/lambda dict for one symbol.
-    Solver failures propagate to the caller; replay must not continue with a
+    Solver failures propagate to the caller; a caller must not continue with a
     silently substituted surface.
     """
     phi, phi_source = effective_phi(config, sigma2_per_sec)
@@ -511,7 +512,7 @@ def solve_hjb(
 # ---------------------------------------------------------------------------
 # Compiled inner loop for select_delta
 #
-# select_delta is the hot path of every replay: profiled over the 161.95 h
+# select_delta was the hot path of every Python replay: profiled over the 161.95 h
 # CASHCAT tape it was 18.1 s of a 42.4 s run (43%), called 1.18 M times, and
 # most of that was numpy dispatch rather than arithmetic -- 3.5 M scalar
 # np.searchsorted calls costing ~1 us each to compare a handful of floats.
@@ -840,7 +841,7 @@ def compute_quotes(
 def route_sides(q_long: int, q_short: int, q_max: int) -> dict[str, str | None]:
     """Compatibility routing for a two-instance, one-order-per-instance adapter.
 
-    This is not used by the current runtime or replay. It is retained to
+    This is not used by the current runtime. It is retained to
     reproduce historical cases and because the deadlock it avoids is not
     obvious. The naive split -- long always bids,
     short always asks -- deadlocks:
@@ -910,7 +911,7 @@ def resolve_net_inventory(
 ) -> tuple[int | None, str]:
     """Historical two-leg net inventory, or None with a reason to stop quoting.
 
-    Not used by the current Rust runtime or replay; retained with ``route_sides``
+    Not used by the current Rust runtime; retained with ``route_sides``
     to reproduce the former adapter's fail-closed behavior.
 
     Fail closed rather than assuming a missing peer is flat: "flat" is a

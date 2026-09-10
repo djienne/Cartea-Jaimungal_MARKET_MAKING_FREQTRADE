@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Incremental toxic-flow guard, a line-for-line port of the shipped Rust one.
 
-The live bot and the Rust replay both run this guard; the Python staged replay
+The live bot and the Rust replay both run this guard; the retired Python sweep
 did not, which biased every sweep it fed. The 08-22 cascade window dominates the
 sweep's train slice, so Stage A/B selection was choosing a high inventory
 penalty to avoid a cascade the guard already bounds — tuning one lever to solve
@@ -17,7 +17,7 @@ are vectorised over a whole dataframe and cannot be fed one event at a time,
 which is what a replay loop needs, so the bucket-filling and dedup logic is
 ported here rather than imported.
 
-Units: this module is float/base-unit throughout (the replay's coordinate),
+Units: this module is float/base-unit throughout,
 whereas Rust works in integer venue units. The arithmetic is otherwise
 identical; bucket comparisons carry an epsilon because of it.
 """

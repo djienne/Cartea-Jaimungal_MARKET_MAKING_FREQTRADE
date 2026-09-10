@@ -28,7 +28,7 @@ use mm_live::lockfree::{
 };
 use mm_live::metrics::Metrics;
 use mm_live::parquet_io::{
-    ensure_no_external_writer, load_market_window, parse_utc_ms, CollectorLock, MarketDataSet,
+    ensure_no_external_writer, load_market_window, CollectorLock, MarketDataSet,
     ParquetEventRecorder, ParquetRecorderHandle,
 };
 use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
@@ -50,7 +50,10 @@ use tracing_subscriber::EnvFilter;
 #[cfg(feature = "live-acceptance")]
 use hyperliquid_connector::acceptance as live_acceptance;
 
+#[cfg(feature = "backtest")]
 mod backtest;
+#[cfg(feature = "backtest")]
+use mm_live::parquet_io::parse_utc_ms;
 mod grid;
 mod paper;
 
@@ -96,6 +99,7 @@ enum Command {
     /// Run one all-Rust calibration and HJB solve over Parquet history.
     Calibrate,
     /// Replay the selected Parquet window deterministically.
+    #[cfg(feature = "backtest")]
     Replay {
         /// Stem for the per-variant session reports.
         #[arg(long)]
@@ -183,21 +187,6 @@ enum Command {
         /// `(keep + 1) * log_max_mb` per variant.
         #[arg(long, default_value_t = 3)]
         log_keep: usize,
-    },
-    /// Select the highest valid, live-equivalent flatten-P&L row and atomically
-    /// generate the micro-live configuration. Dry-run-only exit policies are
-    /// excluded. This command performs no network activity.
-    PromoteBest {
-        #[arg(long)]
-        grid: PathBuf,
-        #[arg(long)]
-        leaderboard: PathBuf,
-        #[arg(long, default_value = "rust_live/run/cashcat-active-live.toml")]
-        output: PathBuf,
-        #[arg(long, default_value = "rust_live/run/cashcat-promotion.json")]
-        manifest: PathBuf,
-        #[arg(long, default_value_t = 43_200)]
-        min_elapsed_seconds: u64,
     },
     /// Exercise credential parsing, account REST reads, and the account WebSocket without actions.
     ConnectorCheck {
@@ -302,23 +291,6 @@ fn main() -> Result<()> {
         };
     }
     let config = AppConfig::load(&cli.config)?;
-    if let Command::PromoteBest {
-        grid,
-        leaderboard,
-        output,
-        manifest,
-        min_elapsed_seconds,
-    } = &cli.command
-    {
-        return promote_best_config(
-            &config,
-            grid,
-            leaderboard,
-            output,
-            manifest,
-            *min_elapsed_seconds,
-        );
-    }
     init_tracing(config.runtime.log_json);
     // The runtime is built explicitly so hot-path isolation is real: the
     // default #[tokio::main] spawned one worker per logical CPU with no
@@ -427,6 +399,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             );
             Ok(())
         }
+        #[cfg(feature = "backtest")]
         Command::Replay {
             report,
             board,
@@ -498,7 +471,6 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             )
             .await
         }
-        Command::PromoteBest { .. } => unreachable!("promotion returned before runtime startup"),
         Command::ConnectorCheck {
             credentials,
             duration_seconds,
@@ -2831,122 +2803,6 @@ fn grid_health_verdict(
     ))
 }
 
-fn promote_best_config(
-    base: &AppConfig,
-    grid_path: &Path,
-    leaderboard_path: &Path,
-    output_path: &Path,
-    manifest_path: &Path,
-    min_elapsed_seconds: u64,
-) -> Result<()> {
-    let spec = grid::GridSpec::load(grid_path)?;
-    let board: grid::Leaderboard = serde_json::from_slice(
-        &std::fs::read(leaderboard_path)
-            .with_context(|| format!("cannot read leaderboard {}", leaderboard_path.display()))?,
-    )?;
-    if board.elapsed_seconds < min_elapsed_seconds {
-        bail!(
-            "leaderboard has only {}s; {}s of corrected evidence are required",
-            board.elapsed_seconds,
-            min_elapsed_seconds
-        );
-    }
-    let winner = board
-        .rows
-        .iter()
-        .filter(|row| row.eligible_for_promotion)
-        // Older leaderboards may predate the eligibility flag's dry-run-only
-        // check. Re-read the spec so an experimental taker-flatten row can
-        // never be turned into a live config whose backend has no such policy.
-        .filter(|row| {
-            spec.variants
-                .iter()
-                .find(|variant| variant.name == row.name)
-                .is_some_and(|variant| {
-                    variant.overrides.flatten_after_ms.unwrap_or(0) == 0
-                        && variant.overrides.parameter_profile.is_none()
-                })
-        })
-        .reduce(|best, row| {
-            if row.promotion_pnl_usdc > best.promotion_pnl_usdc {
-                row
-            } else {
-                best
-            }
-        })
-        .context("leaderboard has no valid live-equivalent promotable row")?;
-    if winner.promotion_pnl_usdc.is_none_or(|pnl| pnl <= 0.0) {
-        bail!(
-            "best valid promotion P&L is {:?}; live remains disabled until a variant is profitable",
-            winner.promotion_pnl_usdc
-        );
-    }
-    let variant = spec
-        .variants
-        .iter()
-        .find(|variant| variant.name == winner.name)
-        .with_context(|| format!("winner {:?} is absent from grid spec", winner.name))?;
-    let mut selected = variant.overrides.apply(base)?;
-    selected.live.enabled = true;
-    selected.live.mode = mm_live::config::LiveMode::Production;
-    selected.live.flatten_on_stop = true;
-    selected.risk.max_daily_loss_usdc = selected
-        .risk
-        .max_daily_loss_usdc
-        .min(selected.live.production_max_daily_realized_loss_usdc);
-    selected.validate()?;
-    // Keep the generated file portable between the Windows host and the live
-    // container. AppConfig resolves these relative to the active config in
-    // rust_live/run (or /opt/mm/run in the container).
-    selected.instrument.evidence_path = PathBuf::from("../config/cashcat.validation.json");
-    selected.storage.data_dir = PathBuf::from("../../scripts/HL_data");
-    selected.storage.state_path = PathBuf::from("cashcat-dry-state.json");
-    selected.storage.calibration_path = PathBuf::from("cashcat-calibration.json");
-    selected.storage.latency_path = PathBuf::from("cashcat-live-latency.json");
-    selected.storage.report_dir = PathBuf::from("../reports/live_active");
-    selected.storage.writer_lock_path = PathBuf::from("cashcat-live-collector.lock");
-    selected.live.credentials_path = PathBuf::from("../hyperliquid.env");
-    selected.live.state_path = PathBuf::from("cashcat-live.redb");
-    let selected_fingerprint = selected.fingerprint()?;
-    let previous_fingerprint = std::fs::read(manifest_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|value| {
-            value
-                .get("selected_config_fingerprint")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        });
-    let changed = previous_fingerprint.as_deref() != Some(selected_fingerprint.as_str());
-    let config_text = toml::to_string_pretty(&selected)?;
-    write_atomic_bytes(output_path, config_text.as_bytes())?;
-    let manifest = serde_json::json!({
-        "schema_version": 1,
-        "generated_at_ms": unix_ms(),
-        "leaderboard_started_at_ms": board.started_at_ms,
-        "leaderboard_generated_at_ms": board.generated_at_ms,
-        "elapsed_seconds": board.elapsed_seconds,
-        "symbol": board.symbol,
-        "variant": winner.name,
-        "promotion_pnl_usdc": winner.promotion_pnl_usdc,
-        "net_pnl_usdc": winner.net_pnl_usdc,
-        "base_config_fingerprint": base.fingerprint()?,
-        "selected_config_fingerprint": selected_fingerprint,
-        "changed": changed,
-        "micro_live": {
-            "min_order_notional_multiplier": selected.live.min_order_notional_multiplier,
-            "max_order_notional_multiplier": selected.live.max_order_notional_multiplier,
-            "max_directional_notional_multiplier": selected.live.max_directional_notional_multiplier,
-            "max_working_gross_multiplier": selected.live.max_working_gross_multiplier,
-            "max_daily_realized_loss_usdc": selected.live.production_max_daily_realized_loss_usdc,
-            "address_action_reserve": selected.live.address_action_reserve,
-        }
-    });
-    write_atomic_bytes(manifest_path, &serde_json::to_vec_pretty(&manifest)?)?;
-    println!("{}", serde_json::to_string_pretty(&manifest)?);
-    Ok(())
-}
-
 fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
@@ -4523,130 +4379,5 @@ mod grid_health_tests {
         let dir = tempfile::tempdir().unwrap();
         let reason = grid_health_verdict(&dir.path().join("absent.json"), 120, 180).unwrap_err();
         assert!(reason.contains("cannot read"), "{reason}");
-    }
-
-    #[test]
-    fn promotion_selects_best_live_equivalent_and_skips_dry_run_only_rows() {
-        let directory = tempfile::tempdir().unwrap();
-        let grid_path = directory.path().join("grid.toml");
-        std::fs::write(
-            &grid_path,
-            "[[variant]]\nname = \"baseline\"\n\n[[variant]]\nname = \"wide\"\nmin_half_spread_bps = 8.0\n\n[[variant]]\nname = \"flatten\"\nflatten_after_ms = 1\nmin_half_spread_bps = 60.0\n\n[parameter_profiles.fixed]\nlambda_plus = 1.0\nlambda_minus = 1.0\nkappa_plus = 1.0\nkappa_minus = 1.0\nepsilon_plus = 0.0\nepsilon_minus = 0.0\n\n[[variant]]\nname = \"fixed\"\nparameter_profile = \"fixed\"\n",
-        )
-        .unwrap();
-        let mut leaderboard = board(unix_ms(), 0);
-        leaderboard.started_at_ms = leaderboard.generated_at_ms.saturating_sub(43_200_000);
-        leaderboard.elapsed_seconds = 43_200;
-        let row = |name: &str, pnl: f64| grid::LeaderboardRow {
-            name: name.to_owned(),
-            description: String::new(),
-            net_pnl_usdc: pnl,
-            promotion_pnl_usdc: Some(pnl),
-            equity_usdc: 297.88 + pnl,
-            realized_pnl_usdc: pnl,
-            mark_to_market_pnl_usdc: pnl,
-            fees_usdc: 0.0,
-            funding_usdc: 0.0,
-            inventory_units: 0,
-            fills: 1,
-            working_orders: 0,
-            max_drawdown_usdc: 0.0,
-            config_changes: 0,
-            scientifically_valid: true,
-            eligible_for_promotion: true,
-        };
-        // Deliberately leave the stale-board eligibility bit true. Promotion
-        // must still reject the higher-P&L dry-run-only exit policy.
-        leaderboard.rows = vec![
-            row("baseline", -2.0),
-            row("wide", 1.0),
-            row("flatten", 10.0),
-            row("fixed", 20.0),
-        ];
-        let leaderboard_path = directory.path().join("leaderboard.json");
-        leaderboard.write_atomic(&leaderboard_path).unwrap();
-        let output = directory.path().join("cashcat-active-live.toml");
-        let manifest = directory.path().join("promotion.json");
-        let base = AppConfig::load(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat_dryrun_realistic.toml"),
-        )
-        .unwrap();
-        promote_best_config(
-            &base,
-            &grid_path,
-            &leaderboard_path,
-            &output,
-            &manifest,
-            43_200,
-        )
-        .unwrap();
-        let selected: AppConfig =
-            toml::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
-        assert!(selected.live.enabled);
-        assert_eq!(selected.quoting.min_half_spread_bps, 8.0);
-        assert_eq!(selected.dry_run.flatten_after_ms, 0);
-        assert_eq!(selected.risk.max_daily_loss_usdc, 1.0);
-        let promotion: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
-        assert_eq!(promotion["variant"], "wide");
-        assert_eq!(promotion["promotion_pnl_usdc"], 1.0);
-        promote_best_config(
-            &base,
-            &grid_path,
-            &leaderboard_path,
-            &output,
-            &directory.path().join("promotion.json"),
-            43_200,
-        )
-        .unwrap();
-        let second: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(directory.path().join("promotion.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(second["changed"], false);
-    }
-
-    #[test]
-    fn promotion_refuses_when_every_valid_variant_is_non_profitable() {
-        let directory = tempfile::tempdir().unwrap();
-        let grid_path = directory.path().join("grid.toml");
-        std::fs::write(&grid_path, "[[variant]]\nname = \"baseline\"\n").unwrap();
-        let mut leaderboard = board(unix_ms(), 0);
-        leaderboard.started_at_ms = leaderboard.generated_at_ms.saturating_sub(43_200_000);
-        leaderboard.elapsed_seconds = 43_200;
-        leaderboard.rows = vec![grid::LeaderboardRow {
-            name: "baseline".to_owned(),
-            description: String::new(),
-            net_pnl_usdc: 0.0,
-            promotion_pnl_usdc: Some(0.0),
-            equity_usdc: 297.88,
-            realized_pnl_usdc: 0.0,
-            mark_to_market_pnl_usdc: 0.0,
-            fees_usdc: 0.0,
-            funding_usdc: 0.0,
-            inventory_units: 0,
-            fills: 0,
-            working_orders: 0,
-            max_drawdown_usdc: 0.0,
-            config_changes: 0,
-            scientifically_valid: true,
-            eligible_for_promotion: true,
-        }];
-        let leaderboard_path = directory.path().join("leaderboard.json");
-        leaderboard.write_atomic(&leaderboard_path).unwrap();
-        let base = AppConfig::load(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("config/cashcat_dryrun_realistic.toml"),
-        )
-        .unwrap();
-        let result = promote_best_config(
-            &base,
-            &grid_path,
-            &leaderboard_path,
-            &directory.path().join("active.toml"),
-            &directory.path().join("promotion.json"),
-            43_200,
-        );
-        assert!(result.is_err());
-        assert!(!directory.path().join("active.toml").exists());
     }
 }

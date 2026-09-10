@@ -25,9 +25,9 @@ backend are intentionally not executed by normal CI. CI hard-gates the pure
 core, dry-run execution and the runtime crates, and publishes the full connector
 report for review.
 
-Current suite sizes are 302 Rust tests (`cargo test --workspace --all-features`)
-and 255 Python (`pytest tests/`). The Python count fell by 137 on 2026-09-10
-when the Python replay was deleted.
+Current suite sizes are 302 Rust tests (`cargo test --workspace --all-features`,
+which includes the `backtest` feature) and 255 Python (`pytest tests/`). The
+Python count fell by 137 on 2026-09-10 when the Python replay was deleted.
 
 ## Defects this campaign found
 

@@ -20,7 +20,13 @@ license = "MIT"
 description = "Generic Cartea-Jaimungal market-making research engine, validated for CASHCAT"
 
 [features]
-default = []
+# `backtest` is on by default and carries the whole offline scoring path
+# (`src/backtest.rs` and the `replay` subcommand). A live or grid deployment can
+# drop it -- `cargo build --release --no-default-features` -- so the binary that
+# touches real money contains no offline machinery at all. Nothing in the live
+# or grid path depends on it; the dependency runs one way.
+default = ["backtest"]
+backtest = []
 live-acceptance = ["hyperliquid-connector/acceptance"]
 
 [lib]

@@ -29,7 +29,10 @@ Usage:
     python scripts/archive_period.py --dry-run     # what would be written
     python scripts/archive_period.py               # archive if due
     python scripts/archive_period.py --force       # archive regardless
-    python scripts/archive_period.py --loop        # daemon: check hourly
+    python scripts/archive_period.py --loop        # daemon; retired -- the
+                                                   # cadence is now the Windows
+                                                   # task "MM CASHCAT period
+                                                   # archive", daily at 04:30
 """
 
 from __future__ import annotations
@@ -84,6 +87,9 @@ def mm_live_binary():
     Replay is a command run from time to time, not a service, so it is a host
     binary rather than a container: only the collectors and the dry-run grid
     need to run continuously. `MM_LIVE_BIN` overrides for an unusual layout.
+    Needs a binary built with the default `backtest` feature; a
+    `--no-default-features` build has no `replay` subcommand, so the archive
+    step fails with a usage error rather than a missing binary.
     """
     override = os.environ.get("MM_LIVE_BIN")
     if override:

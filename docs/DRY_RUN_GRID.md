@@ -141,8 +141,10 @@ the saved models prospectively under the same paper conditions as the controls;
 they do not reproduce the Python sweep's fixed sizing or execution assumptions.
 Timestep, Newton tolerance and the convergence study behind them: `CAUSAL_EXECUTION_REVIEW.md`.
 
-Lot-age exits and fixed parameter profiles are not supported by live promotion.
-Rows using either remain paper-only and ineligible regardless of P&L. Their
+`eligible_for_promotion` is false for rows with a lot-age exit or a fixed
+parameter profile: they have no live equivalent as written. That is a property
+of the row, not a verdict -- there is no automatic promotion, and the shipped
+live config in fact runs a timed exit (`live.flatten_after_ms`) by choice. Their
 exit deadlines include the round trip; see the fidelity limits above.
 
 ## Queue model

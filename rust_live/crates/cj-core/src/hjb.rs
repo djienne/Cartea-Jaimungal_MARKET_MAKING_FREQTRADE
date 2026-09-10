@@ -688,6 +688,13 @@ mod tests {
     #[test]
     fn backward_euler_depth_converges_when_dt_is_halved() {
         let mut coarse_config = ModelConfig::default();
+        // The subject here is the time discretisation, so phi is pinned to the
+        // value this test was written against rather than tracking the shipped
+        // one. It matters: at the shipped phi*kappa*T = 3000 the Newton solve
+        // needs the shipped 0.25 s step and diverges at 0.5 s, so a 1 s coarse
+        // leg would fail to solve at all and this would stop measuring dt.
+        coarse_config.phi_kappa_t = 300.0;
+        coarse_config.phi_kappa_t_max = 450.0;
         coarse_config.max_dt_seconds = 1.0;
         coarse_config.min_steps = 1;
         let mut medium_config = coarse_config.clone();

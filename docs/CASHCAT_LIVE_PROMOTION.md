@@ -1,33 +1,32 @@
-# CASHCAT corrected-grid promotion and micro-live operation
+# CASHCAT micro-live operation
 
-The pre-2026-08-31 grid artifacts are historical only. They used zero queue
-ahead outside the visible book, time-erased queue after twenty seconds, and
-could lose feed-invalid state across a restart. They must not be promoted.
+**There is no automatic promotion.** The live configuration is
+`rust_live/config/cashcat.toml` and you change it by editing it. It defaults to
+the dry-run grid's `sweep1_flat300` row, and the comments in `[model]` say what
+that row is and the two things a live run cannot copy from it.
 
-The corrected grid:
+Automatic promotion existed until 2026-09-10: `promote-best` picked the highest
+`promotion_pnl_usdc` row and generated a derived `cashcat-active-live.toml`. It
+was removed as unnecessary and confusing -- a generated config nobody edited,
+selected by a rule whose exclusions had to be explained every time, and a
+supervisor that could swap the running strategy every twelve hours. Choosing
+what trades real money is a decision to make deliberately, not one to automate
+off a leaderboard.
 
-- leaves queue position unknown until a quote price is visible;
-- uses no uncalibrated time-based queue decay;
-- drives simulation from exchange time and includes deterministic measured
-  latency tails;
-- persists open gaps, event loss and daily loss across restarts;
-- ranks valid rows by executable-side, fee-adjusted flatten P&L;
-- stores each scientific run below `rust_live/reports/grid_live/runs/` while the
-  root `leaderboard.json` remains the healthcheck's latest pointer.
+`promotion_pnl_usdc` survives as the leaderboard's **ranking metric**, and it is
+the number to read: it marks residual inventory out at a pessimistic 25 bps, so
+a row whose P&L is really an open directional position ranks below one that
+actually took the money. `eligible_for_promotion` likewise still marks rows with
+no live equivalent -- a paper lot-age exit or a frozen `parameter_profile` --
+which is a fact about the row, not a promotion verdict.
 
-After at least 43,200 seconds, generate the live configuration with:
-
-```powershell
-scripts\Manage-CashcatLive.ps1 -Action Promote
-```
-
-The selector takes the valid, live-equivalent row with the highest
-`promotion_pnl_usdc` and requires that value to be positive; otherwise live
-remains disabled. Rows with `flatten_after_ms > 0` or a fixed
-`parameter_profile` are excluded: promote-best does not translate a paper
-lot-age exit into `live.flatten_after_ms`, and a frozen fit is not a live
-calibration. A successful selection writes
-`rust_live/run/cashcat-active-live.toml` and `cashcat-promotion.json` atomically.
+The grid ranks valid rows by that metric, leaves queue position unknown until a
+quote price is visible, uses no uncalibrated time-based queue decay, drives
+simulation from exchange time with measured latency tails, and persists open
+gaps, event loss and daily loss across restarts. Each scientific run lives below
+`rust_live/reports/grid_live/runs/`; the root `leaderboard.json` is the
+healthcheck's latest pointer. Pre-2026-08-31 grid artifacts predate all of that
+and must not be used.
 
 Live orders are the first valid lot between 1.05 and 1.10 times the current
 CASHCAT minimum notional. Directional exposure is one such order, working gross
@@ -40,16 +39,17 @@ deadline refreshed every 6 h for budget reasons
 is the primary fast recovery path. Cancels have separate accounting and are never blocked by the
 ordinary placement throttle.
 
-`Canary` runs the selected production pathway for 7,200 seconds and always runs
+`Canary` runs `config/cashcat.toml` for 7,200 seconds and always runs
 `live-flatten` afterwards. It writes the pass evidence only when the full
 duration, at least one fill, zero unknown/rejected actions, operational validity,
 successful shutdown and final flatness all hold. A recovered private socket
 reconnect retains its scientific discontinuity flag but can pass the operational
 verdict after reconciliation; event loss or an unresolved fault cannot.
-`Arm` refuses without that evidence. Once armed,
-the Windows supervisor checks health every minute and promotion every twelve
-hours. A changed winner is applied only after stop, cancel, flatten and flat
-verification; failures leave live stopped.
+`Arm` refuses without that evidence. Once armed, the Windows supervisor checks
+health every minute: it restarts an exited or unhealthy container after
+flattening, and stops live entirely if no valid row has positive
+`promotion_pnl_usdc`. It never changes the configuration -- that is yours to
+edit, and a change takes effect on the next start.
 
 That switch was exercised on real money on 2026-08-31: while flat, the durable
 state accepted a config-fingerprint change to `wide4` and the new two-sided ALO
