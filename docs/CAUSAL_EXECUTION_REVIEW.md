@@ -104,8 +104,10 @@ not an executed liquidation. Bounded logs do not retain every historical fill.
 A native/container duplicate replay matches account equity, inventory and fill
 count; final replays use the native release build on the same frozen inputs.
 
-285 Rust tests, the separately run release-mode convergence study, 392 Python
-tests, Clippy, formatting and whitespace checks pass. The TeX check confirms
+The full suite, the separately run release-mode convergence study, Clippy,
+formatting and whitespace checks pass. (Counts as of this review were 285 Rust
+and 392 Python; the Python figure fell to 255 when the Python replay was deleted
+on 2026-09-10.) The TeX check confirms
 12 source snippets and 55 recomputed numbers; no mathematical exposition change
 is needed. These checks support numerical/accounting consistency, not an edge.
 

@@ -29,14 +29,10 @@ itself still pins only when `MM_BENCH_CPU` is set.
 
 ## Superseded 2026-08-22 measurements
 
-The prior unpinned run measured an 89.22 ns paired quote-loop median. Independent 64-decision batches reported
-p50/p95/p99 of 87.50/132.81/146.88 ns per decision. One-in-16 latency sampling
-raised the paired median to 93.58 ns, or 4.88%. The HJB solve distribution was
-0.698/0.976/1.120 ms at p50/p95/p99. This is a large improvement over the
-pre-change 143–156 ns quote range, chiefly from eliminating two inventory-grid
-allocations per decision and selecting both depths in one lookup. Because this
-run was not CPU-pinned, it remains informational rather than an approved gate
-baseline.
+An unpinned run measured an 89.22 ns paired quote-loop median, down from a
+pre-change 143–156 ns, chiefly from eliminating two inventory-grid allocations
+per decision and selecting both depths in one lookup. Unpinned, so informational
+rather than an approved gate baseline.
 
 ## Historical pre-hardening measurements
 

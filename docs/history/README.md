@@ -30,9 +30,10 @@ of a window whose raw data is gone.
 | `grid_equity_curve.csv.zst` | the period's P&L histories, 15-min, zstd; `run_started_ms` keeps run boundaries |
 | `grid_pnl_curve.png` | that curve, rendered |
 
-Each period's `README.md` is generated and carries the replay's leaderboard,
-the latency ladder and the grid's top and bottom rows — enough to read the
-period without decompressing anything.
+Each period's `README.md` is generated and carries the replay's leaderboard and
+the grid's top and bottom rows — enough to read the period without decompressing
+anything. `2026-08-30_CASHCAT/` predates this layout: it holds only a README and
+a grid leaderboard, its Python sweep having been retired with that engine.
 
 ## Two window conventions, deliberately different
 

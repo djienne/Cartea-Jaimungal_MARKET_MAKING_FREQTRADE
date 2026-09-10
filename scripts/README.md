@@ -1,6 +1,8 @@
 # Hyperliquid Market Making Suite
 
-A comprehensive Python suite for collecting real-time tick data from Hyperliquid and estimating market making parameters. Includes data collection via WebSocket API, advanced parameter estimation, and a Dockerized setup for easy deployment.
+Collects Hyperliquid tick data and estimates the Cartea-Jaimungal parameters
+the Rust trader calibrates against. The collectors run from `HYPERLIQUID_DATA/`,
+not from here.
 
 ---
 
@@ -34,10 +36,9 @@ A comprehensive Python suite for collecting real-time tick data from Hyperliquid
 
 ## Installation (local)
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
 ---
 
@@ -75,17 +76,15 @@ python compute_spreads.py --crypto CASHCAT --qmax 6 --spread-multiplier 1.0
 from here are defined in `HYPERLIQUID_DATA/docker-compose.yml`, alongside the
 other three Hyperliquid collectors, and are operated from there:
 
-- **`hl-cashcat-collector`** — `SYMBOLS=CASHCAT`, `RETENTION_MINUTES=43200`
-  (30 days). CASHCAT is the symbol the strategy quotes, and the sweeps, replays
-  and the acceptance gate all read the traded symbol, so it needs a far longer
-  tape than the rest.
-- **`hl-collector`** — `SYMBOLS=ETH,ACE,CHIP,PENGU,NIL`, `RETENTION_MINUTES=4320`
-  (3 days), as controls and candidates.
+- **`hl-cashcat-collector`** — `SYMBOLS=CASHCAT`, 30-day retention. The traded
+  symbol needs a far longer tape than the rest: replay and the period archive
+  can only score a window while its shards exist.
+- **`hl-collector`** — `SYMBOLS=ETH,ACE,CHIP,PENGU,NIL`, 3 days, as controls.
 
 **The two `SYMBOLS` lists must never overlap.** Both write into the same
-`./data/eth_mm` directory and the estimators read the directory, not the writer
-(2026-08-16: every trade landed twice). If you add a symbol to one list, remove
-it from the other in the same edit. See `docs/DATA_COLLECTION.md`.
+directory and the estimators read the directory, not the writer, so an overlap
+lands every trade twice. Retention values, the 2026-08-16 measurement and the
+dedup that now protects calibration: `docs/DATA_COLLECTION.md`.
 
 ### Quick start
 
@@ -171,26 +170,6 @@ leaves margin for scheduling, file visibility, and a 30 s calibration cadence.
 * `HL_data/<SYMBOL>/orderbooks/orderbooks_<epoch_ms>.parquet` (order book snapshots)
 * `HL_data/<SYMBOL>/asset_ctx/asset_ctx_<epoch_ms>.parquet` (active-asset context)
 
-### Example (symbols: BTC, ETH, SOL)
-
-```
-HL_data/
-  BTC/
-    prices/
-      prices_1765401094883.parquet
-    trades/
-      trades_1765401094883.parquet
-    orderbooks/
-      orderbooks_1765401094883.parquet
-  ETH/
-    prices/
-      prices_1765401094883.parquet
-    trades/
-      trades_1765401094883.parquet
-    orderbooks/
-      orderbooks_1765401094883.parquet
-```
-
 ### File Format
 
 * **Prices**:
@@ -217,27 +196,10 @@ HL_data/
   * `oracle_px`, `mark_px`, `mid_px`, `open_interest`, `funding`, `premium`
   * `impact_bid_px`, `impact_ask_px`, `day_ntl_vlm`
 
-### Benefits
-
-* **Columnar + compressed**: smaller files and faster reads for analytics.
-* **Append-friendly**: sharded files avoid constantly rewriting a single giant file.
-* **Simple partitioning**: data is separated by symbol and type.
-
----
-
 ## Parameter Estimation
 
-### Parameters Estimated
-
-| Parameter         | Symbol | Description                                  | Estimation Method                                      |
-| ----------------- | ------ | -------------------------------------------- | ------------------------------------------------------ |
-| **Lambda Plus**   | λ+     | Buy-side fill-intensity scale (1/s)          | Raw buy-MO rate × survival-fit intercept               |
-| **Lambda Minus**  | λ-     | Sell-side fill-intensity scale (1/s)         | Raw sell-MO rate × survival-fit intercept              |
-| **Epsilon Plus**  | ε+     | Arrival jump after buy MOs (USDC)            | Per-MO 200 ms mean after bad-tick clipping, floored at 0 |
-| **Epsilon Minus** | ε-     | Arrival jump after sell MOs (USDC)           | Per-MO 200 ms mean after bad-tick clipping, floored at 0 |
-| **Kappa Plus**    | κ+     | Ask side depth sensitivity (1/USDC)          | Survival fit: log P(depth ≥ δ) vs δ, mid-relative      |
-| **Kappa Minus**   | κ-     | Bid side depth sensitivity (1/USDC)          | Survival fit: log P(depth ≥ δ) vs δ, mid-relative      |
-| **Sigma²**        | σ²     | Realized mid variance (USDC²/s)              | Variance of 1 s mid increments (gap-tolerant)          |
+Each estimator and how it fails closed is described under Features above;
+`docs/UNITS.md` carries the units.
 
 ### Relative adverse-selection diagnostic
 
@@ -253,72 +215,8 @@ and replay representative windows before drawing an economic conclusion.
 
 ---
 
-## Real-time Statistics
+## Stopping the collector
 
-During collection, statistics are printed every 30s, including rates and buffer sizes:
+Ctrl+C flushes buffered rows before exit. `docker compose down` from
+`HYPERLIQUID_DATA/` does the same for the containers; killing them does not.
 
-```
-============================================================
-DATA COLLECTION SUMMARY - 14:23:45
-============================================================
-Runtime: 0h 5m 23s
-Data collected:
-  bbo_updates: 1,234 (234.5/min)
-  trades: 567 (107.2/min)
-  orderbook_updates: 891 (168.9/min)
-
-Buffer sizes by symbol:
-  BTC: 45 (32 prices, 8 trades, 5 orderbooks)
-  ETH: 23 (18 prices, 3 trades, 2 orderbooks)
-  SOL: 12 (8 prices, 2 trades, 2 orderbooks)
-============================================================
-```
-
----
-
-## Performance Features
-
-* **Buffered writing**: Data is collected in memory and flushed to disk periodically (default: every 10 seconds, `FLUSH_INTERVAL_SEC`).
-* **Threaded I/O**: Parquet writing happens in background threads to avoid blocking.
-* **Configurable buffer sizes**: Prevent memory issues during bursts
-* **Efficient data structures**: Uses deques for O(1) appends
-
----
-
-## Stopping the Collector
-
-* **Local**: Press `Ctrl+C` → graceful shutdown (flushes data and closes connections)
-* **Docker**: `docker compose stop hl-cashcat-collector` from `HYPERLIQUID_DATA/`.
-  A bare `docker compose down` there takes all five Hyperliquid collectors with it,
-  not just this one.
-
----
-
-## Dependencies
-
-* `hyperliquid-python-sdk`: Official Hyperliquid SDK
-* `websockets`: WebSocket client library
-* `pandas`, `numpy`, `pyarrow` (Parquet read/write)
-* `docker` / `docker compose` (for containerized mode)
-
----
-
-## Troubleshooting
-
-### WebSocket Connection Issues
-
-* Check internet connection
-* Verify Hyperliquid API is accessible
-* Reduce number of symbols
-
-### High Memory Usage
-
-* Reduce buffer sizes
-* Decrease flush interval
-* Monitor number of active symbols
-
-### Missing Data
-
-* Check console logs
-* Verify symbol names
-* Ensure disk space available

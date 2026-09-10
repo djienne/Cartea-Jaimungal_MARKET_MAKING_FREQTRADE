@@ -22,7 +22,7 @@ exposure once the move is observable and to stay out of the aftermath.
 ## Why the existing toxicity gate did not help
 
 There is already a toxicity metric — `toxicity = κ·ε` per side, gated by
-`calibration.max_toxicity = 1.5` (`crates/cj-data/src/calibration.rs`). Through
+`calibration.max_toxicity = 1.5` (`rust_live/crates/cj-data/src/calibration.rs`). Through
 this cascade the sweep's own diagnostics record **0.254 / 0.235**, six times
 below the threshold. It is a slowly-varying property of the calibration fit, not
 a flow alarm, and it never fires here. It is left alone; this guard is separate.
@@ -96,18 +96,12 @@ line says why, and trip counts are visible in the dry-run logs.
 
 ## Re-run of 2026-09-02: schema v5, current simulator, `reduce_only_while_tripped`
 
-The A/B below was re-run on the same frozen tapes after two changes that both
-move the numbers: the estimator now hands the HJB `lambda_raw x survival
-intercept` (parameter schema v5), and the replay loader carries all twenty
-recorded book levels instead of the top one. The second matters more than it
-sounds. The simulator fills a virtual order only once it can see the queue at
-that price, and the simulator of the time had no cancel attribution (time
-decay was forbidden; the current model is in `DRY_RUN_GRID.md`, "Queue
-model"), so with one level a maker quote resting
-inside the book could never fill at all; the original A/B filled only because it
-ran with a decay of 0.05, which the config no longer accepts (the key was
-removed; see `DRY_RUN_GRID.md` "Queue model"). Fill counts
-therefore drop sharply and are not comparable with the table further down.
+Re-run on the same frozen tapes after two changes that both move the numbers:
+schema v5 (`lambda_raw x survival intercept`), and a loader that carries all
+twenty recorded book levels instead of the top one. The second matters more:
+under the current queue model (`DRY_RUN_GRID.md`) a quote resting inside a
+one-level book could never fill, so fill counts drop sharply here and are not
+comparable with the table further down.
 
 | 16 h window, current simulator | guard off | guard on | guard on + reduce-only |
 |---|---:|---:|---:|
@@ -127,11 +121,9 @@ cascade closely enough, or a fill model that can see queues deeper than the
 twenty recorded levels (most of this strategy's quotes rest beyond them, which
 is why `unknown_queue_activations` is ~38,000 per leg). Neither exists today.
 
-Provenance: `scripts/guard_study/configs/{crash,calm}_guard{off,on}_v5.toml`
-and `*_guardon_ro.toml` (identical to the 2026-08-23 configs except
-no queue decay (the key has since been removed) and, for `_ro`,
-`reduce_only_while_tripped = true`); run artifacts under `scripts/guard_study_tapes/runs/<name>/`
-(git-ignored). Binary `mm-live` at the commit that introduced this section.
+Provenance: `scripts/guard_study/configs/{crash,calm}_guard{off,on}_v5.toml` and
+`*_guardon_ro.toml`; run artifacts under `scripts/guard_study_tapes/runs/<name>/`
+(git-ignored).
 
 ## The A/B
 
@@ -144,12 +136,8 @@ field changed.
 | **crash** 08-21 20:00 → 08-22 12:00 | −87.95 | **−23.13** | **+64.82** |
 | **calm** 08-19 08:00 → 08-20 00:00 | −80.90 | −80.90 | **0.00** |
 
-*(Re-baselined by the guard-candidate study, `FLOW_GUARD_CANDIDATES.md`. The
-original A/B recorded −33.88 for the guard-on leg; the guard-off leg and the
-trip anatomy — first trip 05:11:15, quotes withheld to ~06:40 — reproduce
-exactly, and the guard-on delta is re-entry-timing sensitivity: VPIN bucket
-volume derives from the loaded calibration window, so small window-derivation
-differences move the re-entry minute. Direction and mechanism unchanged.)*
+*(Re-baselined by `FLOW_GUARD_CANDIDATES.md`, which records why the guard-on leg
+moved from the originally published −33.88. Direction and mechanism unchanged.)*
 
 In the crash window the loss falls by 74%, and the mechanism is visible in the
 detail rather than only the total:
@@ -170,23 +158,19 @@ inventory, same P&L. It never fired in 16 hours of normal trading.
 
 ### A first attempt that measured nothing
 
-The first A/B ran over the whole 165 h tape and returned *identical* P&L with the
-guard on and off, despite 31,499 trips. The reason is worth recording: the
-reason counts were `risk_limit 432,753` with the guard off, and
-`risk_limit 401,254 + toxic_flow 31,499` with it on — the same total. Quoting was
-already withdrawn by a risk limit that had been latched since 22:03 on day one,
-so the guard only relabelled the reason. Scoping the window so the strategy
-starts unlatched before the cascade is what made the test informative.
+The first A/B returned *identical* P&L with the guard on and off despite 31,499
+trips: `risk_limit 432,753` off versus `risk_limit 401,254 + toxic_flow 31,499`
+on, the same total. A daily-loss limit had latched on day one, so the guard only
+relabelled a withdrawal that was already happening. Scope the window so the
+strategy starts unlatched, or the test measures nothing.
 
 ## Limits, stated plainly
 
 - **n = 1.** One cascade in 6.8 days. The thresholds were chosen on the single
   event they are then tested against, so the zero-false-positive claim is only as
   good as that window. Re-check as the tape grows toward its 30-day retention.
-  *Re-checked on 165.11 h (2026-08-23, `FLOW_GUARD_CANDIDATES.md`): still zero
-  false positives for both tiers; max 5s move outside the cascade 427 bps
-  (threshold 800), max VPIN outside 0.371 (threshold 0.40 — was 0.362, so the
-  headroom is narrowing slowly).*
+  *Re-checked on 165.11 h with still zero false positives, though the VPIN
+  headroom is narrowing: `FLOW_GUARD_CANDIDATES.md`.*
 - **It cannot prevent the first fills.** At −14% the resting bids have already
   been hit. This bounds the damage; it does not avoid it.
 - **A guard is not an edge.** Both A/B legs still lose money. If CASHCAT's

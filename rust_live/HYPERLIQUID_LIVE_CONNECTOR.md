@@ -53,7 +53,7 @@ recheck the linked official documentation and pinned protocol fixtures.
 - **Requote hysteresis.** A resting order within
   `max(replace_threshold_ticks × quantum, replace_threshold_bps)` of the new
   target (same size and reduce-only) is held; withdrawals bypass the window.
-  Measured by the retired Python replay. `min_order_lifetime_ms` rose
+  `min_order_lifetime_ms` rose
   to 100 and config validation rejects WebSocket budgets the worst-case
   requote rate plus pings and dead-man refreshes cannot fit.
 - **Latency gate un-latched.** Dropped-sample/observer-error blocks are
@@ -871,53 +871,15 @@ rust_live/
   src/bin/mm_live_acceptance.rs      # feature-gated real-account acceptance
 ```
 
-## 15. Audit of existing projects under `C:\Users\david\Desktop\freqtrade`
+## 15. Provenance
 
-The audit searched Rust, Python, JavaScript, and TypeScript sources while
-excluding build/dependency directories. Read-only collectors, delegated CCXT
-paths, SDK documentation copies, and duplicate project
-copies were separated from actual connector implementations.
-
-### 15.1 Rust implementations
-
-| Local implementation | What is useful | Why it is not a drop-in live maker connector |
-| --- | --- | --- |
-| `XEMM_CROSS_EXCHANGE_MARKET_MAKING_PACIFICA_HYPERLIQUID\src\connector\hyperliquid\` (line-identical duplicate under `XEMM\XEMM_CROSS_...`) | EIP-712 domain/digest, monotonic atomic nonce, metadata cache, public L2 WS, REST IOC submission with CLOID, order-status/fill/account parsing, timeout-aware unknown outcome comments | Only builds IOC market orders; no maker ALO lifecycle, cancel/modify/dead-man switch, or private WS. `construct_connection_id` appends a vault marker but **not the 20 vault address bytes** and has no expiry encoding. Its tests cover only `vault=None`. Uses `f64`, stores key as `String`, and uses the large deprecated-style `ethers` stack. Do not copy its signer. |
-| `OLD\XEMM_dry_run_evaluator\src\livebot\exec\{hyperliquid,crypto,sign,creds}.rs` plus `src\connectors\hyperliquid.rs` | Best local low-level reference: typed MessagePack wire structs, correct vault marker + address bytes, correct expiry separator, main/test phantom agent, secp256k1 signatures, monotonic nonce, golden vectors, ALO/IOC construction, OID cancel, leverage action, open orders/account reads, robust public `bbo`/book/trade WS heartbeat and reconnect | Retired project, not a maintained Git repository. Assumes a subaccount/vault on every live path, has no master-account/no-vault mode, cancel-by-CLOID, modify/batch, `scheduleCancel`, private/account WS, durable fill deduplication, or complete reconciliation. Key bytes are retained without a zeroizing secret type. Port fixtures/ideas only. |
-| Current `rust_live` | Generic instrument, lock-free CJ hot path, zeroizing signer, exact fixed-point actions, persisted nonce/order/fill/funding state, WebSocket posts/account streams, REST recovery, rate reserves, account-aware risk, explicit market close, and guarded acceptance tooling | Continuous live is implemented but tracked off. Current development latency fails the production gate, and the present low-volume account is ineligible for the venue dead-man feature. |
-
-Conclusion: the older Rust signer contains valuable byte-level work, but none of
-the pre-existing local projects was complete enough to enable real money safely.
-The current `rust_live` connector fills that lifecycle gap, remains tracked off,
-and still refuses production trading on this development machine's latency.
-
-### 15.2 JavaScript implementations
-
-| Local implementation | Reuse assessment |
-| --- | --- |
-| `DELTA_NEUTRAL\DELTA_NEUTRAL_HYPERLIQUID_PERP_SPOT\hyperliquid.js` and `tests\unit\hyperliquid-conformance.test.js` | Valuable independent fixtures: correct vault bytes and expiry separator, strict CLOID validation, monotonic nonce, application ping, WS post correlation, timeouts classified as unknown outcomes, REST rate limiting, stale-book refusal. It mainly implements aggressive market orders and lacks maker cancel/order/private-stream reconciliation. Use its conformance tests as behavioral references. |
-| `XEMM\standalone-utils\connectors\hyperliquid.js` and older copies | Public WS and WS action-post examples, but the signer omits vault address bytes and the expiry separator. Do not reuse signing code. |
-
-### 15.3 Python implementations
-
-| Local implementation | Reuse assessment |
-| --- | --- |
-| `XEMM\hyperliquid-python-sdk-master` | A local official-SDK copy and the best language-independent signing/API oracle, but it was version 0.19.0 while 0.24.0 was observed during this dated audit. Refresh and pin it before generating new fixtures. Do not import Python at Rust runtime. |
-| `scripts\hyperliquid_alo_executor.py` and `hyperliquid_risk_executor.py` at the audit date | Historical ALO/IOC command-tool references. They were removed with the former Freqtrade trader on 2026-08-25 and remain only at tag `freqtrade-trader-final`; the current runtime does not depend on them. |
-| `passivbot_real_run\src\exchanges\hyperliquid.py` and related Passivbot copies | Operational lifecycle evidence through CCXT Pro: `watch_orders`, REST open-order/position recovery, ALO parameters, vault handling, error retries, and minimum-notional adaptation. Useful for behavior, but CCXT hides signing/wire details and its state model should not be transplanted into the Rust engine. |
-| `DELTA_NEUTRAL\CROSS_EXCHANGE_DELTA_NEUTRAL_HL_PAC\hyperliquid_connector.py` | Small official-Python-SDK example for market IOC, leverage, position, balance, and funding. Not a maker or private-WS connector. |
-| Older Python/CCXT diagnostics and data collectors | Mostly public/read-only, delegated, or application-specific. They do not add a lower-level authenticated connector. |
-
-### 15.4 Recommended reuse order
-
-1. Current official documentation and current official SDK sources.
-2. Official Python SDK 0.24.x as the independent signing/response oracle.
-3. `hl_sdk` pinned and audited for typed actions/signing only.
-4. Golden vectors and correct vault/expiry encoding from the retired Rust stack.
-5. Unknown-outcome, heartbeat, and conformance cases from the newer JavaScript
-   connector.
-6. Archived CLOID/ALO/risk response semantics from tag `freqtrade-trader-final`.
-7. Passivbot only as an operational comparison.
+The connector was built after auditing the other Hyperliquid implementations
+on this machine (Rust, Python, JavaScript). The decision that audit produced is
+recorded above as the runtime-purity invariant: typed actions and signing from
+a pinned, audited `hl_sdk`, golden vectors and vault/expiry encoding from the
+retired Rust stack, unknown-outcome and heartbeat cases from the JavaScript
+connector, and CLOID/ALO/risk response semantics from tag
+`freqtrade-trader-final`. The survey itself is spent.
 
 ## 16. Test and release gates
 

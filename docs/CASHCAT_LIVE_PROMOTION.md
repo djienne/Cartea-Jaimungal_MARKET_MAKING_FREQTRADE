@@ -51,6 +51,16 @@ the Windows supervisor checks health every minute and promotion every twelve
 hours. A changed winner is applied only after stop, cancel, flatten and flat
 verification; failures leave live stopped.
 
+That switch was exercised on real money on 2026-08-31: while flat, the durable
+state accepted a config-fingerprint change to `wide4` and the new two-sided ALO
+batch rested and cancelled cleanly, with one placement batch, one cancel batch,
+no duplicate terminal cancel and no REST reconciliation error. Maximum working
+gross was 21.1977 USDC, maximum directional exposure 10.59777 USDC, and a
+54-unit IOC round trip (0.19679 in, 0.19662 out) cost 0.018738 USDC. The run's
+one defect was a duplicate startup REST reconciliation, now replaced by the
+fully acknowledged eight-channel account WebSocket snapshot; REST is a
+five-minute drift audit, not a parallel polling loop.
+
 ```powershell
 scripts\Manage-CashcatLive.ps1 -Action Canary
 scripts\Manage-CashcatLive.ps1 -Action Arm

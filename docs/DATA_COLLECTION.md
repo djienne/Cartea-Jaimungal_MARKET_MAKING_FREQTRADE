@@ -71,9 +71,8 @@ not restart the proven collectors.
 - Its own compose project (`hyperliquid_data`) and its own network
   (`hyperliquid_data_default`).
 - **No `depends_on`** and no link to the trading runtime. The root compose file
-  runs only the read-only dry-run grid and the offline period archiver
-  (`network_mode: none`); live/account commands are started explicitly. None
-  is part of the collector compose project.
+  runs only the read-only dry-run grid; live, replay and archive commands are
+  started explicitly. Neither is part of the collector compose project.
 - `live` and `dry-run-grid` never write Parquet. `dry-run` can be configured as a
   recorder, but the writer lock and shard preflight prevent it from joining an
   active collector — see the next section.
@@ -166,15 +165,11 @@ container deliberately opt in; unlabelled services sharing the daemon do not.
 ### Restarts are graceful (2026-08-23)
 
 The watchdog restarts a collector; that restart must not itself cost data. It
-used to. The entrypoint runs as **PID 1**, which gets no default signal
-handlers, and the collector only caught `KeyboardInterrupt` (SIGINT). So
-`docker stop`, `docker restart`, `docker compose down` and autoheal all waited
-out the full stop timeout and then SIGKILLed — skipping `stop_collection()` and
-therefore the final `_flush_buffers()`, losing everything still in memory.
-
-`run_collector.py` now installs a SIGTERM handler that raises
-`KeyboardInterrupt`, reusing the already-tested shutdown path rather than
-adding a second one. Measured before and after on `hl-cashcat-collector`:
+used to: as **PID 1** the entrypoint gets no default signal handlers, and the
+collector caught only `KeyboardInterrupt`, so every stop path SIGKILLed after
+the timeout and skipped the final `_flush_buffers()`. `run_collector.py` now
+installs a SIGTERM handler that raises `KeyboardInterrupt`, reusing the tested
+shutdown path. Measured on `hl-cashcat-collector`:
 
 | | before | after |
 |---|---|---|

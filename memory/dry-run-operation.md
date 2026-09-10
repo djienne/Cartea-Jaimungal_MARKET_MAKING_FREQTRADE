@@ -24,13 +24,10 @@ mm-live --config config/cashcat.toml live          # real money, explicit, gated
 ```
 
 **The grid is the only service in that file** since 2026-09-10. Replay and the
-period archive are host commands now, not containers: only things that must run
-continuously get one. `scripts/archive_period.py` still writes a full replay plus
-the grid's P&L curve under `docs/history/<date>_<SYMBOL>/` every 21 days and
-**does not commit** — `docs/history/README.md` has the why, the failure handling
-and the manual `git add docs/history` step — but it needs a scheduled task rather
-than a restart policy, and nothing notices if that task is missing until a window
-rolls off unarchived.
+period archive are host commands now: only things that must run continuously get
+a container. The archive therefore depends on a scheduled task, and nothing
+notices if that task is missing until a window rolls off unarchived —
+`docs/history/README.md`.
 
 Containerised after the 2026-08-27 reboot loss (66 h unnoticed); the compose
 header explains the three mechanisms (`restart`, `stop_signal`, healthcheck +
@@ -176,12 +173,9 @@ replays the config's `calibration.window_minutes` — two hours — ending at th
 newest shard, which on a 24-day tape fails closed on `InsufficientData` rather
 than scoring what you meant. `archive_period.py` hit exactly that.
 
-It writes the **same schema as the live `leaderboard.json`**, because a replay
-row and a grid row both come from `PaperVariant::leaderboard_row`. That is what
-makes them comparable and what makes them easy to confuse: a replay board
-carries a `replay` key and the viewer prints `REPLAY (not a live run)`. What was
-lost with the Python engine is the staged parameter *search* — in Rust the
-search space is the grid spec, so a new parameter set is a new variant row.
-`docs/DRY_RUN_GRID.md` "Offline comparison" lists the fidelity limits; the one
-that bites is that a `--latency-ms` rung retunes the flatten family, since the
-exit deadline is `flatten_after_ms` plus the decision and acknowledgement legs.
+It writes the same schema as the live `leaderboard.json`; the viewer prints
+`REPLAY (not a live run)` when a board carries the `replay` key. What was lost
+with the Python engine is the staged parameter *search* — in Rust the search
+space is the grid spec, so a new parameter set is a new variant row. Why the two
+boards are comparable and where they are not: `docs/DRY_RUN_GRID.md` "Offline
+comparison".

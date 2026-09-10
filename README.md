@@ -2,13 +2,13 @@
 
 A market maker implementing the Cartea–Jaimungal–Penalva model (Chapter 10 of
 *Algorithmic and High-Frequency Trading*, 2015) with real-time parameter
-estimation, as a **standalone Rust runtime** plus a Python replay and
-calibration toolchain. **Works ONLY for Hyperliquid.**
+estimation, as a **standalone Rust runtime** with a Python collection and
+estimation toolchain. **Works ONLY for Hyperliquid.**
 
 > **The former Freqtrade trader is retired.** It was removed on 2026-08-25 and
 > remains available at tag `freqtrade-trader-final`. The current trader is
-> `rust_live/`; Python is retained for collection, estimation, replay, and
-> independent numerical comparison.
+> `rust_live/`; Python is retained for collection, estimation and the parity
+> oracle. Replay moved to Rust on 2026-09-10.
 
 <p align="center">
   <a href="docs/spread_calculation.pdf">
@@ -40,7 +40,7 @@ exit timing that this host has not demonstrated. The period is reused research
 data, not an untouched holdout. See `docs/CAUSAL_EXECUTION_REVIEW.md` for the
 methods, results, limitations and accounting validation.
 
-The 20-variant paper grid is an experiment, not a ranking to copy into live
+The 22-variant paper grid is an experiment, not a ranking to copy into live
 configuration. `docs/DRY_RUN_GRID.md` describes its risk, feed-validity and
 restart semantics. Older dated reports use different execution assumptions and
 are historical evidence, not acceptance targets for the current simulator.
@@ -59,14 +59,14 @@ Three pieces, deliberately separate:
 | | what it is | where |
 |---|---|---|
 | **Trader** | Pure-Rust runtime: calibration, HJB solve, quoting, dry-run simulator, multi-variant grid, and a stateful Hyperliquid live backend | [`rust_live/`](rust_live/README.md) |
-| **Measurement** | Event replay harness, staged train/held-out sweeps, κ/ε/λ estimators, market-viability screen | `scripts/` |
+| **Measurement** | κ/ε/λ estimators, market-viability screen, period archive | `scripts/` |
 | **Data** | Two collectors writing Parquet shards, operated from a *separate* compose project so no trading session can disturb the tape | `docs/DATA_COLLECTION.md` |
 
-The trader and the replay quote from the same arithmetic on purpose. `mm_core.py`
-is the single Python implementation the replay imports, and
-`rust_live/crates/cj-core` carries the same model in Rust for the live path — so
-a backtest simulates the shape of what actually quotes rather than a second guess
-at it.
+The trader and the estimators share one arithmetic on purpose. `mm_core.py` is
+the single Python implementation, and `rust_live/crates/cj-core` carries the
+same model in Rust; `rust_live/tests/python_parity.rs` pins one against the
+other, so the Rust path is checked against an independent implementation rather
+than only against itself.
 
 **💰 Support this project**: sign up on
 [Hyperliquid with this referral link](https://app.hyperliquid.xyz/join/FREQTRADE)
@@ -131,8 +131,8 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │   ├── hyperliquid_data_collector.py      # writes Parquet shards
 │   ├── run_collector.py
 │   └── HL_data/                           # junction -> HYPERLIQUID_DATA/data/eth_mm
-├── tests/                                 # pytest: replay, estimators, quoting core
-├── docs/                                  # evidence: sweeps, guard, canary, grid, units
+├── tests/                                 # pytest: estimators, quoting core, archive
+├── docs/                                  # evidence: guard, canary, grid, units
 └── memory/dry-run-operation.md            # how to actually run it, and what bites
 ```
 
@@ -205,22 +205,11 @@ from the book: `docs/UNITS.md`.
 
 ### Parameter Estimation and Calibration
 
-**Lambda (λ±) - Order Arrival Intensity:**
-- Estimated from trade frequency: `λ(δ) = λ₀ exp(-κδ)`
-- Separate calibration for buy (`λ⁺`) and sell (`λ⁻`) sides
-- Uses sliding window of recent market data
-
-**Kappa (κ±) - Order Book Sensitivity:**
-- Estimated from fill probability: `P(fill) = exp(-κδ)`
-- Measures order book depth and liquidity
-- Critical parameter: controls base spread width
-
-**Epsilon (ε±) - Adverse Selection Cost:**
-- Estimated as the mean arrival jump at a 200 ms horizon, after bad-tick clipping
-- Floored at zero because the model assumes `ε ≥ 0`; 1 s and 5 s values are
-  diagnostics rather than model inputs
-- `κ × ε` is a dimensionless calibration diagnostic. The configured 1.5 ceiling
-  is a fail-closed operating rule, not a profitability theorem.
+`λ±` arrival intensity, `κ±` fill decay and `ε±` adverse-selection cost, each
+fitted per side. What each estimator computes and how it fails closed:
+`scripts/README.md`. Units and the conventions that differ from the book:
+`docs/UNITS.md`. `κ × ε` is a dimensionless calibration diagnostic whose 1.5
+ceiling is a fail-closed operating rule, not a profitability theorem.
 
 ### Market Regimes and Profitability
 
@@ -271,20 +260,6 @@ and only 9 that clear the 3 bps round-trip fee *and* are wider than one tick.
 this account, that means a spread wider than ~3 bps before adverse selection is
 even considered.
 
-**For calibration monitoring, the operating bands are:**
-- `κ × ε < 1`: below the caution band
-- `1 ≤ κ × ε < 1.5`: caution band; inspect fit stability and empirical markouts
-- `κ × ε ≥ 1.5`: rejected by the shipped fail-closed calibration rule
-
-These bands are not economic verdicts; the empirical viability curve and replay
-carry that burden.
-
-**Other conditions:**
-- **High λ**: Many market orders → frequent spread capture
-- **Low κ**: heavier tail of market-order walk depths → fills remain possible
-  farther from the mid
-- **Low ε**: Limited informed trading → minimal adverse selection
-
 ## Setup
 
 **Prerequisites:** the Rust 1.92 toolchain pinned by
@@ -324,31 +299,11 @@ python scripts/compute_spreads.py      # refresh κ/ε/λ, print spreads vs inve
 
 ### Replay and backtests
 
-Replay is Rust. It runs the same paper simulator as the dry-run grid over a
-Parquet window, so a replay row and a leaderboard row are the same object and
-can be compared field for field. It is a command run from time to time, not a
-service, so it runs natively -- no container.
-
-```bash
-cd rust_live && cargo build --release
-
-# Every variant of the grid spec, over the tape on disk
-mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
-  --grid rust_live/config/grid_cashcat.toml --all-variants \
-  --train-fraction 0.05 --board replay_leaderboard.json
-
-# The fidelity check: the grid's own window, printed beside its live rows
-mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
-  --grid rust_live/config/grid_cashcat.toml \
-  --against-live rust_live/reports/grid_live/leaderboard.json
-```
-
-A replay board uses the live `leaderboard.json` schema, so
-`scripts/show_grid_leaderboard.py` renders either. Read
-`docs/DRY_RUN_GRID.md` "Offline comparison" first: the two measurements differ
-by window, assumed latency and whether the live run was stitched across
-restarts, and a latency rung retunes the flatten family rather than merely
-handicapping it.
+Replay is Rust: `mm-live replay` runs the same paper simulator as the dry-run
+grid over a Parquet window, natively, so a replay row and a leaderboard row are
+the same object and compare field for field. Invocations, `--against-live` and
+the fidelity limits that decide how to read the comparison are in
+`docs/DRY_RUN_GRID.md` "Offline comparison".
 
 ### Reading a grid run
 
@@ -372,9 +327,9 @@ cd rust_live && cargo test --workspace
 Enforced in the Rust runtime, not in a strategy config:
 
 - **Inventory cap.** `q_max` bounds signed inventory in both directions in the
-  current runtime. The historical 185-hour spread replay did not enforce the
-  prospective cap and ended with a directional position worth 130% of equity;
-  that result is therefore not evidence of a deployable market-making book.
+  current runtime. An early 185-hour replay did not enforce it and ended with a
+  directional position worth 130% of equity, which is why the cap exists; that
+  run's report was retired with the Python engine.
 - **Liquidation buffer.** A run that breaches it aborts rather than quoting on.
 - **Toxic-flow guard.** A fast adverse mid-move breaker plus VPIN withdraws
   quoting. `docs/TOXIC_FLOW_GUARD.md` for what it does;
@@ -389,12 +344,20 @@ Enforced in the Rust runtime, not in a strategy config:
   before the configured message-rate limit. Recheck the venue documentation
   before live use; see `docs/live_canary_20260823.md` for the dated evidence.
 
+## Further reading
+
+Documents nothing else links to, kept because they are the only record of what
+they measure:
+
+- `docs/asymmetric_kappa_hjb_fast_methods.md` — analytical methods memo on
+  solving the asymmetric-kappa HJB faster. Candidate methods, none integrated;
+  the shipped solver is damped Newton with an exact tridiagonal Jacobian.
+- `docs/cashcat_epsilon_conditional.md` — `E[mid jump | sweep reached depth d]`
+  measured on 118.7 h. The shipped estimator uses only the `d = 0` row, so this
+  is the table that says what that approximation costs.
+
 ## Disclaimer
 
-This software is for educational and research purposes. Market making involves significant financial risk. Always test thoroughly in dry-run mode before deploying with real capital. Past performance does not guarantee future results.
-ONLY USE IN DRY-RUN
-
-## License
-
-
-This project implements academic market making models and is intended for research and educational use.
+For research and education. Market making risks real capital; the top of this
+file states the conditions under which this repository considers live trading
+defensible, and none of them is met by default. **ONLY USE IN DRY-RUN.**

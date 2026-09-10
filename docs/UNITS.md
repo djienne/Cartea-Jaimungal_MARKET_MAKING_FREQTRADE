@@ -1,6 +1,6 @@
 # Model Units
 
-The Rust runtime and Python replay/reference code must use these units
+The Rust runtime and the Python reference code must use these units
 consistently.
 
 | Quantity | Unit |
@@ -54,8 +54,8 @@ q       = round(q_exact)
 
 With `allow_short=true`, Python uses the signed value and clips to
 `[-q_max, +q_max]`. `rust_live/` always quotes both sides from one signed
-inventory. The long-only option and `mm_core.route_sides` remain only to
-reproduce historical replay cases; they are not the current trader architecture.
+inventory. The long-only option and `mm_core.route_sides` are not the current
+trader architecture.
 
 ## Time and inventory: how `delta*(t,q)` is actually read
 
@@ -67,9 +67,8 @@ The book's control is `delta*(t,q)` on `[0,T]` with terminal condition
 | `t` | Rust always returns the whole surface and reads the episode's real time-to-go, interpolated between nodes. Python calls this `hjb_time_mode="episodic"`; its `"stationary"` option is retained for controlled comparisons and reads only `t=0`. | Reading `t=0` forever means the agent never approaches `T`, `alpha` barely affects the control, and the time axis of eq. 10.26 is discarded. |
 | `q` | Depths are blended linearly between the bracketing integers. Exact at every integer `q`. | Eq. 10.2 is a unit-jump process, so `h` exists only at integer `q`; partial fills land in between. Rounding hides up to half a unit of live risk — 0.49 units reads as flat. Interpolating **depths** not `h`: `delta` reads a *difference* of `h`, so piecewise-linear `h` gives piecewise-*constant* depths, no better than rounding. |
 
-`q_exact` and `q_rounded` are recorded in quote diagnostics; Python replay also
-reports mean `|q_exact - round(q_exact)|`. This is an interpretability diagnostic,
-not a current acceptance threshold.
+`q_exact` and `q_rounded` are recorded in quote diagnostics. This is an
+interpretability diagnostic, not a current acceptance threshold.
 
 ### Named departures from the book
 
@@ -88,16 +87,15 @@ not a current acceptance threshold.
    above `q=5.0` rather than `q=5.5`. Conservative: a bid at `q=5.9` would permit
    a jump to 6.9, past the boundary.
 4. **A fee cushion, bps clamps, leverage and margin** are all outside the model
-   entirely. See "Quote assembly" above and `cj-core/src/quote.rs`.
+   entirely. See "Quote assembly" above and `rust_live/crates/cj-core/src/quote.rs`.
 
 ### What the terminal condition actually does at our calibration
 
 Not the textbook "flatten harder as `t -> T`" picture, because the *running*
 penalty dwarfs the terminal one. The shipped config runs
 `phi*kappa*T = 300` (ceiling `phi_kappa_t_max = 450`) against
-`alpha*kappa = 0.05`, a factor of 6000. Historical Python sweeps used 10, a
-factor of 200; those artifacts are dated and should not be read as the current
-Rust profile. In either case the running penalty is what remains to be **paid**
+`alpha*kappa = 0.05`, a factor of 6000. Earlier sweeps used 10, a factor of
+200. In either case the running penalty is what remains to be **paid**
 over the time left, so it is largest at `t=0` and vanishes at `T`. Measured at
 `q=+3` on live-scale CASHCAT parameters at `phi*kappa*T = 10`, the ask depth
 runs `-6.8e-6 -> +1.0e-4` as `tau` goes `150s -> 0`: the agent unwinds hardest

@@ -56,7 +56,10 @@ mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
 `--to` select the tape range (RFC 3339 or epoch ms); without them the config's
 `calibration.window_minutes` ending at the newest shard is replayed.
 `--latency-ms` overrides all three dry-run latencies and is itself repeatable,
-one rung of a ladder each.
+one rung of a ladder each. `--against-live <leaderboard.json>` replaces all
+three: it takes the window, the latency and -- absent `--variant` -- the
+variant list from a live board, and prints each live row beside its replay.
+That is the fidelity check between replay and dry run.
 
 **The board is the point.** `--board` writes the live `leaderboard.json` schema,
 because a replay row and a grid row both come from
@@ -136,20 +139,11 @@ All rows retain common paper execution settings, capital-derived order sizing,
 risk gates and the current-data VPIN volume scale. The finalists therefore test
 the saved models prospectively under the same paper conditions as the controls;
 they do not reproduce the Python sweep's fixed sizing or execution assumptions.
-The internal HJB timestep is 1/512 s; each current 150 s candidate uses 76,800
-steps within the 153,600-step ceiling. Across the three finalists and shared
-contender quote model, half-inventory states, prices 0.05--0.30 USDC and sampled
-times including the final five seconds, executable quotes change by at most
-one venue price increment under both further halvings.
-Newton uses a 1e-10 residual tolerance and a 100-update budget. These
-numerical settings do not change event-driven quoting or simulated latency.
+Timestep, Newton tolerance and the convergence study behind them: `CAUSAL_EXECUTION_REVIEW.md`.
 
 Lot-age exits and fixed parameter profiles are not supported by live promotion.
-Rows using either remain paper-only and ineligible regardless of P&L. Exit
-deadlines include lot age plus decision/acknowledgement latency: `flatten300`,
-`flatten300w40` and `sweep1_flat300` target 301 ms; `flatten550` and
-`sweep1_flat550` target 550 ms, before event discretization. Combinations are
-controlled comparisons, not presumed improvements.
+Rows using either remain paper-only and ineligible regardless of P&L. Their
+exit deadlines include the round trip; see the fidelity limits above.
 
 ## Queue model
 
@@ -178,19 +172,9 @@ frame, so this is the venue's limit, not the tape's: a quote at 60 bps half
 spread is unknown-queue most of the time under any model, and
 `unknown_queue_activations` in the reports says how often.
 
-**Fidelity against the live dry run.** Replay and the grid share this
-simulator, so replaying the grid's own window should reproduce its row up to
-feed outages the tape did not see:
-
-```sh
-mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
-  --grid rust_live/config/grid_cashcat.toml \
-  --against-live rust_live/reports/grid_live/leaderboard.json
-```
-
-`--against-live` takes the window, the latency and — absent `--variant` — the
-variant list straight from that board, then prints each live row beside its
-replay. See "Offline comparison" above for the limits that table cannot show.
+Replay and the grid share this simulator, so `--against-live` (see "Offline
+comparison") should reproduce a live row up to feed outages the tape did not
+see -- and the unknown queue above is the first reason it may not.
 
 ## Accounting and validity
 
@@ -243,16 +227,11 @@ a functioning trader merely to erase an unfavorable validity flag. The
 leaderboard's `quote_pause_reason` identifies a current data pause.
 
 On Windows, Docker Desktop must start at sign-in and its Windows Startup entry
-must be enabled. The paper container's `restart: unless-stopped` policy recovers
+must be enabled. The grid container's `restart: unless-stopped` policy recovers
 process exits and daemon restarts; a deliberate stop remains stopped.
 The host uses automatic sign-in so Docker Desktop starts unattended (verified: a
-reboot cost 127 s). A host without it is not an unattended trading host.
-
-Docker Desktop must run on the WSL 2 engine. The 4.89 upgrade (2026-09-05)
-silently switched the backend to Docker VMM, whose virtiofs sharing wedged under
-the fleet's load: every bind mount stalled and `docker stop`/`exec` hung. Fix:
-`settings-store.json` `UseLibkrun=false`, `WslEngineEnabled=true`, then
-`docker desktop restart`. Keep bind mounts, never named volumes for reports.
+reboot cost 127 s). A host without it is not an unattended trading host. It must
+also run the WSL 2 engine, not Docker VMM — `memory/dry-run-operation.md`.
 
 ### Checkpoint recovery
 
@@ -326,7 +305,5 @@ for the recorded equity history. `equity_history.csv` is not rotated.
 
 `scripts/archive_period.py` writes a full replay of every grid variant, the
 leaderboard and the period P&L under `docs/history/` every 21 days, ahead of the
-collector's 30-day retention, and does not commit. It runs `mm-live replay` as a
-host binary, so it needs a scheduled task rather than a restart policy. Cadence,
-layout, failure handling and the manual commit step: `history/README.md`.
-Collector ownership and data validation: `DATA_COLLECTION.md`.
+collector's 30-day retention. Cadence, the scheduled task it now needs, failure
+handling and the manual commit step: `history/README.md`.

@@ -1,9 +1,8 @@
 # Rust Cartea–Jaimungal Engine
 
-This directory contains the current trader. The Python estimators and replay
-harness provide an independent numerical comparison path;
-`tests/python_parity.rs` pins selected Rust calibration, HJB, and quote outputs
-against it. Both use schema-v5 direct-window calibration (no cross-window
+This directory contains the current trader. The Python estimators provide an
+independent numerical comparison path; `tests/python_parity.rs` pins selected
+Rust calibration, HJB, and quote outputs against them. Both use schema-v5 direct-window calibration (no cross-window
 smoothing; lambda = raw MO rate × survival intercept, `../scripts/README.md`);
 v4 snapshots are refused. `python scripts/parity_fixture.py` regenerates the
 parity goldens.
@@ -193,50 +192,9 @@ acknowledgement and close timings into the same observer.
 
 ## Commands
 
-Run from the repository root:
-
-```powershell
-cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
-  build-info
-
-cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
-  --config rust_live/config/cashcat.toml validate
-
-cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
-  --config rust_live/config/cashcat.toml calibrate
-
-cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
-  --config rust_live/config/cashcat.toml replay
-#   --from <RFC 3339 | epoch ms>   start of the tape range (requires --to)
-#   --to   <RFC 3339 | epoch ms>   end of the tape range
-#   --latency-ms <ms>              decision/ack/cancel latency override
-#   (see ../docs/DRY_RUN_GRID.md "Offline comparison")
-
-cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
-  --config rust_live/config/cashcat.toml dry-run --no-write-parquet
-
-cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
-  --config rust_live/config/cashcat.toml connector-check `
-  --credentials rust_live/hyperliquid.env --duration-seconds 65
-
-# Requires [live].enabled=true; production latency cannot be bypassed.
-cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
-  --config rust_live/config/cashcat.toml live
-
-# Explicit reduce-only maintenance close.
-cargo run --locked --release --manifest-path rust_live/Cargo.toml -- `
-  --config rust_live/config/cashcat.toml live-flatten
-```
-
-Linux shells use the same arguments without PowerShell backticks.
-Real-account acceptance code is excluded from the production binary. It is
-available only through the separately feature-gated `mm-live-acceptance` binary.
-Build it explicitly only for an authorized dedicated-account campaign:
-
-```powershell
-cargo build --locked --release --manifest-path rust_live/Cargo.toml `
-  --features live-acceptance --bin mm-live-acceptance
-```
+`../README.md` lists the invocations in short form (`cd rust_live` first).
+Every subcommand also prints its own `--help`; `mm-live replay` in particular
+is documented in `../docs/DRY_RUN_GRID.md` "Offline comparison".
 
 ## Validation
 
