@@ -9,7 +9,7 @@ closed around an existing writer, and how to check it.
 
 | | |
 |---|---|
-| container | `hl-cashcat-collector` (CASHCAT, 30-day retention) |
+| container | `hl-cashcat-collector` (CASHCAT, long retention — `CASHCAT_RETENTION_MINUTES` in the compose file) |
 | sibling | `hl-collector` (ETH, ACE, CHIP, PENGU, NIL — 3-day retention) |
 | compose project | `hyperliquid_data` — `HYPERLIQUID_DATA/docker-compose.yml` |
 | entrypoint | `python run_collector.py` |

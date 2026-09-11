@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Archive one retention window before the collector deletes it.
 
-WHY THIS EXISTS. `hl-cashcat-collector` keeps 30 days
-(`CASHCAT_RETENTION_MINUTES: 43200`) and deletes everything older. Two
+WHY THIS EXISTS. `hl-cashcat-collector` keeps a bounded tape
+(`CASHCAT_RETENTION_MINUTES` in HYPERLIQUID_DATA/docker-compose.yml -- the one
+place that value is set) and deletes everything older. Two
 irreplaceable things ride that clock:
 
 1. **Replay.** A replay can only score a window while its Parquet shards exist.
@@ -12,15 +13,15 @@ irreplaceable things ride that clock:
    (`--log-max-mb 64 --log-keep 3`), so grid history expires too.
 
 Every `--cadence-days` this attempts to write a period directory holding a fresh
-replay plus the grid's P&L curve, small enough to commit. A 21-day cadence against
-30-day retention leaves 9 days to retry an interrupted or failed attempt; the
-failure is harmless only if a successful `--force` rerun lands before that
-margin expires.
+replay plus the grid's P&L curve, small enough to commit. The margin for retrying
+an interrupted or failed attempt is retention minus cadence; the failure is
+harmless only if a successful `--force` rerun lands before that margin expires.
 
 TWO WINDOW CONVENTIONS, deliberately different, both recorded in the period
 README:
 
-- the **replay** scores the whole tape currently on disk (up to 30 days), so
+- the **replay** scores the whole tape currently on disk (up to the retention
+  window), so
   consecutive archives overlap -- that overlap is the safety margin;
 - the **grid curve** is sliced to the period since the last archive, preserving
   `run_started_ms` boundaries so independent runs are never spliced.
@@ -53,9 +54,9 @@ ROOT = SCRIPTS.parent
 
 SHARD_RE = re.compile(r"_(\d{13})\.parquet$")
 
-# A symbol qualifies for archiving if its tape spans more than this. The 30-day
-# collector sits far above the line and the 3-day ones (ETH, ACE, CHIP, PENGU,
-# NIL at RETENTION_MINUTES 4320) far below, so the split is unambiguous without
+# A symbol qualifies for archiving if its tape spans more than this. The
+# long-retention collector sits far above the line and the 3-day ones (ETH, ACE,
+# CHIP, PENGU, NIL) far below, so the split is unambiguous without
 # this repo having to read another project's compose file. A long-retention coin
 # added later is picked up automatically once its tape grows past the line.
 DEFAULT_MIN_TAPE_DAYS = 7.0
@@ -512,7 +513,7 @@ def archive(symbol, args, now):
         symbol,
         {
             "archived_at": now.strftime("%Y-%m-%d"),
-            "retention_note": "30 days of CASHCAT tape",
+            "retention_note": "a retention-limited window of CASHCAT tape",
             "tape_span": {
                 "oldest_ms": oldest_ms,
                 "newest_ms": newest_ms,
@@ -619,11 +620,11 @@ def parse_args(argv=None):
     parser.add_argument("--out", type=Path, default=ROOT / "docs" / "history")
     parser.add_argument(
         "--cadence-days", type=float, default=21.0,
-        help="9 days of slack against the 30-day retention",
+        help="slack for a failed attempt is retention minus cadence",
     )
     parser.add_argument(
         "--min-tape-days", type=float, default=DEFAULT_MIN_TAPE_DAYS,
-        help="a symbol qualifies above this; separates the 30-day collector from the 3-day ones",
+        help="a symbol qualifies above this; separates the long-retention collector from the 3-day ones",
     )
     parser.add_argument(
         "--resolution-minutes", type=float, default=15.0,

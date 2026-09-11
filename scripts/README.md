@@ -76,7 +76,8 @@ python compute_spreads.py --crypto CASHCAT --qmax 6 --spread-multiplier 1.0
 from here are defined in `HYPERLIQUID_DATA/docker-compose.yml`, alongside the
 other three Hyperliquid collectors, and are operated from there:
 
-- **`hl-cashcat-collector`** — `SYMBOLS=CASHCAT`, 30-day retention. The traded
+- **`hl-cashcat-collector`** — `SYMBOLS=CASHCAT`, long retention
+  (`CASHCAT_RETENTION_MINUTES`). The traded
   symbol needs a far longer tape than the rest: replay and the period archive
   can only score a window while its shards exist.
 - **`hl-collector`** — `SYMBOLS=ETH,ACE,CHIP,PENGU,NIL`, 3 days, as controls.
@@ -158,7 +159,8 @@ subdirectories. Flush cadence is controlled by `FLUSH_INTERVAL_SEC` (default
 leaves margin for scheduling, file visibility, and a 30 s calibration cadence.
 
 > **Retention warning:** `RETENTION_MINUTES` (collector-code default 60; the
-> compose services set 4320 and 43200) prunes old shards. The code default is
+> compose services override it — 3 days for `hl-collector`,
+> `CASHCAT_RETENTION_MINUTES` for the traded symbol) prunes old shards. The code default is
 > shorter than the Rust profiles' 120-minute calibration window plus required
 > margin and is intended only for standalone collection tests. Replay
 > datasets need retention covering the full capture; raise it explicitly, but do

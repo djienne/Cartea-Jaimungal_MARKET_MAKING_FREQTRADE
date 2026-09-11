@@ -59,8 +59,8 @@ so the mount is required, not optional.
 
 ## Collectors — separate, and must stay that way
 
-Not operated from this repo. `hl-cashcat-collector` (CASHCAT alone, 30-day
-retention) and `hl-collector` (ETH, ACE, CHIP, PENGU, NIL, 3 days) live in
+Not operated from this repo. `hl-cashcat-collector` (CASHCAT alone, long
+retention — `CASHCAT_RETENTION_MINUTES` in the compose file) and `hl-collector` (ETH, ACE, CHIP, PENGU, NIL, 3 days) live in
 `HYPERLIQUID_DATA/docker-compose.yml` and write to the shared `./data/eth_mm`
 tree, reachable here as the `scripts/HL_data` junction.
 

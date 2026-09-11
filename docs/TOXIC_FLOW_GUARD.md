@@ -168,7 +168,7 @@ strategy starts unlatched, or the test measures nothing.
 
 - **n = 1.** One cascade in 6.8 days. The thresholds were chosen on the single
   event they are then tested against, so the zero-false-positive claim is only as
-  good as that window. Re-check as the tape grows toward its 30-day retention.
+  good as that window. Re-check as the tape grows toward its retention limit.
   *Re-checked on 165.11 h with still zero false positives, though the VPIN
   headroom is narrowing: `FLOW_GUARD_CANDIDATES.md`.*
 - **It cannot prevent the first fills.** At −14% the resting bids have already

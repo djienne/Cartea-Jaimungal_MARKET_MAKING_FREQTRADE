@@ -317,5 +317,6 @@ for the recorded equity history. `equity_history.csv` is not rotated.
 
 `scripts/archive_period.py` writes a full replay of every grid variant, the
 leaderboard and the period P&L under `docs/history/` every 21 days, ahead of the
-collector's 30-day retention. Cadence, the scheduled task it now needs, failure
+collector's retention (`CASHCAT_RETENTION_MINUTES` in
+`HYPERLIQUID_DATA/docker-compose.yml`). Cadence, the scheduled task it now needs, failure
 handling and the manual commit step: `history/README.md`.

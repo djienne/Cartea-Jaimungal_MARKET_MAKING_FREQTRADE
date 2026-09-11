@@ -1,6 +1,7 @@
-# Period archive — what survives the 30-day tape
+# Period archive — what survives the rolling tape
 
-The CASHCAT collector keeps **30 days** (`CASHCAT_RETENTION_MINUTES: 43200`) and
+The CASHCAT collector keeps a bounded tape (`CASHCAT_RETENTION_MINUTES` in
+`HYPERLIQUID_DATA/docker-compose.yml` — the one place that value is set) and
 deletes everything older. A replay can only score a window while its Parquet
 shards exist, so once a period rolls off the tape **no replay can ever be run
 against it again** — not more cheaply, not at all. The dry-run grid expires too:
@@ -8,7 +9,7 @@ its event logs rotate at ~34 days.
 
 Every 21 days `scripts/archive_period.py` attempts to write one directory here
 with a fresh full replay and the grid's P&L curve for the period. A successful
-cycle has 9 days of slack against 30-day retention, so an interrupted attempt can
+cycle leaves retention-minus-cadence days of slack, so an interrupted attempt can
 be retried within that margin. A failure is not harmless indefinitely; inspect
 `replay_FAILED.log` and rerun with `--force` before the oldest unarchived shards
 expire. Due-ness is read from the newest directory on disk, not a sleep timer,
@@ -37,7 +38,7 @@ a grid leaderboard, its Python sweep having been retired with that engine.
 
 ## Two window conventions, deliberately different
 
-- The **replay** scores the whole tape on disk (up to 30 days), so consecutive
+- The **replay** scores the whole tape on disk (up to the retention window), so consecutive
   archives **overlap** by roughly 9 days. That overlap is the safety margin.
 - The **grid curve** covers only the period since the previous archive, so the
   archives **concatenate** into one continuous non-overlapping timeline.
@@ -61,8 +62,8 @@ not rotated.
 ## Scope
 
 The only supported instrument profile is CASHCAT. The archiver selects any symbol whose tape spans more than 7
-days, which cleanly separates the 30-day collector from the 3-day one (ETH, ACE,
-CHIP, PENGU, NIL at `RETENTION_MINUTES: 4320`) without this repo reading another
+days, which cleanly separates the long-retention collector from the 3-day one (ETH, ACE,
+CHIP, PENGU, NIL) without this repo reading another
 project's compose file. A symbol that qualifies on tape length but has no
 instrument profile is skipped rather than archived with CASHCAT's tick size and
 inventory base — confident numbers for the wrong asset are worse than none.
