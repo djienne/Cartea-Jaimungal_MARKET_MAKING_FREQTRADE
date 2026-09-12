@@ -177,6 +177,14 @@ def main():
         eps_m = float(epsilon[sym]["epsilon-"])
         lam_p = float(lambdas.get(sym, {}).get("lambda+", 0.0))
         lam_m = float(lambdas.get(sym, {}).get("lambda-", 0.0))
+        raw_p = kappa[sym].get("lambda+_raw")
+        raw_m = kappa[sym].get("lambda-_raw")
+        drift = None if raw_p is None or raw_m is None else float(raw_p) * eps_p - float(raw_m) * eps_m
+        # The kappa fit owns reach-adjusted fill intensity; get_lambda emits raw arrivals.
+        if kappa[sym].get("lambda0_intercept_plus") is not None:
+            lam_p = float(kappa[sym]["lambda0_intercept_plus"])
+        if kappa[sym].get("lambda0_intercept_minus") is not None:
+            lam_m = float(kappa[sym]["lambda0_intercept_minus"])
     except Exception as e:
         raise SystemExit(f"Missing parameters for {sym}: {e}")
 
@@ -193,6 +201,7 @@ def main():
             T_seconds=args.horizon,
             q_max=args.qmax,
             n_steps=args.steps,
+            price_drift_per_second=drift,
         )
     else:
         hjb_res = compute_h_symmetric(
@@ -206,6 +215,7 @@ def main():
             phi=args.phi,
             T_seconds=args.horizon,
             q_max=args.qmax,
+            price_drift_per_second=drift,
         )
 
     # Resolve mid price (arg -> mid_price.json -> 1.0)

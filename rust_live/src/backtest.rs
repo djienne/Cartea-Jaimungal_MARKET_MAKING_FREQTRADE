@@ -341,6 +341,10 @@ async fn score_one(
             config.dry_run.clone(),
             config.quoting.clone(),
             config.risk.clone(),
+        )?
+        .with_exit_settings(
+            config.live.emergency_flatten_max_slippage_bps,
+            config.runtime.market_stale_ms,
         )?,
         logger: JsonlEventLogger::create_with_rotation(
             &run_root,
@@ -610,6 +614,7 @@ mod tests {
                 kappa_minus: 1_000.0,
                 epsilon_plus: 0.0,
                 epsilon_minus: 0.0,
+                price_drift_per_second: None,
                 sigma2_per_second: None,
             },
             &config.model,
@@ -667,7 +672,18 @@ mod tests {
                 },
             ],
             trades: Vec::new(),
-            books: Vec::new(),
+            books: [1_000.0, 2_000.0, 3_000.0]
+                .into_iter()
+                .map(|ts_ms| mm_live::parquet_io::BookTopRecord {
+                    ts_ms,
+                    bid: 0.0999,
+                    bid_size: 500.0,
+                    ask: 0.1001,
+                    ask_size: 500.0,
+                    bid_levels: vec![(0.0999, 500.0)],
+                    ask_levels: vec![(0.1001, 500.0)],
+                })
+                .collect(),
             window_start_ms: 1_000.0,
             window_end_ms: 60_000.0,
             duplicate_trade_ids_dropped: 0,

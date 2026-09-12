@@ -15,8 +15,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const DRY_RUN_STATE_MAX_AGE_MS: u64 = 15 * 60 * 1_000;
 const DRY_RUN_STATE_MAX_FUTURE_SKEW_MS: u64 = 10_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExitExecution {
+    pub arrival_ms: u64,
+    pub snapshot_ms: u64,
+    pub requested_units: i64,
+    pub available_units: i64,
+    pub filled_units: i64,
+    pub limit_px: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DryRunDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<ExitExecution>,
     pub scientifically_valid: bool,
     pub invalid_reason: Option<String>,
     pub virtual_orders_created: u64,
@@ -50,6 +62,7 @@ pub struct DryRunDiagnostics {
 impl Default for DryRunDiagnostics {
     fn default() -> Self {
         Self {
+            last_exit: None,
             scientifically_valid: true,
             invalid_reason: None,
             virtual_orders_created: 0,
@@ -115,6 +128,26 @@ struct PersistedDryRunState {
     daily_realized_pnl_usdc: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PendingExit {
+    Preparing {
+        ready_ms: u64,
+        attempt: usize,
+    },
+    InFlight {
+        arrival_ms: u64,
+        side: Side,
+        qty: i64,
+        limit: i64,
+        attempt: usize,
+    },
+    Reconciling {
+        due_ms: u64,
+        polls: u32,
+        attempt: usize,
+    },
+}
+
 #[derive(Debug)]
 pub struct DryRunBackend {
     instrument: InstrumentSpec,
@@ -131,6 +164,10 @@ pub struct DryRunBackend {
     latest_book: Option<BookSnapshot>,
     next_order_id: u64,
     last_mark_ms: Option<u64>,
+    last_event_ms: u64,
+    pending_exit: Option<PendingExit>,
+    exit_max_slippage_bps: f64,
+    market_stale_ms: u64,
     current_day: Option<u64>,
     daily_realized_pnl_usdc: f64,
     restored_inventory_unit: Option<i64>,
@@ -194,6 +231,10 @@ impl DryRunBackend {
             latest_book: None,
             next_order_id: 1,
             last_mark_ms: None,
+            last_event_ms: 0,
+            pending_exit: None,
+            exit_max_slippage_bps: 250.0,
+            market_stale_ms: 30_000,
             current_day: None,
             daily_realized_pnl_usdc: 0.0,
             restored_inventory_unit: None,
@@ -202,6 +243,20 @@ impl DryRunBackend {
             deferred_desired: None,
             open_lots: std::collections::VecDeque::new(),
         })
+    }
+
+    /// Use the same IOC limit and freshness bound as this application's live path.
+    pub fn with_exit_settings(
+        mut self,
+        max_slippage_bps: f64,
+        market_stale_ms: u64,
+    ) -> Result<Self> {
+        if !max_slippage_bps.is_finite() || !(100.0..10_000.0).contains(&max_slippage_bps) {
+            bail!("IOC maximum slippage must be finite and between 100 and 10000 bps");
+        }
+        self.exit_max_slippage_bps = max_slippage_bps;
+        self.market_stale_ms = market_stale_ms;
+        Ok(self)
     }
 
     pub const fn diagnostics(&self) -> &DryRunDiagnostics {
@@ -249,6 +304,10 @@ impl DryRunBackend {
         self.current_day = current_day;
         self.daily_realized_pnl_usdc = daily_realized_pnl_usdc;
         self.restored_inventory_unit = Some(inventory_unit);
+        self.pending_exit = None;
+        self.last_mark_ms = None;
+        self.last_event_ms = 0;
+        self.latest_book = None;
         self.orders.clear();
         self.pending_markouts.clear();
         self.deferred_desired = None;
@@ -272,6 +331,8 @@ impl DryRunBackend {
     }
 
     pub fn pause_market_data(&mut self) {
+        self.pending_exit = None;
+        self.last_mark_ms = None;
         self.diagnostics.virtual_orders_canceled += self.orders.len() as u64;
         self.orders.clear();
         self.deferred_desired = None;
@@ -343,7 +404,7 @@ impl DryRunBackend {
         let px = self.instrument.price_to_units(price)?;
         let notional =
             self.instrument.size_from_units(inventory.abs()) * self.instrument.price_from_units(px);
-        Ok((px, notional * self.config.promotion_flatten_fee_rate))
+        Ok((px, notional * self.config.flatten_fee_rate))
     }
 
     pub fn promotion_pnl_usdc(&self, bbo: Bbo) -> Option<f64> {
@@ -437,6 +498,10 @@ impl DryRunBackend {
         self.current_day = persisted.current_day;
         self.daily_realized_pnl_usdc = persisted.daily_realized_pnl_usdc;
         self.restored_inventory_unit = Some(persisted.inventory_unit);
+        self.pending_exit = None;
+        self.last_mark_ms = None;
+        self.last_event_ms = 0;
+        self.latest_book = None;
         self.orders.clear();
         self.pending_markouts.clear();
         // A target deferred against the previous session's book is meaningless
@@ -470,7 +535,7 @@ impl DryRunBackend {
     fn order_is_held(&self, order: &VirtualOrder, intent: OrderIntent) -> bool {
         order.cancel_effective_ms.is_none()
             && order.intent.side == intent.side
-            && order.intent.qty_units == intent.qty_units
+            && order.remaining_units == intent.qty_units
             && order.intent.reduce_only == intent.reduce_only
             && (order.intent.px - intent.px).abs()
                 < self
@@ -587,7 +652,22 @@ impl DryRunBackend {
         if !self.scientifically_valid() {
             return Vec::new();
         }
-        let now_ms = event_exchange_ms(event);
+        let now_ms = event_exchange_ms(event).max(self.last_event_ms);
+        if let MarketEvent::Book(book) = event {
+            if !self.accept_exit_book(book, now_ms) {
+                return Vec::new();
+            }
+        }
+        if let MarketEvent::Bbo(bbo) = event {
+            if !bbo.is_valid()
+                || self
+                    .latest_bbo
+                    .is_some_and(|old| bbo.exchange_ms < old.exchange_ms)
+            {
+                return Vec::new();
+            }
+        }
+        self.last_event_ms = now_ms;
         self.flush_deferred(now_ms);
         self.roll_day(now_ms);
         self.expire_cancels(now_ms);
@@ -596,13 +676,27 @@ impl DryRunBackend {
         match event {
             MarketEvent::Bbo(bbo) => {
                 self.bbo_is_restored = false;
-                self.accrue_funding(*bbo);
+                self.accrue_funding(bbo.exchange_ms);
                 self.resolve_markouts(*bbo);
                 self.latest_bbo = Some(*bbo);
                 self.refresh_unknown_queues();
                 self.mark_account(bbo.mid_units());
             }
             MarketEvent::Book(book) => {
+                // Depth precedes its BBO event. Account for exits at this book's
+                // own mark, never at the previous dedicated BBO's touch.
+                self.accrue_funding(book.exchange_ms);
+                let bbo = Bbo {
+                    bid_px: book.bids[0].px,
+                    bid_sz: book.bids[0].qty_units,
+                    ask_px: book.asks[0].px,
+                    ask_sz: book.asks[0].qty_units,
+                    exchange_ms: book.exchange_ms,
+                    recv_ns: book.recv_ns,
+                };
+                self.latest_bbo = Some(bbo);
+                self.bbo_is_restored = false;
+                self.mark_account(bbo.mid_units());
                 self.latest_book = Some(book.clone());
                 self.refresh_unknown_queues();
                 self.attribute_level_changes(book);
@@ -622,7 +716,11 @@ impl DryRunBackend {
         // After the event, not before: a lot opened by this very trade must be
         // allowed to age before it can be crossed out.
         if self.scientifically_valid() {
-            output.extend(self.flatten_stale_lots(now_ms));
+            let book = match event {
+                MarketEvent::Book(book) => Some(book),
+                _ => None,
+            };
+            output.extend(self.advance_exit(now_ms, book));
         }
         output
     }
@@ -656,87 +754,267 @@ impl DryRunBackend {
         }
     }
 
-    /// Cross out the oldest lot once it has been held past the deadline.
-    ///
-    /// Charges the same costs the replay does: the crossed half-spread (we take
-    /// the far touch), `flatten_slippage_bps` for walking the book, and
-    /// `flatten_fee_rate`. Without a touch there is nothing to cross into, so
-    /// the lot waits rather than being priced from an invented market.
-    fn flatten_stale_lots(&mut self, now_ms: u64) -> Vec<ExecutionEvent> {
-        // The deadline carries the SAME round trip a quote pays: we notice the
-        // position, decide, and the taker order reaches the venue one trip
-        // later. Without it `flatten0` was a ~130 ms exit -- unreachable at a
-        // p50 281 ms RTT -- so the grid would have tested a rung that does not
-        // exist rather than the 450-500 ms cliff the replay predicts.
+    fn accept_exit_book(&self, book: &BookSnapshot, now_ms: u64) -> bool {
+        let ordered = |levels: &[crate::types::BookLevel], bids: bool| {
+            !levels.is_empty()
+                && levels
+                    .iter()
+                    .all(|level| level.px > 0 && level.qty_units > 0)
+                && levels.windows(2).all(|pair| {
+                    if bids {
+                        pair[0].px > pair[1].px
+                    } else {
+                        pair[0].px < pair[1].px
+                    }
+                })
+        };
+        book.exchange_ms > 0
+            && book.exchange_ms >= now_ms
+            && self
+                .latest_book
+                .as_ref()
+                .is_none_or(|old| book.exchange_ms > old.exchange_ms)
+            && self
+                .latest_bbo
+                .is_none_or(|old| book.exchange_ms >= old.exchange_ms)
+            && ordered(&book.bids, true)
+            && ordered(&book.asks, false)
+            && book.bids[0].px < book.asks[0].px
+    }
+
+    fn aged_exit_units(&self, now_ms: u64) -> i64 {
+        self.open_lots
+            .iter()
+            .take_while(|(opened, _)| {
+                let notified = opened.saturating_add(
+                    self.simulated_latency_ms(self.config.acknowledgement_latency_ms, *opened),
+                );
+                now_ms >= notified.saturating_add(self.config.flatten_after_ms)
+            })
+            .map(|(_, qty)| qty.abs())
+            .sum::<i64>()
+            .min(self.account.inventory_units.abs())
+    }
+
+    fn reconciliation_at(&self, start_ms: u64) -> u64 {
+        let outbound = start_ms
+            .saturating_add(self.simulated_latency_ms(self.config.decision_latency_ms, start_ms));
+        outbound.saturating_add(
+            self.simulated_latency_ms(self.config.acknowledgement_latency_ms, outbound),
+        )
+    }
+
+    /// FIFO age is a trigger, not a promised fill time. Cancellation/reconciliation
+    /// precede the IOC; each attempt can consume only one new observed snapshot.
+    fn advance_exit(&mut self, now_ms: u64, book: Option<&BookSnapshot>) -> Vec<ExecutionEvent> {
         let mut events = Vec::new();
-        // Disabled is a property of the CONFIGURED deadline, not the computed
-        // one: adding the round trip makes the latter non-zero even when the
-        // policy is off.
         if self.config.flatten_after_ms == 0 || self.bbo_is_restored {
             return events;
         }
-        let deadline_ms = self
-            .config
-            .flatten_after_ms
-            .saturating_add(self.config.decision_latency_ms)
-            .saturating_add(self.config.acknowledgement_latency_ms);
-        let Some(bbo) = self.latest_bbo else {
-            return events;
-        };
-        while let Some(&(opened_ms, lot)) = self.open_lots.front() {
-            if !self.scientifically_valid() {
-                break;
+        if self.pending_exit.is_none() {
+            if self.aged_exit_units(now_ms) == 0 {
+                return events;
             }
-            if lot == 0 {
-                self.open_lots.pop_front();
-                continue;
+            self.deferred_desired = None;
+            let cancel_at = now_ms
+                .saturating_add(self.simulated_latency_ms(self.config.cancel_latency_ms, now_ms));
+            for order in &mut self.orders {
+                order.cancel_effective_ms = Some(
+                    order
+                        .cancel_effective_ms
+                        .unwrap_or(cancel_at)
+                        .min(cancel_at),
+                );
             }
-            if now_ms.saturating_sub(opened_ms) < deadline_ms {
-                break;
+            let confirmed = self
+                .orders
+                .iter()
+                .filter_map(|order| order.cancel_effective_ms)
+                .max()
+                .map_or(now_ms, |at| {
+                    at.saturating_add(
+                        self.simulated_latency_ms(self.config.acknowledgement_latency_ms, at),
+                    )
+                });
+            self.pending_exit = Some(PendingExit::Preparing {
+                ready_ms: self.reconciliation_at(confirmed),
+                attempt: 0,
+            });
+        }
+        // Catch up the bounded reconciliation schedule on sparse market events.
+        loop {
+            match self.pending_exit.expect("exit initialized") {
+                PendingExit::Preparing { ready_ms, attempt } => {
+                    if now_ms < ready_ms {
+                        break;
+                    }
+                    let qty = self.aged_exit_units(now_ms);
+                    if qty == 0 {
+                        self.pending_exit = None;
+                        break;
+                    }
+                    let Some(bbo) = self.latest_bbo.filter(|bbo| {
+                        now_ms.saturating_sub(bbo.exchange_ms) <= self.market_stale_ms
+                    }) else {
+                        break;
+                    };
+                    let side = if self.account.inventory_units > 0 {
+                        Side::Sell
+                    } else {
+                        Side::Buy
+                    };
+                    let slippage = [25.0, 100.0, self.exit_max_slippage_bps][attempt] / 10_000.0;
+                    let touch = if side == Side::Sell {
+                        bbo.bid_px
+                    } else {
+                        bbo.ask_px
+                    };
+                    let raw_limit = (touch as f64
+                        * if side == Side::Sell {
+                            1.0 - slippage
+                        } else {
+                            1.0 + slippage
+                        })
+                    .round();
+                    // Round the permission outward, as the live IOC path does.
+                    let quantum = self.instrument.price_quantum(raw_limit as i64).max(1);
+                    let limit = if side == Side::Sell {
+                        (raw_limit / quantum as f64).floor() as i64 * quantum
+                    } else {
+                        (raw_limit / quantum as f64).ceil() as i64 * quantum
+                    };
+                    let arrival_ms = now_ms.saturating_add(
+                        self.simulated_latency_ms(self.config.decision_latency_ms, now_ms),
+                    );
+                    self.pending_exit = Some(PendingExit::InFlight {
+                        arrival_ms,
+                        side,
+                        qty,
+                        limit,
+                        attempt,
+                    });
+                }
+                PendingExit::InFlight {
+                    arrival_ms,
+                    side,
+                    qty,
+                    limit,
+                    attempt,
+                } => {
+                    let Some(book) = book.filter(|book| book.exchange_ms >= arrival_ms) else {
+                        break;
+                    };
+                    let levels = if side == Side::Sell {
+                        &book.bids
+                    } else {
+                        &book.asks
+                    };
+                    let mut remaining =
+                        if side.inventory_sign() == -self.account.inventory_units.signum() {
+                            qty.min(self.account.inventory_units.abs())
+                        } else {
+                            0
+                        };
+                    let requested = remaining;
+                    let available = levels
+                        .iter()
+                        .take_while(|level| {
+                            if side == Side::Sell {
+                                level.px >= limit
+                            } else {
+                                level.px <= limit
+                            }
+                        })
+                        .fold(0_i64, |sum, level| sum.saturating_add(level.qty_units));
+                    let mid = self.instrument.price_from_units(
+                        book.bids[0].px + (book.asks[0].px - book.bids[0].px) / 2,
+                    );
+                    for level in levels {
+                        if remaining == 0
+                            || !self.scientifically_valid()
+                            || (side == Side::Sell && level.px < limit)
+                            || (side == Side::Buy && level.px > limit)
+                        {
+                            break;
+                        }
+                        let units = remaining.min(level.qty_units);
+                        let price = self.instrument.price_from_units(level.px);
+                        let base = self.instrument.size_from_units(units);
+                        let fee = base * price * self.config.flatten_fee_rate;
+                        let fill = Fill {
+                            side,
+                            px: level.px,
+                            qty_units: units,
+                            fee_usdc: fee,
+                            exchange_ms: book.exchange_ms,
+                            virtual_order_id: 0,
+                            maker: false,
+                        };
+                        self.record_lot(fill.exchange_ms, side.inventory_sign() * units);
+                        self.apply_fill(fill);
+                        self.diagnostics.flatten_units += units;
+                        self.diagnostics.flatten_cost_usdc += (mid - price).abs() * base + fee;
+                        events.push(ExecutionEvent::Fill(fill));
+                        remaining -= units;
+                    }
+                    if remaining < requested {
+                        self.diagnostics.flatten_events += 1;
+                    }
+                    self.diagnostics.last_exit = Some(ExitExecution {
+                        arrival_ms,
+                        snapshot_ms: book.exchange_ms,
+                        requested_units: requested,
+                        available_units: available,
+                        filled_units: requested - remaining,
+                        limit_px: limit,
+                    });
+                    if !self.scientifically_valid() {
+                        break;
+                    }
+                    let acknowledged = now_ms.saturating_add(
+                        self.simulated_latency_ms(self.config.acknowledgement_latency_ms, now_ms),
+                    );
+                    self.pending_exit = Some(PendingExit::Reconciling {
+                        due_ms: self.reconciliation_at(acknowledged.saturating_add(250)),
+                        polls: 1,
+                        attempt,
+                    });
+                    break; // Never reuse this snapshot, even with zero configured latency.
+                }
+                PendingExit::Reconciling {
+                    due_ms,
+                    polls,
+                    attempt,
+                } => {
+                    if now_ms < due_ms {
+                        break;
+                    }
+                    if self.aged_exit_units(now_ms) == 0 {
+                        self.pending_exit = None;
+                        break;
+                    }
+                    if polls < 10 {
+                        self.pending_exit = Some(PendingExit::Reconciling {
+                            due_ms: self.reconciliation_at(due_ms.saturating_add(250)),
+                            polls: polls + 1,
+                            attempt,
+                        });
+                    } else {
+                        // The live safety worker backs off 30 s after exhausting its ladder.
+                        self.pending_exit = Some(PendingExit::Preparing {
+                            ready_ms: if attempt == 2 {
+                                now_ms.saturating_add(30_000)
+                            } else {
+                                now_ms
+                            },
+                            attempt: if attempt == 2 { 0 } else { attempt + 1 },
+                        });
+                    }
+                }
             }
-            let long = lot > 0;
-            let touch_units = if long { bbo.bid_px } else { bbo.ask_px };
-            if touch_units <= 0 {
-                break;
-            }
-            let touch = self.instrument.price_from_units(touch_units);
-            let slip = touch * (self.config.flatten_slippage_bps / 10_000.0);
-            let exit_px = if long { touch - slip } else { touch + slip };
-            if !exit_px.is_finite() || exit_px <= 0.0 {
-                break;
-            }
-            // Round to the tick FIRST, then derive notional and fee from the
-            // rounded price. The Fill carries integer units and `apply_fill`
-            // reads the price back out of them, so a fee computed from the raw
-            // price would not match the cash the same fill moves.
-            let Ok(exit_units) = self.instrument.price_to_units(exit_px) else {
-                break;
-            };
-            let exit_px = self.instrument.price_from_units(exit_units);
-            let qty_units = lot.abs();
-            let qty_base = self.instrument.size_from_units(qty_units);
-            let notional = qty_base * exit_px;
-            let fee = notional * self.config.flatten_fee_rate;
-            let mid = self.instrument.price_from_units(bbo.mid_units());
-            self.diagnostics.flatten_events += 1;
-            self.diagnostics.flatten_units += qty_units;
-            self.diagnostics.flatten_cost_usdc += (mid - exit_px).abs() * qty_base + fee;
-            let fill = Fill {
-                side: if long { Side::Sell } else { Side::Buy },
-                px: exit_units,
-                qty_units,
-                fee_usdc: fee,
-                exchange_ms: now_ms,
-                virtual_order_id: 0,
-                maker: false,
-            };
-            self.open_lots.pop_front();
-            self.apply_fill(fill);
-            events.push(ExecutionEvent::Fill(fill));
         }
         events
     }
-
     fn activate_orders(&mut self, now_ms: u64) {
         // ALO first: a post-only order that reaches the venue crossing the
         // opposite touch is REJECTED, not rested. The market moves during the
@@ -967,6 +1245,7 @@ impl DryRunBackend {
     }
 
     fn apply_fill(&mut self, fill: Fill) {
+        self.accrue_funding(fill.exchange_ms);
         let old_inventory = self.account.inventory_units;
         let signed_fill = fill.side.inventory_sign().saturating_mul(fill.qty_units);
         let new_inventory = old_inventory.saturating_add(signed_fill);
@@ -1059,8 +1338,10 @@ impl DryRunBackend {
         self.account.mark_to_market_pnl_usdc = self.account.equity_usdc - self.starting_equity_usdc;
         self.account.position_notional_usdc = inventory_base.abs() * mid;
         self.account.margin_used_usdc = self.account.position_notional_usdc / self.quoting.leverage;
-        self.account.maintenance_margin_usdc =
-            self.account.position_notional_usdc * self.risk.maintenance_margin_rate;
+        self.account.maintenance_margin_usdc = self.account.position_notional_usdc
+            * self
+                .instrument
+                .maintenance_rate(self.risk.maintenance_margin_rate);
         self.account.liquidation_buffer_usdc =
             self.account.equity_usdc - self.account.maintenance_margin_usdc;
         if self.account.liquidation_buffer_usdc < self.risk.min_liquidation_buffer_usdc {
@@ -1069,18 +1350,24 @@ impl DryRunBackend {
         }
     }
 
-    fn accrue_funding(&mut self, bbo: Bbo) {
+    fn accrue_funding(&mut self, now_ms: u64) {
+        if self.bbo_is_restored {
+            return;
+        }
+        let now_ms = now_ms.max(self.last_mark_ms.unwrap_or(now_ms));
         if let Some(previous_ms) = self.last_mark_ms {
-            let hours = bbo.exchange_ms.saturating_sub(previous_ms) as f64 / 3_600_000.0;
+            let hours = now_ms.saturating_sub(previous_ms) as f64 / 3_600_000.0;
             let inventory_base = self
                 .instrument
                 .size_from_units(self.account.inventory_units);
-            let mid = self.instrument.price_from_units(bbo.mid_units());
+            let mid = self
+                .latest_bbo
+                .map_or(0.0, |bbo| self.instrument.price_from_units(bbo.mid_units()));
             let funding = -inventory_base * mid * self.config.funding_rate_per_hour * hours;
             self.account.funding_usdc += funding;
             self.account.cash_usdc += funding;
         }
-        self.last_mark_ms = Some(bbo.exchange_ms);
+        self.last_mark_ms = Some(now_ms);
     }
 
     fn resolve_markouts(&mut self, bbo: Bbo) {
@@ -1127,6 +1414,10 @@ impl ExecutionBackend for DryRunBackend {
         {
             bail!("cannot quote in an invalidated dry-run session");
         }
+        if self.pending_exit.is_some() {
+            self.deferred_desired = None;
+            return Ok(());
+        }
         // Requote cooldown, mirroring the live backend. Withdrawals and
         // inventory-moving fills are never deferred: an empty target is what
         // cancels resting orders, so the toxic-flow guard and the risk limits
@@ -1149,6 +1440,7 @@ impl ExecutionBackend for DryRunBackend {
     }
 
     async fn shutdown(&mut self, now_ms: u64) -> Result<()> {
+        self.pending_exit = None;
         self.deferred_desired = None;
         for order in &mut self.orders {
             order.cancel_effective_ms = Some(now_ms);
@@ -1158,6 +1450,7 @@ impl ExecutionBackend for DryRunBackend {
     }
 
     fn invalidate(&mut self, reason: &str) {
+        self.pending_exit = None;
         self.deferred_desired = None;
         self.diagnostics.scientifically_valid = false;
         self.diagnostics.invalid_reason = Some(reason.to_owned());
@@ -1441,64 +1734,262 @@ mod tests {
         .unwrap()
     }
 
-    #[tokio::test]
-    async fn the_flatten_charges_its_own_knobs_not_the_promotion_ones() {
-        // This is the regression that matters most. Reusing promotion_flatten_*
-        // charged 25 bps a side instead of 2.5 and flipped the policy's SIGN --
-        // measured at -5.1 USDC/day against +13.4 on the same fills. Every other
-        // flatten test asserts counts, so without this the sign is unpinned.
-        let mut config = DryRunConfig::default();
-        config.flatten_after_ms = 1;
-        config.flatten_slippage_bps = 2.5;
-        config.flatten_fee_rate = 0.001;
-        // Deliberately hostile: if the flatten ever reads these again, the
-        // numbers below move by an order of magnitude and this test fails.
-        config.promotion_flatten_slippage_bps = 250.0;
-        config.promotion_flatten_fee_rate = 0.1;
-        let mut backend = DryRunBackend::new(
-            instrument(),
-            config,
-            QuotingConfig::default(),
-            RiskConfig::default(),
-        )
-        .unwrap();
-        backend.latest_bbo = Some(Bbo {
-            bid_px: 10_000,
-            bid_sz: 50,
-            ask_px: 10_002,
-            ask_sz: 50,
-            exchange_ms: 1_000,
-            recv_ns: 0,
-        });
-        let cash_before = backend.account.cash_usdc;
-        backend.record_lot(0, 10);
-        assert_eq!(backend.flatten_stale_lots(1_000).len(), 1);
+    fn exit_book(ts: u64, bids: &[(i64, i64)]) -> MarketEvent {
+        use crate::types::BookLevel;
+        MarketEvent::Book(BookSnapshot {
+            bids: bids
+                .iter()
+                .map(|&(px, qty_units)| BookLevel { px, qty_units })
+                .collect(),
+            asks: vec![BookLevel {
+                px: 10_002,
+                qty_units: 50,
+            }],
+            exchange_ms: ts,
+            recv_ns: ts * 1_000_000,
+        })
+    }
 
-        // Sold 10 units into a bid of 10_000 units-of-price, minus 2.5 bps of
-        // slippage, minus a 10 bps fee on the notional. The exit price is
-        // tick-ROUNDED on the way into the Fill, so the cash reflects the
-        // rounded price rather than the raw one -- assert against the same path
-        // the code takes, or this pins the rounding instead of the cost.
-        let touch = backend.instrument.price_from_units(10_000);
-        let raw_exit = touch * (1.0 - 2.5 / 10_000.0);
-        let exit = backend
-            .instrument
-            .price_from_units(backend.instrument.price_to_units(raw_exit).unwrap());
-        assert!(exit < touch, "the slippage must move the exit against us");
-        let qty = backend.instrument.size_from_units(10);
-        let expected = cash_before + qty * exit - qty * exit * 0.001;
+    fn enter(backend: &mut DryRunBackend, ts: u64, qty: i64) {
+        backend.record_lot(ts, qty);
+        backend.apply_fill(Fill {
+            side: if qty > 0 { Side::Buy } else { Side::Sell },
+            px: 10_000,
+            qty_units: qty.abs(),
+            fee_usdc: 0.0,
+            exchange_ms: ts,
+            virtual_order_id: 1,
+            maker: true,
+        });
+    }
+
+    #[tokio::test]
+    async fn exits_wait_for_arrival_and_consume_only_new_depth_within_the_sent_limit() {
+        let mut backend = flatten_backend(250);
+        backend.config.decision_latency_ms = 100;
+        backend.config.acknowledgement_latency_ms = 50;
+        backend.config.flatten_fee_rate = 0.001;
+        backend.process_event(&exit_book(1_000, &[(10_000, 50)]));
+        enter(&mut backend, 1_000, 10);
+        enter(&mut backend, 1_300, 2);
+        backend.process_event(&exit_book(1_300, &[(10_000, 50)]));
+        assert!(matches!(
+            backend.pending_exit,
+            Some(PendingExit::Preparing {
+                ready_ms: 1_450,
+                ..
+            })
+        ));
+        backend.process_event(&exit_book(1_450, &[(10_000, 50)]));
+        assert!(matches!(
+            backend.pending_exit,
+            Some(PendingExit::InFlight {
+                arrival_ms: 1_550,
+                qty: 10,
+                ..
+            })
+        ));
+        assert!(backend
+            .process_event(&exit_book(1_549, &[(9_999, 50)]))
+            .is_empty());
         assert!(
-            (backend.account.cash_usdc - expected).abs() < 1e-9,
-            "cash {} != expected {}",
-            backend.account.cash_usdc,
-            expected
+            (backend.account.equity_usdc
+                - backend.account.cash_usdc
+                - backend.account.inventory_units as f64 * 100.0)
+                .abs()
+                < 1e-9,
+            "a checkpoint between Book and BBO must reconcile at its saved mark"
         );
+        let book = exit_book(1_550, &[(10_000, 3), (9_999, 4), (9_900, 100)]);
+        let before = backend.account.cash_usdc;
+        let events = backend.process_event(&book);
+        assert_eq!(events.len(), 2);
+        assert_eq!(backend.account.inventory_units, 5);
+        assert_eq!(
+            backend.open_lots.iter().copied().collect::<Vec<_>>(),
+            vec![(1_000, 3), (1_300, 2)]
+        );
+        assert!(
+            (backend.account.cash_usdc - before - (3.0 * 100.0 + 4.0 * 99.99) * 0.999).abs() < 1e-9
+        );
+        let execution = backend.diagnostics.last_exit.unwrap();
+        assert_eq!(execution.available_units, 7);
+        assert_eq!(execution.filled_units, 7);
+        assert!(execution.snapshot_ms >= execution.arrival_ms);
+        assert!(backend.process_event(&book).is_empty());
+        assert!(backend
+            .process_event(&exit_book(1_549, &[(10_000, 100)]))
+            .is_empty());
+        assert!(backend
+            .process_event(&exit_book(1_551, &[(10_000, 0)]))
+            .is_empty());
+        backend.reconcile(bid_quotes(), 1_551).await.unwrap();
+        assert_eq!(backend.working_order_count(), 0);
+        assert_eq!(backend.account.inventory_units, 5);
+    }
+
+    #[tokio::test]
+    async fn exit_cancellation_keeps_racing_fills_and_retries_partial_iocs() {
+        let mut backend = flatten_backend(1);
+        backend.config.decision_latency_ms = 100;
+        backend.config.acknowledgement_latency_ms = 50;
+        backend.config.cancel_latency_ms = 80;
+        backend.process_event(&exit_book(1_000, &[(10_000, 50)]));
+        backend.reconcile(bid_quotes(), 1_000).await.unwrap();
+        enter(&mut backend, 1_000, 5);
+        backend.process_event(&exit_book(1_150, &[(10_000, 50)]));
+        assert_eq!(backend.orders[0].cancel_effective_ms, Some(1_230));
+        let trade = MarketEvent::Trade(TradePrint {
+            aggressor: AggressorSide::Sell,
+            px: 9_999,
+            qty_units: 7,
+            exchange_ms: 1_200,
+            recv_ns: 0,
+            trade_id: 10,
+        });
+        assert_eq!(backend.process_event(&trade).len(), 1);
+        assert_eq!(backend.account.inventory_units, 12);
+        backend.process_event(&exit_book(1_430, &[(10_000, 50)]));
+        assert!(backend.orders.is_empty());
+        assert!(matches!(
+            backend.pending_exit,
+            Some(PendingExit::InFlight {
+                arrival_ms: 1_530,
+                qty: 12,
+                ..
+            })
+        ));
+        // No print or BBO can manufacture an IOC fill.
+        let bbo = backend.latest_bbo.unwrap();
+        assert!(backend
+            .process_event(&MarketEvent::Bbo(Bbo {
+                exchange_ms: 1_530,
+                ..bbo
+            }))
+            .is_empty());
+        backend.process_event(&exit_book(1_531, &[(9_950, 50)]));
+        assert_eq!(backend.diagnostics.last_exit.unwrap().filled_units, 0);
+        // Ten 250-ms polls with 150-ms round trips, then a wider limit.
+        backend.process_event(&exit_book(5_581, &[(9_950, 50)]));
+        assert!(matches!(
+            backend.pending_exit,
+            Some(PendingExit::InFlight {
+                attempt: 1,
+                arrival_ms: 5_681,
+                ..
+            })
+        ));
+        backend.process_event(&exit_book(5_681, &[(9_950, 4)]));
+        assert_eq!(backend.account.inventory_units, 8);
+        backend.pause_market_data();
+        assert!(backend.pending_exit.is_none());
+        assert_eq!(backend.account.inventory_units, 8);
+    }
+
+    #[test]
+    fn restored_positions_and_tail_latencies_cannot_exit_at_a_saved_touch() {
+        let mut backend = flatten_backend(1);
+        backend.config.decision_latency_ms = 100;
+        backend.config.acknowledgement_latency_ms = 50;
+        backend.process_event(&exit_book(19_000, &[(10_000, 50)]));
+        enter(&mut backend, 19_000, 10);
+        assert_eq!(backend.aged_exit_units(19_118), 0);
+        backend.advance_exit(19_119, None);
+        assert!(matches!(
+            backend.pending_exit,
+            Some(PendingExit::Preparing {
+                ready_ms: 19_472,
+                ..
+            })
+        ));
+        backend.advance_exit(19_472, None);
+        assert!(matches!(
+            backend.pending_exit,
+            Some(PendingExit::InFlight {
+                arrival_ms: 19_707,
+                ..
+            })
+        ));
+        let account = backend.account;
+        let diagnostics = backend.diagnostics.clone();
+        let saved = backend.latest_bbo;
+        backend
+            .restore_from_snapshot(account, diagnostics, 10, None, 0.0)
+            .unwrap();
+        backend.restore_checkpoint_bbo(saved);
+        assert!(backend.advance_exit(30_000, None).is_empty());
+        assert_eq!(backend.account.inventory_units, 10);
+        backend.process_event(&exit_book(30_000, &[(9_950, 3)]));
+        backend.process_event(&exit_book(30_150, &[(9_950, 3)]));
+        backend.process_event(&exit_book(30_250, &[(9_950, 3)]));
+        assert_eq!(backend.account.inventory_units, 7);
+    }
+
+    #[test]
+    fn funding_integrates_inventory_before_changes_and_never_rewinds_or_charges_gaps() {
+        let mut backend = flatten_backend(0);
+        backend.config.funding_rate_per_hour = 0.01;
+        backend.process_event(&exit_book(1_000, &[(9_998, 50)])); // mid = 100
+        enter(&mut backend, 3_600_900, 10);
+        assert_eq!(backend.account.funding_usdc, 0.0);
+        enter(&mut backend, 3_601_000, -10);
+        let expected = -1_000.0 * 0.01 * 100.0 / 3_600_000.0;
+        assert!((backend.account.funding_usdc - expected).abs() < 1e-12);
+        backend.process_event(&exit_book(7_201_000, &[(9_998, 50)]));
+        assert!((backend.account.funding_usdc - expected).abs() < 1e-12);
+        enter(&mut backend, 7_201_000, 2);
+        enter(&mut backend, 7_202_000, -4); // one second long, then short
+        let before = backend.account.funding_usdc;
+        backend.accrue_funding(7_201_500);
+        assert_eq!(backend.account.funding_usdc, before);
+        backend.accrue_funding(7_203_000);
+        assert!((backend.account.funding_usdc - expected).abs() < 1e-12);
+        backend.pause_market_data();
+        backend.process_event(&exit_book(10_000_000, &[(9_998, 50)]));
+        assert!((backend.account.funding_usdc - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn single_tier_maintenance_stops_the_account_at_the_existing_cushion() {
+        let mut backend = flatten_backend(0);
+        backend.instrument.margin_table_id = 3;
+        backend.instrument.max_leverage = 3.0;
+        backend.account.inventory_units = 3;
+        backend.account.cash_usdc = -180.0;
+        backend.mark_account(10_000); // 120 equity, 300 notional, 50 maintenance.
+        assert!((backend.account.maintenance_margin_usdc - 50.0).abs() < 1e-12);
+        assert!(!backend.scientifically_valid());
+        let saved = serde_json::to_value(backend.account).unwrap();
+        backend.process_event(&exit_book(2_000, &[(11_000, 50)]));
+        assert_eq!(serde_json::to_value(backend.account).unwrap(), saved);
+    }
+
+    #[tokio::test]
+    async fn partial_fills_hold_remaining_size_and_replenishment_replaces_the_order() {
+        let mut backend = backend_with_zero_latency();
+        backend.process_event(&exit_book(1_000, &[(10_000, 50)]));
+        backend.reconcile(bid_quotes(), 1_000).await.unwrap();
+        backend.process_event(&MarketEvent::Trade(TradePrint {
+            aggressor: AggressorSide::Sell,
+            px: 9_999,
+            qty_units: 4,
+            exchange_ms: 1_100,
+            recv_ns: 0,
+            trade_id: 1,
+        }));
+        assert_eq!(backend.account.inventory_units, 4);
+        let mut remaining = bid_quotes();
+        remaining.bid.as_mut().unwrap().qty_units = 6;
+        backend.reconcile(remaining, 1_100).await.unwrap();
+        assert_eq!(backend.diagnostics.virtual_orders_created, 1);
+        backend.reconcile(bid_quotes(), 1_300).await.unwrap();
+        assert_eq!(backend.diagnostics.virtual_orders_created, 2);
     }
 
     #[tokio::test]
     async fn a_nan_flatten_cost_is_refused_at_construction() {
         let mut config = DryRunConfig::default();
-        config.flatten_slippage_bps = f64::NAN;
+        config.flatten_fee_rate = f64::NAN;
         assert!(DryRunBackend::new(
             instrument(),
             config,
@@ -1550,53 +2041,6 @@ mod tests {
         assert_eq!(backend.orders.len(), 1);
     }
 
-    #[tokio::test]
-    async fn the_flatten_deadline_includes_the_round_trip() {
-        // Without this the deadline was "next event", a ~130 ms exit that is
-        // unreachable at a p50 281 ms RTT -- the grid would test a rung that
-        // does not exist.
-        let mut backend = flatten_backend(250);
-        backend.record_lot(1_000, 10);
-        backend.latest_bbo = Some(Bbo {
-            bid_px: 10_000,
-            bid_sz: 50,
-            ask_px: 10_002,
-            ask_sz: 50,
-            exchange_ms: 1_000,
-            recv_ns: 0,
-        });
-        let rtt = DryRunConfig::default().decision_latency_ms
-            + DryRunConfig::default().acknowledgement_latency_ms;
-        assert!(backend.flatten_stale_lots(1_000 + 250 + rtt - 1).is_empty());
-        assert_eq!(backend.flatten_stale_lots(1_000 + 250 + rtt).len(), 1);
-    }
-
-    #[tokio::test]
-    async fn restored_inventory_is_seeded_as_a_lot_so_it_can_be_flattened() {
-        // An empty deque would make the policy self-destruct: every reducing
-        // maker fill would open a NEW opposite lot, get crossed back out, and
-        // re-establish the position while paying taker each time.
-        let mut backend = flatten_backend(250);
-        let mut account = backend.account;
-        account.inventory_units = 40;
-        backend
-            .restore_from_snapshot(account, DryRunDiagnostics::default(), 10, None, 0.0)
-            .unwrap();
-        assert_eq!(backend.open_lots.len(), 1);
-        assert_eq!(backend.open_lots.front().unwrap().1, 40);
-        // Aged from 0, so it is past any deadline immediately.
-        backend.latest_bbo = Some(Bbo {
-            bid_px: 10_000,
-            bid_sz: 50,
-            ask_px: 10_002,
-            ask_sz: 50,
-            exchange_ms: 1_000,
-            recv_ns: 0,
-        });
-        assert_eq!(backend.flatten_stale_lots(1_000).len(), 1);
-        assert!(backend.open_lots.is_empty());
-    }
-
     #[test]
     fn gap_flatten_charges_the_promotion_exit_for_longs_and_shorts() {
         for inventory in [40, -40] {
@@ -1636,52 +2080,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn restored_lots_wait_for_a_fresh_book_before_exiting() {
-        let mut backend = flatten_backend(1);
-        backend.config.flatten_slippage_bps = 0.0;
-        backend.config.flatten_fee_rate = 0.0;
-        let mut account = backend.account;
-        account.cash_usdc = 0.0;
-        account.inventory_units = 10;
-        account.average_entry_px = 100.0;
-        backend
-            .restore_from_snapshot(account, DryRunDiagnostics::default(), 10, None, 0.0)
-            .unwrap();
-        backend.restore_checkpoint_bbo(Some(Bbo {
-            bid_px: 10_000,
-            ask_px: 10_002,
-            bid_sz: 50,
-            ask_sz: 50,
-            exchange_ms: 500,
-            recv_ns: 0,
-        }));
-        let trade = MarketEvent::Trade(TradePrint {
-            aggressor: AggressorSide::Sell,
-            px: 9_000,
-            qty_units: 10,
-            exchange_ms: 1_000,
-            recv_ns: 0,
-            trade_id: 1,
-        });
-        assert!(backend.on_market_event(&trade).await.unwrap().is_empty());
-        assert_eq!(backend.account.inventory_units, 10);
-        let events = backend
-            .on_market_event(&MarketEvent::Bbo(Bbo {
-                bid_px: 9_000,
-                ask_px: 9_002,
-                bid_sz: 50,
-                ask_sz: 50,
-                exchange_ms: 1_001,
-                recv_ns: 0,
-            }))
-            .await
-            .unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(backend.account.inventory_units, 0);
-        assert_eq!(backend.account.cash_usdc, 900.0);
-    }
-
     #[test]
     fn gap_flatten_requires_a_book_and_preserves_terminal_accounts() {
         let mut backend = flatten_backend(250);
@@ -1692,54 +2090,6 @@ mod tests {
         let before = serde_json::to_value(backend.account).unwrap();
         assert!(backend.flatten_carried_position().unwrap().is_none());
         assert_eq!(serde_json::to_value(backend.account).unwrap(), before);
-    }
-
-    #[tokio::test]
-    async fn a_lot_held_past_the_deadline_is_crossed_out() {
-        let mut backend = flatten_backend(250);
-        backend.record_lot(1_000, 10);
-        backend.latest_bbo = Some(Bbo {
-            bid_px: 10_000,
-            bid_sz: 50,
-            ask_px: 10_002,
-            ask_sz: 50,
-            exchange_ms: 1_000,
-            recv_ns: 0,
-        });
-        let rtt = DryRunConfig::default().decision_latency_ms
-            + DryRunConfig::default().acknowledgement_latency_ms;
-        // Before the deadline nothing happens.
-        assert!(backend.flatten_stale_lots(1_200 + rtt).is_empty());
-        assert_eq!(backend.open_lots.len(), 1);
-        // After it, the lot is sold into the bid and the book is flat.
-        let events = backend.flatten_stale_lots(1_250 + rtt);
-        assert_eq!(events.len(), 1);
-        assert!(backend.open_lots.is_empty());
-        assert_eq!(backend.account.inventory_units, -10);
-        assert_eq!(backend.diagnostics.flatten_events, 1);
-    }
-
-    #[tokio::test]
-    async fn the_deadline_ages_the_oldest_lot_not_the_net_position() {
-        // A position topped up repeatedly must still exit on the FIRST lot's
-        // clock, or a busy market defers the exit forever.
-        let mut backend = flatten_backend(250);
-        backend.latest_bbo = Some(Bbo {
-            bid_px: 10_000,
-            bid_sz: 50,
-            ask_px: 10_002,
-            ask_sz: 50,
-            exchange_ms: 1_000,
-            recv_ns: 0,
-        });
-        backend.record_lot(1_000, 5);
-        backend.record_lot(1_200, 5);
-        let rtt = DryRunConfig::default().decision_latency_ms
-            + DryRunConfig::default().acknowledgement_latency_ms;
-        let events = backend.flatten_stale_lots(1_250 + rtt);
-        assert_eq!(events.len(), 1, "only the aged lot leaves");
-        assert_eq!(backend.open_lots.len(), 1);
-        assert_eq!(backend.open_lots.front().unwrap().0, 1_200);
     }
 
     #[tokio::test]
@@ -1767,7 +2117,7 @@ mod tests {
             recv_ns: 0,
         });
         backend.record_lot(1_000, 10);
-        assert!(backend.flatten_stale_lots(9_999_999).is_empty());
+        assert!(backend.advance_exit(9_999_999, None).is_empty());
         assert_eq!(backend.open_lots.len(), 1);
     }
 
@@ -1775,7 +2125,7 @@ mod tests {
     async fn without_a_touch_the_lot_waits_rather_than_inventing_a_price() {
         let mut backend = flatten_backend(250);
         backend.record_lot(1_000, 10);
-        assert!(backend.flatten_stale_lots(5_000).is_empty());
+        assert!(backend.advance_exit(5_000, None).is_empty());
         assert_eq!(backend.open_lots.len(), 1);
     }
 
@@ -1860,7 +2210,10 @@ mod tests {
                     px: 9_990,
                     qty_units: 3,
                 }],
-                asks: vec![],
+                asks: vec![crate::types::BookLevel {
+                    px: 10_002,
+                    qty_units: 5,
+                }],
                 exchange_ms: 2_001,
                 recv_ns: 0,
             }))
@@ -1919,7 +2272,10 @@ mod tests {
     fn level_book(px: i64, qty_units: i64, exchange_ms: u64) -> BookSnapshot {
         BookSnapshot {
             bids: vec![crate::types::BookLevel { px, qty_units }],
-            asks: vec![],
+            asks: vec![crate::types::BookLevel {
+                px: px + 10,
+                qty_units: 10,
+            }],
             exchange_ms,
             recv_ns: 0,
         }

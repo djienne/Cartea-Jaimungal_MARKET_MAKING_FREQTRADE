@@ -15,6 +15,43 @@ if str(SCRIPTS) not in sys.path:
 from hjb import compute_h_asymmetric, compute_h_symmetric  # noqa: E402
 
 
+@pytest.mark.parametrize("solver", [compute_h_symmetric, compute_h_asymmetric])
+def test_explicit_price_drift_is_independent_of_fill_intensity(solver):
+    # With no arrivals, h_q(tau) = q*mu*tau up to a common normalization.
+    result = solver(0.0, 0.0, 0.0, 0.0, 2.0, 2.0,
+                    price_drift_per_second=-0.03, T_seconds=2.0, q_max=1,
+                    n_steps=100, return_surface=True)
+    difference = np.diff(result["h_surface"][0])
+    assert np.allclose(difference, -0.06, atol=1e-7)
+    with pytest.raises(ValueError, match="price_drift"):
+        solver(0.0, 0.0, 0.0, 0.0, 2.0, 2.0, price_drift_per_second=float("nan"))
+
+
+def test_spread_command_passes_raw_drift_and_reach_adjusted_intensities(monkeypatch):
+    import compute_spreads
+
+    entries = {
+        "kappa.json": {"CASHCAT": {"kappa+": 2.0, "kappa-": 2.0,
+            "lambda+_raw": 0.1, "lambda-_raw": 0.2,
+            "lambda0_intercept_plus": 0.15, "lambda0_intercept_minus": 0.3}},
+        "lambda.json": {"CASHCAT": {"lambda+": 0.1, "lambda-": 0.2}},
+        "epsilon.json": {"CASHCAT": {"epsilon+": 0.01, "epsilon-": 0.02}},
+    }
+    monkeypatch.setattr(compute_spreads, "load_json", lambda name, _: entries[name])
+
+    def inspect(**kwargs):
+        assert kwargs["lambda_plus"] == 0.15
+        assert kwargs["lambda_minus"] == 0.3
+        assert kwargs["price_drift_per_second"] == pytest.approx(-0.003)
+        raise RuntimeError("solver inputs checked")
+
+    for flag, name in [("--asym-kappa", "compute_h_asymmetric"), (None, "compute_h_symmetric")]:
+        monkeypatch.setattr(compute_spreads, name, inspect)
+        monkeypatch.setattr(sys, "argv", ["compute_spreads", "--skip-refresh"] + ([flag] if flag else []))
+        with pytest.raises(RuntimeError, match="solver inputs checked"):
+            compute_spreads.main()
+
+
 def test_boundary_depths_are_infinite():
     res = compute_h_asymmetric(
         lambda_plus=0.1,

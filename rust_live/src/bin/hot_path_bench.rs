@@ -84,6 +84,7 @@ fn main() {
         kappa_minus: 11_044.0,
         epsilon_plus: 3.26e-5,
         epsilon_minus: 1.92e-5,
+        price_drift_per_second: None,
         sigma2_per_second: Some(3.8e-9),
     };
     let model_config = ModelConfig::default();

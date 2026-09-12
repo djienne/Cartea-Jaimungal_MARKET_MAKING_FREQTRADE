@@ -220,11 +220,11 @@ fn decode_book(payload: &str, instrument: &InstrumentSpec, recv_ns: u64) -> Opti
         return None;
     }
     let mut sides = data.levels.into_iter();
-    let decode_side = |levels: Vec<WireLevel<'_>>| -> Vec<BookLevel> {
+    let decode_side = |levels: Vec<WireLevel<'_>>| -> Option<Vec<BookLevel>> {
         levels
             .into_iter()
             .take(20)
-            .filter_map(|level| {
+            .map(|level| {
                 Some(BookLevel {
                     px: parse_decimal_scaled(&level.px, instrument.max_price_decimals).ok()?,
                     qty_units: parse_decimal_scaled(&level.sz, instrument.sz_decimals).ok()?,
@@ -233,8 +233,9 @@ fn decode_book(payload: &str, instrument: &InstrumentSpec, recv_ns: u64) -> Opti
             .collect()
     };
     Some(BookSnapshot {
-        bids: decode_side(sides.next()?),
-        asks: decode_side(sides.next()?),
+        // Dropping an undecodable level could turn level 1 into a false touch.
+        bids: decode_side(sides.next()?)?,
+        asks: decode_side(sides.next()?)?,
         exchange_ms: wire_u64(data.time.as_ref()),
         recv_ns,
     })
@@ -248,5 +249,27 @@ mod tests {
     fn decimal_parser_rounds_like_python_collector_precision() {
         assert_eq!(parse_decimal_scaled("0.131975", 5).unwrap(), 13_198);
         assert_eq!(parse_decimal_scaled("-2.5", 0).unwrap(), -3);
+    }
+
+    #[test]
+    fn malformed_first_level_cannot_be_replaced_by_deeper_liquidity() {
+        let instrument: InstrumentSpec = serde_json::from_value(serde_json::json!({
+            "symbol":"CASHCAT", "asset_id":231, "sz_decimals":0,
+            "max_price_decimals":6, "max_significant_figures":5,
+            "max_leverage":3.0, "minimum_notional":10.0
+        }))
+        .unwrap();
+        for (coin, first_bid) in [("CASHCAT", "bad"), ("OTHER", "0.18")] {
+            let frame = serde_json::json!({"channel":"l2Book", "data":{
+                "coin":coin, "time":1000, "levels":[
+                    [{"px":first_bid,"sz":"1"},{"px":"0.18","sz":"1"}],
+                    [{"px":"0.19","sz":"1"}]
+                ]
+            }});
+            assert_eq!(
+                parse_public_frame(&frame.to_string(), &instrument, 1),
+                PublicFrame::Other
+            );
+        }
     }
 }

@@ -302,8 +302,9 @@ def replay_headline(board_json):
             utc(window["scoring_end_ms"]),
             window.get("latency_ms", "?"),
         ),
-        "- train/score split: first %.0f%% fits and sizes only"
+        "- prefix: first %.0f%% sizes orders and fits recalibrated rows; frozen profiles bypass fitting"
         % (100.0 * float(window.get("train_fraction", 0.0)),),
+        "- Frozen-profile results before their original fitting/selection dates are in-sample; overlapping archives are not independent holdouts.",
     ] + leaderboard_headline(board_json)[2:]
 
 
@@ -334,7 +335,7 @@ def leaderboard_headline(path):
         ),
     )
     if rows:
-        lines += ["", "| variant | net P&L | fills | inventory |", "| --- | ---: | ---: | ---: |"]
+        lines += ["", "Exit values are hypothetical closes. Invalid rows retain stopped marks, not executed liquidation proceeds.", "", "| variant | net P&L | fills | inventory |", "| --- | ---: | ---: | ---: |"]
         shown = rows[:3] + ([None] if len(rows) > 6 else []) + rows[-3:] if len(rows) > 6 else rows
         for row in shown:
             if row is None:

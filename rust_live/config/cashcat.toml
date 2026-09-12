@@ -148,23 +148,18 @@ horizon_seconds = 150.0
 # clamped off entirely -- deliberate, because that is what `sweep1_flat300`
 # does, but it is a live behaviour change from the 1.5x headroom of 300/450.
 #
-# NUMERICAL COST, measured 2026-09-10. phi*kappa*T = 3000 narrows the stable
-# timestep sharply. At the live-calibrated kappa (~9600) the solve converges at
-# the shipped max_dt_seconds = 0.25 and DIVERGES at 0.5; at 300/450 it converged
-# at every step tried up to 5 s. So this profile sits one halving from a
-# non-converging HJB. That fails closed at startup rather than quoting badly,
-# but do not coarsen the step, and re-check convergence if kappa climbs.
+# Fine settings match the paper/canary quote-refinement checks.
 phi_kappa_t = 3000.0
 phi_kappa_t_max = 3000.0
 alpha_kappa = 0.05
 raw_phi_fallback = 0.0001
 raw_alpha_fallback = 0.001
 volatility_risk_coefficient = 0.05
-max_dt_seconds = 0.25
+max_dt_seconds = 0.001953125
 min_steps = 200
-max_steps = 2000
-newton_max_iterations = 50
-newton_tolerance = 1e-8
+max_steps = 153600
+newton_max_iterations = 100
+newton_tolerance = 1e-10
 newton_damping = 0.7
 episode_reset_on_flat = true
 episode_min_elapsed_fraction = 0.25

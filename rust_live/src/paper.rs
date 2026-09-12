@@ -63,7 +63,15 @@ pub(crate) async fn step_paper_variant(
     bbo: Option<Bbo>,
     vpin_value: Option<f64>,
 ) -> Result<Option<QuoteReason>> {
+    let previous_exit = variant.backend.diagnostics().last_exit;
     let execution_events = variant.backend.on_market_event(event).await?;
+    if variant.backend.diagnostics().last_exit != previous_exit {
+        variant.logger.log(
+            "paper_ioc",
+            Some(event_time),
+            &variant.backend.diagnostics().last_exit,
+        )?;
+    }
     for execution_event in &execution_events {
         variant
             .logger
@@ -108,11 +116,6 @@ impl PaperVariant {
         vpin: Option<f64>,
     ) -> Result<QuoteReason> {
         let account = self.backend.account_state();
-        let q_exact = if self.inventory_unit == 0 {
-            0.0
-        } else {
-            account.inventory_units as f64 / self.inventory_unit as f64
-        };
         let model_now_ns = decision_ms.saturating_mul(1_000_000);
         if self.episode_start_ns == 0 {
             self.episode_start_ns = model_now_ns;
@@ -122,7 +125,7 @@ impl PaperVariant {
         let minimum_elapsed = horizon_seconds * self.config.model.episode_min_elapsed_fraction;
         let episode_rolled = elapsed >= horizon_seconds
             || (self.config.model.episode_reset_on_flat
-                && q_exact.round() == 0.0
+                && account.inventory_units == 0
                 && elapsed >= minimum_elapsed);
         let elapsed = if episode_rolled {
             self.episode_start_ns = model_now_ns;

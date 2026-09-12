@@ -1,4 +1,8 @@
 [parameter_profiles.sweep_a]
+# Frozen profiles retain legacy price drift: saved fits contain reach-adjusted
+# lambda, but no verified raw rates/intercepts. Do not infer them from trimmed
+# epsilon event counts or refit these controls on later data. Fresh fits emit
+# price_drift_per_second separately. Original sweep training ended 2026-08-30.
 epsilon_plus = 0.00005736939755660366
 epsilon_minus = 0.00006613041142407194
 kappa_plus = 4437.202794669829

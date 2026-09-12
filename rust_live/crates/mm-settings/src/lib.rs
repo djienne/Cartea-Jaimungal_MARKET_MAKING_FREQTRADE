@@ -192,43 +192,16 @@ pub struct DryRunConfig {
     /// level shrinks, front^n / (front^n + back^n) of the loss is taken off
     /// the queue ahead of us. 0 counts trades only. Uncalibrated prior.
     pub queue_cancel_power: f64,
-    /// Taker fee used when comparing variants after conservatively flattening
-    /// their residual inventory at the executable side of the book.
+    /// Legacy input retained for config compatibility; exits use `flatten_fee_rate`.
     pub promotion_flatten_fee_rate: f64,
     /// Additional adverse price movement charged to the virtual flatten.
     pub promotion_flatten_slippage_bps: f64,
     pub funding_rate_per_hour: f64,
     pub markout_horizons_ms: Vec<u64>,
-    /// Flatten inventory by CROSSING once a lot has been held this long.
-    /// Zero disables it and holds for an offsetting maker fill.
-    ///
-    /// This is the PAPER deadline and still defaults to zero. Its live
-    /// counterpart `live.flatten_after_ms` is set to 301 in the shipped
-    /// CASHCAT profile, so "hold for a passive offset" is no longer the
-    /// shipped live behaviour.
-    ///
-    /// The replay evidence for this came from the retired Python engine and
-    /// concluded the opposite of the live grid: that a 60 bps half-spread
-    /// floor, not fast flattening, was what made the replay positive. The grid
-    /// has `flatten300` ahead of `wide60`. Re-measure with `mm-live replay`
-    /// before trusting either.
-    /// Adverse selection grows steeply with the markout horizon -- 12.84 bps at
-    /// 200 ms against 29.77 at 6.6 s -- and waiting for a passive offset takes a
-    /// 6.5 s median, so the position eats the whole accrual. Crossing early
-    /// truncates it, and pays the half-spread plus taker fee to do so. The
-    /// replay puts breakeven near a 450-520 ms round trip; this exists to find
-    /// out whether that survives contact with the live feed.
+    /// FIFO lot age after fill notification that triggers cancellation/reconciliation.
+    /// Zero disables timed exits; the value is not a promised IOC fill time.
     pub flatten_after_ms: u64,
-    /// Cost of a flatten, kept SEPARATE from `promotion_flatten_*`.
-    ///
-    /// Those exist for the deliberately pessimistic teardown flatten that marks
-    /// a variant's residual inventory, where 25 bps is a conservative haircut
-    /// applied once. Charging it per exit is a different thing entirely: at
-    /// 25 bps the policy loses under every timing convention, so the grid would
-    /// "refute" the hypothesis whether or not it is true. The measured walk for
-    /// this lot is 1.6-2.1 bps (median) past the touch, and the replay charges
-    /// 2.5 with a 4.5 bps taker fee -- match that, so the two simulators are
-    /// comparable and the answer comes from the market rather than a knob.
+    /// Legacy fixed-walk input, retained for decoding; v5 executes visible depth.
     pub flatten_slippage_bps: f64,
     pub flatten_fee_rate: f64,
 }

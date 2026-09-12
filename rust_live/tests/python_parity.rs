@@ -193,6 +193,7 @@ fn hjb_surface_and_final_spreads_match_python_reference() {
         lambda_minus: 1.000_449_358_777_403_3,
         epsilon_plus: 6.000_260_615_141_559e-9,
         epsilon_minus: 0.0,
+        price_drift_per_second: None,
         sigma2_per_second: Some(9.154_778_008_016_623e-11),
     };
     let surface = solve_asymmetric(parameters, &parity_model_config(), 1_868.0, 1).unwrap();

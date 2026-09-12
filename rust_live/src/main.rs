@@ -168,7 +168,7 @@ enum Command {
         /// Optional bounded runtime. Zero runs until Ctrl-C.
         #[arg(long, default_value_t = 0)]
         duration_seconds: u64,
-        /// Directory for per-variant reports and the leaderboard.
+        /// Existing grid directory to resume; fresh runs are forbidden.
         #[arg(long)]
         out_dir: Option<PathBuf>,
         /// Seconds between equity-history samples. Zero disables the history.
@@ -2042,10 +2042,6 @@ async fn run_dry_run_grid(
     log_rotation: mm_live::report::LogRotation,
 ) -> Result<()> {
     let launched_at_ms = unix_ms();
-    // Overwritten by a resumed checkpoint below, so that elapsed time, the
-    // downtime fraction and the equity curve all run from the original start
-    // rather than restarting with the process.
-    let mut started_at_ms = launched_at_ms;
     let spec = grid::GridSpec::load(grid_path)?;
     // Validate every variant before touching market data. An invalid spec must
     // fail immediately and by name -- not after a calibration it will never
@@ -2055,25 +2051,31 @@ async fn run_dry_run_grid(
             format!("grid variant {:?} is not a valid configuration", entry.name)
         })?;
     }
-    let out_dir = out_dir.map_or_else(
-        || {
-            config
-                .storage
-                .report_dir
-                .join(format!("grid-{launched_at_ms}"))
-        },
-        Path::to_owned,
+    let out_dir = out_dir.context("resume-only grid requires --out-dir for the existing run")?;
+    let _grid_lock = grid::GridRunLock::acquire(out_dir)?;
+    let state_path = out_dir.join("grid_state.json");
+    let grid_fingerprint = format!(
+        "execution={};estimator=v{}:{};starting_equity={}",
+        grid::EXECUTION_REVISION,
+        mm_live::calibration::PARAMETER_SCHEMA_VERSION,
+        mm_live::calibration::ESTIMATOR_SEMANTICS,
+        config.dry_run.starting_equity_usdc
     );
-    std::fs::create_dir_all(&out_dir)
-        .with_context(|| format!("cannot create grid output directory {}", out_dir.display()))?;
-    let _grid_lock = grid::GridRunLock::acquire(&out_dir)?;
+    // Validate recovery before calibration, log rotation, or opening the feed.
+    let resume_from = load_resumable_checkpoint(
+        &state_path,
+        &instrument.symbol,
+        &grid_fingerprint,
+        launched_at_ms,
+        &spec
+            .variants
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+    )?;
+    let started_at_ms = resume_from.started_at_ms;
 
     let (grid_data, snapshot, _, _) = calibrate_model(config, &instrument, true)?;
-    let mid = grid_data
-        .mids
-        .last()
-        .context("calibration window has no final mid")?
-        .mid;
 
     // The checkpoint is read before the variants are built, because it decides
     // one of their construction parameters: a resumed run keeps its ORIGINAL
@@ -2083,7 +2085,6 @@ async fn run_dry_run_grid(
     // another. Keeping the checkpointed unit -- and re-solving the HJB surface
     // against it, as `dry-run` already does via `restored_inventory_unit()` --
     // is what makes the resumed run the same run rather than a similar one.
-    let state_path = out_dir.join("grid_state.json");
     let mut variant_configs = Vec::with_capacity(spec.variants.len());
     for entry in &spec.variants {
         let (variant_config, parameters, fingerprint) =
@@ -2111,25 +2112,7 @@ async fn run_dry_run_grid(
             }
         }
     }
-    // The run's identity: what a checkpoint's accounting cannot survive. A new
-    // execution model or estimator schema, or a different starting equity, makes
-    // the old numbers meaningless. Anything else resumes and is marked per row.
-    let grid_fingerprint = format!(
-        "execution=causal-v4;estimator=v{}:{};starting_equity={}",
-        mm_live::calibration::PARAMETER_SCHEMA_VERSION,
-        mm_live::calibration::ESTIMATOR_SEMANTICS,
-        config.dry_run.starting_equity_usdc
-    );
-    let resume_from = load_resumable_checkpoint(
-        &state_path,
-        &instrument.symbol,
-        &grid_fingerprint,
-        launched_at_ms,
-    );
-    let run_id = resume_from.as_ref().map_or_else(
-        || format!("run-{launched_at_ms}"),
-        |state| state.run_id.clone(),
-    );
+    let run_id = resume_from.run_id.clone();
     let run_dir = out_dir.join("runs").join(&run_id);
     std::fs::create_dir_all(&run_dir)
         .with_context(|| format!("cannot create immutable grid run {}", run_dir.display()))?;
@@ -2142,12 +2125,11 @@ async fn run_dry_run_grid(
             variant_config.risk.clone(),
         )?;
         let inventory_unit = resume_from
-            .as_ref()
-            .and_then(|state| state.variants.iter().find(|v| v.name == entry.name))
-            .map_or_else(
-                || policy.derive_inventory_unit(mid, variant_config.model.q_max),
-                |persisted| Ok(persisted.inventory_unit),
-            )?;
+            .variants
+            .iter()
+            .find(|v| v.name == entry.name)
+            .context("validated checkpoint row missing")?
+            .inventory_unit;
         let surface = solve_asymmetric(
             fixed_parameters.unwrap_or(snapshot.parameters),
             &variant_config.model,
@@ -2160,6 +2142,10 @@ async fn run_dry_run_grid(
             variant_config.dry_run.clone(),
             variant_config.quoting.clone(),
             variant_config.risk.clone(),
+        )?
+        .with_exit_settings(
+            variant_config.live.emergency_flatten_max_slippage_bps,
+            variant_config.runtime.market_stale_ms,
         )?;
         let logger = JsonlEventLogger::create_with_rotation(
             &run_dir,
@@ -2216,65 +2202,53 @@ async fn run_dry_run_grid(
         });
     }
 
-    let mut resumes = 0_u32;
-    let mut resumed_downtime_ms = 0_u64;
-    let mut resumed_feed = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
-    let mut resumed_event_loss = false;
-    if let Some(state) = resume_from {
-        let gap_ms = launched_at_ms.saturating_sub(state.checkpoint_ms);
-        match resume_grid(&mut variants, &state) {
-            Ok(()) => {
-                started_at_ms = state.started_at_ms;
-                resumes = state.resumes.saturating_add(1);
-                resumed_downtime_ms = state.resumed_downtime_ms.saturating_add(gap_ms);
-                resumed_feed = (
-                    state.feed_health.gaps,
-                    state.feed_health.downtime_ms,
-                    state.feed_health.longest_gap_ms,
-                    state.trade_prints,
-                    state.replayed_trades_ignored,
-                );
-                resumed_event_loss = state.feed_health.event_loss;
-                let carry_limit_ms = max_carry_inventory_gap_seconds.saturating_mul(1_000);
-                let (flattened_variants, flattened_pnl_usdc) =
-                    if gap_ms > carry_limit_ms && !resumed_event_loss {
-                        let mut count = 0_usize;
-                        let mut total = 0.0_f64;
-                        for variant in &mut variants {
-                            if let Some(closed) = variant.backend.flatten_carried_position()? {
-                                count += 1;
-                                total += closed;
-                            }
-                        }
-                        (count, total)
-                    } else {
-                        (0, 0.0)
-                    };
-                info!(
-                    gap_ms,
-                    resumes,
-                    resumed_downtime_ms,
-                    elapsed_seconds = launched_at_ms.saturating_sub(started_at_ms) / 1_000,
-                    variants = variants.len(),
-                    flattened_variants,
-                    flattened_pnl_usdc,
-                    "resumed the previous grid run; the interruption is process downtime, not feed downtime"
-                );
-                if flattened_variants > 0 {
-                    warn!(
-                        gap_ms,
-                        carry_limit_ms,
-                        flattened_variants,
-                        "the gap exceeded the inventory carry window; every open position was \
-                         closed at its last observed touch with promotion exit costs, so P&L after the gap is \
-                         attributable to decisions taken after it"
-                    );
-                }
-            }
-            Err(error) => {
-                return Err(error.context("validated checkpoint could not be restored"));
+    let state = resume_from;
+    let gap_ms = launched_at_ms.saturating_sub(state.checkpoint_ms);
+    resume_grid(&mut variants, &state).context("validated checkpoint could not be restored")?;
+    let resumes = state.resumes.saturating_add(1);
+    let resumed_downtime_ms = state.resumed_downtime_ms.saturating_add(gap_ms);
+    let resumed_feed = (
+        state.feed_health.gaps,
+        state.feed_health.downtime_ms,
+        state.feed_health.longest_gap_ms,
+        state.trade_prints,
+        state.replayed_trades_ignored,
+    );
+    let resumed_event_loss = state.feed_health.event_loss;
+    let carry_limit_ms = max_carry_inventory_gap_seconds.saturating_mul(1_000);
+    let (flattened_variants, flattened_pnl_usdc) = if gap_ms > carry_limit_ms && !resumed_event_loss
+    {
+        let mut count = 0_usize;
+        let mut total = 0.0_f64;
+        for variant in &mut variants {
+            if let Some(closed) = variant.backend.flatten_carried_position()? {
+                count += 1;
+                total += closed;
             }
         }
+        (count, total)
+    } else {
+        (0, 0.0)
+    };
+    info!(
+        gap_ms,
+        resumes,
+        resumed_downtime_ms,
+        elapsed_seconds = launched_at_ms.saturating_sub(started_at_ms) / 1_000,
+        variants = variants.len(),
+        flattened_variants,
+        flattened_pnl_usdc,
+        "resumed the previous grid run; the interruption is process downtime, not feed downtime"
+    );
+    if flattened_variants > 0 {
+        warn!(
+            gap_ms,
+            carry_limit_ms,
+            flattened_variants,
+            "the gap exceeded the inventory carry window; every open position was \
+             closed at its last observed touch with promotion exit costs, so P&L after the gap is \
+             attributable to decisions taken after it"
+        );
     }
 
     let metrics = Arc::new(Metrics::default());
@@ -2614,55 +2588,56 @@ async fn run_dry_run_grid(
     Ok(())
 }
 
-/// The checkpoint to resume from, or `None` to start fresh -- with the reason
-/// logged either way.
-///
-/// Every rejection here is a case where continuing would produce a number that
-/// reads as one continuous measurement but is not one.
+/// Recover the existing accounts before creating run artifacts or connecting.
 fn load_resumable_checkpoint(
     state_path: &Path,
     symbol: &str,
     grid_fingerprint: &str,
     launched_at_ms: u64,
-) -> Option<grid::PersistedGridState> {
-    let state = grid::PersistedGridState::load(state_path)?;
-    if let Err(error) = state.validate_variants() {
-        warn!(%error, "checkpoint rejected before adopting run state or artifacts");
-        return None;
-    }
-    if let Some(reason) = state.rejection(symbol, grid_fingerprint) {
-        warn!(reason = %reason, "not resuming the previous grid run; starting fresh");
-        return None;
-    }
-    if state.checkpoint_ms > launched_at_ms {
-        warn!("checkpoint is from the future; starting fresh");
-        return None;
-    }
+    variant_names: &[&str],
+) -> Result<grid::PersistedGridState> {
     // Any gap resumes: past the carry window the caller closes held inventory
     // at the checkpoint mark, so a long outage costs the run its positions, not
     // its history. (Marking inventory across an unobserved move is how a 46.4 h
     // run once reported a 13.2% rally as profit; the carry window is the guard.)
-    Some(state)
+    grid::PersistedGridState::load(state_path, |state| {
+        state.validate_variants()?;
+        state.validate_roster(variant_names)?;
+        if let Some(reason) = state.rejection(symbol, grid_fingerprint) {
+            bail!("{reason}");
+        }
+        if state.checkpoint_ms > launched_at_ms {
+            bail!("checkpoint is from the future");
+        }
+        Ok(())
+    })
 }
 
 /// Restore every variant's accounting from a checkpoint.
 ///
 /// History continues across parameter changes: a retuned row keeps its
-/// accounting and counts the change, a row the checkpoint never had starts from
-/// zero. Both are printed under the leaderboard so a reader knows which rows
-/// span more than one configuration.
+/// accounting and counts the change. Missing rows cannot create new accounts.
 fn resume_grid(variants: &mut [PaperVariant], state: &grid::PersistedGridState) -> Result<()> {
+    state.validate_roster(
+        &variants
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+    )?;
     for variant in variants {
         let Some(persisted) = state
             .variants
             .iter()
             .find(|entry| entry.name == variant.name)
         else {
-            info!(variant = %variant.name, "new to this run; starting from zero");
-            continue;
+            bail!("validated checkpoint row missing: {}", variant.name);
         };
         variant.config_changes = persisted.config_changes;
-        if persisted.config_fingerprint != variant.config_fingerprint {
+        if persisted.failure.is_some() || !persisted.diagnostics.scientifically_valid {
+            variant
+                .config_fingerprint
+                .clone_from(&persisted.config_fingerprint);
+        } else if persisted.config_fingerprint != variant.config_fingerprint {
             variant.config_changes += 1;
             warn!(
                 variant = %variant.name,
@@ -3110,6 +3085,10 @@ async fn run_public_dry_run(
         config.dry_run.clone(),
         config.quoting.clone(),
         config.risk.clone(),
+    )?
+    .with_exit_settings(
+        config.live.emergency_flatten_max_slippage_bps,
+        config.runtime.market_stale_ms,
     )?;
     let config_fingerprint = config.fingerprint()?;
     let _ = backend.restore_account_state(
@@ -3686,6 +3665,7 @@ mod tests {
                 kappa_minus: 1_000.0,
                 epsilon_plus: 0.0,
                 epsilon_minus: 0.0,
+                price_drift_per_second: None,
                 sigma2_per_second: None,
             },
             &config.model,
@@ -3929,7 +3909,7 @@ mod tests {
     }
 
     #[test]
-    fn a_retuned_row_resumes_and_is_counted_while_a_new_row_starts_fresh() {
+    fn retuned_rows_continue_once_stopped_rows_stay_frozen_and_new_rows_are_refused() {
         let directory = tempfile::tempdir().unwrap();
         let mut variants = vec![grid_variant(directory.path())];
         let mut persisted = grid::PersistedVariant {
@@ -3967,11 +3947,80 @@ mod tests {
         assert_eq!(variants[0].fills, 7);
         assert_eq!(variants[0].backend.account_state().fees_usdc, 0.5);
 
+        state.variants[0]
+            .config_fingerprint
+            .clone_from(&variants[0].config_fingerprint);
+        state.variants[0].config_changes = variants[0].config_changes;
+        resume_grid(&mut variants, &state).unwrap();
+        assert_eq!(variants[0].config_changes, 2);
+
+        state.variants[0].diagnostics.scientifically_valid = false;
+        state.variants[0].diagnostics.invalid_reason =
+            Some("liquidation buffer breached".to_owned());
+        variants[0].config_fingerprint = "another change".to_owned();
+        resume_grid(&mut variants, &state).unwrap();
+        assert!(!variants[0].backend.scientifically_valid());
+        assert_eq!(variants[0].fills, 7);
+        assert_eq!(variants[0].backend.account_state().fees_usdc, 0.5);
+        assert_eq!(
+            variants[0].config_fingerprint,
+            state.variants[0].config_fingerprint
+        );
+        assert_eq!(variants[0].config_changes, 2);
+
         state.variants[0].name = "someone_else".to_owned();
         let mut fresh = vec![grid_variant(directory.path())];
-        resume_grid(&mut fresh, &state).unwrap();
+        assert!(resume_grid(&mut fresh, &state).is_err());
         assert_eq!(fresh[0].config_changes, 0);
         assert_eq!(fresh[0].fills, 0);
+    }
+
+    #[tokio::test]
+    async fn paper_horizon_resets_only_for_zero_physical_inventory() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut variant = grid_variant(directory.path());
+        let mut account = variant.backend.account_state();
+        account.inventory_units = 490;
+        variant
+            .backend
+            .restore_from_snapshot(
+                account,
+                mm_live::execution::DryRunDiagnostics::default(),
+                1_000,
+                None,
+                0.0,
+            )
+            .unwrap();
+        variant.episode_start_ns = 1_000_000_000;
+        let bbo = Bbo {
+            bid_px: 99_900,
+            ask_px: 100_100,
+            bid_sz: 100,
+            ask_sz: 100,
+            exchange_ms: 51_000,
+            recv_ns: 51_000_000_000,
+        };
+        variant
+            .step(bbo, 51_000, QuoteReason::Market, None)
+            .await
+            .unwrap();
+        assert_eq!(variant.episode_start_ns, 1_000_000_000);
+        account.inventory_units = 0;
+        variant
+            .backend
+            .restore_from_snapshot(
+                account,
+                mm_live::execution::DryRunDiagnostics::default(),
+                1_000,
+                None,
+                0.0,
+            )
+            .unwrap();
+        variant
+            .step(bbo, 52_000, QuoteReason::Market, None)
+            .await
+            .unwrap();
+        assert_eq!(variant.episode_start_ns, 52_000_000_000);
     }
 
     #[tokio::test]
@@ -4065,6 +4114,7 @@ mod tests {
             kappa_minus: 1.0,
             epsilon_plus: 0.0,
             epsilon_minus: 0.0,
+            price_drift_per_second: None,
             sigma2_per_second: None,
         });
         assert!(!variant.leaderboard_row(Some(book)).eligible_for_promotion);
@@ -4285,8 +4335,19 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let report = directory.path().join("leaderboard.json");
         std::fs::write(&report, b"previous run").unwrap();
-        assert!(load_resumable_checkpoint(&path, "CASHCAT", "execution=other", 2_100).is_none());
+        assert!(
+            load_resumable_checkpoint(&path, "CASHCAT", "execution=other", 2_100, &[]).is_err()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read(&report).unwrap(), b"previous run");
+        // A readable but incompatible primary must not hide a usable backup.
+        let mut incompatible = state.clone();
+        incompatible.grid_fingerprint = "execution=other".to_owned();
+        incompatible.write_atomic(&path).unwrap();
+        let recovered =
+            load_resumable_checkpoint(&path, "CASHCAT", "execution=causal-v4", 2_100, &[]).unwrap();
+        assert_eq!(recovered.run_id, state.run_id);
+        assert_eq!(recovered.started_at_ms, state.started_at_ms);
         assert_eq!(std::fs::read(&report).unwrap(), b"previous run");
     }
 

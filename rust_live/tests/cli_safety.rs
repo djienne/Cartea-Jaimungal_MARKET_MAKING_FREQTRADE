@@ -1,6 +1,39 @@
 use std::process::Command;
 
 #[test]
+fn grid_cannot_start_fresh_when_checkpoints_are_missing_or_corrupt() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let directory = tempfile::tempdir().unwrap();
+    for corrupt in [false, true] {
+        if corrupt {
+            for name in ["grid_state.json", "grid_state.json.bak"] {
+                std::fs::write(directory.path().join(name), b"broken checkpoint").unwrap();
+            }
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_mm-live"))
+            .arg("--config")
+            .arg(root.join("config/cashcat_dryrun_realistic.toml"))
+            .arg("dry-run-grid")
+            .arg("--grid")
+            .arg(root.join("config/grid_cashcat.toml"))
+            .arg("--out-dir")
+            .arg(directory.path())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no fresh run will be started"));
+        assert!(!directory.path().join("runs").exists());
+        assert!(!directory.path().join("leaderboard.json").exists());
+        if corrupt {
+            assert_eq!(
+                std::fs::read(directory.path().join("grid_state.json")).unwrap(),
+                b"broken checkpoint"
+            );
+        }
+    }
+}
+
+#[test]
 fn live_command_fails_before_credentials_or_order_transport() {
     for profile in ["config/cashcat.toml", "config/cashcat_canary.toml"] {
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(profile);

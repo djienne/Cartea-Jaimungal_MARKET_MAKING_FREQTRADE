@@ -78,20 +78,24 @@ evidence that historical venue fills would match paper fills.
 
 ### Fidelity limits, before reading any replay-vs-live table
 
-- **A latency rung retunes the flatten family, it does not merely handicap it.**
-  The exit deadline is `flatten_after_ms` plus the decision and acknowledgement
-  legs, so at the shipped 150 ms `flatten300` is a 301 ms exit and `flatten550`
-  a 550 ms one. `--latency-ms 0` collapses the deadline to the raw
-  `flatten_after_ms`, a rung no real stack can reach.
-- **Use a small `--train-fraction` to reproduce a live row.** The grid was never
-  trained on the window it ran, so the default 0.7 throws most of the
-  comparison away refitting parameters the grid already had.
+- **Exit names retain their historical labels, not guaranteed fill times.**
+  Execution v5 waits for fill notification, the configured FIFO age, effective
+  cancellation, acknowledgement and reconciliation before sending an IOC. Each
+  delay uses the configured latency tails. Maker placements are suppressed during
+  the exit; orders can still fill before their cancellation becomes effective.
+  A new depth snapshot at/after arrival supplies actual prices and bounded size,
+  within the sent 25/100/configured-maximum-bps IOC limit. Residual inventory remains
+  exposed through the live ten-poll retry cadence. Book events use their own touch;
+  prints, BBOs, duplicate and older snapshots cannot manufacture taker liquidity.
+- **Frozen profiles bypass prefix calibration.** The prefix still sizes replay
+  orders; it does not make a frozen fit out-of-sample. Scoring before that fit's
+  original fitting/selection date is in-sample; overlapping replays are dependent.
 - **A live row may be stitched, a replay never is.** Live rows cross `resumes`,
   `resumed_downtime_ms` and checkpoint restores; a replay is one continuous
   pass. A window with heavy downtime is not a fidelity measurement.
-- **Carried inventory is priced differently.** The live gap-carry path charges
-  the promotion 25 bps; the replay's timed exit charges `flatten_slippage_bps`
-  (2.5) plus `flatten_fee_rate` (0.00045).
+- **Carried inventory is priced differently.** Gap-carry valuation retains its
+  25-bps haircut; timed exits consume visible depth. Both use `flatten_fee_rate`.
+  The old fixed-walk and separate promotion-fee settings are compatibility inputs.
 - **`feed_health` on a replay board is not a measurement.** A replay consumes a
   tape slice and cannot observe a gap inside it, so those counters read zero
   meaning "not measured". `calibration` is likewise null for `sweep1_*` and
@@ -111,9 +115,9 @@ finalists, four targeted combinations and two fixed-fit flatten contenders:
 | `sweep3` | Saved fit C, phi*kappa*T=3000, T=150 s, q max=6 |
 | `sweep1_unguarded` | First finalist without the flow guard |
 | `sweep1_wide60` | First finalist with a 60 bps half-spread floor |
-| `sweep1_flat300` | Same 60 bps floor with the 301 ms exit target |
-| `sweep1_flat550` | Same 60 bps floor with the 550 ms exit target |
-| `contender_flat300` | Saved control fit, phi*kappa*T=300, q max=6, 60 bps floor, 301 ms exit target |
+| `sweep1_flat300` | Same 60 bps floor with the historical flat300 trigger |
+| `sweep1_flat550` | Same 60 bps floor with the historical flat550 trigger |
+| `contender_flat300` | Saved control fit, phi*kappa*T=300, q max=6, 60 bps floor, historical flat300 trigger |
 | `contender_flat550` | Same fixed control fit and 60 bps floor, 550 ms exit target |
 
 The four `parameter_profiles` store six fitted CJ parameters each, frozen from
@@ -225,9 +229,9 @@ on a fresh post-reconnect BBO without resetting cash, inventory or loss limits.
 Paper withdrawal is a simulation boundary, not a claim that venue orders were
 cancelled during an unobserved interval.
 
-Startup metadata requests, connections and writes have timeouts; missing BBO
-updates trigger resubscription
-even if heartbeat frames still arrive. Recovery retries with bounded backoff.
+Startup metadata requests, connections and writes have timeouts. Fresh L2
+snapshots refresh the touch even when the change-only BBO channel is quiet;
+heartbeats alone cannot keep stale quotes alive. Recovery uses bounded backoff.
 An unexpectedly terminated feed task fails the process visibly so Docker can
 restart it. Pause/resume and terminal execution-risk stops are logged explicitly;
 a recoverable data pause never releases a terminal risk halt.
@@ -249,23 +253,25 @@ also run the WSL 2 engine, not Docker VMM — `memory/dry-run-operation.md`.
 
 Schema-3 checkpoints contain every variant's accounting, diagnostics, daily risk
 and last observed BBO. **A config change continues the run.** A retuned row
-keeps its history and its `config_changes` count goes up; a row new to the spec
-starts from zero; a row removed from the spec is dropped. The leaderboard
+keeps its history and its `config_changes` count goes up once. The roster must
+match: new, removed or renamed rows are refused. Stopped rows stay frozen. The leaderboard
 prints `[RECONFIGURED]` naming the rows that span more than one configuration.
-Only the run's identity starts fresh: the symbol, the execution model, the
-estimator parameter schema, or `dry_run.starting_equity_usdc`, because the old
-accounting has no meaning under a different one. A rejected checkpoint starts a
-separate run; it cannot overwrite the rejected run's artifacts.
+**The grid is resume-only.** `--out-dir` must identify the existing history.
+Both checkpoint generations are checked for compatibility and valid accounting;
+if neither can be resumed, startup fails before calibration or feed access.
+Missing or incompatible checkpoints never create a fresh run.
+The specific v4-to-v5 upgrade preserves the schema-3 ledger while marking new
+execution behavior prospectively. Other incompatible execution revisions fail.
 
 `grid_state.json` is replaced atomically with one `.bak` generation. Decode
-failures warn and try the backup. Missing feed-health fields are errors, not an
+failures try the backup. Missing feed-health fields are errors, not an
 assumed healthy history; neither an omitted loss flag nor a malformed variant
 is silently converted into a resumable clean account.
 
 | Checkpoint gap | Behavior |
 |---|---|
-| Up to 900 seconds | Restore accounting with no working orders; carry inventory, waiting for a fresh BBO before normal stale-lot exits |
-| Over 900 seconds | Close valid carried inventory at the checkpoint bid/ask with configured promotion fee/slippage before feed startup, then resume |
+| Up to 900 seconds | Restore accounting with no working orders or pending IOC; carried lots wait through exit scheduling and fresh depth |
+| Over 900 seconds | Close valid carried inventory at the saved bid/ask with the taker fee and promotion haircut before feed startup, then resume |
 
 `--max-carry-inventory-gap-seconds` sets the carry window; zero closes
 inventory on any resume. There is no upper limit on the gap: a run resumes
@@ -275,8 +281,8 @@ path was never observed: that mechanism let a 46.4 h run report a 13.2% rally
 as profit (2026-08-27).
 
 A gap close updates cash, realized P&L, fees and daily risk together, reducing
-equity by spread/exit costs relative to the checkpoint mark. It is a conservative
-boundary valuation, **not evidence that a trade executed during the outage**.
+equity by spread/exit costs relative to the checkpoint mark. It is a scenario
+boundary assumption, **not evidence that a trade executed during the outage**.
 Short-gap inventory still experiences unobserved price risk; report the gap
 rather than presenting the session as uninterrupted. Pending markouts are not
 restored across it.
@@ -290,8 +296,8 @@ downtime. `run_started_ms` remains constant within the resumed run.
 
 The root leaderboard and checkpoint describe the active run. Its artifacts live
 under `rust_live/reports/grid_live/runs/<run_id>/`: per-variant reports, logs,
-`equity_history.csv` and a copy of its latest checkpoint, so no run is ever
-lost to a fresh start; copying that checkpoint back to the root resumes it. The
+`equity_history.csv` and a copy of its latest checkpoint; a verified copy can
+restore the root checkpoint without replacing the history. The
 history records one row per variant every
 `--history-seconds` (default 60; zero disables it), plus a final shutdown sample.
 It retains run identity and mid-price, so plotting does not require retained tape.

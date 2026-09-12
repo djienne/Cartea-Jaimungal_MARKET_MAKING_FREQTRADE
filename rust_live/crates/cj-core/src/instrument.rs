@@ -30,6 +30,16 @@ pub struct InstrumentSpec {
 }
 
 impl InstrumentSpec {
+    /// Single-tier venue maintenance is half the initial margin at max leverage.
+    /// Tiered instruments still require their configured conservative rate.
+    pub fn maintenance_rate(&self, configured: f64) -> f64 {
+        if self.margin_table_id > 0 && self.margin_table_id < 50 {
+            configured.max(0.5 / self.max_leverage)
+        } else {
+            configured
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.symbol.trim().is_empty() {
             bail!("instrument symbol must not be empty");

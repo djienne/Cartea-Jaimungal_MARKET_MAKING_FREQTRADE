@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
+import math
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+
+from estimator_common import shard_timestamp_ms
 
 
 REQUIRED_COLUMNS = {
@@ -120,9 +124,17 @@ def iter_parquet_files(
         stream_dir = symbol_dir / stream
         if not stream_dir.is_dir():
             continue
-        files = list(stream_dir.glob("*.parquet"))
+        files = stream_dir.glob("*.parquet")
         if newest_per_stream is not None:
-            files = sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)[:newest_per_stream]
+            def recency(path: Path) -> float:
+                stamp = shard_timestamp_ms(path)
+                if stamp is not None and math.isfinite(stamp) and stamp > 0:
+                    return stamp
+                return path.stat().st_mtime * 1_000
+
+            # Stat only legacy names: per-file bind-mount metadata calls make
+            # selection scale poorly with retention. Contents still prove freshness.
+            files = heapq.nlargest(newest_per_stream, files, key=recency)
         else:
             files = sorted(files)
         for path in files:

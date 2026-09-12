@@ -184,6 +184,7 @@ def compute_h_symmetric(
     q_min: int | None = None,
     n_steps: int = 200,
     return_surface: bool = False,
+    price_drift_per_second: float | None = None,
 ):
     """
     Closed-form matrix solution from fq_market_making_introduction.ipynb
@@ -224,6 +225,10 @@ def compute_h_symmetric(
     eps_p = float(epsilon_plus)
     eps_m = float(epsilon_minus)
 
+    drift = lam_p * eps_p - lam_m * eps_m if price_drift_per_second is None else float(price_drift_per_second)
+    if not np.isfinite(drift):
+        raise ValueError("price_drift_per_second must be finite")
+
     lam_tilde_p = lam_p * np.exp(-1.0 - kappa * eps_p)
     lam_tilde_m = lam_m * np.exp(-1.0 - kappa * eps_m)
 
@@ -232,7 +237,7 @@ def compute_h_symmetric(
     A = np.zeros((d, d))
 
     for i, q in enumerate(q_grid):
-        A[i, i] = q * kappa * (lam_p * eps_p - lam_m * eps_m) - phi * kappa * (q ** 2)
+        A[i, i] = q * kappa * drift - phi * kappa * (q ** 2)
         if i > 0:
             A[i, i - 1] = lam_tilde_p
         if i < d - 1:
@@ -332,6 +337,7 @@ def compute_h_asymmetric(
     damping: float = 0.7,
     clip_deltas: bool = False,
     return_surface: bool = False,
+    price_drift_per_second: float | None = None,
 ):
     """
     Backward-Euler solver for the asymmetric-κ HJB (κ+ != κ-).
@@ -394,6 +400,10 @@ def compute_h_asymmetric(
     eps_p = float(epsilon_plus)
     eps_m = float(epsilon_minus)
 
+    price_drift = lam_p * eps_p - lam_m * eps_m if price_drift_per_second is None else float(price_drift_per_second)
+    if not np.isfinite(price_drift):
+        raise ValueError("price_drift_per_second must be finite")
+
     q_grid = np.arange(q_min, q_max + 1)
     d = len(q_grid)
 
@@ -450,7 +460,7 @@ def compute_h_asymmetric(
                 jac_upper[i] = slope_m
                 jac_diag[i] -= slope_m
 
-            drift = float(q) * (lam_p * eps_p - lam_m * eps_m)
+            drift = float(q) * price_drift
             g_vec[i] = value_total + drift
 
         return g_vec, jac_lower, jac_diag, jac_upper

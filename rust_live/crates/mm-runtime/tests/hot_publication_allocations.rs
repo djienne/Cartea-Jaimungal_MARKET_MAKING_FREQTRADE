@@ -59,6 +59,7 @@ fn complete_production_hot_step_is_allocation_free_after_construction() {
             kappa_minus: 9_161.0,
             epsilon_plus: 2.38e-5,
             epsilon_minus: 3.42e-5,
+            price_drift_per_second: None,
             sigma2_per_second: Some(3.8e-9),
         },
         &model_config,
@@ -90,7 +91,7 @@ fn complete_production_hot_step_is_allocation_free_after_construction() {
         exchange_ms: 1,
         recv_ns: 1,
     });
-    let (quote_writer, _quote_reader) = quote_channel();
+    let (quote_writer, quote_reader) = quote_channel();
     let (risk_writer, risk_reader) = risk_channel();
     risk_writer.store(RiskState {
         equity_usdc: 1_000.0,
@@ -143,4 +144,13 @@ fn complete_production_hot_step_is_allocation_free_after_construction() {
     });
     assert_eq!(allocations.count_total, 0, "{allocations:?}");
     assert_eq!(allocations.bytes_total, 0, "{allocations:?}");
+    inventory.store(1_200, Ordering::Relaxed); // 0.494 model units remains non-flat.
+    engine.step(&inputs, HOT_SIGNAL_MARKET, 50_000_000_000);
+    assert!(quote_reader.load().tau_remaining < 110.0);
+    inventory.store(0, Ordering::Relaxed);
+    engine.step(&inputs, HOT_SIGNAL_MARKET, 51_000_000_000);
+    assert_eq!(
+        quote_reader.load().tau_remaining,
+        inputs.model_config.horizon_seconds
+    );
 }

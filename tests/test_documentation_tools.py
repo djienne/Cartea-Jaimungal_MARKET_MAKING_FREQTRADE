@@ -57,7 +57,9 @@ def test_replay_headline_reports_the_window_and_the_rows(tmp_path):
 
     text = "\n".join(archive_period.replay_headline(path))
     assert "150 ms assumed latency" in text
-    assert "first 5% fits and sizes only" in text
+    assert "first 5% sizes orders and fits recalibrated rows" in text
+    assert "frozen profiles bypass fitting" in text
+    assert "not independent holdouts" in text
     assert "| flatten300 | +11.20 | 217 | 0 |" in text
 
 
@@ -254,9 +256,9 @@ def test_the_viewer_ranks_by_the_boards_own_metric_and_says_why_a_row_is_out():
         {"rows": rows}, {}, "promotion-pnl", ascending=False
     )
     assert [row[1] for row in table] == ["flat", "wide", "blown"]
-    assert headers[3] == "Promo"
+    assert headers[3] == "Exit value"
     assert [row[3] for row in table] == ["+19.25", "+19.15", "n/a"]
-    assert table[-1][-1] == "NO: liquidation buffer breached"
+    assert table[-1][-1] == "STOPPED MARK: liquidation buffer breached"
     assert table[0][-1] == "yes"
 
     # Unrankable, not worst: the row stays last when the sort is reversed.

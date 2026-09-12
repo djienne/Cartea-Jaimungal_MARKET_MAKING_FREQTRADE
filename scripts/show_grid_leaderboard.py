@@ -150,7 +150,7 @@ def verdict(row: dict[str, Any]) -> str:
     if row["scientifically_valid"]:
         return "yes"
     reason = row.get("invalid_reason")
-    return f"NO: {reason}" if reason else "NO"
+    return f"STOPPED MARK: {reason}" if reason else "STOPPED MARK"
 
 
 def result_rows(
@@ -161,7 +161,7 @@ def result_rows(
         "#",
         "Variant",
         "Overrides from base",
-        "Promo",
+        "Exit value",
         "Net",
         "Realized",
         "Fills",

@@ -291,6 +291,8 @@ impl GridSpec {
             })
             .transpose()?;
         let mut fingerprint = config.fingerprint()?;
+        fingerprint.push_str(";execution=");
+        fingerprint.push_str(EXECUTION_REVISION);
         if let Some(parameters) = parameters {
             parameters.validate()?;
             fingerprint.push_str(";parameters=");
@@ -494,7 +496,7 @@ pub struct PersistedGridState {
     pub schema_version: u32,
     pub symbol: String,
     /// `key=value;...` identity of the run: execution model, estimator schema,
-    /// starting equity. Only these start fresh; any other change resumes.
+    /// starting equity. Incompatible identities refuse recovery; they never reset it.
     pub grid_fingerprint: String,
     pub run_id: String,
     /// The *original* start, carried across every resume. This is what makes
@@ -509,46 +511,53 @@ pub struct PersistedGridState {
     pub variants: Vec<PersistedVariant>,
 }
 
+pub const EXECUTION_REVISION: &str = "causal-v5";
+
 impl PersistedGridState {
     pub const SCHEMA_VERSION: u32 = 3;
 
-    /// Read a checkpoint, falling back to the previous generation.
-    ///
-    /// A missing file is the ordinary first-run case, and a corrupt one is
-    /// treated the same way rather than fatally: a bad checkpoint must cost a
-    /// fresh run, not a grid that will not start.
-    ///
-    /// The `.bak` fallback is what makes that cost one stats interval instead
-    /// of the whole run. `write_atomic` already rules out a torn file — the
-    /// rename is atomic within a directory — but not a file torn by something
-    /// outside this process: a full disk, a killed container mid-rename, a
-    /// half-synced bind mount on a host that lost power. Those are exactly the
-    /// circumstances this whole mechanism exists for.
-    pub fn load(path: &Path) -> Option<Self> {
-        Self::read_one(path).or_else(|| Self::read_one(&Self::backup_path(path)))
-    }
-
-    fn read_one(path: &Path) -> Option<Self> {
-        let bytes = std::fs::read(path).ok()?;
-        let state: Self = match serde_json::from_slice(&bytes) {
-            Ok(state) => state,
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "checkpoint is unreadable; trying backup or starting fresh");
-                return None;
+    /// Recover the current checkpoint or its backup, validating each candidate
+    /// before accepting it. Failure never authorizes a new experiment.
+    pub fn load(path: &Path, validate: impl Fn(&Self) -> Result<()>) -> Result<Self> {
+        let mut failures = Vec::new();
+        for candidate in [path.to_owned(), Self::backup_path(path)] {
+            match Self::read_one(&candidate).and_then(|state| {
+                validate(&state)?;
+                Ok(state)
+            }) {
+                Ok(state) => {
+                    if candidate != path {
+                        tracing::warn!(path = %candidate.display(), "resuming checkpoint backup");
+                    }
+                    return Ok(state);
+                }
+                Err(error) => failures.push(format!("{}: {error:#}", candidate.display())),
             }
-        };
-        if state.schema_version != Self::SCHEMA_VERSION {
-            tracing::warn!(
-                schema_version = state.schema_version,
-                "checkpoint execution schema changed; starting fresh"
-            );
-            return None;
         }
-        Some(state)
+        bail!(
+            "cannot resume grid; no fresh run will be started: {}",
+            failures.join("; ")
+        )
     }
 
-    /// Refuse a checkpoint whose accounting is corrupt. A variant missing from
-    /// it starts from zero; one whose parameters changed resumes and is marked.
+    fn read_one(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path)?;
+        let state: Self = serde_json::from_slice(&bytes)?;
+        if state.schema_version != Self::SCHEMA_VERSION {
+            bail!("unsupported checkpoint schema {}", state.schema_version);
+        }
+        Ok(state)
+    }
+
+    pub fn validate_roster(&self, names: &[&str]) -> Result<()> {
+        let saved: BTreeSet<_> = self.variants.iter().map(|row| row.name.as_str()).collect();
+        if saved != names.iter().copied().collect() || names.len() != self.variants.len() {
+            bail!("checkpoint roster differs from the grid; no accounts may be added, removed or reset");
+        }
+        Ok(())
+    }
+
+    /// Refuse corrupt accounting; parameter changes preserve it and are marked.
     pub fn validate_variants(&self) -> Result<()> {
         if self
             .variants
@@ -639,6 +648,15 @@ impl PersistedGridState {
             .split(';')
             .filter_map(|part| part.split_once('='))
         {
+            // v5 changes prospective controls/execution, not the schema-3 ledger.
+            // This is the only supported algorithm transition, not a fresh account.
+            if key == "execution"
+                && stored.get(key) == Some(&"causal-v4")
+                && value == EXECUTION_REVISION
+                && self.schema_version == Self::SCHEMA_VERSION
+            {
+                continue;
+            }
             if stored.get(key).is_some_and(|was| *was != value) {
                 return Some(format!(
                     "{key} changed since the checkpoint ({} -> {value}); the old accounting has \
@@ -799,7 +817,7 @@ impl Leaderboard {
             self.elapsed_seconds
         );
         out.push_str(
-            "variant          flat P&L    net P&L   realized   fills     inv     maxDD  overrides\n",
+            "variant          exit value  net P&L   realized   fills     inv     maxDD  overrides\n",
         );
         for row in &self.rows {
             let _ = writeln!(
@@ -814,7 +832,9 @@ impl Leaderboard {
                 row.inventory_units,
                 row.max_drawdown_usdc,
                 row.description,
-                if row.eligible_for_promotion {
+                if !row.scientifically_valid {
+                    "  [STOPPED MARK]"
+                } else if row.eligible_for_promotion {
                     ""
                 } else {
                     "  [INELIGIBLE]"
@@ -881,6 +901,12 @@ mod tests {
         for entry in &spec.variants {
             let (applied, parameters, _) = spec.resolve_variant(entry, &config).unwrap();
             let Some(actual) = parameters else { continue };
+            let payload = serde_json::to_string(&actual).unwrap();
+            assert!(!payload.contains("price_drift_per_second"));
+            assert_eq!(
+                serde_json::from_str::<CjParameters>(&payload).unwrap(),
+                actual
+            );
             profiled += 1;
             for (key, value) in [
                 ("lambda+", actual.lambda_plus),
@@ -1347,7 +1373,7 @@ mod tests {
             .remove("event_loss");
         std::fs::write(&path, serde_json::to_vec(&incomplete).unwrap()).unwrap();
         assert!(
-            PersistedGridState::load(&path)
+            PersistedGridState::load(&path, |_| Ok(()))
                 .unwrap()
                 .feed_health
                 .event_loss
@@ -1357,7 +1383,7 @@ mod tests {
             serde_json::to_vec(&incomplete).unwrap(),
         )
         .unwrap();
-        assert!(PersistedGridState::load(&path).is_none());
+        assert!(PersistedGridState::load(&path, |_| Ok(())).is_err());
     }
 
     #[test]
@@ -1375,15 +1401,34 @@ mod tests {
             .is_none());
     }
 
-    /// Only the run's identity starts fresh: a different execution model or
+    /// A different execution model or
     /// estimator schema makes the old accounting meaningless. Retuned
     /// parameters resume and are counted per row instead.
     #[test]
     fn a_changed_identity_is_not_resumable() {
         let reason = checkpoint()
-            .rejection("CASHCAT", "execution=causal-v5;estimator=v5:direct")
+            .rejection("CASHCAT", "execution=causal-v6;estimator=v5:direct")
             .expect("a new execution model must be refused");
         assert!(reason.contains("execution changed"), "{reason}");
+    }
+
+    #[test]
+    fn only_the_known_ledger_compatible_execution_upgrade_is_allowed() {
+        let state = checkpoint();
+        assert!(state
+            .rejection("CASHCAT", "execution=causal-v5;estimator=v5:direct")
+            .is_none());
+        assert!(state
+            .rejection("CASHCAT", "execution=causal-v5;estimator=v6:direct")
+            .is_some());
+        let mut upgraded = state;
+        upgraded.grid_fingerprint = "execution=causal-v5;starting_equity=297.88".to_owned();
+        assert!(upgraded
+            .rejection("CASHCAT", "execution=causal-v4")
+            .is_some());
+        assert!(upgraded
+            .rejection("CASHCAT", "execution=causal-v5;starting_equity=1000")
+            .is_some());
     }
 
     #[test]
@@ -1399,7 +1444,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("grid_state.json");
         checkpoint().write_atomic(&path).unwrap();
-        let loaded = PersistedGridState::load(&path).expect("must reload");
+        let loaded = PersistedGridState::load(&path, |_| Ok(())).expect("must reload");
         assert_eq!(loaded.started_at_ms, 1_000);
         assert_eq!(loaded.feed_health.downtime_ms, 500);
         assert_eq!(loaded.trade_prints, 9_000);
@@ -1413,7 +1458,7 @@ mod tests {
         state.feed_health.event_loss = true;
         state.write_atomic(&path).unwrap();
         assert!(
-            PersistedGridState::load(&path)
+            PersistedGridState::load(&path, |_| Ok(()))
                 .expect("checkpoint")
                 .feed_health
                 .event_loss
@@ -1429,15 +1474,15 @@ mod tests {
         assert!(GridRunLock::acquire(dir.path()).is_ok());
     }
 
-    /// A half-written or stale-schema checkpoint must cost a fresh run, never a
-    /// grid that refuses to start.
+    /// A half-written or stale-schema checkpoint must refuse recovery, never reset a
+    /// long-running experiment.
     #[test]
-    fn a_corrupt_checkpoint_reads_as_absent() {
+    fn a_corrupt_checkpoint_refuses_recovery() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("grid_state.json");
         std::fs::write(&path, b"{\"schema_version\":1,\"symbol\":").unwrap();
-        assert!(PersistedGridState::load(&path).is_none());
-        assert!(PersistedGridState::load(&dir.path().join("absent.json")).is_none());
+        assert!(PersistedGridState::load(&path, |_| Ok(())).is_err());
+        assert!(PersistedGridState::load(&dir.path().join("absent.json"), |_| Ok(())).is_err());
     }
 
     /// The reason the checkpoint keeps one previous generation: a file torn by
@@ -1456,7 +1501,7 @@ mod tests {
         // The live generation is now unreadable; the `.bak` still holds the one
         // before it.
         std::fs::write(&path, b"torn").unwrap();
-        let loaded = PersistedGridState::load(&path).expect("must fall back to .bak");
+        let loaded = PersistedGridState::load(&path, |_| Ok(())).expect("must fall back to .bak");
         assert_eq!(loaded.checkpoint_ms, 1_000);
     }
 

@@ -327,13 +327,12 @@ impl HotPathEngine {
             return;
         };
         let inventory = inputs.inventory_units.load(Ordering::Relaxed);
-        let q_exact = inventory as f64 / bundle.inventory_unit as f64;
         let elapsed = now_ns.saturating_sub(self.episode_start_ns) as f64 / 1_000_000_000.0;
         let minimum_elapsed =
             inputs.model_config.horizon_seconds * inputs.model_config.episode_min_elapsed_fraction;
         let episode_rolled = elapsed >= inputs.model_config.horizon_seconds
             || (inputs.model_config.episode_reset_on_flat
-                && q_exact.round() == 0.0
+                && inventory == 0
                 && elapsed >= minimum_elapsed);
         let elapsed = if episode_rolled {
             self.episode_start_ns = now_ns;
@@ -517,6 +516,7 @@ mod tests {
                 kappa_minus: 100.0,
                 epsilon_plus: 0.0,
                 epsilon_minus: 0.0,
+                price_drift_per_second: None,
                 sigma2_per_second: None,
             },
             &ModelConfig::default(),

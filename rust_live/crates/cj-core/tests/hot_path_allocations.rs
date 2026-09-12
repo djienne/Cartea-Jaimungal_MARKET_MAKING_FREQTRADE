@@ -30,6 +30,7 @@ fn parameters() -> CjParameters {
         kappa_minus: 9_161.0,
         epsilon_plus: 2.38e-5,
         epsilon_minus: 3.42e-5,
+        price_drift_per_second: None,
         sigma2_per_second: Some(3.8e-9),
     }
 }

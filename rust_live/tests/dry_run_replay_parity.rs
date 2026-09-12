@@ -197,6 +197,7 @@ fn policy_decisions_carry_the_source_bbo_exchange_time() {
             kappa_minus: 9_000.0,
             epsilon_plus: 2.0e-5,
             epsilon_minus: 3.0e-5,
+            price_drift_per_second: None,
             sigma2_per_second: Some(3.0e-9),
         },
         &mm_live::config::ModelConfig::default(),

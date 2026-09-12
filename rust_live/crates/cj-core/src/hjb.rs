@@ -11,6 +11,10 @@ pub struct CjParameters {
     pub kappa_minus: f64,
     pub epsilon_plus: f64,
     pub epsilon_minus: f64,
+    /// Unconditional price drift; fill intensities may include a reach-fit intercept.
+    /// Absent only for legacy frozen fits whose raw arrival rates are unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_drift_per_second: Option<f64>,
     pub sigma2_per_second: Option<f64>,
 }
 
@@ -30,6 +34,12 @@ impl CjParameters {
         }
         if self.lambda_plus < 0.0 || self.lambda_minus < 0.0 {
             bail!("lambda values must be non-negative");
+        }
+        if self
+            .price_drift_per_second
+            .is_some_and(|value| !value.is_finite())
+        {
+            bail!("price_drift_per_second must be finite when present");
         }
         if self.kappa_plus <= 0.0 || self.kappa_minus <= 0.0 {
             bail!("kappa values must be strictly positive");
@@ -397,9 +407,10 @@ fn compute_g_and_jac(
             upper[index] = slope;
             diagonal[index] -= slope;
         }
-        value += q
-            * (parameters.lambda_plus * parameters.epsilon_plus
-                - parameters.lambda_minus * parameters.epsilon_minus);
+        value += q * parameters.price_drift_per_second.unwrap_or(
+            parameters.lambda_plus * parameters.epsilon_plus
+                - parameters.lambda_minus * parameters.epsilon_minus,
+        );
         g[index] = value;
     }
     (g, lower, diagonal, upper)
@@ -550,6 +561,7 @@ mod tests {
             kappa_minus: 9_161.0,
             epsilon_plus: 2.38e-5,
             epsilon_minus: 3.42e-5,
+            price_drift_per_second: None,
             sigma2_per_second: Some(3.8e-9),
         }
     }
@@ -667,6 +679,28 @@ mod tests {
     }
 
     #[test]
+    fn explicit_drift_changes_only_the_price_term() {
+        let legacy = parameters();
+        let mut explicit = legacy;
+        explicit.price_drift_per_second = Some(-0.0007);
+        let h = vec![0.0; 3];
+        let q = vec![-1, 0, 1];
+        let (old, lower, diagonal, upper) = compute_g_and_jac(&h, &q, legacy, 0.1);
+        let (new, new_lower, new_diagonal, new_upper) = compute_g_and_jac(&h, &q, explicit, 0.1);
+        assert_eq!(
+            (lower, diagonal, upper),
+            (new_lower, new_diagonal, new_upper)
+        );
+        for (i, inventory) in q.iter().enumerate() {
+            let difference = *inventory as f64
+                * (-0.0007
+                    - (legacy.lambda_plus * legacy.epsilon_plus
+                        - legacy.lambda_minus * legacy.epsilon_minus));
+            assert!((new[i] - old[i] - difference).abs() < 1e-12);
+        }
+    }
+
+    #[test]
     fn symmetric_parameter_limit_is_symmetric_at_flat_inventory() {
         let symmetric = CjParameters {
             lambda_plus: 0.2,
@@ -675,6 +709,7 @@ mod tests {
             kappa_minus: 100.0,
             epsilon_plus: 0.001,
             epsilon_minus: 0.001,
+            price_drift_per_second: None,
             sigma2_per_second: None,
         };
         let surface = solve_asymmetric(symmetric, &ModelConfig::default(), 10.0, 1).unwrap();

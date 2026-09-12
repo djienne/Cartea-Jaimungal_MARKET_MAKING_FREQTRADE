@@ -262,7 +262,10 @@ impl CarteaJaimungalPolicy {
             if self.risk.max_margin_usdc > 0.0 && margin > self.risk.max_margin_usdc {
                 return None;
             }
-            let maintenance = next_notional * self.risk.maintenance_margin_rate;
+            let maintenance = next_notional
+                * self
+                    .instrument
+                    .maintenance_rate(self.risk.maintenance_margin_rate);
             if risk_state.equity_usdc - maintenance < self.risk.min_liquidation_buffer_usdc {
                 return None;
             }
@@ -339,6 +342,7 @@ mod tests {
                 kappa_minus: 9_000.0,
                 epsilon_plus: 2.0e-5,
                 epsilon_minus: 3.0e-5,
+                price_drift_per_second: None,
                 sigma2_per_second: Some(3.0e-9),
             },
             &ModelConfig::default(),
@@ -541,5 +545,28 @@ mod tests {
         let ask = decision.quotes.ask.expect("reducing side must be quoted");
         assert_eq!(ask.side, Side::Sell);
         assert_eq!(ask.qty_units, 2_000);
+    }
+
+    #[test]
+    fn single_tier_maintenance_limits_admission_but_not_reductions() {
+        let mut venue = instrument("CASHCAT", 6, 0);
+        venue.margin_table_id = 3;
+        venue.max_leverage = 3.0;
+        assert_eq!(venue.maintenance_rate(0.05), 1.0 / 6.0);
+        assert_eq!(venue.maintenance_rate(0.2), 0.2);
+        let policy =
+            CarteaJaimungalPolicy::new(venue, QuotingConfig::default(), RiskConfig::default())
+                .unwrap();
+        let risk = RiskState {
+            equity_usdc: 120.0,
+            ..RiskState::default()
+        };
+        // 300 notional: the former 5% rate admitted this with 105 equity left.
+        assert!(policy
+            .build_intent(Side::Buy, 100_000, 0, 3_000, 0.1, false, risk)
+            .is_none());
+        assert!(policy
+            .build_intent(Side::Sell, 100_000, 3_000, 1_000, 0.1, true, risk)
+            .is_some());
     }
 }

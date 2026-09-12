@@ -270,6 +270,10 @@ impl Calibrator {
             kappa_minus: minus_fit.kappa.unwrap_or(0.0),
             epsilon_plus: epsilon_plus.unwrap_or(0.0),
             epsilon_minus: epsilon_minus.unwrap_or(0.0),
+            price_drift_per_second: Some(
+                lambda_plus_raw * epsilon_plus.unwrap_or(0.0)
+                    - lambda_minus_raw * epsilon_minus.unwrap_or(0.0),
+            ),
             sigma2_per_second: sigma2,
         };
 
@@ -725,6 +729,14 @@ mod tests {
         let snapshot = Calibrator::new("SYN", config).calibrate(&data).unwrap();
         assert_eq!(snapshot.status, CalibrationStatus::Ok);
         assert!(snapshot.parameters.validate().is_ok());
+        assert_eq!(
+            snapshot.parameters.price_drift_per_second,
+            Some(
+                snapshot.diagnostics.plus.lambda_raw.unwrap() * snapshot.parameters.epsilon_plus
+                    - snapshot.diagnostics.minus.lambda_raw.unwrap()
+                        * snapshot.parameters.epsilon_minus
+            )
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ COPY rust_live/tests ./rust_live/tests
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/rust_live/target \
-    cargo build --locked --manifest-path rust_live/Cargo.toml --release --bin mm-live \
+    cargo build --locked --jobs 1 --manifest-path rust_live/Cargo.toml --release --bin mm-live \
     && cp rust_live/target/release/mm-live /tmp/mm-live
 
 FROM debian:bookworm-slim
