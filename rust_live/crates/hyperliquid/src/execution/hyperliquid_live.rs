@@ -678,11 +678,18 @@ impl HyperliquidLiveBackend {
     }
 
     pub fn effective_quoting_config(&self) -> Result<QuotingConfig> {
-        let usable = allocated_usable_equity(
-            self.quoting.available_capital_usdc,
-            self.account.account_value_usdc,
-            self.risk.min_liquidation_buffer_usdc,
-        );
+        let usable = if self.live.paper_strategy.is_some() {
+            // The shared policy already checks the proportional liquidation reserve.
+            self.quoting
+                .available_capital_usdc
+                .min(self.account.account_value_usdc)
+        } else {
+            allocated_usable_equity(
+                self.quoting.available_capital_usdc,
+                self.account.account_value_usdc,
+                self.risk.min_liquidation_buffer_usdc,
+            )
+        };
         if usable <= 0.0 {
             bail!("account equity does not exceed the liquidation reserve");
         }
@@ -2083,7 +2090,10 @@ impl HyperliquidLiveBackend {
                     "acceptance order exceeds 12-USDC hard cap",
                 ));
             }
-            if self.live.mode == LiveMode::Production && !request.reduce_only {
+            if self.live.mode == LiveMode::Production
+                && self.live.paper_strategy.is_none()
+                && !request.reduce_only
+            {
                 let minimum =
                     self.instrument.minimum_notional * self.live.min_order_notional_multiplier;
                 let maximum =
@@ -2148,24 +2158,35 @@ impl HyperliquidLiveBackend {
                 ));
             }
         } else {
-            let directional_cap =
-                self.instrument.minimum_notional * self.live.max_directional_notional_multiplier;
-            let working_gross_cap =
-                self.instrument.minimum_notional * self.live.max_working_gross_multiplier;
+            let (
+                directional_cap,
+                working_gross_cap,
+                transient_directional_cap,
+                transient_gross_cap,
+            ) = if self.live.paper_strategy.is_some() {
+                let cap = (self.quoting.available_capital_usdc * self.quoting.leverage)
+                    .min(self.risk.max_notional_usdc)
+                    .min(self.risk.max_margin_usdc * self.quoting.leverage);
+                (cap, 2.0 * cap, cap, 2.0 * cap)
+            } else {
+                let minimum = self.instrument.minimum_notional;
+                (
+                    minimum * self.live.max_directional_notional_multiplier,
+                    minimum * self.live.max_working_gross_multiplier,
+                    minimum * self.live.max_transient_directional_notional_multiplier,
+                    minimum * self.live.max_transient_working_gross_multiplier,
+                )
+            };
             if steady.directional > directional_cap {
                 return Err(PlacementRefusal::degrade(
-                    "prospective live directional exposure exceeds micro-live cap",
+                    "prospective live directional exposure exceeds configured cap",
                 ));
             }
             if steady.gross > working_gross_cap {
                 return Err(PlacementRefusal::degrade(
-                    "prospective live working gross exceeds micro-live cap",
+                    "prospective live working gross exceeds configured cap",
                 ));
             }
-            let transient_directional_cap = self.instrument.minimum_notional
-                * self.live.max_transient_directional_notional_multiplier;
-            let transient_gross_cap =
-                self.instrument.minimum_notional * self.live.max_transient_working_gross_multiplier;
             if transient.directional > transient_directional_cap
                 || transient.gross > transient_gross_cap
             {
@@ -2312,7 +2333,10 @@ impl ExecutionBackend for HyperliquidLiveBackend {
                 Side::Sell => desired.ask,
             };
             let target = if let Some(mut target) = target {
-                if self.live.mode == LiveMode::Production && !target.reduce_only {
+                if self.live.mode == LiveMode::Production
+                    && self.live.paper_strategy.is_none()
+                    && !target.reduce_only
+                {
                     target.qty_units = self.minimum_live_order_quantity(target.px)?;
                 }
                 Some(target)
@@ -4186,6 +4210,53 @@ mod tests {
             assert!(live_notional >= 10.5);
             assert!(live_notional <= backend.live.acceptance_max_order_notional_usdc);
         }
+    }
+
+    #[test]
+    fn linked_paper_orders_use_proportional_sizes_but_keep_capital_and_venue_caps() {
+        let (_directory, mut backend, _) = lifecycle_backend();
+        backend.live.mode = LiveMode::Production;
+        backend.live.paper_strategy = Some(mm_config::PaperStrategy {
+            base_config: "base.toml".into(),
+            grid: "grid.toml".into(),
+            checkpoint: "checkpoint.json".into(),
+            variant: "sweep1_flat300".to_owned(),
+        });
+        backend.quoting.available_capital_usdc = 100.0;
+        backend.risk.max_notional_usdc = 200.0;
+        backend.risk.max_margin_usdc = 100.0;
+        backend.risk.min_liquidation_buffer_usdc = 100.0 / 2.9788;
+        assert_eq!(
+            backend
+                .effective_quoting_config()
+                .unwrap()
+                .available_capital_usdc,
+            100.0
+        );
+        let book = Bbo {
+            bid_px: 169_900,
+            ask_px: 170_100,
+            exchange_ms: 1,
+            ..Bbo::default()
+        };
+        let mut request = LiveOrderRequest {
+            side: Side::Buy,
+            px_units: 169_000,
+            qty_units: 213,
+            reduce_only: false,
+            time_in_force: TimeInForce::Alo,
+            cloid: "sized".to_owned(),
+        };
+        assert!(backend
+            .validate_new_orders(&[request.clone()], book, 1)
+            .is_ok());
+        request.qty_units = 1_300; // Above the 200-USDC directional ceiling.
+        assert!(backend
+            .validate_new_orders(&[request.clone()], book, 1)
+            .is_err());
+        request.qty_units = 213;
+        backend.account.available_to_trade_usdc = [20.0, 20.0];
+        assert!(backend.validate_new_orders(&[request], book, 1).is_err());
     }
 
     #[test]

@@ -146,10 +146,10 @@ they do not reproduce the Python sweep's fixed sizing or execution assumptions.
 Timestep, Newton tolerance and the convergence study behind them: `CAUSAL_EXECUTION_REVIEW.md`.
 
 `eligible_for_promotion` is false for rows with a lot-age exit or a fixed
-parameter profile: they have no live equivalent as written. That is a property
-of the row, not a verdict and not a rank -- there is no automatic promotion, and the shipped
-live config in fact runs a timed exit (`live.flatten_after_ms`) by choice. Their
-exit deadlines include the round trip; see the fidelity limits above.
+parameter profile: this remains an evidence flag, not a verdict or a rank.
+There is no automatic promotion. The live configuration can explicitly reference
+`sweep1_flat300` to share its frozen strategy and proportionally scale its saved
+sizing unit; venue constraints and execution differ. See `CASHCAT_LIVE_PROMOTION.md`.
 
 ## Queue model
 

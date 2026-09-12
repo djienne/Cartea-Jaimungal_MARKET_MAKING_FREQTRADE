@@ -1,9 +1,31 @@
-# CASHCAT micro-live operation
+# CASHCAT live strategy
 
 **There is no automatic promotion.** The live configuration is
-`rust_live/config/cashcat.toml` and you change it by editing it. It defaults to
-the dry-run grid's `sweep1_flat300` row, and the comments in `[model]` say what
-that row is and the two things a live run cannot copy from it.
+`rust_live/config/cashcat.toml`. Its `live.paper_strategy` explicitly selects
+`sweep1_flat300` from the existing grid definition and checkpoint. The shared
+resolver supplies the model, frozen fit, quote rules, flow guard and exit age;
+the live file holds the allocation and venue safeguards. Live remains disabled.
+
+The allocation ceiling is 100 USDC at 2x, with a 200-USDC directional notional
+ceiling (including pending cancellations), 100-USDC margin ceiling and the
+stricter 1-USDC daily realized-loss stop. The inventory unit is
+`floor(paper_unit * live_allocation / paper_allocation)`: 636 becomes 213 units
+at 100/297.88 capital, about 36 USDC per entry near a 0.17 price. Actual account
+equity can reduce the allocation; venue available-to-trade limits still apply.
+An allocation below the minimum viable order fails rather than silently sizing up.
+Paper balances, fills and P&L are never copied into the live account.
+
+Frozen parameters are not periodically refitted or expired as rolling estimates.
+Recent collector data still supplies the initial VPIN volume scale. Changes to
+the referenced fit or sizing unit participate in live state identity. Read-only
+`validate` prints the resolved strategy. Emergency `live-flatten` deliberately
+does not require the paper files, so missing research data cannot block cleanup.
+
+The configured age is 1 ms after inventory observation, not an artificial
+301-ms or six-second delay. Live safety exits reconcile and close the actual
+remaining position; paper ages lots FIFO and waits for recorded depth. Quotas,
+latency admission, real fees, acknowledgements and fill outcomes remain live
+constraints. Sharing a strategy does not imply identical execution or P&L.
 
 Automatic promotion existed until 2026-09-10: `promote-best` picked the highest
 `promotion_pnl_usdc` row and generated a derived `cashcat-active-live.toml`. It
@@ -28,9 +50,8 @@ gaps, event loss and daily loss across restarts. Each scientific run lives below
 healthcheck's latest pointer. Pre-2026-08-31 grid artifacts predate all of that
 and must not be used.
 
-Live orders are the first valid lot between 1.05 and 1.10 times the current
-CASHCAT minimum notional. Directional exposure is one such order, working gross
-is two, and the daily realised-loss stop is 1 USDC. Quote calculations continue
+Profiles without a paper reference retain the micro-live order-size limits.
+The linked profile preserves its proportional model quantity. Quote calculations continue
 normally, but the executor coalesces intermediate targets and paces placements
 from the venue-reported address allowance while preserving 100 placement
 actions plus ten scheduled safety actions. The venue dead-man runs an 8 h

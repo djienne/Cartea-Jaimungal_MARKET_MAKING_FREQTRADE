@@ -353,6 +353,105 @@ impl GridSpec {
     }
 }
 
+/// A frozen paper control, with the live operator's capital and safeguards.
+pub struct LiveStrategy {
+    pub config: AppConfig,
+    pub parameters: CjParameters,
+    pub reference_unit: i64,
+    pub reference_capital: f64,
+}
+
+impl LiveStrategy {
+    pub fn scaled_unit(&self, capital: f64) -> Result<i64> {
+        let unit = (self.reference_unit as f64 * capital / self.reference_capital).floor() as i64;
+        if unit <= 0 {
+            bail!("live allocation is too small for one proportional inventory unit");
+        }
+        Ok(unit)
+    }
+}
+
+pub fn live_strategy(config: &AppConfig) -> Result<Option<LiveStrategy>> {
+    let Some(source) = &config.live.paper_strategy else {
+        return Ok(None);
+    };
+    let base = AppConfig::load(&source.base_config)?;
+    if base.live.paper_strategy.is_some() {
+        bail!("paper strategy must reference the grid base, not another linked live profile");
+    }
+    let spec = GridSpec::load(&source.grid)?;
+    let row = spec
+        .variants
+        .iter()
+        .find(|row| row.name == source.variant)
+        .with_context(|| format!("unknown paper strategy {:?}", source.variant))?;
+    let (paper, parameters, fingerprint) = spec.resolve_variant(row, &base)?;
+    let parameters =
+        parameters.context("live paper reference must select a frozen parameter profile")?;
+    let state = PersistedGridState::load(&source.checkpoint, |state| {
+        state.validate_variants()?;
+        if state.symbol != config.instrument.symbol || state.symbol != paper.instrument.symbol {
+            bail!("paper strategy and live instrument differ");
+        }
+        let saved = state
+            .variants
+            .iter()
+            .find(|row| row.name == source.variant)
+            .context("paper strategy is missing from the existing checkpoint")?;
+        // The full fingerprint also contains host paths. Compare the saved fit
+        // itself so a Docker checkpoint can be inspected from another host path.
+        let encoded = saved
+            .config_fingerprint
+            .split_once(";parameters=")
+            .context("paper checkpoint does not identify its frozen parameters")?
+            .1;
+        if serde_json::from_str::<CjParameters>(encoded)? != parameters {
+            bail!("configured frozen fit differs from the running paper checkpoint");
+        }
+        Ok(())
+    })?;
+    let reference_unit = state
+        .variants
+        .iter()
+        .find(|row| row.name == source.variant)
+        .context("validated paper row disappeared")?
+        .inventory_unit;
+    let capital = config.quoting.available_capital_usdc;
+    let reference_capital = paper.quoting.available_capital_usdc;
+    if reference_capital <= 0.0 || capital <= 0.0 {
+        bail!("strategy capital must be positive");
+    }
+    let scale = capital / reference_capital;
+    let mut resolved = config.clone();
+    resolved.model = paper.model;
+    resolved.calibration = paper.calibration;
+    resolved.flow_guard = paper.flow_guard;
+    resolved.quoting = paper.quoting;
+    resolved.quoting.available_capital_usdc = capital;
+    resolved.quoting.leverage = config.quoting.leverage;
+    resolved.risk = paper.risk;
+    resolved.risk.kill_switch |= config.risk.kill_switch;
+    resolved.risk.max_notional_usdc = (resolved.risk.max_notional_usdc * scale)
+        .min(config.risk.max_notional_usdc)
+        .min(capital * resolved.quoting.leverage);
+    resolved.risk.max_margin_usdc = (resolved.risk.max_margin_usdc * scale)
+        .min(config.risk.max_margin_usdc)
+        .min(capital);
+    resolved.risk.min_liquidation_buffer_usdc *= scale;
+    resolved.risk.max_daily_loss_usdc =
+        (resolved.risk.max_daily_loss_usdc * scale).min(config.risk.max_daily_loss_usdc);
+    resolved.live.flatten_after_ms = paper.dry_run.flatten_after_ms;
+    resolved.live.strategy_fingerprint =
+        Some(format!("{fingerprint};inventory_unit={reference_unit}"));
+    resolved.validate()?;
+    Ok(Some(LiveStrategy {
+        config: resolved,
+        parameters,
+        reference_unit,
+        reference_capital,
+    }))
+}
+
 /// One row of the leaderboard.
 ///
 /// Ordered by executable-side, fee-adjusted flatten P&L. This prevents a large
@@ -1323,6 +1422,123 @@ mod tests {
             replayed_trades_ignored: 30,
             variants: Vec::new(),
         }
+    }
+
+    #[test]
+    fn live_reuses_the_paper_fit_and_scales_its_unit_without_relaxing_live_caps() {
+        use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
+        use mm_live::types::QuoteReason;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut live = AppConfig::load(&root.join("config/cashcat.toml")).unwrap();
+        let source = live.live.paper_strategy.as_ref().unwrap();
+        let base = AppConfig::load(&source.base_config).unwrap();
+        let spec = GridSpec::load(&source.grid).unwrap();
+        let row = spec
+            .variants
+            .iter()
+            .find(|row| row.name == "sweep1_flat300")
+            .unwrap();
+        let (paper, parameters, fingerprint) = spec.resolve_variant(row, &base).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("checkpoint.json");
+        let mut saved = checkpoint();
+        saved.variants.push(PersistedVariant {
+            name: row.name.clone(),
+            config_fingerprint: fingerprint,
+            config_changes: 3,
+            inventory_unit: 636,
+            last_bbo: None,
+            account: mm_live::types::DryRunAccountState::default(),
+            diagnostics: mm_live::execution::DryRunDiagnostics::default(),
+            fills: 7,
+            peak_equity_usdc: 297.88,
+            max_drawdown_usdc: 1.0,
+            failure: None,
+            current_day: None,
+            daily_realized_pnl_usdc: 0.0,
+        });
+        saved.write_atomic(&path).unwrap();
+        live.live.paper_strategy.as_mut().unwrap().checkpoint = path.clone();
+        let before = std::fs::read(&path).unwrap();
+        let resolved = live_strategy(&live).unwrap().unwrap();
+        assert_eq!(resolved.parameters, parameters.unwrap());
+        assert_eq!(resolved.scaled_unit(100.0).unwrap(), 213);
+        assert_eq!(resolved.scaled_unit(50.0).unwrap(), 106);
+        assert!(resolved.scaled_unit(0.0).is_err());
+        assert!(!resolved.config.live.enabled);
+        assert_eq!(resolved.config.live.flatten_after_ms, 1);
+        assert_eq!(resolved.config.risk.max_daily_loss_usdc, 1.0);
+        assert_eq!(resolved.config.risk.max_notional_usdc, 200.0);
+        assert_eq!(resolved.config.risk.max_margin_usdc, 100.0);
+        assert_eq!(
+            resolved.config.live.address_action_reserve,
+            live.live.address_action_reserve
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let instrument = mm_live::InstrumentSpec {
+            symbol: "CASHCAT".to_owned(),
+            dex: String::new(),
+            asset_id: 231,
+            sz_decimals: 0,
+            max_price_decimals: 6,
+            max_significant_figures: 5,
+            max_leverage: 3.0,
+            minimum_notional: 10.0,
+            margin_table_id: 3,
+            only_isolated: false,
+            margin_mode: String::new(),
+            is_delisted: false,
+            metadata_fingerprint: String::new(),
+        };
+        let paper_policy = CarteaJaimungalPolicy::new(
+            instrument.clone(),
+            paper.quoting.clone(),
+            paper.risk.clone(),
+        )
+        .unwrap();
+        let live_policy = CarteaJaimungalPolicy::new(
+            instrument.clone(),
+            resolved.config.quoting.clone(),
+            resolved.config.risk.clone(),
+        )
+        .unwrap();
+        let surface =
+            mm_live::hjb::solve_asymmetric(resolved.parameters, &paper.model, 636.0, 1).unwrap();
+        let book = Bbo {
+            bid_px: 169_900,
+            ask_px: 170_100,
+            bid_sz: 1_000,
+            ask_sz: 1_000,
+            exchange_ms: 1,
+            recv_ns: 1,
+        };
+        for q in -3..=3 {
+            let decision = |policy: &CarteaJaimungalPolicy, unit, equity| {
+                policy
+                    .compute(
+                        &surface,
+                        book,
+                        q * unit,
+                        unit,
+                        75.0,
+                        1,
+                        1,
+                        QuoteReason::Market,
+                        RiskState {
+                            equity_usdc: equity,
+                            ..RiskState::default()
+                        },
+                    )
+                    .quotes
+            };
+            let a = decision(&paper_policy, 636, 297.88);
+            let b = decision(&live_policy, 213, 100.0);
+            assert_eq!(a.bid.map(|o| o.px), b.bid.map(|o| o.px));
+            assert_eq!(a.ask.map(|o| o.px), b.ask.map(|o| o.px));
+        }
+        saved.variants[0].config_fingerprint = "missing frozen fit".to_owned();
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert!(live_strategy(&live).is_err());
     }
 
     #[test]

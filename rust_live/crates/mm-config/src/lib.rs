@@ -168,6 +168,12 @@ pub enum LiveMode {
 // clearer as named bools than as a state enum here.
 #[allow(clippy::struct_excessive_bools)]
 pub struct LiveConfig {
+    /// Reuse a running paper row's strategy; capital and live safeguards stay local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper_strategy: Option<PaperStrategy>,
+    /// Filled by the row resolver so changing the referenced fit changes live state identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy_fingerprint: Option<String>,
     pub enabled: bool,
     pub mode: LiveMode,
     pub credentials_path: PathBuf,
@@ -219,6 +225,8 @@ pub struct LiveConfig {
 impl Default for LiveConfig {
     fn default() -> Self {
         Self {
+            paper_strategy: None,
+            strategy_fingerprint: None,
             enabled: false,
             mode: LiveMode::Production,
             credentials_path: PathBuf::from("../hyperliquid.env"),
@@ -266,6 +274,15 @@ impl Default for LiveConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperStrategy {
+    pub base_config: PathBuf,
+    pub grid: PathBuf,
+    pub checkpoint: PathBuf,
+    pub variant: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     pub data_dir: PathBuf,
@@ -308,6 +325,17 @@ impl AppConfig {
         let mut config: Self = toml::from_str(&raw)
             .with_context(|| format!("cannot parse TOML config {}", path.display()))?;
         let base = path.parent().unwrap_or_else(|| Path::new("."));
+        if let Some(source) = &mut config.live.paper_strategy {
+            for value in [
+                &mut source.base_config,
+                &mut source.grid,
+                &mut source.checkpoint,
+            ] {
+                if value.is_relative() {
+                    *value = base.join(&*value);
+                }
+            }
+        }
         for value in [
             &mut config.storage.data_dir,
             &mut config.storage.state_path,
@@ -797,7 +825,7 @@ mod tests {
     #[test]
     fn a_nan_spread_bound_in_toml_is_rejected_at_load() {
         let directory = tempfile::tempdir().unwrap();
-        let source = cashcat_config_path();
+        let source = cashcat_config_path().with_file_name("cashcat_dryrun_realistic.toml");
         std::fs::copy(
             source.parent().unwrap().join("cashcat.validation.json"),
             directory.path().join("cashcat.validation.json"),

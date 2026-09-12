@@ -374,7 +374,19 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             unreachable!("grid-health returned before configuration loading")
         }
         Command::Validate => {
-            println!("{}", serde_json::to_string_pretty(&instrument)?);
+            let mut value = serde_json::to_value(&instrument)?;
+            if let Some(strategy) = grid::live_strategy(&config)? {
+                value["live_strategy"] = serde_json::json!({
+                    "source": strategy.config.live.paper_strategy,
+                    "parameters": strategy.parameters,
+                    "inventory_unit": strategy.scaled_unit(strategy.config.quoting.available_capital_usdc)?,
+                    "model": strategy.config.model,
+                    "quoting": strategy.config.quoting,
+                    "risk": strategy.config.risk,
+                    "enabled": strategy.config.live.enabled,
+                });
+            }
+            println!("{}", serde_json::to_string_pretty(&value)?);
             Ok(())
         }
         Command::Calibrate => {
@@ -1308,6 +1320,13 @@ async fn run_live(
     report_path: Option<&Path>,
     duration_seconds: u64,
 ) -> Result<()> {
+    let selected_strategy = grid::live_strategy(config)?;
+    let config = selected_strategy
+        .as_ref()
+        .map_or(config, |strategy| &strategy.config);
+    let fixed_parameters = selected_strategy
+        .as_ref()
+        .map(|strategy| strategy.parameters);
     let started_at_ms = unix_ms();
     let clock = Arc::new(ProcessClock::default());
     let gate_enforced = config.live.mode == mm_live::config::LiveMode::Production;
@@ -1344,7 +1363,28 @@ async fn run_live(
     let mut effective_config = config.clone();
     effective_config.quoting = backend.effective_quoting_config()?;
     let (calibration_data, initial_snapshot, mut initial_surface, mut inventory_unit) =
-        calibrate_model(&effective_config, &instrument, true)?;
+        if let Some(strategy) = &selected_strategy {
+            let data = load_model_data(&effective_config, &instrument, true)?;
+            let unit = strategy.scaled_unit(effective_config.quoting.available_capital_usdc)?;
+            let notional =
+                instrument.size_from_units(unit) * data.mids.last().context("no sizing mid")?.mid;
+            if backend.account_state().inventory_units == 0
+                && notional < instrument.minimum_notional
+            {
+                bail!("proportional live unit is {notional:.4} USDC, below the venue minimum {}; increase allocation rather than rounding up exposure", instrument.minimum_notional);
+            }
+            let surface = solve_asymmetric(
+                strategy.parameters,
+                &effective_config.model,
+                instrument.size_from_units(unit),
+                started_at_ms,
+            )?;
+            (data, None, surface, unit)
+        } else {
+            let (data, snapshot, surface, unit) =
+                calibrate_model(&effective_config, &instrument, true)?;
+            (data, Some(snapshot), surface, unit)
+        };
     // Size the VPIN bucket from the calibration window's observed volume so the
     // threshold keeps its meaning as the instrument's activity changes.
     let vpin_bucket = vpin_bucket_units(
@@ -1359,23 +1399,36 @@ async fn run_live(
             .persisted_inventory_unit()?
             .context("non-flat live account has no persisted inventory unit")?;
         initial_surface = solve_asymmetric(
-            initial_snapshot.parameters,
+            fixed_parameters
+                .or_else(|| {
+                    initial_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.parameters)
+                })
+                .context("live model has no parameters")?,
             &effective_config.model,
             instrument.size_from_units(inventory_unit),
-            initial_snapshot.revision,
+            started_at_ms,
         )?;
     }
     backend.persist_inventory_unit(inventory_unit)?;
+    let mut initial_bundle = prepare_model_bundle(
+        initial_surface,
+        inventory_unit,
+        initial_snapshot
+            .as_ref()
+            .map_or(started_at_ms, |snapshot| snapshot.generated_at_ms),
+        &effective_config,
+        &clock,
+    );
+    if fixed_parameters.is_some() {
+        // Frozen research controls do not expire as though they were rolling fits.
+        initial_bundle.valid_until_ns = u64::MAX;
+    }
     let model = Arc::new(arc_swap::ArcSwapOption::from(Some(Arc::new(
-        prepare_model_bundle(
-            initial_surface,
-            inventory_unit,
-            initial_snapshot.generated_at_ms,
-            &effective_config,
-            &clock,
-        ),
+        initial_bundle,
     ))));
-    let mut calibration_snapshot = Some(initial_snapshot);
+    let mut calibration_snapshot = initial_snapshot;
 
     let metrics = Arc::new(Metrics::default());
     let quote_enabled = Arc::new(AtomicBool::new(false));
@@ -1449,6 +1502,16 @@ async fn run_live(
             max_bytes: live_log_max_bytes,
             keep: config.storage.live_log_keep,
         },
+    )?;
+    event_logger.log(
+        "strategy",
+        None,
+        &serde_json::json!({
+            "paper_source": config.live.paper_strategy,
+            "fixed_parameters": fixed_parameters,
+            "inventory_unit": inventory_unit,
+            "capital_usdc": effective_config.quoting.available_capital_usdc,
+        }),
     )?;
     let live_heartbeat_path = config.storage.report_dir.join("live_heartbeat.json");
     let (heartbeat_tx, mut heartbeat_rx) = tokio::sync::mpsc::channel(1);
@@ -1788,7 +1851,7 @@ async fn run_live(
                         }
                     }
                 }
-                _ = calibration_interval.tick(), if !calibration_inflight => {
+                _ = calibration_interval.tick(), if !calibration_inflight && fixed_parameters.is_none() => {
                     // While non-flat the inventory unit is pinned; hand it to
                     // the worker so the re-solve for that unit happens off the
                     // event loop instead of inline on receipt.
@@ -2859,11 +2922,11 @@ fn vpin_bucket_units(
     instrument.size_to_units(bucket).unwrap_or(1).max(1)
 }
 
-fn calibrate_model(
+fn load_model_data(
     config: &AppConfig,
     instrument: &mm_live::InstrumentSpec,
     require_current_data: bool,
-) -> Result<(MarketDataSet, CalibrationSnapshot, HjbSurface, i64)> {
+) -> Result<MarketDataSet> {
     let data = load_market_window(
         &config.storage.data_dir,
         &instrument.symbol,
@@ -2889,6 +2952,15 @@ fn calibrate_model(
             );
         }
     }
+    Ok(data)
+}
+
+fn calibrate_model(
+    config: &AppConfig,
+    instrument: &mm_live::InstrumentSpec,
+    require_current_data: bool,
+) -> Result<(MarketDataSet, CalibrationSnapshot, HjbSurface, i64)> {
+    let data = load_model_data(config, instrument, require_current_data)?;
     let previous = match CalibrationSnapshot::load(&config.storage.calibration_path) {
         Ok(snapshot) => Some(snapshot),
         Err(error)
