@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Zip every git-tracked file (current working-tree content) for handoff to another agent.
+"""Zip current source, review prompt and a read-only paper-history snapshot.
 
-Uses `git ls-files` for the path list -- which is exactly the .gitignore-filtered
-set (no secrets, no keys, no bulk parquet/log data, no venvs) -- but reads each
-file straight off disk, so uncommitted edits are included rather than the stale
-last-commit version. Run from anywhere; it resolves the repo root itself.
+Includes tracked edits and non-ignored new files. Excludes credential files,
+builds and bulk data; git tracking alone is not a guarantee against secrets.
 
     python scripts/make_agent_bundle.py [-o OUTPUT.zip]
 """
@@ -12,51 +10,97 @@ last-commit version. Run from anywhere; it resolves the repo root itself.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
-import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+SKIP_DIRS = {".git", ".claude", ".codex", ".agents", ".venv", "venv", "__pycache__", "target", "node_modules", "hl_data", "run", "reports"}
+SKIP_SUFFIXES = {".env", ".key", ".pem", ".p12", ".pfx", ".zip", ".7z", ".parquet", ".zst", ".exe", ".dll", ".pyc", ".db", ".sqlite"}
+REFERENCE_BOOK = "docs/[Mathematics, Finance and Risk] Álvaro Cartea, Sebastian Jaimungal, José Penalva - Algorithmic and High-Frequency Trading (2015, Cambridge University Press) - libgen.li.pdf"
+
 
 def repo_root() -> Path:
     out = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, check=True,
+        ["git", "-C", str(Path(__file__).resolve().parents[1]), "rev-parse", "--show-toplevel"],
+        capture_output=True, encoding="utf-8", check=True,
     )
     return Path(out.stdout.strip())
 
 
-def tracked_files(root: Path) -> list[str]:
+def project_files(root: Path) -> list[str]:
     out = subprocess.run(
-        ["git", "ls-files", "-z"],
-        capture_output=True, text=True, check=True, cwd=root,
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        capture_output=True, encoding="utf-8", check=True, cwd=root,
     )
-    return [p for p in out.stdout.split("\0") if p]
+    if not (root / REFERENCE_BOOK).is_file():
+        raise FileNotFoundError(f"Requested reference book is missing: {REFERENCE_BOOK}")
+    paths = []
+    for name in sorted((set(out.stdout.split("\0")) | {REFERENCE_BOOK}) - {""}):
+        path = root / name
+        if (set(part.lower() for part in path.relative_to(root).parts[:-1]) & SKIP_DIRS
+                or path.suffix.lower() in SKIP_SUFFIXES or ".env." in path.name.lower()
+                or path.name.lower() == ".env" or path.is_symlink()
+                or not path.resolve().is_relative_to(root.resolve()) or not path.is_file()):
+            continue
+        paths.append(name)
+    return paths
+
+
+def paper_files(root: Path) -> list[str]:
+    """Only paper artifacts; never traverse live account state or event logs."""
+    base = root / "rust_live/reports/grid_live"
+    checkpoint = base / "grid_state.json"
+    if not checkpoint.exists():
+        return []
+    run_id = json.loads(checkpoint.read_text(encoding="utf-8"))["run_id"]
+    if not run_id.startswith("run-") or not run_id[4:].isdigit():
+        raise ValueError("invalid paper run ID")
+    run = base / "runs" / run_id
+    paths = [checkpoint, base / "leaderboard.json", run / "equity_history.csv", *run.glob("fix-*.md")]
+    return [p.relative_to(root).as_posix() for p in paths
+            if p.is_file() and p.resolve().is_relative_to(root.resolve())]
 
 
 def build_manifest(root: Path, paths: list[str]) -> str:
     head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=root
+        ["git", "rev-parse", "HEAD"], capture_output=True, encoding="utf-8", cwd=root
     ).stdout.strip()
     dirty = subprocess.run(
-        ["git", "status", "--short"], capture_output=True, text=True, cwd=root
+        ["git", "status", "--short"], capture_output=True, encoding="utf-8", cwd=root
     ).stdout
-    dirty_paths = sorted(
-        line[3:] for line in dirty.splitlines() if not line.startswith("??")
-    )
     lines = [
         f"# Agent bundle -- {root.name}",
         f"generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
         f"git HEAD: {head}",
-        f"tracked files: {len(paths)}",
+        f"included files: {len(paths)}",
         "",
-        "Every path below is a git-tracked file, read from the CURRENT working",
-        "tree -- uncommitted edits are included, not just the last commit.",
-        f"{len(dirty_paths)} file(s) differ from HEAD:",
+        "Start with project/docs/AGENT_REVIEW_PROMPT.md.",
+        "Source comes from the CURRENT working tree, including non-ignored new files.",
+        "Paper snapshots are copied without stopping the run; compare their timestamps.",
+        "Includes the Cartea/Jaimungal/Penalva book and docs/market_making_introduction.ipynb.",
+        "Raw market tape, event logs, live account state, credentials and builds are excluded.",
+        "The paper history spans configuration changes; it is not a fixed-configuration benchmark.",
+        "Working-tree status:",
     ]
-    lines += [f"  M  {p}" for p in dirty_paths] or ["  (none -- tree is clean)"]
+    lines += dirty.splitlines() or ["  (clean)"]
     return "\n".join(lines) + "\n"
+
+
+def create_bundle(root: Path, output: Path) -> int:
+    paths = project_files(root) + paper_files(root)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Refuse to overwrite a previous handoff. Each invocation is a new snapshot.
+    with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("BUNDLE_MANIFEST.txt", build_manifest(root, paths))
+        for rel in paths:
+            data = (root / rel).read_bytes()
+            if rel.endswith("/equity_history.csv"):
+                # The writer stays running; omit only an unfinished trailing row.
+                data = data[:data.rfind(b"\n") + 1]
+            zf.writestr(f"project/{rel}", data)
+    return len(paths)
 
 
 def main() -> int:
@@ -68,36 +112,13 @@ def main() -> int:
     args = parser.parse_args()
 
     root = repo_root()
-    paths = tracked_files(root)
-    if not paths:
-        print("No git-tracked files found -- is this a git repo?", file=sys.stderr)
-        return 1
-
     output = args.output
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = root.parent / f"{root.name}_bundle_{stamp}.zip"
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    manifest = build_manifest(root, paths)
-
-    missing: list[str] = []
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("BUNDLE_MANIFEST.txt", manifest)
-        for rel in paths:
-            src = root / rel
-            if not src.is_file():
-                # Deleted-but-still-staged, or a submodule gitlink entry.
-                missing.append(rel)
-                continue
-            zf.write(src, arcname=f"{root.name}/{rel}")
-
+    count = create_bundle(root, output)
     size_mb = output.stat().st_size / (1024 * 1024)
-    print(f"wrote {output}  ({size_mb:.1f} MB, {len(paths) - len(missing)} files)")
-    if missing:
-        print(f"skipped {len(missing)} tracked path(s) not present on disk:")
-        for rel in missing:
-            print(f"  - {rel}")
+    print(f"wrote {output}  ({size_mb:.1f} MB, {count} files)")
     return 0
 
 
