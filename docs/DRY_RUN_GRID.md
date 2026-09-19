@@ -263,10 +263,19 @@ and last observed BBO. **A config change continues the run.** A retuned row
 keeps its history and its `config_changes` count goes up once. The roster must
 match: new, removed or renamed rows are refused. Stopped rows stay frozen. The leaderboard
 prints `[RECONFIGURED]` naming the rows that span more than one configuration.
-**The grid is resume-only.** `--out-dir` must identify the existing history.
+**Normal startup is resume-only.** `--out-dir` must identify the existing history.
 Both checkpoint generations are checked for compatibility and valid accounting;
 if neither can be resumed, startup fails before calibration or feed access.
 Missing or incompatible checkpoints never create a fresh run.
+For an explicit reset, stop the paper service and prepare an empty output
+directory. Run `dry-run-grid --initialize --grid <spec> --out-dir <empty-dir>`
+with the paper configuration: it prepares all accounts using the existing sizing
+and calibration code, saves `initial_state.json` in the new run directory, and
+exits without subscribing to a market feed. It refuses any existing history.
+Start the service normally afterward; its first resume is from this zero-account
+checkpoint. The paper service uses `mm-live:grid-receipt-flow-v1`, independently
+of the real-money image tag. Keep the initial checkpoint, actual startup fit and
+UTC boundary when comparing subsequent backtests.
 The specific v4-to-v5 upgrade preserves the schema-3 ledger while marking new
 execution behavior prospectively. Other incompatible execution revisions fail.
 

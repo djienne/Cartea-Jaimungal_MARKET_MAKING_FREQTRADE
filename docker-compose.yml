@@ -33,7 +33,7 @@ services:
     build:
       context: .
       dockerfile: rust_live/Dockerfile
-    image: mm-live:local
+    image: mm-live:grid-receipt-flow-v1
     container_name: mm-grid-dryrun
     init: true
 

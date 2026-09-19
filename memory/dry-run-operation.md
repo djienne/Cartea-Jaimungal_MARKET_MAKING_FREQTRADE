@@ -48,7 +48,17 @@ Three things bound that, and they are the point rather than an afterthought:
   `docs/DRY_RUN_GRID.md` "Checkpoint recovery".
 - **An edited config or grid spec continues the run** (since 2026-09-07); the
   changed rows are counted and printed under the table as `[RECONFIGURED]`.
-  Only symbol, execution model, estimator schema or starting equity start fresh.
+  An incompatible checkpoint refuses startup. A fresh experiment requires the
+  explicit `dry-run-grid --initialize` command in an empty output directory,
+  followed by normal service startup; it never overwrites existing history.
+
+The user-requested reset on 2026-09-19 UTC created `run-1789857749175` for all
+22 rows. Its zero-account checkpoint is at `runs/<run_id>/initial_state.json`;
+actual service startup was 22:46:39 UTC. Initial sizes were recalculated:
+`sweep1_flat300` now uses 798 units (previous run: 636). Use this new checkpoint
+and startup calibration for subsequent comparisons. The old grid directories
+are inactive under `reports/grid_reset_20260920/inactive-old-grid`: automatic
+review blocked their deletion, so they were moved aside without being destroyed.
 
 **Container paths are load-bearing.** Configs set
 `data_dir = "../../scripts/HL_data"`, resolved relative to the *config file*,

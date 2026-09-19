@@ -180,9 +180,12 @@ enum Command {
         /// Optional bounded runtime. Zero runs until Ctrl-C.
         #[arg(long, default_value_t = 0)]
         duration_seconds: u64,
-        /// Existing grid directory to resume; fresh runs are forbidden.
+        /// Grid directory to resume, or an empty directory for --initialize.
         #[arg(long)]
         out_dir: Option<PathBuf>,
+        /// Prepare fresh paper accounts in an empty directory and exit without a feed.
+        #[arg(long, requires = "out_dir")]
+        initialize: bool,
         /// Seconds between equity-history samples. Zero disables the history.
         #[arg(long, default_value_t = 60)]
         history_seconds: u64,
@@ -483,6 +486,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             grid,
             duration_seconds,
             out_dir,
+            initialize,
             history_seconds,
             max_carry_inventory_gap_seconds,
             log_max_mb,
@@ -494,6 +498,7 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
                 &grid,
                 duration_seconds,
                 out_dir.as_deref(),
+                initialize,
                 history_seconds,
                 max_carry_inventory_gap_seconds,
                 mm_live::report::LogRotation {
@@ -2086,6 +2091,7 @@ async fn run_dry_run_grid(
     grid_path: &Path,
     duration_seconds: u64,
     out_dir: Option<&Path>,
+    initialize: bool,
     history_seconds: u64,
     max_carry_inventory_gap_seconds: u64,
     log_rotation: mm_live::report::LogRotation,
@@ -2100,8 +2106,11 @@ async fn run_dry_run_grid(
             format!("grid variant {:?} is not a valid configuration", entry.name)
         })?;
     }
-    let out_dir = out_dir.context("resume-only grid requires --out-dir for the existing run")?;
+    let out_dir = out_dir.context("grid requires --out-dir")?;
     let _grid_lock = grid::GridRunLock::acquire(out_dir)?;
+    if initialize {
+        require_empty_grid(out_dir)?;
+    }
     let state_path = out_dir.join("grid_state.json");
     let grid_fingerprint = format!(
         "execution={};estimator=v{}:{};starting_equity={}",
@@ -2111,18 +2120,24 @@ async fn run_dry_run_grid(
         config.dry_run.starting_equity_usdc
     );
     // Validate recovery before calibration, log rotation, or opening the feed.
-    let resume_from = load_resumable_checkpoint(
-        &state_path,
-        &instrument.symbol,
-        &grid_fingerprint,
-        launched_at_ms,
-        &spec
-            .variants
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect::<Vec<_>>(),
-    )?;
-    let started_at_ms = resume_from.started_at_ms;
+    let resume_from = if initialize {
+        None
+    } else {
+        Some(load_resumable_checkpoint(
+            &state_path,
+            &instrument.symbol,
+            &grid_fingerprint,
+            launched_at_ms,
+            &spec
+                .variants
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+        )?)
+    };
+    let started_at_ms = resume_from
+        .as_ref()
+        .map_or(launched_at_ms, |state| state.started_at_ms);
 
     let (grid_data, snapshot, _, _) = calibrate_model(config, &instrument, true)?;
 
@@ -2161,7 +2176,10 @@ async fn run_dry_run_grid(
             }
         }
     }
-    let run_id = resume_from.run_id.clone();
+    let run_id = resume_from.as_ref().map_or_else(
+        || format!("run-{started_at_ms}"),
+        |state| state.run_id.clone(),
+    );
     let run_dir = out_dir.join("runs").join(&run_id);
     std::fs::create_dir_all(&run_dir)
         .with_context(|| format!("cannot create immutable grid run {}", run_dir.display()))?;
@@ -2173,12 +2191,19 @@ async fn run_dry_run_grid(
             variant_config.quoting.clone(),
             variant_config.risk.clone(),
         )?;
-        let inventory_unit = resume_from
-            .variants
-            .iter()
-            .find(|v| v.name == entry.name)
-            .context("validated checkpoint row missing")?
-            .inventory_unit;
+        let inventory_unit = if let Some(state) = &resume_from {
+            state
+                .variants
+                .iter()
+                .find(|v| v.name == entry.name)
+                .context("validated checkpoint row missing")?
+                .inventory_unit
+        } else {
+            policy.derive_inventory_unit(
+                grid_data.mids.last().context("no calibration mid")?.mid,
+                variant_config.model.q_max,
+            )?
+        };
         let surface = solve_asymmetric(
             fixed_parameters.unwrap_or(snapshot.parameters),
             &variant_config.model,
@@ -2251,7 +2276,31 @@ async fn run_dry_run_grid(
         });
     }
 
-    let state = resume_from;
+    if initialize {
+        checkpoint_grid(
+            &variants,
+            &state_path,
+            &instrument.symbol,
+            &grid_fingerprint,
+            started_at_ms,
+            0,
+            0,
+            &Metrics::default(),
+            &run_id,
+            false,
+        )?;
+        std::fs::copy(&state_path, run_dir.join("initial_state.json"))?;
+        std::fs::write(
+            run_dir.join("initialization_calibration.json"),
+            serde_json::to_vec_pretty(&snapshot)?,
+        )?;
+        for variant in &mut variants {
+            variant.logger.flush()?;
+        }
+        info!(%run_id, variants = variants.len(), "initialized fresh paper accounts; start the grid normally to resume this initial checkpoint");
+        return Ok(());
+    }
+    let state = resume_from.context("missing checkpoint for resume")?;
     let gap_ms = launched_at_ms.saturating_sub(state.checkpoint_ms);
     resume_grid(&mut variants, &state).context("validated checkpoint could not be restored")?;
     let resumes = state.resumes.saturating_add(1);
@@ -2638,6 +2687,15 @@ async fn run_dry_run_grid(
 }
 
 /// Recover the existing accounts before creating run artifacts or connecting.
+fn require_empty_grid(directory: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        if entry?.file_name() != ".grid.lock" {
+            bail!("--initialize requires an empty grid directory; existing history is never overwritten");
+        }
+    }
+    Ok(())
+}
+
 fn load_resumable_checkpoint(
     state_path: &Path,
     symbol: &str,
@@ -4420,6 +4478,25 @@ mod tests {
 #[cfg(test)]
 mod grid_health_tests {
     use super::*;
+
+    #[test]
+    fn initialization_refuses_any_existing_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let _lock = grid::GridRunLock::acquire(directory.path()).unwrap();
+        assert!(require_empty_grid(directory.path()).is_ok());
+        for name in [
+            "grid_state.json",
+            "grid_state.json.bak",
+            "leaderboard.json",
+            "operator-note.txt",
+        ] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, b"keep").unwrap();
+            assert!(require_empty_grid(directory.path()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 
     fn board(generated_at_ms: u64, feed_down_for_ms: u64) -> grid::Leaderboard {
         grid::Leaderboard {
