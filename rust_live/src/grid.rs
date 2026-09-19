@@ -534,24 +534,19 @@ pub struct Leaderboard {
     pub replay: Option<ReplayWindow>,
 }
 
-/// What a replay board scored: the window, the split and the assumed latency.
-///
-/// Enough for another run to be reproduced or refused as incomparable. A live
-/// row and a replay row of the same variant differ by the tape window, the
-/// latency assumption and whether the run was stitched across restarts; the
-/// first two are here and the third is `resumes` above.
+/// Scored bounds, initialization and execution assumptions for each variant.
+/// Missing historical state and grid process outages limit reconstruction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayWindow {
+    #[serde(default)]
+    pub execution: BTreeMap<String, mm_live::report::ReplayDiagnostics>,
     pub training_start_ms: f64,
     pub training_end_ms: f64,
     pub scoring_start_ms: f64,
     pub scoring_end_ms: f64,
     pub train_fraction: f64,
-    /// The decision/acknowledgement/cancel latency every variant assumed.
-    ///
-    /// Load-bearing for the flatten family: the exit deadline is
-    /// `flatten_after_ms + decision + acknowledgement`, so a latency rung
-    /// retunes the strategy rather than merely handicapping it.
+    /// Decision latency for the ranking label. `execution` records all three
+    /// delays and tails; a timed-exit trigger is not a guaranteed fill time.
     pub latency_ms: u64,
 }
 
@@ -639,7 +634,7 @@ impl PersistedGridState {
         )
     }
 
-    fn read_one(path: &Path) -> Result<Self> {
+    pub(crate) fn read_one(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path)?;
         let state: Self = serde_json::from_slice(&bytes)?;
         if state.schema_version != Self::SCHEMA_VERSION {

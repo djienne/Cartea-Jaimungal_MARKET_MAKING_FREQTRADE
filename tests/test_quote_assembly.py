@@ -6,9 +6,8 @@ band in bps of mid, fees included, for any plausible parameter combination.
 The clamps are the hard guarantee; this sweep proves the wiring end-to-end,
 HJB solve -> assemble_half_spread.
 
-``mm_core.assemble_half_spread`` is the single implementation: the Rust
-quoting path is pinned against it by ``rust_live/tests/python_parity.rs``, so
-this sweep is what stands behind that pin.
+This sweep checks the optional Python analysis implementation only.
+The production Rust path has its own numerical and execution tests.
 """
 
 from __future__ import annotations

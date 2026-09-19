@@ -7,8 +7,8 @@ estimation toolchain. **Works ONLY for Hyperliquid.**
 
 > **The former Freqtrade trader is retired.** It was removed on 2026-08-25 and
 > remains available at tag `freqtrade-trader-final`. The current trader is
-> `rust_live/`; Python is retained for collection, estimation and the parity
-> oracle. Replay moved to Rust on 2026-09-10.
+> `rust_live/`; Python is retained for collection and offline analysis.
+> Dry-run and replay execute entirely in Rust.
 
 <p align="center">
   <a href="docs/spread_calculation.pdf">
@@ -62,11 +62,9 @@ Three pieces, deliberately separate:
 | **Measurement** | κ/ε/λ estimators, market-viability screen, period archive | `scripts/` |
 | **Data** | Two collectors writing Parquet shards, operated from a *separate* compose project so no trading session can disturb the tape | `docs/DATA_COLLECTION.md` |
 
-The trader and the estimators share one arithmetic on purpose. `mm_core.py` is
-the single Python implementation, and `rust_live/crates/cj-core` carries the
-same model in Rust; `rust_live/tests/python_parity.rs` pins one against the
-other, so the Rust path is checked against an independent implementation rather
-than only against itself.
+The trader, dry-run grid and backtest share the Rust model and execution code.
+Validation checks numerical residuals, accounting, known limits and recorded-data
+execution. Python estimators are optional analysis tools, not replay dependencies.
 
 **💰 Support this project**: sign up on
 [Hyperliquid with this referral link](https://app.hyperliquid.xyz/join/FREQTRADE)

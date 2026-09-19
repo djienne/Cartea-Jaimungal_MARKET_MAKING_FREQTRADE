@@ -114,6 +114,18 @@ enum Command {
         /// that window, so a large prefix throws the comparison away.
         #[arg(long, default_value_t = 0.7)]
         train_fraction: f64,
+        /// Explicit scoring boundary; overrides the fractional split.
+        #[arg(long)]
+        scoring_from: Option<String>,
+        /// Fixed model units, repeatable as `variant=positive_units` (base without a grid).
+        #[arg(long)]
+        inventory_unit: Vec<String>,
+        /// Historical grid checkpoint, restored with grid restart semantics.
+        #[arg(long)]
+        initial_state: Option<PathBuf>,
+        /// Same carried-inventory limit as the paper grid.
+        #[arg(long, default_value_t = 900)]
+        max_carry_inventory_gap_seconds: u64,
         #[arg(long)]
         grid: Option<PathBuf>,
         /// Repeatable. One row of the grid spec each.
@@ -133,9 +145,9 @@ enum Command {
         /// Score the window a live `leaderboard.json` covers and print its rows
         /// beside the replay's: the fidelity check between replay and dry run.
         ///
-        /// Supplies the range, the latency and, absent `--variant`, the variant
-        /// list. Requires `--grid` to resolve those names.
-        #[arg(long, requires = "grid", conflicts_with_all = ["from", "to"])]
+        /// Supplies the default range and variant list; explicit --from/--to
+        /// select a subwindow. Latencies still come from config/--latency-ms.
+        #[arg(long, requires = "grid")]
         against_live: Option<PathBuf>,
         /// Start of the tape range to replay, RFC 3339 or epoch ms (default:
         /// the config window ending at the newest shard).
@@ -416,6 +428,10 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
             report,
             board,
             train_fraction,
+            scoring_from,
+            inventory_unit,
+            initial_state,
+            max_carry_inventory_gap_seconds,
             grid,
             variant,
             all_variants,
@@ -435,6 +451,10 @@ async fn run_command(cli: Cli, config: AppConfig) -> Result<()> {
                     report: report.as_deref(),
                     board: board.as_deref(),
                     train_fraction,
+                    scoring_from: scoring_from.as_deref().map(parse_utc_ms).transpose()?,
+                    inventory_units: inventory_unit,
+                    initial_state: initial_state.as_deref(),
+                    max_carry_inventory_gap_seconds,
                     grid_path: grid.as_deref(),
                     variants: variant,
                     all_variants,
@@ -2033,51 +2053,17 @@ fn observe_grid_market(
     max_age_ms: u64,
     carry_limit_ms: u64,
 ) -> Result<()> {
-    let previous = market.pause_reason;
-    let withdraw = market.observe(
+    paper::observe_paper_market(
+        variants,
+        market,
         event,
         now_ns,
         unix_ms(),
         metrics.feed_connected_at_ns.load(Ordering::Acquire),
         metrics.feed_disconnected_since_ms.load(Ordering::Relaxed) != 0,
         max_age_ms,
-    );
-    if withdraw {
-        for variant in variants
-            .iter_mut()
-            .filter(|variant| variant.backend.scientifically_valid())
-        {
-            variant.backend.pause_market_data();
-            variant.logger.log(
-                "market_data_paused",
-                None,
-                &market.pause_reason.unwrap_or("connection changed"),
-            )?;
-        }
-    }
-    if previous != market.pause_reason {
-        if let Some(reason) = market.pause_reason {
-            warn!(reason, "paper quoting paused; recovery remains active");
-        } else {
-            info!("fresh BBO received; paper quoting resumed without resetting accounts");
-        }
-    }
-    // A feed gap is the same blindness as a process outage: orders were already
-    // withdrawn, only inventory was held at a mark nobody watched, so past the
-    // carry window it is closed at that mark exactly as a resume does.
-    if let Some(gap_ms) = market.resumed_after_ms.filter(|gap| *gap > carry_limit_ms) {
-        warn!(
-            gap_ms,
-            carry_limit_ms,
-            "feed gap exceeded the carry window; closing carried inventory at its last mark"
-        );
-        for variant in variants.iter_mut() {
-            if variant.backend.flatten_carried_position()?.is_some() {
-                variant.logger.log("feed_gap_flattened", None, &gap_ms)?;
-            }
-        }
-    }
-    Ok(())
+        carry_limit_ms,
+    )
 }
 
 /// Run every variant in the grid against one shared public feed.
@@ -2695,31 +2681,7 @@ fn resume_grid(variants: &mut [PaperVariant], state: &grid::PersistedGridState) 
         else {
             bail!("validated checkpoint row missing: {}", variant.name);
         };
-        variant.config_changes = persisted.config_changes;
-        if persisted.failure.is_some() || !persisted.diagnostics.scientifically_valid {
-            variant
-                .config_fingerprint
-                .clone_from(&persisted.config_fingerprint);
-        } else if persisted.config_fingerprint != variant.config_fingerprint {
-            variant.config_changes += 1;
-            warn!(
-                variant = %variant.name,
-                config_changes = variant.config_changes,
-                "parameters changed since the checkpoint; history continues and the row is marked"
-            );
-        }
-        variant.backend.restore_from_snapshot(
-            persisted.account,
-            persisted.diagnostics.clone(),
-            persisted.inventory_unit,
-            persisted.current_day,
-            persisted.daily_realized_pnl_usdc,
-        )?;
-        variant.backend.restore_checkpoint_bbo(persisted.last_bbo);
-        variant.fills = persisted.fills;
-        variant.peak_equity_usdc = persisted.peak_equity_usdc;
-        variant.max_drawdown_usdc = persisted.max_drawdown_usdc;
-        variant.failure = persisted.failure.clone();
+        variant.restore(persisted)?;
     }
     Ok(())
 }
@@ -4316,12 +4278,18 @@ mod tests {
             time_source: TimeSource::Exchange,
             mids: vec![
                 MidRecord {
+                    received_ms: None,
+                    bid_size: 0.0,
+                    ask_size: 0.0,
                     ts_ms: 2_000.0,
                     bid: 0.099,
                     ask: 0.101,
                     mid: 0.1,
                 },
                 MidRecord {
+                    received_ms: None,
+                    bid_size: 0.0,
+                    ask_size: 0.0,
                     ts_ms: 3_000.0,
                     bid: 0.299,
                     ask: 0.301,

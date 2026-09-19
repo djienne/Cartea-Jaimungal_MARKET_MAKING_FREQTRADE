@@ -151,15 +151,15 @@ gap too long, or an edited spec), which is exactly when you do want to split.
 
 `mm-live calibrate` solves κ/λ/ε and the HJB surface over Parquet history. The
 Python estimators (`estimate_all.py`, `get_{kappa,lambda,epsilon}.py`) are kept
-as the independent oracle that `rust_live/tests/python_parity.rs` pins the Rust
-math against; the trader does not consume their JSON snapshots. See
+as optional offline analysis; Rust execution and its tests do not require
+Python, and the trader does not consume those JSON snapshots. See
 `../docs/UNITS.md` before changing φ or α.
 
 ## Replay is Rust, and native
 
 The Python replay and its staged sweep were deleted on 2026-09-10. Scoring a
-parameter set offline is `mm-live replay`, built with `cargo build --release`
-and run from the host:
+parameter set offline is `mm-live replay`; validate in Docker with a separate
+image tag and report directory:
 
 ```
 mm-live --config config/cashcat_dryrun_realistic.toml replay \
@@ -179,3 +179,11 @@ with the Python engine is the staged parameter *search* — in Rust the search
 space is the grid spec, so a new parameter set is a new variant row. Why the two
 boards are comparable and where they are not: `docs/DRY_RUN_GRID.md` "Offline
 comparison".
+
+Replay `receipt-flow-v1` uses collector receipt order, L2-derived BBOs and the
+grid's pause/restart actions on a virtual clock. Use explicit scored bounds,
+aligned `--inventory-unit` values and a historical `--initial-state` when one
+exists. Otherwise disclose the flat start and missing warm state. Compare grid
+interval deltas after **2026-09-12 20:26:31 UTC** (`causal-v5` deployment), never
+its lifetime profit against a replay subinterval. Latencies remain configured;
+collector gaps cannot reconstruct every grid process or network interruption.

@@ -31,6 +31,12 @@ pub enum TimeSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MidRecord {
+    #[serde(default)]
+    pub bid_size: f64,
+    #[serde(default)]
+    pub ask_size: f64,
+    #[serde(default)]
+    pub received_ms: Option<f64>,
     pub ts_ms: f64,
     pub bid: f64,
     pub ask: f64,
@@ -39,6 +45,8 @@ pub struct MidRecord {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeRecord {
+    #[serde(default)]
+    pub received_ms: Option<f64>,
     pub ts_ms: f64,
     pub side: String,
     pub price: f64,
@@ -48,6 +56,8 @@ pub struct TradeRecord {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BookTopRecord {
+    #[serde(default)]
+    pub received_ms: Option<f64>,
     pub ts_ms: f64,
     pub bid: f64,
     pub bid_size: f64,
@@ -97,23 +107,40 @@ impl MarketDataSet {
         }
         let cutoff =
             self.window_start_ms + train_fraction * (self.window_end_ms - self.window_start_ms);
+        self.split_at(cutoff)
+    }
+
+    pub fn split_at(&self, cutoff: f64) -> Result<(Self, Self)> {
+        if !cutoff.is_finite() || cutoff <= self.window_start_ms || cutoff >= self.window_end_ms {
+            bail!("scoring start must lie strictly inside the requested data window");
+        }
         let mut training = self.clone();
         let mut scoring = self.clone();
-        training.mids.retain(|row| row.ts_ms < cutoff);
-        training.trades.retain(|row| row.ts_ms < cutoff);
-        training.books.retain(|row| row.ts_ms < cutoff);
+        // A training observation must have been both produced and received.
+        training
+            .mids
+            .retain(|row| row.ts_ms < cutoff && row.received_ms.unwrap_or(row.ts_ms) < cutoff);
+        training
+            .trades
+            .retain(|row| row.ts_ms < cutoff && row.received_ms.unwrap_or(row.ts_ms) < cutoff);
+        training
+            .books
+            .retain(|row| row.ts_ms < cutoff && row.received_ms.unwrap_or(row.ts_ms) < cutoff);
         training.window_end_ms = cutoff;
-        scoring.mids.retain(|row| row.ts_ms >= cutoff);
-        scoring.trades.retain(|row| row.ts_ms >= cutoff);
-        scoring.books.retain(|row| row.ts_ms >= cutoff);
+        scoring
+            .mids
+            .retain(|row| row.received_ms.unwrap_or(row.ts_ms) >= cutoff);
+        scoring
+            .trades
+            .retain(|row| row.received_ms.unwrap_or(row.ts_ms) >= cutoff);
+        scoring
+            .books
+            .retain(|row| row.received_ms.unwrap_or(row.ts_ms) >= cutoff);
         scoring.window_start_ms = cutoff;
-        if training.mids.is_empty()
-            || training.trades.is_empty()
-            || scoring.mids.is_empty()
-            || scoring.trades.is_empty()
-        {
-            bail!("replay requires prices and trades in both training and scoring partitions");
+        if training.mids.is_empty() || training.trades.is_empty() {
+            bail!("replay requires prices and trades in the training partition");
         }
+        // A silent scored interval is meaningful: the virtual clock still runs.
         Ok((training, scoring))
     }
 }
@@ -189,7 +216,11 @@ pub fn load_market_window(
         TimeSource::Exchange => row.exchange_ms.map_or(row.local_ms, |value| value as f64),
         TimeSource::Local => row.local_ms,
     };
-    prices.sort_by(|a, b| timestamp_price(a).total_cmp(&timestamp_price(b)));
+    prices.sort_by(|a, b| {
+        timestamp_price(a)
+            .total_cmp(&timestamp_price(b))
+            .then_with(|| a.local_ms.total_cmp(&b.local_ms))
+    });
     trades.sort_by(|a, b| timestamp_trade(a).total_cmp(&timestamp_trade(b)));
 
     let mids = build_mids(&prices, time_source);
@@ -202,16 +233,25 @@ pub fn load_market_window(
         .last()
         .map_or(mid_end, |row| mid_end.min(row.ts_ms));
     let (window_start_ms, window_end_ms) = match range {
-        Some((start, end)) => (start as f64, (end as f64).min(data_end_ms)),
+        // Preserve an explicit silent suffix; replay's virtual clock must see it.
+        Some((start, end)) => (start as f64, end as f64),
         None => (data_end_ms - window_minutes as f64 * 60_000.0, data_end_ms),
+    };
+    let in_window = |exchange: f64, receipt: Option<f64>| {
+        let stamp = if range.is_some() {
+            receipt.unwrap_or(exchange)
+        } else {
+            exchange
+        };
+        (window_start_ms..=window_end_ms).contains(&stamp)
     };
     let mids: Vec<_> = mids
         .into_iter()
-        .filter(|row| row.ts_ms >= window_start_ms && row.ts_ms <= window_end_ms)
+        .filter(|row| in_window(row.ts_ms, row.received_ms))
         .collect();
     let trades: Vec<_> = normalized_trades
         .into_iter()
-        .filter(|row| row.ts_ms >= window_start_ms && row.ts_ms <= window_end_ms)
+        .filter(|row| in_window(row.ts_ms, row.received_ms))
         .collect();
 
     let (raw_books, orderbook_shards) =
@@ -224,6 +264,7 @@ pub fn load_market_window(
     let mut books: Vec<_> = raw_books
         .into_iter()
         .map(|row| BookTopRecord {
+            received_ms: valid_receive_ms(row.local_ms),
             ts_ms: match time_source {
                 TimeSource::Exchange => row.exchange_ms.map_or(row.local_ms, |value| value as f64),
                 TimeSource::Local => row.local_ms,
@@ -235,7 +276,7 @@ pub fn load_market_window(
             bid_levels: row.bid_levels,
             ask_levels: row.ask_levels,
         })
-        .filter(|row| row.ts_ms >= window_start_ms && row.ts_ms <= window_end_ms)
+        .filter(|row| in_window(row.ts_ms, row.received_ms))
         .collect();
     books.sort_by(|a, b| a.ts_ms.total_cmp(&b.ts_ms));
 
@@ -353,7 +394,7 @@ fn selected_shards(
             stamped.push((timestamp, path));
         }
     }
-    stamped.sort_by_key(|(timestamp, _)| *timestamp);
+    stamped.sort(); // Timestamp, then filename: deterministic even during compaction overlap.
     let Some((newest, _)) = stamped.last() else {
         return Ok(Vec::new());
     };
@@ -408,7 +449,11 @@ fn read_batches(path: &Path) -> Result<Vec<RecordBatch>> {
 fn parse_price_batches(batches: &[RecordBatch]) -> Result<Vec<RawPrice>> {
     let mut rows = Vec::new();
     for batch in batches {
-        let timestamp = numeric_f64(batch, "timestamp")?;
+        let timestamp = if batch.column_by_name("timestamp").is_some() {
+            numeric_f64(batch, "timestamp")?
+        } else {
+            vec![f64::NAN; batch.num_rows()]
+        };
         let price = numeric_f64(batch, "price")?;
         let size = numeric_f64(batch, "size")?;
         let side = string_values(batch, "side")?;
@@ -429,7 +474,11 @@ fn parse_price_batches(batches: &[RecordBatch]) -> Result<Vec<RawPrice>> {
 fn parse_trade_batches(batches: &[RecordBatch]) -> Result<Vec<RawTrade>> {
     let mut rows = Vec::new();
     for batch in batches {
-        let timestamp = numeric_f64(batch, "timestamp")?;
+        let timestamp = if batch.column_by_name("timestamp").is_some() {
+            numeric_f64(batch, "timestamp")?
+        } else {
+            vec![f64::NAN; batch.num_rows()]
+        };
         let price = numeric_f64(batch, "price")?;
         let size = numeric_f64(batch, "size")?;
         let side = string_values(batch, "side")?;
@@ -459,7 +508,11 @@ fn usable_level(px: f64, size: f64) -> bool {
 fn parse_book_batches(batches: &[RecordBatch]) -> Result<Vec<RawBookTop>> {
     let mut rows = Vec::new();
     for batch in batches {
-        let timestamp = numeric_f64(batch, "timestamp")?;
+        let timestamp = if batch.column_by_name("timestamp").is_some() {
+            numeric_f64(batch, "timestamp")?
+        } else {
+            vec![f64::NAN; batch.num_rows()]
+        };
         let exchange = optional_i64(batch, "exchange_timestamp")?;
         // Level 0 is mandatory; deeper levels are read while the shard has
         // them, so an older or narrower shard still loads as top-of-book.
@@ -595,6 +648,10 @@ fn exchange_coverage_trades(rows: &[RawTrade]) -> f64 {
         / rows.len().max(1) as f64
 }
 
+fn valid_receive_ms(value: f64) -> Option<f64> {
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
 fn build_mids(rows: &[RawPrice], source: TimeSource) -> Vec<MidRecord> {
     let timestamp = |row: &RawPrice| match source {
         TimeSource::Exchange => row.exchange_ms.map_or(row.local_ms, |value| value as f64),
@@ -607,7 +664,10 @@ fn build_mids(rows: &[RawPrice], source: TimeSource) -> Vec<MidRecord> {
     while index < rows.len() {
         let ts = timestamp(&rows[index]);
         let mut next = index;
-        while next < rows.len() && timestamp(&rows[next]) == ts {
+        while next < rows.len()
+            && timestamp(&rows[next]).total_cmp(&ts).is_eq()
+            && rows[next].local_ms.total_cmp(&rows[index].local_ms).is_eq()
+        {
             match rows[next].side.to_ascii_lowercase().as_str() {
                 "bid" => bid = Some((rows[next].price, rows[next].size)),
                 "ask" => ask = Some((rows[next].price, rows[next].size)),
@@ -615,9 +675,15 @@ fn build_mids(rows: &[RawPrice], source: TimeSource) -> Vec<MidRecord> {
             }
             next += 1;
         }
-        if let (Some((bid_px, _)), Some((ask_px, _))) = (bid, ask) {
+        if let (Some((bid_px, bid_size)), Some((ask_px, ask_size))) = (bid, ask) {
             if bid_px > 0.0 && ask_px > bid_px {
                 output.push(MidRecord {
+                    received_ms: rows[index..next]
+                        .iter()
+                        .filter_map(|row| valid_receive_ms(row.local_ms))
+                        .reduce(f64::max),
+                    bid_size,
+                    ask_size,
                     ts_ms: ts,
                     bid: bid_px,
                     ask: ask_px,
@@ -647,6 +713,7 @@ fn normalize_trades(rows: Vec<RawTrade>, source: TimeSource) -> (Vec<TradeRecord
             continue;
         }
         output.push(TradeRecord {
+            received_ms: valid_receive_ms(row.local_ms),
             ts_ms: match source {
                 TimeSource::Exchange => row.exchange_ms.map_or(row.local_ms, |value| value as f64),
                 TimeSource::Local => row.local_ms,
@@ -1412,6 +1479,13 @@ mod tests {
         let rows = parse_price_batches(&batches).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].side, "bid");
+        let legacy = batches[0].project(&[1, 2, 3, 4]).unwrap();
+        let legacy_rows = parse_price_batches(&[legacy]).unwrap();
+        let mids = build_mids(&legacy_rows, TimeSource::Exchange);
+        assert_eq!(mids.len(), 1);
+        assert_eq!(mids[0].received_ms, None);
+        assert_eq!(mids[0].ts_ms, 1_000.0);
+        assert_eq!((mids[0].bid_size, mids[0].ask_size), (3.0, 4.0));
     }
 
     #[test]

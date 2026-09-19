@@ -14,7 +14,7 @@ use mm_live::quote::{CarteaJaimungalPolicy, RiskState};
 use mm_live::report::JsonlEventLogger;
 use mm_live::types::{Bbo, DesiredQuotes, ExecutionEvent, MarketEvent, QuoteReason};
 use std::path::PathBuf;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::grid;
 
@@ -105,6 +105,34 @@ pub(crate) async fn step_paper_variant(
 }
 
 impl PaperVariant {
+    pub(crate) fn restore(&mut self, persisted: &grid::PersistedVariant) -> Result<()> {
+        self.config_changes = persisted.config_changes;
+        if persisted.failure.is_some() || !persisted.diagnostics.scientifically_valid {
+            self.config_fingerprint
+                .clone_from(&persisted.config_fingerprint);
+        } else if persisted.config_fingerprint != self.config_fingerprint {
+            self.config_changes += 1;
+            warn!(
+                variant = %self.name,
+                config_changes = self.config_changes,
+                "parameters changed since the checkpoint; history continues and the row is marked"
+            );
+        }
+        self.backend.restore_from_snapshot(
+            persisted.account,
+            persisted.diagnostics.clone(),
+            persisted.inventory_unit,
+            persisted.current_day,
+            persisted.daily_realized_pnl_usdc,
+        )?;
+        self.backend.restore_checkpoint_bbo(persisted.last_bbo);
+        self.fills = persisted.fills;
+        self.peak_equity_usdc = persisted.peak_equity_usdc;
+        self.max_drawdown_usdc = persisted.max_drawdown_usdc;
+        self.failure.clone_from(&persisted.failure);
+        Ok(())
+    }
+
     /// Price this variant against the current book and hand the result to its
     /// own simulator. This is the same `policy.compute` the hot path calls; the
     /// grid deliberately does not spawn hot-path threads (see `src/grid.rs`).
@@ -222,4 +250,63 @@ impl PaperVariant {
                 && has_live_equivalent,
         }
     }
+}
+
+/// Shared pause/resume transitions with explicit real or virtual clocks.
+pub(crate) fn observe_paper_market(
+    variants: &mut [PaperVariant],
+    market: &mut grid::PaperMarketState,
+    event: Option<&MarketEvent>,
+    now_ns: u64,
+    now_ms: u64,
+    connected_ns: u64,
+    disconnected: bool,
+    max_age_ms: u64,
+    carry_limit_ms: u64,
+) -> Result<()> {
+    let previous = market.pause_reason;
+    let withdraw = market.observe(
+        event,
+        now_ns,
+        now_ms,
+        connected_ns,
+        disconnected,
+        max_age_ms,
+    );
+    if withdraw {
+        for variant in variants
+            .iter_mut()
+            .filter(|variant| variant.backend.scientifically_valid())
+        {
+            variant.backend.pause_market_data();
+            variant.logger.log(
+                "market_data_paused",
+                None,
+                &market.pause_reason.unwrap_or("connection changed"),
+            )?;
+        }
+    }
+    if previous != market.pause_reason {
+        if let Some(reason) = market.pause_reason {
+            warn!(reason, "paper quoting paused; recovery remains active");
+        } else {
+            info!("fresh BBO received; paper quoting resumed without resetting accounts");
+        }
+    }
+    // A feed gap is the same blindness as a process outage: orders were already
+    // withdrawn, only inventory was held at a mark nobody watched, so past the
+    // carry window it is closed at that mark exactly as a resume does.
+    if let Some(gap_ms) = market.resumed_after_ms.filter(|gap| *gap > carry_limit_ms) {
+        warn!(
+            gap_ms,
+            carry_limit_ms,
+            "feed gap exceeded the carry window; closing carried inventory at its last mark"
+        );
+        for variant in variants.iter_mut() {
+            if variant.backend.flatten_carried_position()?.is_some() {
+                variant.logger.log("feed_gap_flattened", None, &gap_ms)?;
+            }
+        }
+    }
+    Ok(())
 }

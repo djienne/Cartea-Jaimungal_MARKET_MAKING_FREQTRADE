@@ -279,17 +279,9 @@ where
                             super::wire::PublicFrame::Book(book) => {
                                 // BBO is change-only; L2 snapshots also prove an
                                 // unchanged touch is current. Preserve venue time.
-                                let Some((bid, ask)) = book.bids.first().zip(book.asks.first()) else {
+                                let Some(bbo) = book.bbo() else {
                                     args.metrics.invalid_messages.fetch_add(1, Ordering::Relaxed);
                                     continue;
-                                };
-                                let bbo = Bbo {
-                                    bid_px: bid.px,
-                                    bid_sz: bid.qty_units,
-                                    ask_px: ask.px,
-                                    ask_sz: ask.qty_units,
-                                    exchange_ms: book.exchange_ms,
-                                    recv_ns: book.recv_ns,
                                 };
                                 if publish_bbo(args, bbo, Some(book), &mut last_exchange_ms)? {
                                     last_bbo_update = tokio::time::Instant::now();
@@ -337,11 +329,11 @@ fn publish_bbo(
     book: Option<BookSnapshot>,
     last_exchange_ms: &mut u64,
 ) -> Result<bool> {
-    if !bbo.is_valid()
-        || bbo.exchange_ms == 0
-        || bbo.exchange_ms < *last_exchange_ms
-        || crate::types::unix_ms().abs_diff(bbo.exchange_ms) > args.max_bbo_lag_ms
-    {
+    if !bbo.is_fresh(
+        crate::types::unix_ms(),
+        *last_exchange_ms,
+        args.max_bbo_lag_ms,
+    ) {
         args.metrics
             .invalid_messages
             .fetch_add(1, Ordering::Relaxed);

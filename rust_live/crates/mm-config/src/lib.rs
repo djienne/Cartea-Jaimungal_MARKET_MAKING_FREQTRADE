@@ -939,6 +939,8 @@ mod tests {
         config.live.acceptance_max_directional_notional_usdc = 12.01;
         assert!(config.validate().is_err());
         config.live.acceptance_max_directional_notional_usdc = 12.0;
+        // Exercise the enabled dead-man regardless of the operator's live profile.
+        config.live.deadman_enabled = true;
         config.live.deadman_refresh_ms = config.live.deadman_deadline_ms;
         assert!(config.validate().is_err());
     }

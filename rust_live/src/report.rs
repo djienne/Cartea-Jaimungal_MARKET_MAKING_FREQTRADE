@@ -176,6 +176,37 @@ pub struct ReplayInputs {
     pub scoring_end_ms: f64,
     pub parameters: crate::hjb::CjParameters,
     pub vpin_bucket_units: i64,
+    pub execution: ReplayDiagnostics,
+}
+
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+pub struct ReplayPause {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub open_at_end: bool,
+}
+
+/// Recorded-data availability, not a measurement of the grid's WebSocket.
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+pub struct ReplayDiagnostics {
+    pub revision: String,
+    pub scored_until_ms: Option<u64>,
+    pub clock: String,
+    pub receive_time_fallbacks: usize,
+    pub rejected_touches: usize,
+    pub inventory_unit: i64,
+    pub initial_state: Option<String>,
+    pub initial_account: DryRunAccountState,
+    pub initial_fills: u64,
+    pub decision_latency_ms: u64,
+    pub acknowledgement_latency_ms: u64,
+    pub cancel_latency_ms: u64,
+    pub tail_latency_multiplier: f64,
+    pub tail_latency_every: u64,
+    pub max_carry_inventory_gap_seconds: u64,
+    pub pauses: Vec<ReplayPause>,
+    pub gap_closes: u64,
+    pub gap_close_pnl_usdc: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]

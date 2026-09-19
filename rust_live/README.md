@@ -1,11 +1,10 @@
 # Rust Cartea–Jaimungal Engine
 
-This directory contains the current trader. The Python estimators provide an
-independent numerical comparison path; `tests/python_parity.rs` pins selected
-Rust calibration, HJB, and quote outputs against them. Both use schema-v5 direct-window calibration (no cross-window
-smoothing; lambda = raw MO rate × survival intercept, `../scripts/README.md`);
-v4 snapshots are refused. `python scripts/parity_fixture.py` regenerates the
-parity goldens.
+This directory contains the trader, dry-run grid and backtest, all in Rust.
+Schema-v5 direct-window calibration uses no cross-window smoothing:
+lambda = raw MO rate × survival intercept. V4 snapshots are refused.
+Python remains available for collection and optional analysis; it is not an
+execution dependency or a required parity oracle.
 
 The Rust model is intentionally singular: asymmetric Cartea–Jaimungal arrival
 and adverse-selection parameters feed the nonlinear backward-Euler HJB. The
@@ -50,7 +49,7 @@ The Cargo workspace enforces dependency direction:
 
 Only the `cashcat` instrument profile is scientifically validated. Shared model,
 calibration, execution, accounting, and storage code accepts an `InstrumentSpec`;
-future markets require a new validated profile and parity fixtures, not a model
+future markets require a validated profile and numerical/execution checks, not a model
 rewrite.
 
 ## Live connector boundary
@@ -225,11 +224,8 @@ docker build --build-arg "MM_RUSTFLAGS=-C target-cpu=native" `
   -f rust_live/Dockerfile -t cashcat-cj-rust:native .
 ```
 
-`tests/python_parity.rs` pins deterministic outputs from the Python reference for
-schema-v5 unsmoothed parameter estimation, HJB solving, time/inventory interpolation, fee
-assembly, and final tick-rounded quotes. Parameters and ordinary HJB values use
-a `1e-8` tolerance, high-sensitivity HJB points use `1e-7`, and rounded prices
-must be exactly equal.
+Rust tests check known model limits, HJB residuals, accounting identities and
+event-driven execution, including the shared grid/replay pause and resume path.
 
 ## Important units
 
@@ -240,4 +236,6 @@ The CASHCAT profile dynamically verifies venue metadata. The tracked
 price decimals (`6 - szDecimals`) and maximum leverage come from venue metadata
 at startup, and `validate` refuses if live metadata no longer matches the
 profile or `quoting.leverage` exceeds the venue maximum.
-`cashcat.validation.json` records only the parity tolerances and gate.
+`cashcat.validation.json` retains historical tolerances and admission fields;
+its old Python oracle/gate labels are archival, not current test commands.
+It does not certify replay fidelity or profitability.

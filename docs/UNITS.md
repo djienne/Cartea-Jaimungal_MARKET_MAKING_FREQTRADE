@@ -41,7 +41,7 @@ unit = `inventory_unit_base` base asset). A mid-variance penalty on the real
 USDC exposure `q * inventory_unit_base` scales as `sigma2 * unit^2 * q^2` in
 USDC; dividing by one factor of `unit` to match `h`'s per-unit normalization
 leaves `gamma * sigma2 * unit * q^2`. Rust names the coefficient
-`volatility_risk_coefficient`; Python names the parity field
+`volatility_risk_coefficient`; the Python worked example names this field
 `gamma_inventory_risk`. Its default is 0.05, but that is a model choice rather
 than a measured universal constant. When `sigma2_per_sec` is missing or invalid,
 the volatility increment is zero and the configured base penalty remains.

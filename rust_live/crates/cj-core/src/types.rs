@@ -44,6 +44,13 @@ pub struct Bbo {
 }
 
 impl Bbo {
+    /// Admission shared by the public feed and historical replay.
+    pub fn is_fresh(self, now_ms: u64, last_exchange_ms: u64, max_age_ms: u64) -> bool {
+        self.is_valid()
+            && self.exchange_ms != 0
+            && self.exchange_ms >= last_exchange_ms
+            && now_ms.abs_diff(self.exchange_ms) <= max_age_ms
+    }
     #[inline]
     pub const fn is_valid(self) -> bool {
         self.bid_px > 0 && self.ask_px > self.bid_px && self.bid_sz >= 0 && self.ask_sz >= 0
@@ -79,12 +86,36 @@ pub struct BookSnapshot {
     pub recv_ns: u64,
 }
 
+impl BookSnapshot {
+    pub fn bbo(&self) -> Option<Bbo> {
+        let (bid, ask) = self.bids.first().zip(self.asks.first())?;
+        Some(Bbo {
+            bid_px: bid.px,
+            bid_sz: bid.qty_units,
+            ask_px: ask.px,
+            ask_sz: ask.qty_units,
+            exchange_ms: self.exchange_ms,
+            recv_ns: self.recv_ns,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MarketEvent {
     Bbo(Bbo),
     Trade(TradePrint),
     Book(BookSnapshot),
+}
+
+impl MarketEvent {
+    pub const fn received_ns(&self) -> u64 {
+        match self {
+            Self::Bbo(value) => value.recv_ns,
+            Self::Trade(value) => value.recv_ns,
+            Self::Book(value) => value.recv_ns,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

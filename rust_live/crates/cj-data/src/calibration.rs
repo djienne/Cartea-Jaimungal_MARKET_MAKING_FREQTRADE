@@ -693,6 +693,9 @@ mod tests {
             let ts = index as f64 * 1_000.0;
             let mid = 100.0 + (index as f64 / 100.0).sin() * 0.01;
             mids.push(MidRecord {
+                received_ms: None,
+                bid_size: 0.0,
+                ask_size: 0.0,
                 ts_ms: ts,
                 bid: mid - 0.01,
                 ask: mid + 0.01,
@@ -702,6 +705,7 @@ mod tests {
                 let buy = index % 2 == 0;
                 let depth = 0.001 * (1 + index % 20) as f64;
                 trades.push(TradeRecord {
+                    received_ms: None,
                     ts_ms: ts + 100.0,
                     side: if buy { "buy" } else { "sell" }.to_owned(),
                     price: if buy { mid + depth } else { mid - depth },
@@ -745,6 +749,9 @@ mod tests {
             symbol: "SYN".to_owned(),
             time_source: TimeSource::Exchange,
             mids: vec![MidRecord {
+                received_ms: None,
+                bid_size: 0.0,
+                ask_size: 0.0,
                 ts_ms: 0.0,
                 bid: 99.0,
                 ask: 101.0,
@@ -780,6 +787,9 @@ mod tests {
             let ts_ms = f64::from(index) * 1_000.0;
             let mid = 100.0 + (f64::from(index) / 100.0).sin() * 0.01;
             mids.push(MidRecord {
+                received_ms: None,
+                bid_size: 0.0,
+                ask_size: 0.0,
                 ts_ms,
                 bid: mid - 0.01,
                 ask: mid + 0.01,
@@ -789,6 +799,7 @@ mod tests {
                 let buy = index % 2 == 0;
                 let depth = 0.001 * f64::from(1 + index % 20);
                 trades.push(TradeRecord {
+                    received_ms: None,
                     ts_ms: ts_ms + 100.0,
                     side: if buy { "buy" } else { "sell" }.to_owned(),
                     price: if buy { mid + depth } else { mid - depth },

@@ -38,68 +38,75 @@ python scripts/grid_pnl_curve.py
 
 ## Offline comparison
 
-`mm-live replay` scores grid rows over a tape window instead of a live feed. It
-is a command, not a service, so it runs natively; only the collectors and the
-grid need containers, because only they run continuously.
+All dry-run and backtest execution is Rust. Build and validate in Docker; use a
+separate image tag and report directory so an experiment cannot replace the
+running grid's binary or reports.
 
 ```sh
-cargo build --release                     # in rust_live/
-
-mm-live --config rust_live/config/cashcat_dryrun_realistic.toml replay \
-  --grid rust_live/config/grid_cashcat.toml --all-variants \
-  --from 2026-08-30T14:24:06Z --to 2026-09-05T11:09:28Z \
-  --train-fraction 0.05 --latency-ms 150 \
-  --board replay_leaderboard.json
+mm-live --config /opt/mm/config/cashcat_dryrun_realistic.toml replay \
+  --grid /opt/mm/config/grid_cashcat.toml --all-variants \
+  --from 2026-09-13T00:00:00Z --to 2026-09-14T00:00:00Z \
+  --scoring-from 2026-09-13T06:00:00Z \
+  --inventory-unit sweep1_flat300=636 \
+  --board /opt/mm/reports/experiment/leaderboard.json
 ```
 
-`--variant` is repeatable and `--all-variants` takes the whole spec. `--from` /
-`--to` select the tape range (RFC 3339 or epoch ms); without them the config's
-`calibration.window_minutes` ending at the newest shard is replayed.
-`--latency-ms` overrides all three dry-run latencies and is itself repeatable,
-one rung of a ladder each. `--against-live <leaderboard.json>` replaces all
-three: it takes the window, the latency and -- absent `--variant` -- the
-variant list from a live board, and prints each live row beside its replay.
-That is the fidelity check between replay and dry run.
+`--variant` and `--inventory-unit variant=positive_units` are repeatable.
+Without an explicit size, the training prefix sizes each variant automatically.
+Without `--scoring-from`, `--train-fraction` sets the scoring boundary.
+Training excludes observations exchanged or received at/after that boundary.
+Calibration and VPIN scale are shared; frozen parameter profiles skip fitting.
+An omitted `--from` / `--to` uses the configured calibration window.
 
-**The board is the point.** `--board` writes the live `leaderboard.json` schema,
-because a replay row and a grid row both come from
-`PaperVariant::leaderboard_row` — same code, same accounting — so
-`show_grid_leaderboard.py` renders either and rows compare field for field. A
-replay board carries a `replay` key and a live board does not; that is the only
-thing distinguishing two deliberately identical shapes, so check it first.
+`--initial-state historical-grid_state.json` restores the accounts, sizes,
+daily losses and stopped variants using the grid restart path; orders, pending
+operations and guards start cold. Future, incompatible or size-conflicting
+checkpoints are rejected. An omitted checkpoint means **flat, incomplete historical
+state**, not a reconstruction of the grid account. A restart gap beyond
+`--max-carry-inventory-gap-seconds` (default 900) closes carried inventory at
+its saved mark with estimated costs, as in the grid.
 
-Tape and calibration are loaded once and shared: `[calibration]` is not
-overridable, so per-variant refits would be byte-identical work. Calibration
-(unless a frozen `parameter_profile` is selected), VPIN volume scale and order
-sizing use only the training prefix; replay neither loads nor updates the
-calibration cache. Each variant starts flat with cold guards and no orders, and
-stops on terminal risk invalidation. This is a controlled model comparison, not
-evidence that historical venue fills would match paper fills.
+Replay revision **receipt-flow-v1** retains exchange time for existing model and
+execution calculations, but dispatches events in collector receipt order.
+Equal receipt times use trades, L2 books, direct BBOs, then each stream's
+exchange-sorted order (stable file/row order for remaining ties).
+Each accepted L2 book emits book then its derived BBO using the connector's
+shared touch validation. Missing receipt times fall back to exchange time and
+are counted. Collector receipt time is not the grid process's receipt time.
 
-### Fidelity limits, before reading any replay-vs-live table
+Fresh direct or L2-derived BBOs keep the market available; transactions alone
+do not. A virtual clock runs the grid's periodic freshness checks even through
+silence. Shared pause actions withdraw simulated orders and pending exits.
+Resumption requires a fresh BBO; an interruption over the carry limit uses the
+same last-mark close. These are **inferred data gaps**, not reconstructed network
+disconnects. Timer phase, process outages, warm guards and unrecorded messages
+cannot be recovered from an independent collector.
 
-- **Exit names retain their historical labels, not guaranteed fill times.**
-  Execution v5 waits for fill notification, the configured FIFO age, effective
-  cancellation, acknowledgement and reconciliation before sending an IOC. Each
-  delay uses the configured latency tails. Maker placements are suppressed during
-  the exit; orders can still fill before their cancellation becomes effective.
-  A new depth snapshot at/after arrival supplies actual prices and bounded size,
-  within the sent 25/100/configured-maximum-bps IOC limit. Residual inventory remains
-  exposed through the live ten-poll retry cadence. Book events use their own touch;
-  prints, BBOs, duplicate and older snapshots cannot manufacture taker liquidity.
-- **Frozen profiles bypass prefix calibration.** The prefix still sizes replay
-  orders; it does not make a frozen fit out-of-sample. Scoring before that fit's
-  original fitting/selection date is in-sample; overlapping replays are dependent.
-- **A live row may be stitched, a replay never is.** Live rows cross `resumes`,
-  `resumed_downtime_ms` and checkpoint restores; a replay is one continuous
-  pass. A window with heavy downtime is not a fidelity measurement.
-- **Carried inventory is priced differently.** Gap-carry valuation retains its
-  25-bps haircut; timed exits consume visible depth. Both use `flatten_fee_rate`.
-  The old fixed-walk and separate promotion-fee settings are compatibility inputs.
-- **`feed_health` on a replay board is not a measurement.** A replay consumes a
-  tape slice and cannot observe a gap inside it, so those counters read zero
-  meaning "not measured". `calibration` is likewise null for `sweep1_*` and
-  `contender_*`, which skip the fit entirely.
+Configured latency remains authoritative: CASHCAT grid uses **150/150/150 ms**,
+tail multiplier **2.35**, one slow second in twenty. Repeatable `--latency-ms`
+overrides all three for sensitivity experiments; `--against-live` does not
+replace them. It supplies default bounds/variants and compares changes in
+`equity_history.csv` at the scored bounds, with boundary sample ages disclosed.
+Never compare a lifetime grid profit to a replay subinterval. Complete matching
+account state and feeds are still required for a strict fidelity comparison.
+
+`--board` writes interval gains, fees, funding, fills and drawdown; session
+reports retain the final account and an explicit initial-account baseline.
+`replay.execution` records sizes, initialization, latencies, receipt fallbacks,
+rejected touches, pauses and gap closes. WebSocket `feed_health` stays
+unmeasured. The optional comparison report gives the first observable difference
+in a bounded prefix of retained quote/fill traces; absent or rotated-away traces
+are disclosed. A profit difference is not automatically a latency effect.
+
+The historical execution boundary remains **2026-09-12 20:26:31 UTC**, when
+`causal-v5` reached the grid (later commit `142ae3b`). Replaying earlier data
+with v5 is counterfactual. `receipt-flow-v1` changes replay event handling,
+not that past deployment. Timed exits still require cancellation/reconciliation,
+latency and fresh bounded depth; their labels do not promise exact fill times.
+Frozen fits are only out-of-sample after their original fitting/selection date.
+These simulations do not establish historical venue fills.
+
+See [the 22-variant validation](REPLAY_FIDELITY_20260919.md) for measured agreement and remaining differences.
 
 ## Experimental controls
 

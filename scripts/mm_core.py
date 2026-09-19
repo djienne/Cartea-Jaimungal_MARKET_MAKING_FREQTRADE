@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Python quoting core: the reference implementation Rust is pinned against.
+"""Python quoting formulas for optional analysis and the worked document example.
 
 Quote assembly, inventory mapping, maker-safety checks, and tick rounding once
 had multiple Python copies. Consolidating them here prevents a caller from
 silently using different arithmetic from its own documented reference path.
 
-This module is the single Python implementation. `rust_live/tests/python_parity.rs`
-pins the Rust quoting path against it;
-``rust_live/crates/cj-core`` independently implements the production path and
-``rust_live/tests/python_parity.rs`` checks selected outputs against this one.
+The production trader, dry-run and backtest use ``rust_live/crates/cj-core``.
+This analysis module is not a dependency or a validation oracle for that path.
 
 Conventions worth knowing before reading further:
 
@@ -152,7 +150,7 @@ class QuoteConfig:
     """Everything that shapes a quote, in one place.
 
     Constructed directly by callers. Rust uses the corresponding validated
-    TOML schema; parity tests cover the shared numerical fields.
+    TOML schema; this helper is used only by the Python analysis tools.
     """
 
     maker_fee_rate: float = 0.00015
