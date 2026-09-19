@@ -455,7 +455,7 @@ def run_kappa_for_crypto(crypto: str, minutes: int = 30,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Joint kappa/lambda estimation from market data (survival fit + MO arrival rates)')
     parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'CASHCAT'),
-                        help='Cryptocurrency symbol (e.g., ETH) or ALL to process every symbol in HL_data')
+                        help='Cryptocurrency symbol (e.g., CASHCAT) or ALL to process every symbol in HL_data')
     parser.add_argument('--minutes', '-m', type=int, default=30,
                         help='Number of minutes from most recent data to analyze')
     parser.add_argument('--support-quantile', type=float, default=None,

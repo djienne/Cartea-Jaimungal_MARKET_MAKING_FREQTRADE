@@ -175,7 +175,7 @@ class HyperliquidDataCollector:
         # flush writes ~360 shards/hour/stream, and for the 83-column orderbook
         # schema that is pathological -- per-column metadata and the parquet
         # footer dwarf ~2 rows of payload, measured at 27,343 bytes/row against
-        # 664 bytes of actual float64. Compacting an hour of ETH orderbooks:
+        # 664 bytes of actual float64. Compacting an hour of orderbooks:
         # 18.39 MB -> 0.27 MB (68x) and read time 2199ms -> 6ms. Must stay well
         # above the estimator's window edge so the live tail is never rewritten
         # underneath a reader. 0 disables.
@@ -865,7 +865,7 @@ class HyperliquidDataCollector:
         A 10s flush is right for freshness and wrong for storage: it writes ~360
         files per hour per stream, and a columnar format carrying 83 columns of
         schema and statistics for ~2 rows of payload spends 27,343 bytes/row on
-        664 bytes of float64. Measured on an hour of ETH orderbooks, merging
+        664 bytes of float64. Measured on an hour of orderbooks, merging
         those shards takes 18.39 MB to 0.27 MB and the estimator's read of that
         directory from 2199ms to 6ms.
 

@@ -80,7 +80,7 @@ other three Hyperliquid collectors, and are operated from there:
   (`CASHCAT_RETENTION_MINUTES`). The traded
   symbol needs a far longer tape than the rest: replay and the period archive
   can only score a window while its shards exist.
-- **`hl-collector`** — `SYMBOLS=ETH,ACE,CHIP,PENGU,NIL`, 3 days, as controls.
+- **`hl-collector`** — short-retention control symbols.
 
 **The two `SYMBOLS` lists must never overlap.** Both write into the same
 directory and the estimators read the directory, not the writer, so an overlap
@@ -102,7 +102,7 @@ Environment variables, read by `run_collector.py` / `hyperliquid_data_collector.
 
 | Variable                  | Default   | Description                                                        |
 | ------------------------- | --------- | ------------------------------------------------------------------ |
-| `SYMBOLS`                 | `ETH`     | Comma-separated list of symbols to collect                         |
+| `SYMBOLS`                 | `CASHCAT` | Comma-separated list of symbols to collect                         |
 | `OUTPUT_DIR`              | `HL_data` | Directory where Parquet files are written                          |
 | `ORDERBOOK_DEPTH`         | `20`      | Orderbook depth to record                                          |
 | `FLUSH_INTERVAL_SEC`      | `10`      | Buffer flush cadence; kept well below the Rust calibrator's 120 s maximum data age |
@@ -128,8 +128,8 @@ that looks alive but delivers nothing.
 
 ### Data persistence
 
-Collected Parquet files are stored on the host in `HYPERLIQUID_DATA/data/eth_mm`.
-The market-making project reaches them through the `scripts/HL_data` junction, so
+Collected Parquet files live in the shared directory mounted by the collector
+compose project. This project reaches them through the `scripts/HL_data` junction, so
 the parameter estimation scripts (`get_kappa.py`, `get_epsilon.py`,
 `get_lambda.py`) still find their data where they always did.
 

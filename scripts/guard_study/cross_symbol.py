@@ -40,7 +40,7 @@ def worst_moves(tape_dir, symbol) -> dict | None:
 
 def main() -> None:
     rows = {"CASHCAT": worst_moves(T.TAPES_DIR / "full_tape", "CASHCAT")}
-    for sym in ("ETH", "PENGU", "ACE", "CHIP", "NIL"):
+    for sym in ("PENGU", "ACE", "CHIP", "NIL"):
         rows[sym] = worst_moves(T.TAPES_DIR / "siblings", sym)
     print(f"{'symbol':8s} {'max 5s move':>12s} {'max 60s move':>13s} {'05:11 minute':>13s}")
     for sym, row in rows.items():

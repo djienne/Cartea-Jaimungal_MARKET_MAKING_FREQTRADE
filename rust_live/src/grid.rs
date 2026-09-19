@@ -1645,7 +1645,7 @@ mod tests {
     #[test]
     fn a_checkpoint_from_another_instrument_is_not_resumable() {
         let reason = checkpoint()
-            .rejection("ETH", "execution=causal-v4;estimator=v5:direct")
+            .rejection("OTHER", "execution=causal-v4;estimator=v5:direct")
             .expect("a different symbol must be refused");
         assert!(reason.contains("CASHCAT"), "{reason}");
     }

@@ -23,9 +23,9 @@ from validate_hl_data import latest_parquet_timestamp, validate_parquet_file, va
 
 def test_atomic_write_json_round_trip(tmp_path):
     path = tmp_path / "params.json"
-    atomic_write_json(path, {"ETH": {"schema_version": PARAM_SCHEMA_VERSION}})
+    atomic_write_json(path, {"TESTCOIN": {"schema_version": PARAM_SCHEMA_VERSION}})
 
-    assert load_json_object(path) == {"ETH": {"schema_version": PARAM_SCHEMA_VERSION}}
+    assert load_json_object(path) == {"TESTCOIN": {"schema_version": PARAM_SCHEMA_VERSION}}
     assert not path.with_suffix(".json.tmp").exists()
 
 
@@ -38,15 +38,15 @@ def test_kappa_lambda_writer_uses_schema_v4_and_mo_survival_fit(tmp_path):
         3.0,
         0.1,
         0.2,
-        "ETH",
+        "TESTCOIN",
         kappa_file=str(kappa_path),
         lambda_file=str(lambda_path),
         metadata={"generated_at": "2026-05-25T10:00:00Z", "n_quotes": 10, "n_trades": 5},
         raw_values={"kappa+_raw": 2.5, "kappa-_raw": 3.5, "lambda+_raw": 0.15, "lambda-_raw": 0.25},
     )
 
-    kappa = json.loads(kappa_path.read_text(encoding="utf-8"))["ETH"]
-    lambdas = json.loads(lambda_path.read_text(encoding="utf-8"))["ETH"]
+    kappa = json.loads(kappa_path.read_text(encoding="utf-8"))["TESTCOIN"]
+    lambdas = json.loads(lambda_path.read_text(encoding="utf-8"))["TESTCOIN"]
 
     assert kappa["schema_version"] == PARAM_SCHEMA_VERSION
     assert kappa["status"] == "ok"
@@ -70,13 +70,13 @@ def test_kappa_lambda_writer_defaults_raw_to_primary(tmp_path):
         3.0,
         0.1,
         0.2,
-        "ETH",
+        "TESTCOIN",
         kappa_file=str(kappa_path),
         lambda_file=str(lambda_path),
         metadata={"generated_at": "2026-05-25T10:00:00Z"},
     )
 
-    kappa = json.loads(kappa_path.read_text(encoding="utf-8"))["ETH"]
+    kappa = json.loads(kappa_path.read_text(encoding="utf-8"))["TESTCOIN"]
     assert kappa["kappa+_raw"] == 2.0
     assert kappa["kappa-_raw"] == 3.0
     assert kappa["lambda+_raw"] == 0.1
@@ -88,13 +88,13 @@ def test_epsilon_writer_includes_diagnostics(tmp_path):
     save_epsilon_to_json(
         0.01,
         0.02,
-        "ETH",
+        "TESTCOIN",
         filename=str(path),
         metadata={"generated_at": "2026-05-25T10:00:00Z", "n_buy_events": 4, "n_sell_events": 5},
         raw_values={"epsilon+_raw": 0.015, "epsilon-_raw": 0.025},
     )
 
-    data = json.loads(path.read_text(encoding="utf-8"))["ETH"]
+    data = json.loads(path.read_text(encoding="utf-8"))["TESTCOIN"]
     assert data["schema_version"] == PARAM_SCHEMA_VERSION
     assert data["status"] == "ok"
     assert data["estimator"] == "mean_at_arrival"
@@ -106,8 +106,8 @@ def test_epsilon_writer_includes_diagnostics(tmp_path):
 
 def test_epsilon_writer_defaults_raw_to_primary(tmp_path):
     path = tmp_path / "epsilon.json"
-    save_epsilon_to_json(0.01, 0.02, "ETH", filename=str(path), metadata={"generated_at": "2026-05-25T10:00:00Z"})
-    data = json.loads(path.read_text(encoding="utf-8"))["ETH"]
+    save_epsilon_to_json(0.01, 0.02, "TESTCOIN", filename=str(path), metadata={"generated_at": "2026-05-25T10:00:00Z"})
+    data = json.loads(path.read_text(encoding="utf-8"))["TESTCOIN"]
     assert data["epsilon+_raw"] == 0.01
     assert data["epsilon-_raw"] == 0.02
 
@@ -117,12 +117,12 @@ def test_raw_lambda_writer_is_monitoring_only(tmp_path):
     save_lambda_to_json(
         0.3,
         0.4,
-        "ETH",
+        "TESTCOIN",
         filename=str(path),
         metadata={"generated_at": "2026-05-25T10:00:00Z", "n_trades_total": 9},
     )
 
-    data = json.loads(path.read_text(encoding="utf-8"))["ETH"]
+    data = json.loads(path.read_text(encoding="utf-8"))["TESTCOIN"]
     assert data["schema_version"] == PARAM_SCHEMA_VERSION
     assert data["status"] == "ok"
     assert data["lambda_source"] == "lambda_raw"
@@ -152,14 +152,14 @@ def test_hl_data_validator_reads_row_timestamp(tmp_path):
 
 
 def test_hl_data_validator_reports_missing_streams(tmp_path):
-    payload = validate_symbol(tmp_path, "ETH")
+    payload = validate_symbol(tmp_path, "TESTCOIN")
 
     assert not payload["ok"]
     assert set(payload["missing_streams"]) == {"prices", "trades", "orderbooks"}
 
 
 def test_hl_data_validator_can_fail_stale_data(tmp_path):
-    payload = validate_symbol(tmp_path, "ETH", max_age_seconds=30)
+    payload = validate_symbol(tmp_path, "TESTCOIN", max_age_seconds=30)
 
     assert not payload["fresh"]
     assert not payload["ok"]
@@ -168,7 +168,7 @@ def test_hl_data_validator_can_fail_stale_data(tmp_path):
 def test_hl_data_validator_uses_data_timestamp_not_file_mtime(tmp_path):
     now = datetime.now(timezone.utc)
     stale_ts = now - timedelta(seconds=120)
-    symbol_dir = tmp_path / "ETH"
+    symbol_dir = tmp_path / "TESTCOIN"
     for stream in ("prices", "trades", "orderbooks"):
         stream_dir = symbol_dir / stream
         stream_dir.mkdir(parents=True)
@@ -179,7 +179,7 @@ def test_hl_data_validator_uses_data_timestamp_not_file_mtime(tmp_path):
         pd.DataFrame(payload).to_parquet(shard, index=False)
         os.utime(shard, None)
 
-    result = validate_symbol(tmp_path, "ETH", max_age_seconds=30)
+    result = validate_symbol(tmp_path, "TESTCOIN", max_age_seconds=30)
 
     assert not result["fresh"]
     assert not result["ok"]

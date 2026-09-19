@@ -148,7 +148,6 @@ backtested; the collectors have recorded it as `asset_ctx/` since 2026-08-23
    | ACE | 1,016 bps | +6.5 % |
    | CHIP | 452 bps | −3.1 % |
    | PENGU | 375 bps | −0.7 % |
-   | ETH | 114 bps | +1.8 % |
 
    The cascade was CASHCAT-idiosyncratic: the perp dislocated alone and mean
    reverted — exactly the situation oracle-vs-mid divergence measures directly.

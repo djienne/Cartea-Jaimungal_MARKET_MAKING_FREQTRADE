@@ -55,8 +55,8 @@ ROOT = SCRIPTS.parent
 SHARD_RE = re.compile(r"_(\d{13})\.parquet$")
 
 # A symbol qualifies for archiving if its tape spans more than this. The
-# long-retention collector sits far above the line and the 3-day ones (ETH, ACE,
-# CHIP, PENGU, NIL) far below, so the split is unambiguous without
+# long-retention collector sits far above the line and the 3-day controls far
+# below, so the split is unambiguous without
 # this repo having to read another project's compose file. A long-retention coin
 # added later is picked up automatically once its tape grows past the line.
 DEFAULT_MIN_TAPE_DAYS = 7.0

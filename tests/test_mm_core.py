@@ -650,8 +650,7 @@ def test_phi_and_alpha_are_derived_from_live_kappa():
 
 
 def test_one_config_gives_unclamped_skew_at_wildly_different_kappa():
-    """The regression this prevents: moving ETH -> CASHCAT drove phi*kappa*T from
-    0.03 to 153 and pinned every quote onto the floor or the cap."""
+    """Changing kappa by orders of magnitude must preserve normalized risk."""
     config = QuoteConfig(
         hjb_phi_kappa_t=0.05, hjb_alpha_kappa=0.05,
         hjb_horizon_seconds=150.0, q_max=6, allow_short=True,

@@ -612,7 +612,7 @@ def run_epsilon_for_crypto(crypto: str, minutes: int = 30, post_horizon_ms: int 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Estimate the epsilon arrival jump from market data')
     parser.add_argument('--crypto', '-c', type=str, default=os.getenv('CRYPTO_NAME', 'CASHCAT'),
-                        help='Cryptocurrency symbol (e.g., ETH) or ALL for all available in HL_data')
+                        help='Cryptocurrency symbol (e.g., CASHCAT) or ALL for all available in HL_data')
     parser.add_argument('--minutes', '-m', type=int, default=30,
                         help='Number of minutes from most recent data to analyze')
     parser.add_argument('--post-horizon-ms', type=int, default=None,

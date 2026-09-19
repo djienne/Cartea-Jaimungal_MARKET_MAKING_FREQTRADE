@@ -131,7 +131,7 @@ Cartea-Jaimungal_MARKET_MAKING_FREQTRADE/
 │   ├── Dockerfile                         # collector image (built from HYPERLIQUID_DATA)
 │   ├── hyperliquid_data_collector.py      # writes Parquet shards
 │   ├── run_collector.py
-│   └── HL_data/                           # junction -> HYPERLIQUID_DATA/data/eth_mm
+│   └── HL_data/                           # junction -> shared collector data
 ├── tests/                                 # pytest: estimators, quoting core, archive
 ├── docs/                                  # evidence: guard, canary, grid, units
 └── memory/dry-run-operation.md            # how to actually run it, and what bites
@@ -216,23 +216,33 @@ ceiling is a fail-closed operating rule, not a profitability theorem.
 
 **⚠️ The fee comes first. `κ × ε` says nothing about whether you can pay it.**
 
-The toxicity thresholds below are a *relative* measure of adverse selection.
-They contain no fee term, so a market can score beautifully on them and still be
-guaranteed to lose money. That is not hypothetical — it is what this project did
-for months on ETH:
+`toxicity = κε` measures the fitted arrival jump in units of the natural depth
+`1/κ`. It has no fee, queue, latency or holding-period term. The following is the
+actual CASHCAT calibration loaded by the clean 22-variant Rust grid at startup;
+it is a dated measurement, not a permanent property of the instrument.
 
-| | |
-|---|---|
-| ETH perp quoted spread | **0.53 bps** (exactly one tick) |
-| Round trip at the touch earns | 0.53 bps |
-| Two maker fees cost | **3.00 bps** |
-| Net per round trip | **−2.47 bps** |
-| `κ × ε` diagnostic | 0.02 — low relative arrival impact, but no fee information |
+**CASHCAT snapshot — generated 2026-09-19 22:46:49 UTC.** The exchange-time
+window was 20:46:21.382–22:46:21.382 UTC: 118.10 observed minutes after one
+113.126 s outage, 17,819 mid updates and 9,049 trade prints. The observed mid
+used for the bps conversions below was `0.183860`.
 
-Every quote was floor-clamped at `min_half_spread_bps` and sat ~11× past the
-depth 95% of market orders ever reach, and the replay recorded **no maker fills
-in any variant**. The model was working correctly; it was being asked a question
-that cannot detect an unpayable fee.
+| fitted quantity | `+`: buy MO lifts our ask | `−`: sell MO hits our bid |
+|---|---:|---:|
+| `λ` (market orders/s) | 0.218507 | 0.267591 |
+| `κ` (price⁻¹) | 10,753.94 | 9,227.31 |
+| `1/κ` (bps at the observed mid) | 5.06 | 5.89 |
+| `ε` (price units) | 0.0000252470 | 0.0000428913 |
+| `ε` (bps at the observed mid) | 1.37 | 2.33 |
+| **`toxicity = κε`** | **0.272** | **0.396** |
+| survival-fit `R²` | 0.971 | 0.992 |
+| market orders / `ε` events | 1,547 / 1,518 | 1,946 / 1,923 |
+| observed depth p95 (bps) | 13.60 | 16.59 |
+
+The first Rust quote using that model, at flat inventory, was bid `0.183340`
+and ask `0.184370`: 28.28/27.74 bps from mid, or 56.02 bps across both quotes.
+That is a posted spread, not realised edge. Subtracting two maker fees from it
+would still omit conditional markout, queue priority, latency, inventory and the
+probability that both sides fill.
 
 **Check viability before calibrating anything:**
 
@@ -251,10 +261,8 @@ pnl(δ)    = volume(δ) · edge(δ)
 ```
 
 maximised over every observed depth, on both sides, summing the losing side too.
-The dated 2026-08-17 screen recorded in `docs/market_viability_report.json` found
-**28 of 60 screened Hyperliquid perps above $0.5M daily volume pinned
-at exactly one tick like ETH** — a maker cannot even improve the quote there —
-and only 9 that clear the 3 bps round-trip fee *and* are wider than one tick.
+`docs/market_viability_report.json` is a dated 2026-08-17 result and must be
+regenerated on current data before it is used for an admission decision.
 
 **Necessary condition, in plain terms:** the quoted spread must exceed
 `2 × maker_fee + adverse selection`. At the 1.5 bps per-side fee measured for
@@ -285,10 +293,8 @@ python scripts/verify_market_viability.py --crypto ALL --minutes 4320
 ```
 
 Writes `docs/market_viability_report.json`, exits non-zero when no symbol clears
-the bar, and refuses a verdict on less than 6 hours of data — a short window
-describes whichever regime it landed in, not the instrument. (CASHCAT was
-measured running 19.3× its own daily average volume for 15 minutes; over that
-burst the profit curve read +$4,117/h.)
+the bar, and refuses a verdict on less than 6 hours of data: a short window
+describes whichever regime it landed in, not the instrument.
 
 ### Calibration and spreads
 

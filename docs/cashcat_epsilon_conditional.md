@@ -138,7 +138,7 @@ gap between consecutive fills. Held-out slice, `eps500/klo0.75`, `q_max=6`, `T=1
 | phi*kappa*T | fills | mean hold | **median hold** | p90 hold | still open at end |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | 200 | 3907 | 112.0 s | **6.60 s** | 220.2 s | 50 |
-| 300 (shipped) | 3379 | 121.1 s | **6.48 s** | 229.2 s | 546 |
+| 300 (study row) | 3379 | 121.1 s | **6.48 s** | 229.2 s | 546 |
 | 1000 | 2023 | 192.9 s | **5.33 s** | 296.2 s | 717 |
 
 The distribution is heavily skewed: half of all inventory is round-tripped inside ~6.5 s,
@@ -168,7 +168,7 @@ raises the markout horizon that applies to each fill, which raises adverse selec
 fill. Quoting wider is not a free reduction in toxicity, and the phi ladder scored it as
 though it were.
 
-## It is the venue, not CASHCAT
+## Historical cross-instrument control
 
 Same statistic on every instrument with a tape, common window 2026-08-30 20:35 to
 09-02 20:20, each on a depth grid that actually covers where its sweeps land:
@@ -176,14 +176,14 @@ Same statistic on every instrument with a tape, common window 2026-08-30 20:35 t
 | pooled b | 200 ms | 1 s | 5 s |
 | :--- | ---: | ---: | ---: |
 | CASHCAT | 0.35 | 0.84 | 1.01 |
-| ETH | 0.78 | **1.03** | **1.01** |
 | ACE | 0.87 | **1.32** | **1.54** |
 | CHIP | 0.59 | **1.09** | **1.35** |
 
 PENGU and NIL have too few deep sweeps to fit and the script refuses rather than
-guessing. **Every instrument that fits has `b >= 1` from 1 s out**, and 200 ms is the
-only horizon anywhere that reads below 1. At the depths and 1--5 s horizons measured
-here, conditional markout consumes the quoted depth. This does not rule out a deeper
+guessing. In this dated control window, every retained instrument has `b >= 1`
+from 1 s out, and 200 ms is the only horizon that reads below 1. This is not a
+current toxicity estimate for any control symbol. At the depths and 1--5 s
+horizons measured here, conditional markout consumes the quoted depth. This does not rule out a deeper
 or longer-hold policy: the later 60 bps replay is positive but carries large inventory
 and rests beyond the recorded book, so its queue and live achievability remain unknown.
 

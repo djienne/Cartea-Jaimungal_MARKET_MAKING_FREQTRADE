@@ -170,12 +170,12 @@ def test_run_all_loads_the_window_once_and_shares_it(monkeypatch):
     monkeypatch.setattr(estimate_all, "run_epsilon_for_crypto", fake_epsilon)
     monkeypatch.setattr(estimate_all, "_lambda_trades_monitor", lambda *a, **k: None)
 
-    result = estimate_all.run_all("ETH", minutes=30)
+    result = estimate_all.run_all("TESTCOIN", minutes=30)
 
-    assert loads == [("ETH", 30)], "the window must be loaded exactly once per cycle"
+    assert loads == [("TESTCOIN", 30)], "the window must be loaded exactly once per cycle"
     assert seen["kappa"] is window
     assert seen["epsilon"] is window
-    assert result["crypto"] == "ETH"
+    assert result["crypto"] == "TESTCOIN"
     assert result["cycle_seconds"] >= 0
 
 
@@ -193,7 +193,7 @@ def test_run_all_runs_kappa_before_epsilon(monkeypatch):
         estimate_all, "_lambda_trades_monitor", lambda *a, **k: order.append("lambda")
     )
 
-    estimate_all.run_all("ETH", minutes=30)
+    estimate_all.run_all("TESTCOIN", minutes=30)
 
     assert order == ["kappa", "epsilon", "lambda"]
 
@@ -206,4 +206,4 @@ def test_run_all_propagates_a_load_failure(monkeypatch):
 
     monkeypatch.setattr(estimate_all, "load_market_window", boom)
     with pytest.raises(ShardReadError):
-        estimate_all.run_all("ETH", minutes=30)
+        estimate_all.run_all("TESTCOIN", minutes=30)

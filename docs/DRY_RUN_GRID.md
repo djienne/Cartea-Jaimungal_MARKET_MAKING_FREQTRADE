@@ -47,11 +47,13 @@ mm-live --config /opt/mm/config/cashcat_dryrun_realistic.toml replay \
   --grid /opt/mm/config/grid_cashcat.toml --all-variants \
   --from 2026-09-13T00:00:00Z --to 2026-09-14T00:00:00Z \
   --scoring-from 2026-09-13T06:00:00Z \
-  --inventory-unit sweep1_flat300=636 \
+  --inventory-unit "sweep1_flat300=${SWEEP1_FLAT300_UNIT}" \
   --board /opt/mm/reports/experiment/leaderboard.json
 ```
 
 `--variant` and `--inventory-unit variant=positive_units` are repeatable.
+Set the size from the run being compared; the clean run started on 2026-09-19
+uses `sweep1_flat300=798`.
 Without an explicit size, the training prefix sizes each variant automatically.
 Without `--scoring-from`, `--train-fraction` sets the scoring boundary.
 Training excludes observations exchanged or received at/after that boundary.

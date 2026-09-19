@@ -10,7 +10,7 @@ closed around an existing writer, and how to check it.
 | | |
 |---|---|
 | container | `hl-cashcat-collector` (CASHCAT, long retention — `CASHCAT_RETENTION_MINUTES` in the compose file) |
-| sibling | `hl-collector` (ETH, ACE, CHIP, PENGU, NIL — 3-day retention) |
+| sibling | `hl-collector` (short-retention control symbols) |
 | compose project | `hyperliquid_data` — `HYPERLIQUID_DATA/docker-compose.yml` |
 | entrypoint | `python run_collector.py` |
 | build context | this repo's `scripts/` (the collector code is `hyperliquid_data_collector.py`) |
@@ -43,7 +43,7 @@ The mount is a **bind mount**, so the tape is ordinary Windows files:
 
 ```
 type=bind  rw=true
-C:\Users\david\Desktop\freqtrade\HYPERLIQUID_DATA\data\eth_mm  ->  /app/HL_data
+the shared Parquet directory  ->  /app/HL_data
 ```
 
 `rust_live/config/*.toml` sets `storage.data_dir = "../../scripts/HL_data"`,
@@ -51,7 +51,7 @@ and that path is an **NTFS junction** onto the same directory:
 
 ```
 Cartea-Jaimungal_MARKET_MAKING_FREQTRADE\scripts\HL_data
-  --> C:\Users\david\Desktop\freqtrade\HYPERLIQUID_DATA\data\eth_mm
+  --> the shared Parquet directory configured by the collector compose project
 ```
 
 Verified identical: the newest shards listed through the junction and through

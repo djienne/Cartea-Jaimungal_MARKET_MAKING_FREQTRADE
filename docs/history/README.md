@@ -62,8 +62,8 @@ not rotated.
 ## Scope
 
 The only supported instrument profile is CASHCAT. The archiver selects any symbol whose tape spans more than 7
-days, which cleanly separates the long-retention collector from the 3-day one (ETH, ACE,
-CHIP, PENGU, NIL) without this repo reading another
+days, which cleanly separates the long-retention collector from the short-retention
+controls without this repo reading another
 project's compose file. A symbol that qualifies on tape length but has no
 instrument profile is skipped rather than archived with CASHCAT's tick size and
 inventory base — confident numbers for the wrong asset are worse than none.

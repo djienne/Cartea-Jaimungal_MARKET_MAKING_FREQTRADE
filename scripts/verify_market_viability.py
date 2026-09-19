@@ -2,11 +2,9 @@
 """Decide whether an instrument can pay a passive market maker at all.
 
 This gate exists because the Cartea-Jaimungal machinery answers "how wide should
-I quote", never "can quoting this instrument ever be profitable". ETH perp on
-Hyperliquid is the worked counter-example: a one-tick-wide book whose touch sits
-0.27 bps from mid against a 1.5 bps per-side maker fee, so a round trip at the
-touch loses ~2.5 bps. The model produced quotes anyway -- floor-clamped, 11x past
-the calibrated depth -- and the replay recorded no maker fills in any variant.
+I quote", never "can quoting this instrument ever be profitable". A fitted
+model can pass its relative adverse-selection gate while fees, queue position
+and reachable depth still make passive quoting uneconomic.
 
 The verdict comes from an EMPIRICAL PROFIT CURVE, not from the fitted model, so a
 degenerate kappa cannot hide the answer. For each side and each candidate quote

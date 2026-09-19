@@ -1,56 +1,11 @@
 #!/usr/bin/env python3
-"""Keep ``docs/spread_calculation.tex`` honest.
+"""Verify the source snippets and worked numbers in ``spread_calculation.tex``.
 
-The document quotes real source lines and real numbers. Both rot silently: a
-refactor moves a function and the listing becomes fiction, a default changes and
-the worked example describes a spread the code no longer produces. Nothing in a
-PDF complains about that, so this script does.
-
-Two checks, both exact:
-
-1. **Snippets.** Every listing in the ``.tex`` is preceded by
-
-       \snip{scripts/mm_core.py}{224}{240}
-
-   which both typesets the attribution for the reader and tells this script what
-   to check. It re-reads those lines from the repo and compares them with the
-   listing body character for character. A moved or edited function fails here.
-
-2. **Numbers.** Every worked-example figure is tagged
-
-       % CHECK: delta_total = 2.4786e-04
-
-   and this script recomputes it by calling the Python reference pricing
-   path, then compares to the printed precision. It does not validate the Rust
-   trading or replay engine. Tagged worked-example
-   numbers are therefore executable checks; dated evidence tables elsewhere in
-   the document are historical inputs, not recomputed by this script.
-
-``--print`` dumps the worked example instead of checking it, which is how the
-numbers got into the document in the first place.
-
-``--fix-snippets`` re-locates the markers when a listing's text still exists in
-its file but has moved. Editing anything above a quoted range shifts every
-marker below it, and hand-patching line numbers is both tedious and the sort of
-job that gets done carelessly. This only ever moves a marker to a range whose
-text matches the listing exactly; if the text genuinely changed it refuses and
-you get the normal failure.
-
-Book cross-check (done by hand against ``docs/[...]Algorithmic and
-High-Frequency Trading[...].pdf``, printed pages 262-264, and recorded here so
-the provenance is not lost):
-
-    eq. 10.22  midprice with MO impact          -> Part 1, verbatim
-    eq. 10.23  the DPE                          -> Part 1, verbatim
-    eq. 10.25  the ansatz H = x + qS + h(t,q)   -> Part 1, verbatim
-    eq. 10.26  the h-equation, h(T,q) = -alpha q^2 -> Part 1, verbatim
-    eq. 10.27  delta+- = 1/kappa +- eps -+ dh   -> Part 1 and hjb._depths_from_h
-    eq. 10.28  the matrix A                     -> Part 3 against hjb.py:235-239
-    eq. 10.29  omega(t) = e^{A(T-t)} z          -> Part 3 against hjb.py:249-274
-
-Usage:
-    python scripts/verify_spread_doc.py
-    python scripts/verify_spread_doc.py --print
+``\snip{path}{start}{end}`` listings must match their source exactly. Values
+tagged ``% CHECK: name = value`` must round to a fresh calculation from the
+pinned CASHCAT snapshot below. ``--fix-snippets`` relocates unchanged listings;
+``--print`` emits the calculation. This is an offline documentation check, not a
+trading or replay engine.
 """
 from __future__ import annotations
 
@@ -72,36 +27,28 @@ TEX = REPO / "docs" / "spread_calculation.tex"
 # ---------------------------------------------------------------------------
 # The pinned snapshot the worked example runs on.
 #
-# One coherent estimator window from the live CASHCAT dry run, 2026-08-17
-# 14:20:18Z - 16:20:18Z (120 minutes), re-estimated on 2026-09-02 under
-# parameter schema v5 (`python scripts/get_kappa.py` / `get_epsilon.py`
-# with --window-start/--window-end). v5 hands the HJB lambda_raw times the
-# survival-fit intercept; the kappa/epsilon values differ from the original
-# 2026-08-17T16:20:41Z live cycle by under 1% because the collector later
-# compacted the window (170 s of outage is now excluded from the denominator).
-# Pinned rather than read from the live files so the document's numbers do
-# not change every 30 seconds.
+# Startup fit loaded by clean grid run-1789857749175, generated
+# 2026-09-19T22:46:49Z from the preceding two exchange-time hours. It stays
+# pinned here so the checked document does not change at every calibration.
 # ---------------------------------------------------------------------------
 SNAPSHOT = {
-    "kappa+": 10055.673508266684,
-    "kappa-": 9398.654070051622,
-    # lambda_raw 0.12022191331670479 x survival intercept 1.03272...
-    "lambda+": 0.12415621832565442,
-    # lambda_raw 0.13182855810651778 x survival intercept 1.12928...
-    "lambda-": 0.14887163479331725,
-    "epsilon+": 2.5224725943970184e-05,
-    "epsilon-": 2.7800333704115578e-05,
+    "kappa+": 10753.936778090696,
+    "kappa-": 9227.309868601893,
+    "lambda+": 0.2185068182684562,
+    "lambda-": 0.2675909514676402,
+    "epsilon+": 2.5247035573122783e-05,
+    "epsilon-": 4.28913156526262e-05,
 }
-SIGMA2_PER_SEC = 3.352917846799544e-09
-DEPTH_P95_PLUS = 0.0003251999999999934
-DEPTH_P95_MINUS = 0.0003440499999999971
+SIGMA2_PER_SEC = 4.927589879575113e-09
+DEPTH_P95_PLUS = 0.0002500000000000002
+DEPTH_P95_MINUS = 0.0003049999999999997
 
-MID = 0.105685
+MID = 0.18386
 PRICE_TICK = 1e-5
-INVENTORY_UNIT_BASE = 2527.322404371585
+INVENTORY_UNIT_BASE = 399.0
 TAU_REMAINING = 130.786584
 
-# A deliberately fractional inventory: 6065.6 CASHCAT is 2.4 units, which is
+# A deliberately fractional inventory: 957.6 CASHCAT is 2.4 units, which is
 # what a partial fill actually leaves behind and what the interpolation exists
 # to price. An integer q would hide the whole mechanism.
 SIGNED_BASE = 2.4 * INVENTORY_UNIT_BASE
@@ -116,6 +63,11 @@ def build_config() -> mm_core.QuoteConfig:
         allow_short=True,
         hjb_horizon_seconds=150.0,
         hjb_time_mode="episodic",
+        hjb_phi_kappa_t=300.0,
+        hjb_phi_kappa_t_max=450.0,
+        hjb_alpha_kappa=0.05,
+        hjb_max_dt_seconds=0.001953125,
+        hjb_n_steps_max=153_600,
     )
 
 
@@ -212,16 +164,23 @@ def worked_example() -> dict[str, float | int | str | None]:
     out["floor_equals_fee_cushion"] = (
         config.min_half_spread_bps / 10_000.0 * MID == config.maker_fee_rate * MID
     )
-    d1 = mm_core.select_delta(hjb, 1.0, "ask", tau_remaining=TAU_REMAINING)
-    d2 = mm_core.select_delta(hjb, 2.0, "ask", tau_remaining=TAU_REMAINING)
-    out["ask_zero_crossing_q"] = 1.0 + d1 / (d1 - d2)
+    ask_nodes = [
+        (q, mm_core.select_delta(hjb, float(q), "ask", tau_remaining=TAU_REMAINING))
+        for q in range(-config.q_max + 1, config.q_max + 1)
+    ]
+    out["ask_zero_crossing_q"] = next(
+        q0 + d0 / (d0 - d1)
+        for (q0, d0), (_, d1) in zip(ask_nodes, ask_nodes[1:])
+        if math.isfinite(d0) and math.isfinite(d1) and d0 >= 0.0 > d1
+    )
 
     # --- What the finished quotes are worth, back through eq. 10.14 ---------
     ask_delta = config.maker_fee_rate * MID
     out["ask_fill_rate_per_sec"] = SNAPSHOT["lambda+"] * math.exp(-kappa_p * ask_delta)
     out["ask_seconds_per_fill"] = 1.0 / out["ask_fill_rate_per_sec"]
     out["toxicity_plus"] = kappa_p * SNAPSHOT["epsilon+"]
-    out["fills_kept_at_live_toxicity_pct"] = math.exp(-out["toxicity_plus"]) * 100.0
+    out["toxicity_minus"] = SNAPSHOT["kappa-"] * SNAPSHOT["epsilon-"]
+    out["fills_kept_at_snapshot_toxicity_pct"] = math.exp(-out["toxicity_plus"]) * 100.0
     out["fills_kept_at_gate_pct"] = math.exp(-1.5) * 100.0
 
     # --- The same machine at four inventories ------------------------------

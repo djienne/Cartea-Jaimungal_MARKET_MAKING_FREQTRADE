@@ -16,7 +16,6 @@
 \usepackage[margin=2.5cm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
-\usepackage{longtable}
 \usepackage{array}
 \usepackage{xcolor}
 \usepackage{listings}
@@ -100,12 +99,6 @@
   {\footnotesize\color{NavyLink}\texttt{\detokenize{#1}}\quad lines #2--#3}%
   \par\nobreak\vspace{1pt}}
 
-\title{\vspace{-1.2cm}\Huge\bfseries How the Spread Is Computed\\[0.35cm]
-  \Large\mdseries A step-by-step walkthrough of the Cartea--Jaimungal\\
-  market maker, from L2 tick data to a resting limit order}
-\author{}
-\date{}
-
 \begin{document}
 
 % ===========================================================================
@@ -143,7 +136,7 @@ Cartea--Jaimungal market maker\par}
 
 \vspace{0.7cm}
 {\large as implemented by the standalone Rust runtime\\[0.2cm]
-with Python worked examples\par}
+with reproducible worked examples\par}
 
 \vfill
 {\small Every code listing in this document is checked against the repository
@@ -240,7 +233,8 @@ bad luck, and it must be priced in.
 
 \subsection{The concrete setting}
 
-The worked example uses a pinned historical fit for \textbf{CASHCAT}, a low-priced token
+The worked example uses the pinned startup fit from the clean 2026-09-19
+\textbf{CASHCAT} grid, a low-priced token
 traded on \textbf{Hyperliquid}, a crypto derivatives exchange. The instrument is a
 \emph{perpetual future}: a contract that tracks the token's price, can be held
 long or short, can be traded with leverage, and --- unlike a normal future ---
@@ -316,47 +310,10 @@ problem occasionally, read the answer constantly.
 
 \subsection{How to read this document}
 
-Every implementation section below follows the same shape:
-
-\begin{center}
-\fbox{\parbox{0.86\textwidth}{\centering
-\textbf{This is what the book says} (equation, with its number)\\[3pt]
-$\downarrow$\\[3pt]
-\textbf{This is the executable Python reference} (quoted verbatim)\\[3pt]
-$\downarrow$\\[3pt]
-\textbf{This is where the two differ}, if they do
-}}
-\end{center}
-
-\noindent Nothing is paraphrased into pseudo-code. Every listing is the real
-file, checked line by line by \code{scripts/verify\_spread\_doc.py}. Where the
-implementation and the book genuinely part company it is flagged in an amber box,
-and \S\ref{sec:departures} collects every such case in one list. The complete
-correspondence is:
-
-\begin{table}[htbp]
-\centering\small
-\begin{tabular}{@{}llll@{}}
-\toprule
-\textbf{The book} & \textbf{What it says} & \textbf{Python reference} & \textbf{\S} \\
-\midrule
-eq.~(10.22) & mid jumps on each MO & \code{get\_epsilon.py} fits $\epsb^{\pm}$ & \ref{sec:estimation} \\
-$\lambda e^{-\kappa\delta}$ & fills decay in depth & \code{estimator\_common.fit\_kappa\_survival} & \ref{sec:estimation} \\
-eq.~(10.2) & inventory jumps by 1 & \code{mm\_core.inventory\_to\_q} & \ref{sec:reading} \\
-eq.~(10.26) & the equation for $h$ & \code{hjb.compute\_h\_asymmetric} & \ref{sec:solving} \\
-eq.~(10.27) & the optimal depths & \code{hjb.\_depths\_from\_h} & \ref{sec:solving} \\
-eq.~(10.28) & the matrix $\mathbf{A}$ & \code{hjb.compute\_h\_symmetric} & \ref{sec:solving} \\
-eq.~(10.29) & $\omega = e^{\mathbf{A}(T-t)}z$ & eigendecomposition in \code{hjb.py} & \ref{sec:solving} \\
-$\phi = \tfrac12\sigma^2\gamma$ & risk aversion $\equiv$ penalty & \code{mm\_core.effective\_phi} & \ref{sec:phicode} \\
-$\delta^{*}(t,q)$ & the control & \code{mm\_core.select\_delta} & \ref{sec:reading} \\
---- & \emph{(nothing --- ours)} & \code{mm\_core.assemble\_half\_spread} & \ref{sec:assembly} \\
-\bottomrule
-\end{tabular}
-\caption{Book to code. The last row has no book equation behind it: fees,
-cushions and clamps are entirely our addition, and \S\ref{sec:departures} says
-so plainly.}
-\label{tab:booktocode}
-\end{table}
+Book equations retain their (10.x) numbers; project equations use D1, D2, and
+so on. Source listings are quoted verbatim and checked by
+\code{scripts/verify\_spread\_doc.py}. Amber boxes identify implementation
+choices outside the book, collected once in \S\ref{sec:departures}.
 
 % ===========================================================================
 \section{The model}
@@ -424,13 +381,14 @@ depth $\delta$ gets filled is
 
 \begin{intuition}
 $1/\kappa$ is the natural unit of depth. Quote $1/\kappa$ further out and your
-fill rate falls by a factor of $e \approx 2.72$. In the pinned 2026-08-17 CASHCAT snapshot
-$\kappa^{+} \approx 10{,}056$~USDC$^{-1}$, so $1/\kappa^{+} \approx
-9.9\times10^{-5}$~USDC. That is $9.4$~\textbf{bps} of a $0.1057$ mid --- a
+fill rate falls by a factor of $e \approx 2.72$. In the pinned 2026-09-19
+CASHCAT snapshot $\kappa^{+} \approx 10{,}754$~USDC$^{-1}$, so
+$1/\kappa^{+} \approx 9.30\times10^{-5}$~USDC. That is $5.06$~\textbf{bps}
+of a $0.18386$ mid --- a
 \emph{basis point} is one hundredth of one per cent, i.e.\ $10^{-4}$ of the
 price, and depths are quoted in bps throughout this document because it makes
 them comparable across instruments at wildly different price levels. The code
-stores them in USDC. Push the ask 9.4~bps
+stores them in USDC. Push the ask 5.06~bps
 out and you get filled about a third as often.
 \end{intuition}
 
@@ -447,16 +405,16 @@ out and you get filled about a third as often.
   legend style={draw=none, fill=none, at={(0.97,0.95)}, anchor=north east},
 ]
 \addplot[NavyLink, very thick, domain=0:4e-4, samples=120]
-  {0.12415621832565442*exp(-10055.673508266684*x)};
+  {0.2185068182684562*exp(-10753.936778090696*x)};
 \addlegendentry{$\lambda^{+}e^{-\kappa^{+}\delta}$ (ask)}
 \addplot[BoxTrap, thick, dashed, domain=0:4e-4, samples=120]
-  {0.14887163479331725*exp(-9398.654070051622*x)};
+  {0.2675909514676402*exp(-9227.309868601893*x)};
 \addlegendentry{$\lambda^{-}e^{-\kappa^{-}\delta}$ (bid)}
-\addplot[gray, dotted, thick] coordinates {(9.9446e-5,0) (9.9446e-5,0.0457)};
-\node[gray, anchor=west, font=\scriptsize] at (axis cs:1.06e-4,0.057) {$\delta=1/\kappa^{+}$};
+\addplot[gray, dotted, thick] coordinates {(9.2989e-5,0) (9.2989e-5,0.0804)};
+\node[gray, anchor=west, font=\scriptsize] at (axis cs:9.8e-5,0.092) {$\delta=1/\kappa^{+}$};
 \end{axis}
 \end{tikzpicture}
-\caption{Fill rate against depth at the pinned 2026-08-17 CASHCAT calibration. At
+\caption{Fill rate against depth at the pinned 2026-09-19 CASHCAT calibration. At
 $\delta = 1/\kappa$ the rate has fallen to $\lambda/e$.}
 \end{figure}
 
@@ -1130,7 +1088,7 @@ dimensionless $\phi\kappa T$ and $\alpha\kappa$ and derive the rest, then add th
 volatility term that \S10.3 calls for:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{471}{480}
+\snip{scripts/mm_core.py}{430}{439}
 \begin{lstlisting}
     if kappa_avg > 0:
         # Derive from the dimensionless targets so the same config expresses the
@@ -1336,23 +1294,24 @@ different constant on every row.
   grid=major, grid style={gray!20},
   legend style={draw=none, fill=none, at={(0.5,-0.24)}, anchor=north,
                 legend columns=2, font=\small},
-  ytick={-6e-4,-4e-4,-2e-4,0,2e-4,4e-4,6e-4},
-  yticklabels={$-6$,$-4$,$-2$,$0$,$2$,$4$,$6$},
+  ymin=-7e-4, ymax=9e-4,
+  ytick={-6e-4,-3e-4,0,3e-4,6e-4,9e-4},
+  yticklabels={$-6$,$-3$,$0$,$3$,$6$,$9$},
 ]
 \addplot[NavyLink, very thick, mark=*, mark size=1.3] coordinates {
-  (-5,5.56246627e-4) (-4,5.17507797e-4) (-3,4.70314517e-4) (-2,4.10046774e-4)
-  (-1,3.27236018e-4) (0,1.99094589e-4) (1,1.17887227e-5) (2,-1.00953697e-4)
-  (3,-1.74762769e-4) (4,-2.29071529e-4) (5,-2.71906926e-4) (6,-3.07251948e-4)};
+  (-5,8.66673232e-4) (-4,8.27016385e-4) (-3,7.78434021e-4) (-2,7.15700147e-4)
+  (-1,6.27001500e-4) (0,4.74034255e-4) (1,-2.15276308e-4) (2,-3.42976422e-4)
+  (3,-4.17969430e-4) (4,-4.71260669e-4) (5,-5.12631968e-4) (6,-5.46453413e-4)};
 \addlegendentry{$\delta^{+,*}$ (ask)}
 \addplot[BoxTrap, very thick, mark=square*, mark size=1.2, dashed] coordinates {
-  (-6,-2.97377007e-4) (-5,-2.58638177e-4) (-4,-2.11444897e-4) (-3,-1.51177154e-4)
-  (-2,-6.83663977e-5) (-1,5.97750310e-5) (0,2.47080897e-4) (1,3.59823318e-4)
-  (2,4.33632389e-4) (3,4.87941150e-4) (4,5.30776546e-4) (5,5.66121569e-4)};
+  (-6,-5.97171730e-4) (-5,-5.57514883e-4) (-4,-5.08932520e-4) (-3,-4.46198646e-4)
+  (-2,-3.57499999e-4) (-1,-2.04532754e-4) (0,4.84777809e-4) (1,6.12477923e-4)
+  (2,6.87470931e-4) (3,7.40762170e-4) (4,7.82133469e-4) (5,8.15954914e-4)};
 \addlegendentry{$\delta^{-,*}$ (bid)}
 \addplot[gray, thin, domain=-6.5:6.5] {0};
 \end{axis}
 \end{tikzpicture}
-\caption{The solved control at the pinned 2026-08-17 CASHCAT calibration, $\tau = 130.8$~s.
+\caption{The solved control at the pinned 2026-09-19 CASHCAT calibration, $\tau = 130.8$~s.
 Long inventory ($q>0$) tightens the ask and widens the bid, pushing the position
 back toward zero. The ask is absent at $q=-6$ and the bid at $q=+6$: the
 inventory boundary switches the adding side off entirely. Depths below zero
@@ -1386,9 +1345,9 @@ sensible fraction of capital:
   u \;=\; \frac{\text{available capital}\times\text{target utilisation}
                 \times\text{target leverage}}{\bar{q}\times S},
 \]
-which at 1000~USDC, 74\% utilisation, 2$\times$ leverage, $\bar q = 6$ and
-$S = 0.0976$ gives $u \approx 2527$~CASHCAT, so a full $\pm6$ band is about
-1480~USDC of notional.
+which for the grid's 297.88~USDC, 74\% utilisation, 2$\times$ leverage,
+$\bar q = 6$ and $S = 0.18386$ gives $u = 399$~CASHCAT after venue rounding.
+A full $\pm6$ band is about 440.16~USDC of notional.
 
 \begin{trap}{Easy to get backwards}
 $u$ is the denominator of $q = \text{position}/u$, so changing it re-labels the
@@ -1456,7 +1415,7 @@ our own in between. The bracketing helper has two guards that look redundant and
 are not:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{631}{642}
+\snip{scripts/mm_core.py}{590}{601}
 \begin{lstlisting}
     n = len(axis)
     if n == 1 or value <= axis[0]:
@@ -1491,7 +1450,7 @@ reproduces the book exactly and only genuinely fractional inventory blends.
 
 And the blend itself refuses to average away a disabled side:
 
-\snip{scripts/mm_core.py}{659}{665}
+\snip{scripts/mm_core.py}{618}{624}
 \begin{lstlisting}
     if not np.isfinite(low) or not np.isfinite(high):
         return float("inf")
@@ -1517,9 +1476,9 @@ flattening as $t \to T$, because that is when the terminal penalty $\alpha q^2$
 is about to be charged. It does the reverse, and the reason is worth
 understanding rather than filing as a bug.
 
-The pinned worked example uses $\phi\kappa T = 10$ and the terminal one
-$\alpha\kappa = 0.05$: a ratio of $200$ to $1$. The current Rust profile's 300
-makes the dominance stronger. The running penalty is what
+The pinned baseline example uses $\phi\kappa T = 300$ and
+$\alpha\kappa = 0.05$: a ratio of $6000$ to $1$. Fixed-fit sweep candidates use
+$3000$, making the dominance stronger. The running penalty is what
 remains to be \emph{paid} over the time left, so it is largest at the start of an
 episode and vanishes at the end. It dominates the surface completely, and the
 skew therefore collapses as $\tau \to 0$.
@@ -1591,7 +1550,7 @@ rejects orders.
 Everything below is ours, and every line of it can override the model:
 \end{booktocode}
 
-\snip{scripts/mm_core.py}{329}{343}
+\snip{scripts/mm_core.py}{288}{302}
 \begin{lstlisting}
 
     fee_cushion = float(config.maker_fee_rate) * mid
@@ -1628,7 +1587,7 @@ cap           & \code{max\_half\_spread\_bps}$/10^4 \times$ mid & $80$ bps \\
 The worked example and replay default pin the 1.5~bps rate measured for the
 CASHCAT account on 2026-08-23.\normalsize
 
-Four design choices are encoded here:
+Five design choices are encoded here:
 
 \begin{itemize}
   \item \textbf{The fee cushion is one maker fee per side.} A round trip pays two
@@ -1661,12 +1620,12 @@ $\delta_{\text{total}} = \max(\delta_{\text{model}} +
 asks for a negative depth} --- nothing more, nothing less.
 
 Figure~\ref{fig:skew}'s ask curve crosses zero at
-% CHECK: ask_zero_crossing_q = 1.105
-$q = 1.105$. So at this $\tau$, for every inventory above about $1.1$ units ---
-four-fifths of the positive band --- the ask is pinned at $1.5$~bps and carries
-\textbf{no inventory information at all}, and the bid mirrors it below $-1.1$.
+% CHECK: ask_zero_crossing_q = 0.688
+$q = 0.688$. So at this $\tau$, for every inventory above about $0.69$ units ---
+almost nine-tenths of the positive band --- the ask is pinned at $1.5$~bps and carries
+\textbf{no inventory information at all}, and the bid mirrors it below about $-0.70$.
 The skew that \S\ref{sec:model} spends fifteen pages deriving reaches the market,
-on the reducing side, only over roughly $|q| < 1.1$; outside that band one side
+on the reducing side, only over a narrow band around flat; outside it one side
 is a constant and the model's entire remaining influence is in how far it widens
 the other.
 
@@ -1677,9 +1636,9 @@ $\tau \to 0$, so the model is most overruled at exactly the moments it is most
 aggressive.
 \end{trap}
 
-\begin{intuition}
+\begin{intuition}[breakable=false]
 Figure~\ref{fig:skew} shows the model asking for \emph{negative} ask depths once
-$q \ge 2$. A negative depth means ``cross the mid to get out''. That is a
+$q \ge 1$. A negative depth means ``cross the mid to get out''. That is a
 coherent instruction -- the model wants the inventory gone -- but this strategy
 is post-only, so it cannot be obeyed. The floor is what stops it, and the
 \code{clamped} flag records that the model was overruled.
@@ -1716,7 +1675,7 @@ order into an exchange rejection.
 
 \subsection{The last check before posting}
 
-\snip{scripts/mm_core.py}{372}{383}
+\snip{scripts/mm_core.py}{331}{342}
 \begin{lstlisting}
     price_f = finite_float_or_none(price)
     bid_f = finite_float_or_none(best_bid)
@@ -1754,29 +1713,36 @@ path, and every tagged number is re-checked by
 
 \subsection{Inputs}
 
-One recorded CASHCAT estimator window, 2026-08-17 14:20--16:20Z (120
-minutes), re-estimated on 2026-09-02 under parameter schema v5, where
-$\lambda^{\pm}$ is the raw market-order rate times that side's survival-fit
-intercept (1.033 on the ask side, 1.129 on the bid side here). The original
-2026-08-17T16:20:41Z live cycle fed the raw rate; its $\kappa$ and $\epsb$
-differ from these by under 1\% because the collector later compacted the window.
+The CASHCAT startup fit generated at 2026-09-19 22:46:49Z for clean grid run
+\code{run-1789857749175}. Its exchange-time window is
+20:46:21.382--22:46:21.382Z: 118.10 observed minutes after one 113.126~s
+outage, with 17,819 mid updates and 9,049 trade prints. These market inputs are
+recorded measurements; the fractional inventory below is deliberately chosen to
+show interpolation.
 
 \begin{center}\small
 \begin{tabular}{@{}llll@{}}
 \toprule
-$\kappa^{+}$ & $10{,}055.674$ & $\lambda^{+}$ & $0.124156$ \\
-$\kappa^{-}$ & $9{,}398.654$  & $\lambda^{-}$ & $0.148872$ \\
-$\epsb^{+}$  & $2.5225\times10^{-5}$ & $\sigma^{2}$ & $3.3529\times10^{-9}$ \\
-$\epsb^{-}$  & $2.7800\times10^{-5}$ & mid $S$ & $0.105685$ \\
+$\kappa^{+}$ & $10{,}753.937$ & $\lambda^{+}$ & $0.218507$ \\
+$\kappa^{-}$ & $9{,}227.310$  & $\lambda^{-}$ & $0.267591$ \\
+$\epsb^{+}$  & $2.5247\times10^{-5}$ & $\sigma^{2}$ & $4.9276\times10^{-9}$ \\
+$\epsb^{-}$  & $4.2891\times10^{-5}$ & mid $S$ & $0.183860$ \\
 \midrule
-$T$ & 150 s & unit size $u$ & $2527.32$ CASHCAT \\
+$T$ & 150 s & unit size $u$ & $399$ CASHCAT \\
 $\bar{q}$ & 6 & tick & $10^{-5}$ \\
-$(\phi\kappa T)_{\text{target}}$ & 10 & $(\alpha\kappa)_{\text{target}}$ & 0.05 \\
+$(\phi\kappa T)_{\text{target}}$ & 300 & $(\alpha\kappa)_{\text{target}}$ & 0.05 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Inventory is \textbf{6065.6 CASHCAT}, deliberately not a whole number of units --
+The survival fits have $R^2=0.971/0.992$ on 1,547/1,946 market orders. Their
+dimensionless adverse-selection diagnostics are
+% CHECK: toxicity_plus = 0.2715
+$\kappa^{+}\epsb^{+}=0.2715$ and
+% CHECK: toxicity_minus = 0.3958
+$\kappa^{-}\epsb^{-}=0.3958$, both below the configured 1.5 rejection ceiling.
+
+Inventory is \textbf{957.6 CASHCAT}, deliberately not a whole number of units --
 this is what a partial fill leaves behind, and it is what the interpolation
 exists for. Time-to-go is $\tau = 130.79$~s.
 
@@ -1787,30 +1753,30 @@ exists for. Time-to-go is $\tau = 130.79$~s.
 \toprule
 \textbf{Quantity} & \textbf{Formula} & \textbf{Value} \\
 \midrule
-% CHECK: kappa_avg = 9727.1638
-$\bar{\kappa}$ & $\tfrac12(\kappa^{+}+\kappa^{-})$ & $9727.1638$ \\
-% CHECK: phi_kappa_relative = 6.8537e-06
-$\phi_{\kappa\text{-rel}}$ & $10/(\bar{\kappa}T)$ & $6.8537\times10^{-6}$ \\
-% CHECK: vol_delta = 4.2370e-07
-volatility term & $\gamma\sigma^{2}u$ & $4.2370\times10^{-7}$ \\
-% CHECK: phi_effective = 7.2774e-06
-$\phi$ & sum of the two & $7.2774\times10^{-6}$ \\
-% CHECK: alpha_effective = 5.1402e-06
-$\alpha$ & $0.05/\bar{\kappa}$ & $5.1402\times10^{-6}$ \\
+% CHECK: kappa_avg = 9990.6233
+$\bar{\kappa}$ & $\tfrac12(\kappa^{+}+\kappa^{-})$ & $9990.6233$ \\
+% CHECK: phi_kappa_relative = 2.0019e-04
+$\phi_{\kappa\text{-rel}}$ & $300/(\bar{\kappa}T)$ & $2.0019\times10^{-4}$ \\
+% CHECK: vol_delta = 9.8305e-08
+volatility term & $\gamma\sigma^{2}u$ & $9.8305\times10^{-8}$ \\
+% CHECK: phi_effective = 2.0029e-04
+$\phi$ & sum of the two & $2.0029\times10^{-4}$ \\
+% CHECK: alpha_effective = 5.0047e-06
+$\alpha$ & $0.05/\bar{\kappa}$ & $5.0047\times10^{-6}$ \\
 % CHECK: phi_source = kappa_relative+sigma2
 \code{phi\_source} & --- & \code{kappa\_relative+sigma2} \\
-% CHECK: n_steps = 600
-\code{n\_steps} & $\lceil T/0.25\rceil$ & $600$ \\
-% CHECK: dt = 0.25
-$dt$ & $T/\text{\code{n\_steps}}$ & $0.25$ s \\
+% CHECK: n_steps = 76800
+\code{n\_steps} & $\lceil T/0.001953125\rceil$ & $76{,}800$ \\
+% CHECK: dt = 0.001953125
+$dt$ & $T/\text{\code{n\_steps}}$ & $0.001953125$ s \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The volatility channel contributes about 6\% of $\phi$ here, lifting the
-dimensionless product from the configured $10$ to
-% CHECK: phi_kappa_t_dimensionless = 10.6182
-$\phi\bar{\kappa}T = 10.6182$ -- comfortably below the cap of 50.
+The volatility channel contributes about 0.05\% of $\phi$ here, lifting the
+dimensionless product from the configured $300$ to
+% CHECK: phi_kappa_t_dimensionless = 300.1473
+$\phi\bar{\kappa}T = 300.1473$ -- below the cap of 450.
 
 \subsection{Step 2 --- inventory}
 
@@ -1818,7 +1784,7 @@ $\phi\bar{\kappa}T = 10.6182$ -- comfortably below the cap of 50.
 \begin{tabular}{@{}llr@{}}
 \toprule
 % CHECK: q_exact = 2.4
-$q_{\text{exact}}$ & $6065.6 / 2527.32$ & $2.4$ \\
+$q_{\text{exact}}$ & $957.6 / 399$ & $2.4$ \\
 % CHECK: q_int = 2
 $q$ (integer, for routing) & $\text{round}(q_{\text{exact}})$ & $2$ \\
 % CHECK: q_residual = 0.4
@@ -1842,26 +1808,26 @@ the same size:
 \toprule
 \textbf{Term} & \textbf{What it is} & \textbf{USDC} & \textbf{bps of mid} \\
 \midrule
-% CHECK: rent_bps = 9.4097
-$1/\kappa^{+}$ & rent & $+9.9446\times10^{-5}$ & $+9.41$ \\
-% CHECK: adverse_bps = 2.3868
-$\epsb^{+}$ & adverse-selection cover & $+2.5225\times10^{-5}$ & $+2.39$ \\
-% CHECK: h_diff_q2 = 2.2562e-04
-% CHECK: inventory_bps = -21.3488
-$-\bigl(h(\tau,1)-h(\tau,2)\bigr)$ & inventory pressure & $-2.2562\times10^{-4}$ & $-21.35$ \\
+% CHECK: rent_bps = 5.0576
+$1/\kappa^{+}$ & rent & $+9.2989\times10^{-5}$ & $+5.06$ \\
+% CHECK: adverse_bps = 1.3732
+$\epsb^{+}$ & adverse-selection cover & $+2.5247\times10^{-5}$ & $+1.37$ \\
+% CHECK: h_diff_q2 = 4.6121e-04
+% CHECK: inventory_bps = -25.0850
+$-\bigl(h(\tau,1)-h(\tau,2)\bigr)$ & inventory pressure & $-4.6121\times10^{-4}$ & $-25.08$ \\
 \midrule
-% CHECK: delta_plus_q2_bps = -9.5523
-$\delta^{+,*}(\tau,2)$ & & $-1.0095\times10^{-4}$ & $-9.55$ \\
+% CHECK: delta_plus_q2_bps = -18.6542
+$\delta^{+,*}(\tau,2)$ & & $-3.4298\times10^{-4}$ & $-18.65$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\noindent The inventory term is nearly twice the other two combined, and it
+\noindent The inventory term is more than three times the other two combined, and it
 points the other way. \textbf{That is the answer to why the ask gets clamped two
 steps from now}: at $q=2$ the model does not want a spread, it wants \emph{out},
-and it is willing to pay $9.6$~bps through the mid to get there. The first two
+and it is willing to pay $18.7$~bps through the mid to get there. The first two
 terms --- the entire content of \S\ref{sec:model} up to \eqref{eq:1027} --- are
-worth $11.8$~bps between them and are simply overwhelmed. Everything that makes
+worth $6.43$~bps between them and are simply overwhelmed. Everything that makes
 this a \emph{strategy} rather than a fixed spread is in the third row.
 
 \subsection{Step 3b --- blending to the real inventory}
@@ -1874,20 +1840,20 @@ a blend with weight $0.4$:
 \toprule
 & \textbf{at $q=2$} & \textbf{at $q=3$} & \textbf{blended at $q=2.4$} \\
 \midrule
-% CHECK: delta_plus_q2 = -1.0095e-04
-% CHECK: delta_plus_q3 = -1.7476e-04
-% CHECK: ask_delta_model = -1.3048e-04
-$\delta^{+,*}$ (ask) & $-1.0095\times10^{-4}$ & $-1.7476\times10^{-4}$ & $-1.3048\times10^{-4}$ \\
-% CHECK: delta_minus_q2 = 4.3363e-04
-% CHECK: delta_minus_q3 = 4.8794e-04
-% CHECK: bid_delta_model = 4.5536e-04
-$\delta^{-,*}$ (bid) & $4.3363\times10^{-4}$ & $4.8794\times10^{-4}$ & $4.5536\times10^{-4}$ \\
+% CHECK: delta_plus_q2 = -3.4298e-04
+% CHECK: delta_plus_q3 = -4.1797e-04
+% CHECK: ask_delta_model = -3.7297e-04
+$\delta^{+,*}$ (ask) & $-3.4298\times10^{-4}$ & $-4.1797\times10^{-4}$ & $-3.7297\times10^{-4}$ \\
+% CHECK: delta_minus_q2 = 6.8747e-04
+% CHECK: delta_minus_q3 = 7.4076e-04
+% CHECK: bid_delta_model = 7.0879e-04
+$\delta^{-,*}$ (bid) & $6.8747\times10^{-4}$ & $7.4076\times10^{-4}$ & $7.0879\times10^{-4}$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Check the ask by hand: $-1.0095\times10^{-4} + 0.4\times(-1.7476 + 1.0095)\times
-10^{-4} = -1.3048\times10^{-4}$. Note it is \textbf{negative}: holding 2.4 units
+Check the ask by hand: $-3.4298\times10^{-4} + 0.4\times(-4.1797 + 3.4298)\times
+10^{-4} = -3.7297\times10^{-4}$. Note it is \textbf{negative}: holding 2.4 units
 long, the model wants to sell badly enough to cross the mid.
 
 \subsection{Step 4 --- assembling both prices}
@@ -1897,49 +1863,48 @@ long, the model wants to sell badly enough to cross the mid.
 \toprule
 & \textbf{bid} & \textbf{ask} \\
 \midrule
-% CHECK: bid_delta_model = 4.5536e-04
-% CHECK: ask_delta_model = -1.3048e-04
-model depth $\delta_{\text{model}}$ & $4.5536\times10^{-4}$ & $-1.3048\times10^{-4}$ \\
-% CHECK: bid_fee_cushion = 1.5853e-05
-% CHECK: ask_fee_cushion = 1.5853e-05
-$+$ fee cushion & $1.5853\times10^{-5}$ & $1.5853\times10^{-5}$ \\
-% CHECK: bid_delta_pre_clamp = 4.7121e-04
-% CHECK: ask_delta_pre_clamp = -1.1462e-04
-$=$ pre-clamp & $4.7121\times10^{-4}$ & $-1.1462\times10^{-4}$ \\
+% CHECK: bid_delta_model = 7.0879e-04
+% CHECK: ask_delta_model = -3.7297e-04
+model depth $\delta_{\text{model}}$ & $7.0879\times10^{-4}$ & $-3.7297\times10^{-4}$ \\
+% CHECK: bid_fee_cushion = 2.7579e-05
+% CHECK: ask_fee_cushion = 2.7579e-05
+$+$ fee cushion & $2.7579\times10^{-5}$ & $2.7579\times10^{-5}$ \\
+% CHECK: bid_delta_pre_clamp = 7.3637e-04
+% CHECK: ask_delta_pre_clamp = -3.4539e-04
+$=$ pre-clamp & $7.3637\times10^{-4}$ & $-3.4539\times10^{-4}$ \\
 \midrule
-% CHECK: floor_price = 1.5853e-05
-floor ($1.5$ bps) & \multicolumn{2}{c}{$1.5853\times10^{-5}$} \\
-% CHECK: cap_price = 8.4548e-04
-cap ($80$ bps) & \multicolumn{2}{c}{$8.4548\times10^{-4}$} \\
+% CHECK: floor_price = 2.7579e-05
+floor ($1.5$ bps) & \multicolumn{2}{c}{$2.7579\times10^{-5}$} \\
+% CHECK: cap_price = 1.4709e-03
+cap ($80$ bps) & \multicolumn{2}{c}{$1.4709\times10^{-3}$} \\
 % CHECK: bid_clamped = None
 % CHECK: ask_clamped = floor
 clamped? & no & \textbf{yes, at the floor} \\
 \midrule
-% CHECK: bid_delta_total = 4.7121e-04
-% CHECK: ask_delta_total = 1.5853e-05
-final $\delta_{\text{total}}$ & $4.7121\times10^{-4}$ & $1.5853\times10^{-5}$ \\
-% CHECK: bid_bps = 44.5861
+% CHECK: bid_delta_total = 7.3637e-04
+% CHECK: ask_delta_total = 2.7579e-05
+final $\delta_{\text{total}}$ & $7.3637\times10^{-4}$ & $2.7579\times10^{-5}$ \\
+% CHECK: bid_bps = 40.0504
 % CHECK: ask_bps = 1.5000
-in bps of mid & $44.59$ & $1.50$ \\
+in bps of mid & $40.05$ & $1.50$ \\
 \midrule
-% CHECK: bid_raw_price = 0.10521379
-% CHECK: ask_raw_price = 0.10570085
-raw price ($S \mp \delta$) & $0.10521379$ & $0.10570085$ \\
-% CHECK: bid_price = 0.10521
-% CHECK: ask_price = 0.10571
-rounded to tick & $0.10521$ (down) & $0.10571$ (up) \\
+% CHECK: bid_raw_price = 0.18312363
+% CHECK: ask_raw_price = 0.18388758
+raw price ($S \mp \delta$) & $0.18312363$ & $0.18388758$ \\
+% CHECK: bid_price = 0.18312
+% CHECK: ask_price = 0.18389
+rounded to tick & $0.18312$ (down) & $0.18389$ (up) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \subsection{Reading the result}
 
-% CHECK: quoted_spread_bps = 47.3104
+% CHECK: quoted_spread_bps = 41.8797
 The final quote is wildly asymmetric: the ask sits $1.50$ bps from the mid and
-the bid $44.59$ bps away. Those sum to $46.09$ bps, while the quoted spread
-measured between the two \emph{rounded} prices is $47.31$ bps --- the extra
-$1.22$ bps is tick rounding pushing both prices away from the touch, which at a
-$10^{-5}$ tick on a $0.1057$ mid is worth up to a basis point per side.
+the bid $40.05$ bps away. Those sum to $41.55$ bps, while the quoted spread
+measured between the two \emph{rounded} prices is $41.88$ bps --- the extra
+$0.33$ bps is tick rounding pushing both prices away from the touch.
 
 None of that is a malfunction; the asymmetry is the entire point. Holding 2.4
 units long, the strategy is almost giving the inventory away on the ask while
@@ -1948,11 +1913,11 @@ making itself very hard to hit on the bid.
 \begin{intuition}
 Put the two final depths back through \eqref{eq:fillrate} and ask what they are
 worth. The ask, pinned at the floor, runs at
-% CHECK: ask_fill_rate_per_sec = 0.1059
-% CHECK: ask_seconds_per_fill = 9.4
-$\lambda^{+}e^{-\kappa^{+}\delta} = 0.1059$~s$^{-1}$ --- a fill every $9.4$
-seconds. The bid, $44.59$~bps out, runs at $0.00178$~s$^{-1}$: a fill every
-$9.4$~minutes, against an episode horizon of $150$~seconds.
+% CHECK: ask_fill_rate_per_sec = 0.1624
+% CHECK: ask_seconds_per_fill = 6.2
+$\lambda^{+}e^{-\kappa^{+}\delta} = 0.1624$~s$^{-1}$ --- a modelled fill every
+$6.2$ seconds. The bid, $40.05$~bps out, runs at $0.000300$~s$^{-1}$: a modelled
+fill every $55.6$~minutes, against an episode horizon of $150$~seconds.
 
 The bid is not really a quote. It is a decision not to buy, dressed as one. That
 is correct behaviour at $2.4$ units long, and it is the clearest statement of
@@ -1970,15 +1935,15 @@ unobstructed too, so here is the identical pipeline at four inventories:
 \toprule
 $q$ & bid (bps) & ask (bps) & clamped? & \\
 \midrule
-% CHECK: q0p0_bid_bps = 24.88
-% CHECK: q0p0_ask_bps = 20.34
-$0.0$ & $24.88$ & $20.34$ & no & near-symmetric; the model as the book intends it \\
-% CHECK: q0p4_bid_bps = 29.15
-% CHECK: q0p4_ask_bps = 13.25
-$0.4$ & $29.15$ & $13.25$ & no & mild skew, both sides live \\
-% CHECK: q2p4_bid_bps = 44.59
+% CHECK: q0p0_bid_bps = 27.87
+% CHECK: q0p0_ask_bps = 27.28
+$0.0$ & $27.87$ & $27.28$ & no & near-symmetric; the model as the book intends it \\
+% CHECK: q0p4_bid_bps = 30.64
+% CHECK: q0p4_ask_bps = 12.29
+$0.4$ & $30.64$ & $12.29$ & no & mild skew, both sides live \\
+% CHECK: q2p4_bid_bps = 40.05
 % CHECK: q2p4_ask_bps = 1.50
-$2.4$ & $44.59$ & $1.50$ & ask & the worked example \\
+$2.4$ & $40.05$ & $1.50$ & ask & the worked example \\
 % CHECK: q5p4_bid_bps = None
 % CHECK: q5p4_ask_bps = 1.50
 $5.4$ & --- & $1.50$ & ask & bid switched off by the boundary blend \\
@@ -2004,8 +1969,8 @@ Two diagnostics fire on the $q=2.4$ quote and both are worth attention:
     the liquidity available.
   \item \textbf{The bid is outside the calibrated range.}
 % CHECK: bid_outside_calibrated = True
-    At $4.71\times10^{-4}$ it sits beyond the 95th percentile of observed
-    market-order walk depths ($3.44\times10^{-4}$). Equation~\eqref{eq:fillrate}
+    At $7.36\times10^{-4}$ it sits beyond the 95th percentile of observed
+    market-order walk depths ($3.05\times10^{-4}$). Equation~\eqref{eq:fillrate}
     is being extrapolated past the data that fitted it, so the true fill
     probability there is anybody's guess.
 \end{itemize}
@@ -2066,7 +2031,7 @@ risk aversion.
 \section{File map}
 
 \begin{center}\small
-\begin{tabular}{@{}p{6.2cm}p{8.0cm}@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{6.2cm}>{\raggedright\arraybackslash}p{8.0cm}@{}}
 \toprule
 \textbf{File} & \textbf{Role} \\
 \midrule

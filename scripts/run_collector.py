@@ -25,7 +25,7 @@ def _install_sigterm_handler():
     signal.signal(signal.SIGTERM, _handle)
 
 def _symbols():
-    raw = os.getenv("SYMBOLS", "ETH")
+    raw = os.getenv("SYMBOLS", "CASHCAT")
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 def main():
