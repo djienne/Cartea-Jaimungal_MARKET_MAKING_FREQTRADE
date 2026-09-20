@@ -5,6 +5,8 @@ A market maker implementing the Cartea–Jaimungal–Penalva model (Chapter 10 o
 estimation, as a **standalone Rust runtime** with a Python collection and
 estimation toolchain. **Works ONLY for Hyperliquid.**
 
+Associated Youtube video: [https://www.example.com](https://www.youtube.com/watch?v=tIdJDrR4wgU)
+
 > **The former Freqtrade trader is retired.** It was removed on 2026-08-25 and
 > remains available at tag `freqtrade-trader-final`. The current trader is
 > `rust_live/`; Python is retained for collection and offline analysis.
