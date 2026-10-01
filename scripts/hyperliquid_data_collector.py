@@ -254,6 +254,9 @@ class HyperliquidDataCollector:
             else:
                 df = pd.DataFrame(data)
 
+            if dtype == 'orderbooks':
+                # Fast L2 currently supplies five levels; keep absent deeper columns numeric/null.
+                df = df.astype({col: 'float64' for col in df if col.startswith(('bid_', 'ask_'))})
             df = self.narrow_dtypes(df)
 
             # Generate filename with timestamp
@@ -650,7 +653,7 @@ class HyperliquidDataCollector:
             self.subscription_ids.append(trades_id)
 
             l2book_id = self.info.subscribe(
-                {"type": "l2Book", "coin": symbol},
+                {"type": "l2Book", "coin": symbol, "fast": True},
                 self._handle_orderbook_data
             )
             self.subscription_ids.append(l2book_id)
